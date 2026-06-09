@@ -160,10 +160,6 @@ function applyBranding(ctx: ExtensionContext): void {
 			intervalMs: 140,
 		});
 		ctx.ui.setHiddenThinkingLabel(`${AVATAR} thinking...`);
-		ctx.ui.setStatus(
-			"varisdev",
-			`${ctx.ui.theme.fg("accent", AVATAR)} ${ctx.ui.theme.fg("muted", TITLE)}`,
-		);
 	}
 }
 
