@@ -1,9 +1,60 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { basename } from "node:path";
 
 const THEME_NAME = "varisware";
 const TITLE = "VarisTerminal";
+const TERMINAL_TITLE_PREFIX = "VWTerminal";
+const TITLE_REFRESH_MS = 2000;
 const AVATAR = "\\_(o)>";
+
+let titleRefresh: ReturnType<typeof setInterval> | undefined;
+
+function unrefTimer(timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>): void {
+	if (typeof timer === "object" && timer && "unref" in timer) {
+		(timer as { unref?: () => void }).unref?.();
+	}
+}
+
+function getTerminalTitle(ctx?: ExtensionContext): string {
+	const folder = ctx ? basename(ctx.cwd) : "";
+	return folder ? `${TERMINAL_TITLE_PREFIX} - ${folder}` : TERMINAL_TITLE_PREFIX;
+}
+
+function applyTerminalTitle(ctx?: ExtensionContext): void {
+	const terminalTitle = getTerminalTitle(ctx);
+	process.title = terminalTitle;
+
+	if (ctx?.hasUI) {
+		ctx.ui.setTitle(terminalTitle);
+	}
+
+	if (ctx?.mode === "tui") {
+		// OSC 2 targets the window/tab title explicitly. pi's built-in
+		// title updater uses OSC 0, so emit both and keep ours last.
+		process.stdout.write(`\x1b]2;${terminalTitle}\x07`);
+	}
+}
+
+function keepTerminalTitle(ctx: ExtensionContext): void {
+	applyTerminalTitle(ctx);
+
+	for (const delay of [0, 50, 250, 1000]) {
+		const timeout = setTimeout(() => applyTerminalTitle(ctx), delay);
+		unrefTimer(timeout);
+	}
+
+	if (!titleRefresh) {
+		titleRefresh = setInterval(() => applyTerminalTitle(ctx), TITLE_REFRESH_MS);
+		unrefTimer(titleRefresh);
+	}
+}
+
+function stopKeepingTerminalTitle(): void {
+	if (!titleRefresh) return;
+	clearInterval(titleRefresh);
+	titleRefresh = undefined;
+}
 
 // Generated from varisware_logo-512.png as a terminal-friendly ASCII mark.
 const LOGO = [
@@ -71,7 +122,7 @@ function makeHeader(theme: Theme) {
 		render(width: number): string[] {
 			const title = theme.fg("accent", theme.bold(TITLE));
 			const subtitle = theme.fg("muted", "Varisware coding terminal");
-			const avatar = `${theme.fg("accent", AVATAR)} ${theme.fg("dim", "crow online")}`;
+			const avatar = theme.fg("dim", "Crow AI Agent Harness");
 
 			return [
 				"",
@@ -98,7 +149,7 @@ function applyTheme(ctx: ExtensionContext): boolean {
 function applyBranding(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
 
-	ctx.ui.setTitle(TITLE);
+	keepTerminalTitle(ctx);
 
 	if (ctx.mode === "tui") {
 		applyTheme(ctx);
@@ -122,11 +173,15 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
-		ctx.ui.setTitle(TITLE);
+		keepTerminalTitle(ctx);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		ctx.ui.setTitle(TITLE);
+		keepTerminalTitle(ctx);
+	});
+
+	pi.on("session_shutdown", async () => {
+		stopKeepingTerminalTitle();
 	});
 
 	pi.registerCommand("varisterminal", {
