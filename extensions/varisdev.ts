@@ -3,8 +3,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
 
 const THEME_NAME = "varisware";
-const TITLE = "VarisTerminal";
-const TERMINAL_TITLE_PREFIX = "VWTerminal";
+const TITLE = "VarisDev";
+const TERMINAL_TITLE_PREFIX = TITLE;
 const TITLE_REFRESH_MS = 2000;
 const AVATAR = "\\_(o)>";
 
@@ -161,7 +161,7 @@ function applyBranding(ctx: ExtensionContext): void {
 		});
 		ctx.ui.setHiddenThinkingLabel(`${AVATAR} thinking...`);
 		ctx.ui.setStatus(
-			"varisterminal",
+			"varisdev",
 			`${ctx.ui.theme.fg("accent", AVATAR)} ${ctx.ui.theme.fg("muted", TITLE)}`,
 		);
 	}
@@ -184,11 +184,11 @@ export default function (pi: ExtensionAPI) {
 		stopKeepingTerminalTitle();
 	});
 
-	pi.registerCommand("varisterminal", {
-		description: "Reapply VarisTerminal branding and the Varisware theme.",
+	pi.registerCommand("varisdev", {
+		description: "Reapply VarisDev branding and the Varisware theme.",
 		handler: async (_args, ctx) => {
 			applyBranding(ctx);
-			ctx.ui.notify("VarisTerminal branding applied", "info");
+			ctx.ui.notify("VarisDev branding applied", "info");
 		},
 	});
 }
