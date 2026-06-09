@@ -6,9 +6,6 @@ const THEME_NAME = "varisware";
 const TITLE = "VarisDev";
 const TERMINAL_TITLE_PREFIX = TITLE;
 const TITLE_REFRESH_MS = 2000;
-const AVATAR = "\\_(o)>";
-const CROW_DECORATION_START = "\x1b_varisdev-crow:start\x1b\\";
-const CROW_DECORATION_END = "\x1b_varisdev-crow:end\x1b\\";
 
 let titleRefresh: ReturnType<typeof setInterval> | undefined;
 
@@ -119,10 +116,7 @@ function centered(line: string, width: number): string {
 	return " ".repeat(Math.floor((width - lineWidth) / 2)) + line;
 }
 
-// Generated from C:\\Users\\herra\\Desktop\\spr_crow.png as compact
-// true-color half-block art. Each pair is the top/bottom palette index for
-// one terminal cell; 0 means transparent.
-const CROW_PALETTE: Array<[number, number, number] | null> = [
+const PROCESSING_CROW_PALETTE: Array<[number, number, number] | null> = [
 	null,
 	[17, 12, 124],
 	[2, 2, 149],
@@ -134,34 +128,26 @@ const CROW_PALETTE: Array<[number, number, number] | null> = [
 	[143, 142, 167],
 	[224, 221, 222],
 ];
-const CROW_ART_WIDTH = 22;
-const CROW_ART: string[] = [
-	"000000000000000000000507075756565666",
-	"0000000000000000067787888878676736765204",
-	"000000000000001231636773837371326637132244",
-	"00000000095876636110089809012367767733124204",
-	"00099998988888989896933063667667376662320204",
-	"88988881316060703020010112266677762222020104",
-	"857000000000000000002366663671776537202324",
-	"0000000000000400122216767361336736002534",
-	"0000000000004403121173122260201",
-	"0000000000000000202122222100004",
-	"00000000000000000050243",
-	"0000000000000000004",
+const PROCESSING_CROW_WIDTH = 9;
+const PROCESSING_CROW_ART: string[] = [
+	"000000018778676304",
+	"089888989166777242",
+	"800004126162772534",
+	"0000002024204",
 ];
 
 function color24([r, g, b]: [number, number, number], mode: "fg" | "bg"): string {
 	return `\x1b[${mode === "fg" ? 38 : 48};2;${r};${g};${b}m`;
 }
 
-function renderCrowBlockArt(): string[] {
-	return CROW_ART.map((row) => {
+function renderProcessingCrowImage(): string[] {
+	return PROCESSING_CROW_ART.map((row) => {
 		let rendered = "\x1b[0m";
-		for (let i = 0; i < CROW_ART_WIDTH; i++) {
+		for (let i = 0; i < PROCESSING_CROW_WIDTH; i++) {
 			const topIndex = Number(row[i * 2] ?? "0");
 			const bottomIndex = Number(row[i * 2 + 1] ?? "0");
-			const top = CROW_PALETTE[topIndex];
-			const bottom = CROW_PALETTE[bottomIndex];
+			const top = PROCESSING_CROW_PALETTE[topIndex];
+			const bottom = PROCESSING_CROW_PALETTE[bottomIndex];
 
 			if (!top && !bottom) {
 				rendered += " ";
@@ -177,68 +163,16 @@ function renderCrowBlockArt(): string[] {
 	});
 }
 
-function makeCrowSpeechPrefix(theme: Theme): string {
-	const art = renderCrowBlockArt();
-	const bubble = [
-		theme.fg("accent", "╭─ VarisDev says ─"),
-		theme.fg("accent", "│"),
-		theme.fg("muted", "│ caw caw"),
-		theme.fg("accent", "╰───────────────"),
-	];
-
-	return art
-		.map((line, index) => `${line}  ${bubble[index] ?? ""}`)
+function makeProcessingFrame(theme: Theme, dotCount: number): string {
+	const dots = ".".repeat(dotCount).padEnd(3, " ");
+	const label = theme.fg("muted", `processing${dots}`);
+	return renderProcessingCrowImage()
+		.map((line, index) => (index === 1 ? `${line} ${label}` : line))
 		.join("\n");
 }
 
-function decorateAssistantText(text: string, theme: Theme): string {
-	if (!text.trim() || text.startsWith(CROW_DECORATION_START)) return text;
-	return `${CROW_DECORATION_START}${makeCrowSpeechPrefix(theme)}${CROW_DECORATION_END}\n\n${text}`;
-}
-
-function stripCrowDecoration(text: string): string {
-	if (!text.startsWith(CROW_DECORATION_START)) return text;
-	const end = text.indexOf(CROW_DECORATION_END);
-	if (end === -1) return text;
-	return text.slice(end + CROW_DECORATION_END.length).replace(/^\n{1,2}/, "");
-}
-
-function isTextBlock(block: unknown): block is { type: "text"; text: string } {
-	return (
-		typeof block === "object" &&
-		block !== null &&
-		(block as { type?: unknown }).type === "text" &&
-		typeof (block as { text?: unknown }).text === "string"
-	);
-}
-
-function decorateAssistantMessage<T extends { role: "assistant"; content: unknown[] }>(message: T, theme: Theme): T {
-	let decorated = false;
-	let changed = false;
-	const content = message.content.map((block) => {
-		if (decorated || !isTextBlock(block) || !block.text.trim()) return block;
-		decorated = true;
-		const text = decorateAssistantText(block.text, theme);
-		if (text === block.text) return block;
-		changed = true;
-		return { ...block, text };
-	});
-	return changed ? ({ ...message, content } as T) : message;
-}
-
-function stripAssistantMessageDecoration<T extends { role?: string; content?: unknown }>(message: T): T {
-	if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
-
-	let changed = false;
-	const content = message.content.map((block) => {
-		if (!isTextBlock(block)) return block;
-		const text = stripCrowDecoration(block.text);
-		if (text === block.text) return block;
-		changed = true;
-		return { ...block, text };
-	});
-
-	return changed ? ({ ...message, content } as T) : message;
+function makeProcessingFrames(theme: Theme): string[] {
+	return [0, 1, 2, 3].map((dotCount) => makeProcessingFrame(theme, dotCount));
 }
 
 function makeHeader(theme: Theme) {
@@ -278,12 +212,12 @@ function applyBranding(ctx: ExtensionContext): void {
 	if (ctx.mode === "tui") {
 		applyTheme(ctx);
 		ctx.ui.setHeader((_tui, theme) => makeHeader(theme));
-		ctx.ui.setWorkingMessage("processing...");
+		ctx.ui.setWorkingMessage("");
 		ctx.ui.setWorkingIndicator({
-			frames: ["\\_(o)>", "\\-(o)>", "/-(o)>", "/_(o)>"].map((frame) => ctx.ui.theme.fg("accent", frame)),
-			intervalMs: 140,
+			frames: makeProcessingFrames(ctx.ui.theme),
+			intervalMs: 240,
 		});
-		ctx.ui.setHiddenThinkingLabel(`${AVATAR} thinking...`);
+		ctx.ui.setHiddenThinkingLabel("thinking...");
 	}
 }
 
@@ -298,22 +232,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (_event, ctx) => {
 		keepTerminalTitle(ctx);
-	});
-
-	pi.on("message_end", async (event, ctx) => {
-		if (ctx.mode !== "tui" || event.message.role !== "assistant") return;
-		const message = decorateAssistantMessage(event.message, ctx.ui.theme);
-		if (message !== event.message) return { message };
-	});
-
-	pi.on("context", async (event) => {
-		let changed = false;
-		const messages = event.messages.map((message) => {
-			const stripped = stripAssistantMessageDecoration(message);
-			if (stripped !== message) changed = true;
-			return stripped;
-		});
-		if (changed) return { messages };
 	});
 
 	pi.on("session_shutdown", async () => {

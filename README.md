@@ -4,7 +4,7 @@ Varisware VarisDev package.
 
 ## Included
 
-- `extensions/varisdev.ts` — replaces the startup header with the Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, uses a crow ASCII avatar while the assistant is streaming, and prefixes assistant replies with ANSI-colored crow block art.
+- `extensions/varisdev.ts` — replaces the startup header with the Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, and uses a small crow image-style loader with animated processing dots while the assistant is streaming.
 - `themes/varisware.json` — Varisware purple terminal theme.
 
 ## Local test
