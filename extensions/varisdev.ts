@@ -116,59 +116,9 @@ function centered(line: string, width: number): string {
 	return " ".repeat(Math.floor((width - lineWidth) / 2)) + line;
 }
 
-const PROCESSING_CROW_PALETTE: Array<[number, number, number] | null> = [
-	null,
-	[17, 12, 124],
-	[2, 2, 149],
-	[44, 41, 117],
-	[141, 54, 8],
-	[96, 71, 63],
-	[68, 66, 99],
-	[87, 86, 92],
-	[143, 142, 167],
-	[224, 221, 222],
-];
-const PROCESSING_CROW_WIDTH = 9;
-const PROCESSING_CROW_ART: string[] = [
-	"000000018778676304",
-	"089888989166777242",
-	"800004126162772534",
-	"0000002024204",
-];
-
-function color24([r, g, b]: [number, number, number], mode: "fg" | "bg"): string {
-	return `\x1b[${mode === "fg" ? 38 : 48};2;${r};${g};${b}m`;
-}
-
-function renderProcessingCrowImage(): string[] {
-	return PROCESSING_CROW_ART.map((row) => {
-		let rendered = "\x1b[0m";
-		for (let i = 0; i < PROCESSING_CROW_WIDTH; i++) {
-			const topIndex = Number(row[i * 2] ?? "0");
-			const bottomIndex = Number(row[i * 2 + 1] ?? "0");
-			const top = PROCESSING_CROW_PALETTE[topIndex];
-			const bottom = PROCESSING_CROW_PALETTE[bottomIndex];
-
-			if (!top && !bottom) {
-				rendered += " ";
-			} else if (top && bottom) {
-				rendered += `${color24(top, "fg")}${color24(bottom, "bg")}▀\x1b[0m`;
-			} else if (top) {
-				rendered += `${color24(top, "fg")}▀\x1b[0m`;
-			} else if (bottom) {
-				rendered += `${color24(bottom, "fg")}▄\x1b[0m`;
-			}
-		}
-		return rendered;
-	});
-}
-
 function makeProcessingFrame(theme: Theme, dotCount: number): string {
 	const dots = ".".repeat(dotCount).padEnd(3, " ");
-	const label = theme.fg("muted", `processing${dots}`);
-	return renderProcessingCrowImage()
-		.map((line, index) => (index === 1 ? `${line} ${label}` : line))
-		.join("\n");
+	return theme.fg("muted", `Processing${dots}`);
 }
 
 function makeProcessingFrames(theme: Theme): string[] {
