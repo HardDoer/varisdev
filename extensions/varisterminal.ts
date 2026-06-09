@@ -154,7 +154,7 @@ function applyBranding(ctx: ExtensionContext): void {
 	if (ctx.mode === "tui") {
 		applyTheme(ctx);
 		ctx.ui.setHeader((_tui, theme) => makeHeader(theme));
-		ctx.ui.setWorkingMessage(`${AVATAR} spouting lines...`);
+		ctx.ui.setWorkingMessage("processing...");
 		ctx.ui.setWorkingIndicator({
 			frames: ["\\_(o)>", "\\-(o)>", "/-(o)>", "/_(o)>"].map((frame) => ctx.ui.theme.fg("accent", frame)),
 			intervalMs: 140,
