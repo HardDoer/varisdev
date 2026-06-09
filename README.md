@@ -1,6 +1,6 @@
 # Varisware Pi/pidev plugins
 
-Private Varisware Pi package.
+Varisware coding terminal package.
 
 ## Included
 

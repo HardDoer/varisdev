@@ -2,7 +2,7 @@
   "name": "varisware-pidev-plugins",
   "version": "0.1.0",
   "private": true,
-  "description": "Private Varisware Pi/pidev plugins.",
+  "description": "Varisware coding terminal Pi/pidev plugins.",
   "keywords": [
     "pi-package"
   ],
