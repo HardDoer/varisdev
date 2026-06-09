@@ -1,0 +1,21 @@
+{
+  "name": "varisware-pidev-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private Varisware Pi/pidev plugins.",
+  "keywords": [
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  }
+}
