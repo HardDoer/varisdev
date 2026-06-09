@@ -4,7 +4,7 @@ Private Varisware Pi package.
 
 ## Included
 
-- `extensions/varisterminal.ts` — replaces the startup header with the Varisware ASCII logo, sets the terminal title to `VarisTerminal`, and uses a raven ASCII avatar while the assistant is streaming.
+- `extensions/varisterminal.ts` — replaces the startup header with the Varisware ASCII logo, sets the terminal title to `VarisTerminal`, and uses a crow ASCII avatar while the assistant is streaming.
 - `themes/varisware.json` — Varisware purple terminal theme.
 
 ## Local test

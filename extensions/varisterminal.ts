@@ -71,7 +71,7 @@ function makeHeader(theme: Theme) {
 		render(width: number): string[] {
 			const title = theme.fg("accent", theme.bold(TITLE));
 			const subtitle = theme.fg("muted", "Varisware private coding terminal");
-			const avatar = `${theme.fg("accent", AVATAR)} ${theme.fg("dim", "raven online")}`;
+			const avatar = `${theme.fg("accent", AVATAR)} ${theme.fg("dim", "crow online")}`;
 
 			return [
 				"",
