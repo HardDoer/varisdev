@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
+import { registerHttpRequestTool } from "../src/tools/http-request.ts";
 
 const THEME_NAME = "varisware";
 const TITLE = "VarisDev";
@@ -172,6 +173,7 @@ function applyBranding(ctx: ExtensionContext): void {
 }
 
 export default function (pi: ExtensionAPI) {
+	registerHttpRequestTool(pi);
 	pi.on("session_start", async (_event, ctx) => {
 		applyBranding(ctx);
 	});

@@ -4,7 +4,8 @@ Varisware VarisDev package.
 
 ## Included
 
-- `extensions/varisdev.ts` — replaces the startup header with the Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, and uses a small crow image-style loader with animated processing dots while the assistant is streaming.
+- `extensions/varisdev.ts` — replaces the startup header with the Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, uses a small crow image-style loader with animated processing dots while the assistant is streaming, and registers VarisDev tools.
+- `src/tools/http-request.ts` — agent-callable `http_request` tool for HTTP/HTTPS requests.
 - `themes/varisware.json` — Varisware purple terminal theme.
 
 ## Local test
