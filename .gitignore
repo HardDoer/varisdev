@@ -3,3 +3,4 @@ node_modules/
 .pi/git/
 *.tgz
 .DS_Store
+generate_images
