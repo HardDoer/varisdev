@@ -17,7 +17,7 @@ Configure the API key through the environment before starting Pi:
 export OPENAI_API_KEY="sk-..."
 ```
 
-The image model is fixed to `gpt-image-2`. Dimensions can be requested per tool call via the `size` argument.
+The image model is fixed to `gpt-image-2`. Dimensions can be requested per tool call via the `size` argument. Image quality is a tool parameter that the agent can choose from the user's request, defaulting to `auto` when unspecified.
 
 Optional defaults:
 

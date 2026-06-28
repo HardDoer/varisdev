@@ -13,6 +13,7 @@ import { Type } from "typebox";
 
 const DEFAULT_IMAGE_MODEL = "gpt-image-2";
 const DEFAULT_IMAGE_SIZE = "1024x1024";
+const DEFAULT_IMAGE_QUALITY = "auto";
 const DEFAULT_OUTPUT_DIR = "generated-images";
 const DEFAULT_OUTPUT_FORMAT = "png";
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -26,7 +27,10 @@ const openAIImageSchema = Type.Object({
 		Type.String({ description: `Image size, for example 1024x1024, 1024x1536, 1536x1024, or auto. Defaults to process.env.OPENAI_IMAGE_SIZE or ${DEFAULT_IMAGE_SIZE}.` }),
 	),
 	quality: Type.Optional(
-		Type.String({ description: "Image quality, for example auto, low, medium, high, standard, or hd. Defaults to process.env.OPENAI_IMAGE_QUALITY when set." }),
+		Type.String({
+			description: `Image quality, for example auto, low, medium, high, standard, or hd. The agent should choose this from the user's request; defaults to ${DEFAULT_IMAGE_QUALITY}.`,
+			default: DEFAULT_IMAGE_QUALITY,
+		}),
 	),
 	n: Type.Optional(
 		Type.Number({
@@ -254,13 +258,14 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
 			"Use openai_generate_image when the user asks to generate an AI image file through OpenAI.",
 			"openai_generate_image uses process.env.OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.",
 			"openai_generate_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.",
+			`Choose the quality parameter from the user's requested speed/detail/cost preference; use ${DEFAULT_IMAGE_QUALITY} when unspecified.`,
 		],
 		parameters: openAIImageSchema,
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const { apiKey, envVarName } = getApiKey();
 			const model = DEFAULT_IMAGE_MODEL;
 			const size = params.size?.trim() || envOrDefault("OPENAI_IMAGE_SIZE", DEFAULT_IMAGE_SIZE);
-			const quality = params.quality?.trim() || trimEnv("OPENAI_IMAGE_QUALITY");
+			const quality = params.quality?.trim() || DEFAULT_IMAGE_QUALITY;
 			const n = normalizeImageCount(params.n);
 			const outputDir = resolveOutputDir(ctx.cwd, params.outputDir);
 			const outputFormat = normalizeOutputFormat(params.outputFormat);
