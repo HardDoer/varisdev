@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import OpenAI, { toFile, type Uploadable } from "openai";
 import {
 	DEFAULT_MAX_BYTES,
 	formatSize,
@@ -7,8 +7,8 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
 import { Type } from "typebox";
 
 const DEFAULT_IMAGE_MODEL = "gpt-image-2";
@@ -19,10 +19,15 @@ const DEFAULT_OUTPUT_FORMAT = "png";
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MAX_IMAGES = 4;
+const MAX_INPUT_IMAGE_BYTES = 50 * 1024 * 1024;
 const API_KEY_ENV_VAR = "OPENAI_API_KEY";
+const OPENAI_IMAGE_TOOL_NAME = "openai_image";
 
 const openAIImageSchema = Type.Object({
-	prompt: Type.String({ description: "Detailed prompt for the image to generate." }),
+	prompt: Type.String({ description: "Detailed prompt for the image to create or edit." }),
+	inputImagePath: Type.Optional(
+		Type.String({ description: "Optional local PNG, JPEG, or WebP image path to use as input/reference for an image edit. Prefix with @ if helpful; relative paths resolve under the current project. The tool reads this file and converts it to a base64 edit payload." }),
+	),
 	size: Type.Optional(
 		Type.String({ description: `Image size, for example 1024x1024, 1024x1536, 1536x1024, or auto. Defaults to process.env.OPENAI_IMAGE_SIZE or ${DEFAULT_IMAGE_SIZE}.` }),
 	),
@@ -34,13 +39,13 @@ const openAIImageSchema = Type.Object({
 	),
 	n: Type.Optional(
 		Type.Number({
-			description: `Number of images to generate. Defaults to 1. Maximum ${MAX_IMAGES} to avoid accidental high-cost calls.`,
+			description: `Number of images to create. Defaults to 1. Maximum ${MAX_IMAGES} to avoid accidental high-cost calls.`,
 			minimum: 1,
 			maximum: MAX_IMAGES,
 		}),
 	),
 	outputDir: Type.Optional(
-		Type.String({ description: `Directory where generated image files are saved. Relative paths resolve under the current project. Defaults to process.env.OPENAI_IMAGE_OUTPUT_DIR or ${DEFAULT_OUTPUT_DIR}.` }),
+		Type.String({ description: `Directory where created image files are saved. Relative paths resolve under the current project. Defaults to process.env.OPENAI_IMAGE_OUTPUT_DIR or ${DEFAULT_OUTPUT_DIR}.` }),
 	),
 	filenamePrefix: Type.Optional(
 		Type.String({ description: "Optional filename prefix for saved images. The tool adds a timestamp, image index, and random suffix." }),
@@ -73,8 +78,19 @@ type GeneratedImageDetails = {
 	revisedPrompt?: string;
 };
 
+type InputImageDetails = {
+	path: string;
+	mimeType: string;
+	bytes: number;
+};
+
+type InputImagePayload = InputImageDetails & {
+	upload: Uploadable;
+};
+
 type OpenAIImageToolDetails = {
 	request: {
+		operation: "generate" | "edit";
 		model: string;
 		size: string;
 		quality?: string;
@@ -84,6 +100,7 @@ type OpenAIImageToolDetails = {
 		timeoutMs: number;
 		apiKeyEnvVar: string;
 		baseURL?: string;
+		inputImage?: InputImageDetails;
 	};
 	images: GeneratedImageDetails[];
 };
@@ -115,6 +132,53 @@ function normalizeImageCount(n?: number): number {
 
 function stripAtPath(rawPath: string): string {
 	return rawPath.startsWith("@") ? rawPath.slice(1) : rawPath;
+}
+
+function resolveInputImagePath(cwd: string, inputImagePath: string): string {
+	const trimmedPath = inputImagePath.trim();
+	if (!trimmedPath) throw new Error("inputImagePath cannot be empty.");
+	return resolve(cwd, stripAtPath(trimmedPath));
+}
+
+function detectInputImageMimeType(filePath: string, bytes: Buffer): string {
+	if (bytes.byteLength >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+		return "image/png";
+	}
+	if (bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		return "image/jpeg";
+	}
+	if (bytes.byteLength >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") {
+		return "image/webp";
+	}
+	const extensionMimeTypes: Record<string, string> = {
+		".jpeg": "image/jpeg",
+		".jpg": "image/jpeg",
+		".png": "image/png",
+		".webp": "image/webp",
+	};
+	const mimeType = extensionMimeTypes[extname(filePath).toLowerCase()];
+	if (mimeType) return mimeType;
+
+	throw new Error("Unsupported input image type. Use PNG, JPEG, or WebP.");
+}
+
+async function readInputImagePayload(cwd: string, inputImagePath: string): Promise<InputImagePayload> {
+	const path = resolveInputImagePath(cwd, inputImagePath);
+	const imageBytes = await readFile(path);
+	if (imageBytes.byteLength === 0) throw new Error(`Input image is empty: ${path}`);
+	if (imageBytes.byteLength > MAX_INPUT_IMAGE_BYTES) {
+		throw new Error(`Input image is too large: ${formatSize(imageBytes.byteLength)}. Maximum is ${formatSize(MAX_INPUT_IMAGE_BYTES)}.`);
+	}
+
+	const mimeType = detectInputImageMimeType(path, imageBytes);
+	const base64 = imageBytes.toString("base64");
+	// Build the OpenAI upload from the base64 payload when an input image is used.
+	return {
+		path,
+		mimeType,
+		bytes: imageBytes.byteLength,
+		upload: await toFile(Buffer.from(base64, "base64"), basename(path), { type: mimeType }),
+	};
 }
 
 function resolveOutputDir(cwd: string, outputDir?: string): string {
@@ -166,7 +230,7 @@ function decodeBase64Image(data: string): Buffer {
 async function fetchImageFromUrl(url: string, signal?: AbortSignal): Promise<{ bytes: Buffer; mimeType: string }> {
 	const response = await fetch(url, { signal });
 	if (!response.ok) {
-		throw new Error(`Failed to download generated image: ${response.status} ${response.statusText}`);
+		throw new Error(`Failed to download OpenAI image: ${response.status} ${response.statusText}`);
 	}
 
 	const mimeType = response.headers.get("content-type") ?? "image/png";
@@ -181,7 +245,7 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
 
 function createTimeoutSignal(timeoutMs: number, parentSignal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(new Error(`OpenAI image generation timed out after ${timeoutMs}ms`)), timeoutMs);
+	const timeout = setTimeout(() => controller.abort(new Error(`OpenAI image request timed out after ${timeoutMs}ms`)), timeoutMs);
 	unrefTimer(timeout);
 
 	const abortFromParent = () => controller.abort(parentSignal?.reason);
@@ -200,13 +264,14 @@ function createTimeoutSignal(timeoutMs: number, parentSignal?: AbortSignal): { s
 	};
 }
 
-function makeGenerateRequest(params: {
+function makeImageRequest(params: {
 	model: string;
 	prompt: string;
 	size: string;
 	quality?: string;
 	n: number;
 	outputFormat: string;
+	inputImage?: InputImagePayload;
 	background?: string;
 	outputCompression?: number;
 	moderation?: string;
@@ -219,6 +284,7 @@ function makeGenerateRequest(params: {
 		size: params.size,
 	};
 
+	if (params.inputImage) request.image = params.inputImage.upload;
 	if (params.quality) request.quality = params.quality;
 	if (params.background) request.background = params.background;
 	if (params.outputCompression !== undefined) request.output_compression = Math.round(params.outputCompression);
@@ -235,7 +301,7 @@ function makeGenerateRequest(params: {
 }
 
 function formatResultText(images: GeneratedImageDetails[]): string {
-	const lines = [`Generated ${images.length} image${images.length === 1 ? "" : "s"} with OpenAI.`];
+	const lines = [`Saved ${images.length} OpenAI image${images.length === 1 ? "" : "s"}.`];
 
 	for (const [index, image] of images.entries()) {
 		lines.push(`- ${image.path} (${image.mimeType}, ${formatSize(image.bytes)})`);
@@ -250,14 +316,15 @@ function formatResultText(images: GeneratedImageDetails[]): string {
 
 export function registerOpenAIImageTool(pi: ExtensionAPI): void {
 	pi.registerTool<typeof openAIImageSchema, OpenAIImageToolDetails>({
-		name: "openai_generate_image",
+		name: OPENAI_IMAGE_TOOL_NAME,
 		label: "OpenAI Image",
-		description: "Generate one or more images with the OpenAI Images API and save them as files in the current project.",
-		promptSnippet: "Generate images with the OpenAI Images API and save them to project files.",
+		description: "Create or edit one or more images with the OpenAI Images API and save them as files in the current project.",
+		promptSnippet: "Create or edit images with the OpenAI Images API and save them to project files.",
 		promptGuidelines: [
-			"Use openai_generate_image when the user asks to generate an AI image file through OpenAI.",
-			"openai_generate_image uses process.env.OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.",
-			"openai_generate_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.",
+			"Use openai_image when the user asks to generate, edit, transform, restyle, or use an input image with OpenAI.",
+			"openai_image uses process.env.OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.",
+			"When the user wants to use an existing local image, pass its path as inputImagePath; the tool converts it to base64 for the request.",
+			"openai_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.",
 			`Choose the quality parameter from the user's requested speed/detail/cost preference; use ${DEFAULT_IMAGE_QUALITY} when unspecified.`,
 		],
 		parameters: openAIImageSchema,
@@ -271,7 +338,10 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
 			const outputFormat = normalizeOutputFormat(params.outputFormat);
 			const timeoutMs = normalizeTimeout(params.timeoutMs);
 			const baseURL = trimEnv("OPENAI_BASE_URL");
+			const inputImage = params.inputImagePath?.trim() ? await readInputImagePayload(ctx.cwd, params.inputImagePath) : undefined;
+			const operation: OpenAIImageToolDetails["request"]["operation"] = inputImage ? "edit" : "generate";
 			const requestDetails: OpenAIImageToolDetails["request"] = {
+				operation,
 				model,
 				size,
 				quality,
@@ -281,40 +351,45 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
 				timeoutMs,
 				apiKeyEnvVar: envVarName,
 				baseURL,
+				...(inputImage ? { inputImage: { path: inputImage.path, mimeType: inputImage.mimeType, bytes: inputImage.bytes } } : {}),
 			};
 
 			const client = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
 			const { signal: requestSignal, cleanup } = createTimeoutSignal(timeoutMs, signal);
 
 			onUpdate?.({
-				content: [{ type: "text", text: `Generating ${n} image${n === 1 ? "" : "s"} with ${model}...` }],
+				content: [{ type: "text", text: `Creating ${n} image${n === 1 ? "" : "s"} with ${model}${inputImage ? " from input image" : ""}...` }],
 				details: { request: requestDetails, images: [] },
 			});
 
 			try {
-				const request = makeGenerateRequest({
+				const request = makeImageRequest({
 					model,
 					prompt: params.prompt,
 					size,
 					quality,
 					n,
 					outputFormat,
+					inputImage,
 					background: params.background?.trim() || undefined,
 					outputCompression: params.outputCompression,
 					moderation: params.moderation?.trim() || undefined,
 					user: params.user?.trim() || undefined,
 				});
 
-				const response = await client.images.generate(request as never, { signal: requestSignal, timeout: timeoutMs } as never);
+				const requestOptions = { signal: requestSignal, timeout: timeoutMs } as never;
+				const response = inputImage
+					? await client.images.edit(request as never, requestOptions)
+					: await client.images.generate(request as never, requestOptions);
 				const data = Array.isArray(response.data) ? response.data : [];
 
 				if (data.length === 0) {
-					throw new Error("OpenAI returned no generated images.");
+					throw new Error("OpenAI returned no images.");
 				}
 
 				await mkdir(outputDir, { recursive: true });
 				onUpdate?.({
-					content: [{ type: "text", text: `Saving ${data.length} generated image${data.length === 1 ? "" : "s"}...` }],
+					content: [{ type: "text", text: `Saving ${data.length} image${data.length === 1 ? "" : "s"}...` }],
 					details: { request: requestDetails, images: [] },
 				});
 
