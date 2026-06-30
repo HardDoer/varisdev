@@ -19,13 +19,23 @@ export OPENAI_API_KEY="sk-..."
 
 The image model is fixed to `gpt-image-2`. Dimensions can be requested per tool call via the `size` argument. Image quality is a tool parameter that the agent can choose from the user's request, defaulting to `auto` when unspecified.
 
-The `openai_image` tool can also use an existing local PNG, JPEG, or WebP image by passing `inputImagePath`. The tool reads that image, converts it to a base64 edit payload, and sends an edit request instead of a pure generation request.
+The `openai_image` tool can also use existing local PNG, JPEG, or WebP images by passing `inputImagePaths`, an array of up to 16 local file paths. Tool callers should pass local paths only, not raw base64 strings. The tool reads each file, converts it internally to a base64-backed OpenAI upload payload, and sends an edit request with one or more input images instead of a pure generation request.
 
 Optional defaults:
 
 ```bash
 export OPENAI_IMAGE_SIZE="1024x1024"
 export OPENAI_IMAGE_OUTPUT_DIR="generated-images"
+```
+
+## Development
+
+This repo targets Node.js 24+ and uses Google's TypeScript Style via `gts`.
+
+```bash
+npm run lint
+npm run typecheck
+npm run fix
 ```
 
 ## Local test

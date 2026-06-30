@@ -1,0 +1,18 @@
+{
+  "extends": "./node_modules/gts/tsconfig-google.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "build",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM"],
+    "types": ["node"],
+    "skipLibCheck": true,
+    "composite": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["extensions/**/*.ts", "src/**/*.ts"],
+  "exclude": ["build", "node_modules"]
+}
