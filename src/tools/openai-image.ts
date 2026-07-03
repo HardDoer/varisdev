@@ -11,7 +11,7 @@ import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename, extname, join, resolve} from 'node:path';
 import {Type} from 'typebox';
 
-const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
+const DEFAULT_IMAGE_MODEL = 'gpt-image-2-2026-04-21';
 const DEFAULT_IMAGE_SIZE = '1024x1024';
 const DEFAULT_IMAGE_QUALITY = 'auto';
 const DEFAULT_OUTPUT_DIR = 'generated-images';
