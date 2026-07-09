@@ -5,9 +5,20 @@ Varisware VarisDev package.
 ## Included
 
 - `extensions/varisdev.ts` — replaces the startup header with the Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, uses a small crow image-style loader with animated processing dots while the assistant is streaming, and registers VarisDev tools.
-- `src/tools/http-request.ts` — agent-callable `http_request` tool for HTTP/HTTPS requests.
+- `src/tools/browse.ts` — agent-callable `browse` tool for compact HTTP/HTTPS browsing without dumping response headers or large body samples into the LLM context.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `themes/varisware.json` — Varisware purple terminal theme.
+
+## Browse tool
+
+The `browse` tool replaces raw HTTP dumps with compact browser-oriented views:
+
+- default `auto` view: status, content type, title, and extracted text capped at 6k characters
+- `links` view: deduplicated page links, capped at 25 by default
+- `raw` view: bounded raw text for API/plain-text responses
+- `none` view: status-only checks
+
+Full response headers remain available in tool `details` for rendering/debugging, but are not included in LLM-visible tool text by default.
 
 ## OpenAI image tool
 

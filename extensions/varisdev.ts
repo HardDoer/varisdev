@@ -5,7 +5,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {truncateToWidth, visibleWidth} from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
-import {registerHttpRequestTool} from '../src/tools/http-request.ts';
+import {registerBrowseTool} from '../src/tools/browse.ts';
 import {registerOpenAIImageTool} from '../src/tools/openai-image.ts';
 
 const THEME_NAME = 'varisware';
@@ -182,7 +182,7 @@ function applyBranding(ctx: ExtensionContext): void {
 }
 
 export default function (pi: ExtensionAPI) {
-  registerHttpRequestTool(pi);
+  registerBrowseTool(pi);
   registerOpenAIImageTool(pi);
   pi.on('session_start', async (_event, ctx) => {
     applyBranding(ctx);
