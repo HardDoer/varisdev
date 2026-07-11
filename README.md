@@ -17,6 +17,25 @@ The `browse` tool replaces raw HTTP dumps with compact browser-oriented views:
 - `links` view: deduplicated page links, capped at 25 by default
 - `raw` view: bounded raw text for API/plain-text responses
 - `none` view: status-only checks
+- `jsonPointers`: RFC 6901 pointers that select exact fields from JSON responses; selection reads up to 10 MiB and allows up to 24k output characters by default while returning only the selected JSON
+
+Use `browse` for all HTTP/HTTPS access and web research. Do not fetch URLs through `bash` or shell programs such as `curl`, `wget`, PowerShell, Node, or Python. If a result is truncated or the relevant content is not in the initial excerpt, retry with a more targeted URL, `jsonPointers`, `links` view, or a larger `maxChars`; truncation is not a reason to switch to a shell HTTP client.
+
+For example, exact definitions can be extracted from a large API discovery document without downloading it through the shell:
+
+```json
+{
+  "url": "https://androidpublisher.googleapis.com/$discovery/rest?version=v3",
+  "jsonPointers": [
+    "/resources/edits/resources/tracks/methods/update",
+    "/resources/edits/resources/bundles/methods/upload",
+    "/schemas/Track",
+    "/schemas/TrackRelease"
+  ]
+}
+```
+
+JSON Pointer tokens escape `~` as `~0` and `/` as `~1`. The empty pointer (`""`) selects the whole document. `jsonPointers` cannot be combined with `links` or `none` views.
 
 Full response headers remain available in tool `details` for rendering/debugging, but are not included in LLM-visible tool text by default.
 

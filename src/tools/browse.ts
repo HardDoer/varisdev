@@ -4,13 +4,15 @@ import {Type} from 'typebox';
 const DEFAULT_BROWSE_TIMEOUT_MS = 30_000;
 const MAX_BROWSE_TIMEOUT_MS = 120_000;
 const BODY_READ_LIMIT_BYTES = 512 * 1024;
+const JSON_BODY_READ_LIMIT_BYTES = 10 * 1024 * 1024;
 const DEFAULT_OUTPUT_CHARS = 6_000;
 const MIN_OUTPUT_CHARS = 500;
 const MAX_OUTPUT_CHARS = 24_000;
 const DEFAULT_LINK_LIMIT = 25;
 const MAX_LINK_LIMIT = 100;
+const MAX_JSON_POINTERS = 20;
 const DEFAULT_VIEW: BrowseView = 'auto';
-const MAX_OUTPUT_LINES = 300;
+const MAX_OUTPUT_LINES = 1_200;
 
 const BROWSE_VIEWS = ['auto', 'text', 'links', 'raw', 'none'] as const;
 
@@ -47,6 +49,7 @@ type BrowseToolDetails = {
     view: BrowseView;
     maxChars: number;
     maxLinks: number;
+    jsonPointers?: string[];
     timeoutMs: number;
   };
   response: {
@@ -58,6 +61,7 @@ type BrowseToolDetails = {
     contentType: string;
     contentLength?: number;
     bodyBytesRead: number;
+    bodyReadLimitBytes: number;
     bodyReadTruncated: boolean;
     textBody: boolean;
     htmlBody: boolean;
@@ -90,9 +94,22 @@ const browseSchema = Type.Object({
         'Output view: auto (default compact text), text (force text extraction), links (only links), raw (raw text body), or none (status only).',
     }),
   ),
+  jsonPointers: Type.Optional(
+    Type.Array(
+      Type.String({
+        description:
+          'RFC 6901 JSON Pointer to select from a JSON response, for example /schemas/Track. Use an empty string to select the document root.',
+      }),
+      {
+        description: `Select and return only these fields from a JSON response. This reads up to ${formatSize(JSON_BODY_READ_LIMIT_BYTES)} so large API and discovery documents can be queried without shell HTTP clients. Maximum ${MAX_JSON_POINTERS} pointers.`,
+        minItems: 1,
+        maxItems: MAX_JSON_POINTERS,
+      },
+    ),
+  ),
   maxChars: Type.Optional(
     Type.Number({
-      description: `Approximate maximum characters of page/body text to return. Defaults to ${DEFAULT_OUTPUT_CHARS}. Maximum ${MAX_OUTPUT_CHARS}.`,
+      description: `Approximate maximum characters of page/body text to return. Defaults to ${DEFAULT_OUTPUT_CHARS}, or ${MAX_OUTPUT_CHARS} when jsonPointers is set. Maximum ${MAX_OUTPUT_CHARS}.`,
       minimum: MIN_OUTPUT_CHARS,
       maximum: MAX_OUTPUT_CHARS,
     }),
@@ -187,6 +204,33 @@ function normalizeBrowseView(view?: string): BrowseView {
     return normalized as BrowseView;
   }
   throw new Error(`Invalid browse view: ${view}`);
+}
+
+function normalizeJsonPointers(jsonPointers?: string[]): string[] | undefined {
+  if (jsonPointers === undefined) return undefined;
+  if (jsonPointers.length === 0) {
+    throw new Error('jsonPointers must contain at least one JSON Pointer.');
+  }
+  if (jsonPointers.length > MAX_JSON_POINTERS) {
+    throw new Error(
+      `Too many JSON Pointers: ${jsonPointers.length}. Maximum is ${MAX_JSON_POINTERS}.`,
+    );
+  }
+
+  const seen = new Set<string>();
+  for (const pointer of jsonPointers) {
+    if (pointer !== '' && !pointer.startsWith('/')) {
+      throw new Error(
+        `Invalid JSON Pointer ${JSON.stringify(pointer)}: pointers must be empty or start with "/".`,
+      );
+    }
+    if (seen.has(pointer)) {
+      throw new Error(`Duplicate JSON Pointer: ${JSON.stringify(pointer)}.`);
+    }
+    seen.add(pointer);
+  }
+
+  return [...jsonPointers];
 }
 
 function makeRequestHeaders(headers?: Record<string, string>): Headers {
@@ -499,7 +543,7 @@ function truncateLineToChars(input: string, maxChars: number): string {
 }
 
 function getMaxOutputLines(maxChars: number): number {
-  return Math.min(MAX_OUTPUT_LINES, Math.max(20, Math.ceil(maxChars / 80)));
+  return Math.min(MAX_OUTPUT_LINES, Math.max(20, Math.ceil(maxChars / 20)));
 }
 
 function limitText(input: string, maxChars: number): LimitedText {
@@ -566,6 +610,56 @@ function plainTextBody(rawText: string): string {
   return rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 }
 
+function decodeJsonPointerToken(token: string, pointer: string): string {
+  if (/~(?:[^01]|$)/.test(token)) {
+    throw new Error(
+      `Invalid JSON Pointer ${JSON.stringify(pointer)}: "~" must be escaped as "~0" and "/" as "~1".`,
+    );
+  }
+  return token.replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+function resolveJsonPointer(document: unknown, pointer: string): unknown {
+  if (pointer === '') return document;
+
+  let value = document;
+  for (const encodedToken of pointer.slice(1).split('/')) {
+    const token = decodeJsonPointerToken(encodedToken, pointer);
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      !Object.hasOwn(value, token)
+    ) {
+      throw new Error(
+        `JSON Pointer not found: ${JSON.stringify(pointer)} (missing token ${JSON.stringify(token)}).`,
+      );
+    }
+    value = (value as Record<string, unknown>)[token];
+  }
+
+  return value;
+}
+
+function selectJsonPointers(rawText: string, pointers: string[]): string {
+  let document: unknown;
+  try {
+    document = JSON.parse(rawText) as unknown;
+  } catch (error) {
+    throw new Error(
+      `Could not parse response as JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const selected: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >;
+  for (const pointer of pointers) {
+    selected[pointer] = resolveJsonPointer(document, pointer);
+  }
+  return JSON.stringify(selected, null, 2);
+}
+
 function selectBodyText(input: {
   view: BrowseView;
   rawText: string;
@@ -573,7 +667,15 @@ function selectBodyText(input: {
   textBody: boolean;
   links: BrowseLink[];
   totalLinks: number;
+  jsonPointers?: string[];
 }): {label: string; text: string} | undefined {
+  if (input.jsonPointers) {
+    return {
+      label: 'Selected JSON',
+      text: selectJsonPointers(input.rawText, input.jsonPointers),
+    };
+  }
+
   if (input.view === 'none') return undefined;
 
   if (input.view === 'links') {
@@ -610,6 +712,7 @@ function formatBrowseResponseText(input: {
   contentType: string;
   contentLength?: number;
   bodyBytesRead: number;
+  bodyReadLimitBytes: number;
   bodyReadTruncated: boolean;
   view: BrowseView;
   htmlBody: boolean;
@@ -637,7 +740,7 @@ function formatBrowseResponseText(input: {
       bodyParts.push(`declared ${formatSize(input.contentLength)}`);
     }
     if (input.bodyReadTruncated) {
-      bodyParts.push(`capped at ${formatSize(BODY_READ_LIMIT_BYTES)}`);
+      bodyParts.push(`capped at ${formatSize(input.bodyReadLimitBytes)}`);
     }
     lines.push(`Body: ${bodyParts.join(', ')}`);
   }
@@ -660,12 +763,12 @@ function formatBrowseResponseText(input: {
   const notices: string[] = [];
   if (input.body.limited.truncated) {
     notices.push(
-      `Text truncated to ${input.body.limited.outputChars} of ${input.body.limited.totalChars} chars / ${input.body.limited.outputLines} of ${input.body.limited.totalLines} lines. Increase maxChars only if needed`,
+      `Text truncated to ${input.body.limited.outputChars} of ${input.body.limited.totalChars} chars / ${input.body.limited.outputLines} of ${input.body.limited.totalLines} lines. Narrow JSON with jsonPointers or increase maxChars and retry with browse`,
     );
   }
   if (input.bodyReadTruncated) {
     notices.push(
-      `Fetched body capped at ${formatSize(BODY_READ_LIMIT_BYTES)} before extraction`,
+      `Fetched body capped at ${formatSize(input.bodyReadLimitBytes)} before extraction; use jsonPointers for large JSON responses or a more targeted URL`,
     );
   }
   if (input.htmlBody && input.view !== 'links') {
@@ -684,13 +787,15 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
     name: 'browse',
     label: 'Browse',
     description:
-      'Fetch an HTTP/HTTPS URL and return a compact browser-style view: status, title, extracted text, raw body text, links, or status only. Full response headers stay out of the LLM-visible text.',
+      'Fetch an HTTP/HTTPS URL and return a compact browser-style view. Supports text, links, raw bodies, status checks, and RFC 6901 JSON Pointer selection from large JSON documents. Use this tool—not shell commands—for HTTP requests and web research.',
     promptSnippet:
-      'Fetch URLs compactly with extracted text, links, raw text, or status-only views.',
+      'Fetch URLs directly, including targeted fields from large JSON documents. Do not use bash, curl, wget, Node, or Python for HTTP requests or web research.',
     promptGuidelines: [
-      'Use browse for web pages, documentation URLs, and local HTTP endpoints when concise web context is needed.',
-      'Use browse with view="links" only when navigation links are needed; use view="raw" for API/plain-text bodies and view="none" for status checks.',
-      'Keep browse maxChars at its default unless the user explicitly needs more page content.',
+      'Use browse for all HTTP/HTTPS access, including web research, documentation, APIs, discovery documents, downloads inspected as text, and local HTTP endpoints. Do not use bash, curl, wget, PowerShell, Node, Python, or other shell commands to fetch URLs.',
+      'For JSON APIs and large JSON documents, use browse jsonPointers to return only the required fields. JSON Pointers follow RFC 6901, such as /resources/edits/methods/get or /schemas/Track.',
+      'If browse output is truncated or omits the relevant content, retry browse with a targeted URL, jsonPointers, view="links", or a larger maxChars as appropriate. Do not fall back to shell-based HTTP clients.',
+      'Use browse view="links" only when navigation links are needed; use view="raw" for API/plain-text bodies and view="none" for status checks.',
+      'Keep browse maxChars at its default initially; increase it when a relevant browse result is truncated and cannot be narrowed first.',
       'Do not send credentials, tokens, or private data with browse unless the user explicitly provided or requested them.',
     ],
     parameters: browseSchema,
@@ -698,9 +803,10 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
       const url = normalizeHttpUrl(params.url);
       const method = normalizeHttpMethod(params.method);
       const view = normalizeBrowseView(params.view);
+      const jsonPointers = normalizeJsonPointers(params.jsonPointers);
       const maxChars = normalizeBoundedInteger(
         params.maxChars,
-        DEFAULT_OUTPUT_CHARS,
+        jsonPointers ? MAX_OUTPUT_CHARS : DEFAULT_OUTPUT_CHARS,
         MIN_OUTPUT_CHARS,
         MAX_OUTPUT_CHARS,
       );
@@ -717,6 +823,14 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
         params.body !== undefined
       ) {
         throw new Error(`${method} requests cannot include a body.`);
+      }
+      if (jsonPointers && (view === 'links' || view === 'none')) {
+        throw new Error(
+          `jsonPointers cannot be combined with view=${JSON.stringify(view)}. Omit view or use view="auto".`,
+        );
+      }
+      if (jsonPointers && method === 'HEAD') {
+        throw new Error('jsonPointers cannot be used with HEAD requests.');
       }
 
       const timeoutController = new AbortController();
@@ -753,12 +867,24 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
         const textBody = isTextLikeContentType(contentType);
         const htmlContentType = isHtmlContentType(contentType);
         const shouldReadBody = method !== 'HEAD' && view !== 'none';
+        const bodyReadLimitBytes = jsonPointers
+          ? JSON_BODY_READ_LIMIT_BYTES
+          : BODY_READ_LIMIT_BYTES;
         const bodySample = shouldReadBody
-          ? await readBodySample(response, BODY_READ_LIMIT_BYTES)
+          ? await readBodySample(response, bodyReadLimitBytes)
           : {bytes: new Uint8Array(), truncated: false};
+        if (jsonPointers && bodySample.truncated) {
+          throw new Error(
+            `JSON response exceeds the ${formatSize(bodyReadLimitBytes)} browse selection limit. Use a more targeted URL.`,
+          );
+        }
         const shouldDecodeBody =
           shouldReadBody &&
-          (textBody || view === 'raw' || view === 'text' || view === 'links');
+          (Boolean(jsonPointers) ||
+            textBody ||
+            view === 'raw' ||
+            view === 'text' ||
+            view === 'links');
         const rawText = shouldDecodeBody ? decodeUtf8(bodySample.bytes) : '';
         const htmlBody = htmlContentType || looksLikeHtml(rawText);
         const title = htmlBody && rawText ? extractTitle(rawText) : undefined;
@@ -773,6 +899,7 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
           textBody,
           links: linkExtraction.links,
           totalLinks: linkExtraction.totalLinks,
+          jsonPointers,
         });
         const limitedBody = body
           ? {label: body.label, limited: limitText(body.text, maxChars)}
@@ -786,6 +913,7 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
           contentType,
           contentLength,
           bodyBytesRead: bodySample.bytes.byteLength,
+          bodyReadLimitBytes,
           bodyReadTruncated: bodySample.truncated,
           view,
           htmlBody,
@@ -797,7 +925,15 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
         return {
           content: [{type: 'text', text: contentText}],
           details: {
-            request: {url, method, view, maxChars, maxLinks, timeoutMs},
+            request: {
+              url,
+              method,
+              view,
+              maxChars,
+              maxLinks,
+              jsonPointers,
+              timeoutMs,
+            },
             response: {
               url: response.url,
               status: response.status,
@@ -807,6 +943,7 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
               contentType,
               contentLength,
               bodyBytesRead: bodySample.bytes.byteLength,
+              bodyReadLimitBytes,
               bodyReadTruncated: bodySample.truncated,
               textBody,
               htmlBody,
