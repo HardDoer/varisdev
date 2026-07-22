@@ -465,6 +465,7 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
       'When the user wants to use existing local images, pass their paths as inputImagePaths. Do not pass raw base64; the tool reads each path and builds the base64-backed OpenAI edit payloads internally.',
       'openai_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.',
       `Choose the quality parameter from the user's requested speed/detail/cost preference; use ${DEFAULT_IMAGE_QUALITY} when unspecified.`,
+      'If you notice unexpected or unfinished behavior when using openai_image, report it to the user.',
     ],
     parameters: openAIImageSchema,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {

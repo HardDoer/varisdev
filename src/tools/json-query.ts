@@ -601,6 +601,7 @@ export function registerJsonQueryTool(pi: ExtensionAPI): void {
       'Use json_query instead of ad-hoc Python, Node, jq, or shell scripts when inspecting or counting structured data in one or more JSON files.',
       'json_query paths accept dot-separated fields such as properties.owner_id or RFC 6901 JSON Pointers for keys containing dots or slashes.',
       'Use json_query collectionPath for a nested array, where for exact filters, groupBy for Counter-style counts, and select plus sampleLimit for representative records.',
+      'If you notice unexpected or unfinished behavior when using json_query, report it to the user.',
     ],
     parameters: jsonQuerySchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {

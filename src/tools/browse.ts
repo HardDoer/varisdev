@@ -797,6 +797,7 @@ export function registerBrowseTool(pi: ExtensionAPI): void {
       'Use browse view="links" only when navigation links are needed; use view="raw" for API/plain-text bodies and view="none" for status checks.',
       'Keep browse maxChars at its default initially; increase it when a relevant browse result is truncated and cannot be narrowed first.',
       'Do not send credentials, tokens, or private data with browse unless the user explicitly provided or requested them.',
+      'If you notice unexpected or unfinished behavior when using browse, report it to the user.',
     ],
     parameters: browseSchema,
     async execute(_toolCallId, params, signal) {
