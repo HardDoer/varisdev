@@ -6,6 +6,7 @@ Varisware VarisDev package.
 
 - `extensions/varisdev.ts` — replaces the startup header with the Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, uses a small crow image-style loader with animated processing dots while the assistant is streaming, and registers VarisDev tools.
 - `src/tools/browse.ts` — agent-callable `browse` tool for compact HTTP/HTTPS browsing without dumping response headers or large body samples into the LLM context.
+- `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `themes/varisware.json` — Varisware purple terminal theme.
 
@@ -38,6 +39,28 @@ For example, exact definitions can be extracted from a large API discovery docum
 JSON Pointer tokens escape `~` as `~0` and `/` as `~1`. The empty pointer (`""`) selects the whole document. `jsonPointers` cannot be combined with `links` or `none` views.
 
 Full response headers remain available in tool `details` for rendering/debugging, but are not included in LLM-visible tool text by default.
+
+## JSON query tool
+
+The `json_query` tool replaces common inline Python, Node, and `jq` inspection scripts. It accepts a file path or glob, supports JSON in files with custom extensions, and can report root keys, exact nested-field filters, Counter-style groups, and selected samples per file.
+
+For example, this replaces a script that scans map files, selects neutral outposts, and counts their owners:
+
+```json
+{
+  "path": "datafiles/maps/*.lmap",
+  "collectionPath": "objects",
+  "where": {
+    "objectId": "obj_neutral_outpost"
+  },
+  "groupBy": [
+    "properties.owner_id"
+  ],
+  "includeRootKeys": true
+}
+```
+
+Field paths may be dot-separated (`properties.owner_id`) or RFC 6901 JSON Pointers (`/properties/owner_id`). Use `select` with `sampleLimit` to inspect representative matching records. Results are capped at 2,000 lines or 50 KiB; complete output is saved to a temporary file when truncated.
 
 ## OpenAI image tool
 
