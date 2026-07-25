@@ -99,25 +99,16 @@ const LOGO = [
   '                         ...++++++........',
 ];
 
+const LOGO_PURPLE_TRUECOLOR = '\x1b[38;2;209;0;209m';
+const LOGO_PURPLE_256 = '\x1b[38;5;164m';
+const FOREGROUND_RESET = '\x1b[39m';
+
 function colorLogoLine(line: string, theme: Theme): string {
-  let rendered = '';
-  for (const ch of line) {
-    switch (ch) {
-      case '.':
-        rendered += theme.fg('accent', ch);
-        break;
-      case '@':
-        rendered += theme.fg('text', ch);
-        break;
-      case '+':
-      case 'o':
-        rendered += theme.fg('warning', ch);
-        break;
-      default:
-        rendered += ch;
-    }
-  }
-  return rendered;
+  const purple =
+    theme.getColorMode() === 'truecolor'
+      ? LOGO_PURPLE_TRUECOLOR
+      : LOGO_PURPLE_256;
+  return `${purple}${line}${FOREGROUND_RESET}`;
 }
 
 function centered(line: string, width: number): string {
