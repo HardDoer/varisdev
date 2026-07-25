@@ -99,16 +99,31 @@ const LOGO = [
   '                         ...++++++........',
 ];
 
-const LOGO_PURPLE_TRUECOLOR = '\x1b[38;2;209;0;209m';
-const LOGO_PURPLE_256 = '\x1b[38;5;164m';
+const LOGO_TRUECOLOR = {
+  background: '\x1b[38;2;209;0;209m',
+  crow: '\x1b[38;2;247;239;247m',
+  controller: '\x1b[38;2;255;209;102m',
+};
+const LOGO_256_COLOR = {
+  background: '\x1b[38;5;164m',
+  crow: '\x1b[38;5;255m',
+  controller: '\x1b[38;5;221m',
+};
 const FOREGROUND_RESET = '\x1b[39m';
 
 function colorLogoLine(line: string, theme: Theme): string {
-  const purple =
-    theme.getColorMode() === 'truecolor'
-      ? LOGO_PURPLE_TRUECOLOR
-      : LOGO_PURPLE_256;
-  return `${purple}${line}${FOREGROUND_RESET}`;
+  const palette =
+    theme.getColorMode() === 'truecolor' ? LOGO_TRUECOLOR : LOGO_256_COLOR;
+  return line
+    .replace(
+      /\.+/g,
+      background => `${palette.background}${background}${FOREGROUND_RESET}`,
+    )
+    .replace(/@+/g, crow => `${palette.crow}${crow}${FOREGROUND_RESET}`)
+    .replace(
+      /[+o]+/g,
+      controller => `${palette.controller}${controller}${FOREGROUND_RESET}`,
+    );
 }
 
 function centered(line: string, width: number): string {
