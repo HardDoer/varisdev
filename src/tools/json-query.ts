@@ -21,14 +21,14 @@ const MAX_GROUP_BY_PATHS = 8;
 const MAX_SELECT_PATHS = 20;
 const MAX_SAMPLES = 20;
 const MAX_ROOT_KEYS = 100;
-const MAX_JSON_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_QUERY_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_VALUE_CHARS = 500;
 const MAX_SAMPLE_CHARS = 2_000;
 
 const jsonQuerySchema = Type.Object({
   path: Type.String({
     description:
-      'JSON file path or glob pattern, relative to the current project. Non-.json extensions are supported. Prefix with @ if helpful.',
+      'Structured-data file path or glob pattern, relative to the current project. Custom extensions are supported. Prefix with @ if helpful.',
   }),
   collectionPath: Type.Optional(
     Type.String({
@@ -167,6 +167,16 @@ type QueryFile = {
   displayPath: string;
 };
 
+export type QueryToolConfiguration = {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet: string;
+  promptGuidelines: string[];
+  documentLabel: string;
+  parseDocument: (source: string) => unknown;
+};
+
 function normalizeBoundedInteger(
   value: number | undefined,
   fallback: number,
@@ -181,9 +191,9 @@ function stripAtPath(value: string): string {
   return value.startsWith('@') ? value.slice(1) : value;
 }
 
-function normalizePattern(rawPattern: string): string {
+function normalizePattern(rawPattern: string, toolName: string): string {
   const pattern = stripAtPath(rawPattern.trim());
-  if (!pattern) throw new Error('json_query path cannot be empty.');
+  if (!pattern) throw new Error(`${toolName} path cannot be empty.`);
   return pattern;
 }
 
@@ -367,23 +377,24 @@ function displayPath(cwd: string, absolutePath: string): string {
   return output.replaceAll('\\', '/');
 }
 
-function throwIfAborted(signal?: AbortSignal): void {
+function throwIfAborted(toolName: string, signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   if (signal.reason instanceof Error) throw signal.reason;
-  throw new Error('json_query cancelled.');
+  throw new Error(`${toolName} cancelled.`);
 }
 
 async function findQueryFiles(
   cwd: string,
   pattern: string,
   maxFiles: number,
+  toolName: string,
   signal?: AbortSignal,
 ): Promise<{files: QueryFile[]; limitReached: boolean}> {
   const files: QueryFile[] = [];
   let limitReached = false;
 
   for await (const match of glob(pattern, {cwd})) {
-    throwIfAborted(signal);
+    throwIfAborted(toolName, signal);
     const absolutePath = resolve(cwd, match);
 
     try {
@@ -411,14 +422,15 @@ async function findQueryFiles(
 async function queryFile(
   file: QueryFile,
   plan: QueryPlan,
+  config: QueryToolConfiguration,
   signal?: AbortSignal,
 ): Promise<JsonQueryFileDetails> {
   try {
-    throwIfAborted(signal);
+    throwIfAborted(config.name, signal);
     const fileStats = await stat(file.absolutePath);
-    if (fileStats.size > MAX_JSON_FILE_BYTES) {
+    if (fileStats.size > MAX_QUERY_FILE_BYTES) {
       throw new Error(
-        `File is ${formatSize(fileStats.size)}; the json_query per-file limit is ${formatSize(MAX_JSON_FILE_BYTES)}.`,
+        `File is ${formatSize(fileStats.size)}; the ${config.name} per-file limit is ${formatSize(MAX_QUERY_FILE_BYTES)}.`,
       );
     }
 
@@ -426,7 +438,7 @@ async function queryFile(
       encoding: 'utf8',
       signal,
     });
-    const document = JSON.parse(rawText.replace(/^\uFEFF/, '')) as unknown;
+    const document = config.parseDocument(rawText.replace(/^\uFEFF/, ''));
     const rootKeys =
       document !== null &&
       typeof document === 'object' &&
@@ -500,7 +512,7 @@ async function queryFile(
       ...(plan.sampleLimit > 0 ? {samples} : {}),
     };
   } catch (error) {
-    throwIfAborted(signal);
+    throwIfAborted(config.name, signal);
     return {path: file.displayPath, error: describeError(error)};
   }
 }
@@ -571,6 +583,7 @@ function formatQueryResult(details: JsonQueryToolDetails): string {
 async function truncateQueryOutput(
   output: string,
   details: JsonQueryToolDetails,
+  toolName: string,
 ): Promise<string> {
   const truncation = truncateHead(output, {
     maxLines: DEFAULT_MAX_LINES,
@@ -578,7 +591,9 @@ async function truncateQueryOutput(
   });
   if (!truncation.truncated) return output;
 
-  const tempDir = await mkdtemp(join(tmpdir(), 'pi-json-query-'));
+  const tempDir = await mkdtemp(
+    join(tmpdir(), `pi-${toolName.replaceAll('_', '-')}-`),
+  );
   const outputPath = join(tempDir, 'output.txt');
   await withFileMutationQueue(outputPath, async () => {
     await writeFile(outputPath, output, 'utf8');
@@ -589,23 +604,19 @@ async function truncateQueryOutput(
   return `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${outputPath}]`;
 }
 
-export function registerJsonQueryTool(pi: ExtensionAPI): void {
+export function registerQueryTool(
+  pi: ExtensionAPI,
+  config: QueryToolConfiguration,
+): void {
   pi.registerTool<typeof jsonQuerySchema, JsonQueryToolDetails>({
-    name: 'json_query',
-    label: 'JSON Query',
-    description:
-      'Inspect and query one or many JSON files without writing an ad-hoc script. Supports globbing (including JSON stored under custom extensions), root-key inspection, exact nested-field filters, per-file group counts, and selected samples. Output is truncated to 2000 lines or 50KB, with full output saved to a temporary file.',
-    promptSnippet:
-      'Inspect and summarize JSON files with globs, nested equality filters, group counts, and samples instead of writing one-off scripts.',
-    promptGuidelines: [
-      'Use json_query instead of ad-hoc Python, Node, jq, or shell scripts when inspecting or counting structured data in one or more JSON files.',
-      'json_query paths accept dot-separated fields such as properties.owner_id or RFC 6901 JSON Pointers for keys containing dots or slashes.',
-      'Use json_query collectionPath for a nested array, where for exact filters, groupBy for Counter-style counts, and select plus sampleLimit for representative records.',
-      'If you notice unexpected or unfinished behavior when using json_query, report it to the user.',
-    ],
+    name: config.name,
+    label: config.label,
+    description: config.description,
+    promptSnippet: config.promptSnippet,
+    promptGuidelines: config.promptGuidelines,
     parameters: jsonQuerySchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const pattern = normalizePattern(params.path);
+      const pattern = normalizePattern(params.path, config.name);
       const maxFiles = normalizeBoundedInteger(
         params.maxFiles,
         DEFAULT_MAX_FILES,
@@ -613,16 +624,22 @@ export function registerJsonQueryTool(pi: ExtensionAPI): void {
         MAX_FILES,
       );
       const plan = makeQueryPlan(params);
-      const found = await findQueryFiles(ctx.cwd, pattern, maxFiles, signal);
+      const found = await findQueryFiles(
+        ctx.cwd,
+        pattern,
+        maxFiles,
+        config.name,
+        signal,
+      );
       if (found.files.length === 0) {
         throw new Error(
-          `No files matched json_query path ${JSON.stringify(pattern)} from ${ctx.cwd}.`,
+          `No files matched ${config.name} path ${JSON.stringify(pattern)} from ${ctx.cwd}.`,
         );
       }
 
       const files: JsonQueryFileDetails[] = [];
       for (const file of found.files) {
-        files.push(await queryFile(file, plan, signal));
+        files.push(await queryFile(file, plan, config, signal));
       }
 
       const succeededFiles = files.filter(file => !file.error);
@@ -633,7 +650,7 @@ export function registerJsonQueryTool(pi: ExtensionAPI): void {
           .join('; ');
         const omittedErrors = files.length - 5;
         throw new Error(
-          `Could not query any matched JSON files. ${shownErrors}${omittedErrors > 0 ? `; and ${omittedErrors} more error(s)` : ''}`,
+          `Could not query any matched ${config.documentLabel}. ${shownErrors}${omittedErrors > 0 ? `; and ${omittedErrors} more error(s)` : ''}`,
         );
       }
 
@@ -669,10 +686,32 @@ export function registerJsonQueryTool(pi: ExtensionAPI): void {
 
       return {
         content: [
-          {type: 'text', text: await truncateQueryOutput(output, details)},
+          {
+            type: 'text',
+            text: await truncateQueryOutput(output, details, config.name),
+          },
         ],
         details,
       };
     },
+  });
+}
+
+export function registerJsonQueryTool(pi: ExtensionAPI): void {
+  registerQueryTool(pi, {
+    name: 'json_query',
+    label: 'JSON Query',
+    description:
+      'Inspect and query one or many strict JSON files without writing an ad-hoc script. Supports globbing (including JSON stored under custom extensions), root-key inspection, exact nested-field filters, per-file group counts, and selected samples. Output is truncated to 2000 lines or 50KB, with full output saved to a temporary file.',
+    promptSnippet:
+      'Inspect and summarize strict JSON files with globs, nested equality filters, group counts, and samples instead of writing one-off scripts.',
+    promptGuidelines: [
+      'Use json_query instead of ad-hoc Python, Node, jq, or shell scripts when inspecting or counting strict JSON data. Use gamemaker_query for GameMaker .yy and .yyp files because they can contain trailing commas.',
+      'json_query paths accept dot-separated fields such as properties.owner_id or RFC 6901 JSON Pointers for keys containing dots or slashes.',
+      'Use json_query collectionPath for a nested array, where for exact filters, groupBy for Counter-style counts, and select plus sampleLimit for representative records.',
+      'If you notice unexpected or unfinished behavior when using json_query, report it to the user.',
+    ],
+    documentLabel: 'JSON files',
+    parseDocument: source => JSON.parse(source) as unknown,
   });
 }
