@@ -6,6 +6,7 @@ import type {
 import {truncateToWidth, visibleWidth} from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
 import {registerBrowseTool} from '../src/tools/browse.ts';
+import {registerImageQueryTool} from '../src/tools/image-query.ts';
 import {registerJsonQueryTool} from '../src/tools/json-query.ts';
 import {registerOpenAIImageTool} from '../src/tools/openai-image.ts';
 
@@ -190,6 +191,7 @@ function applyBranding(ctx: ExtensionContext): void {
 
 export default function (pi: ExtensionAPI) {
   registerBrowseTool(pi);
+  registerImageQueryTool(pi);
   registerJsonQueryTool(pi);
   registerOpenAIImageTool(pi);
   pi.on('session_start', async (_event, ctx) => {
