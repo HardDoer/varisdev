@@ -83,7 +83,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
   pi.registerTool<typeof sessionSaveSchema, {status: string}>({
     name: 'memory_session_save',
     label: 'Save Session Memory',
-    description: 'Save the current turn content to the short-term session memory.',
+    description: 'Save the current turn content to the short-term session memory. The agent should use this tool at will to persist session data, especially when a session begins.',,
     parameters: sessionSaveSchema,
     async execute(_toolCallId, params) {
       await checkMemoryService();
@@ -122,7 +122,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
   pi.registerTool<typeof sessionSummarizeSchema, {status: string}>({
     name: 'memory_session_summarize',
     label: 'Summarize Session',
-    description: 'Save a summary of a session to the global memory.',
+    description: 'Save a summary of a session to the global memory. The agent should summarize the session as necessary if it seems that makes sense to preserve key information long-term.',,
     parameters: sessionSummarizeSchema,
     async execute(_toolCallId, params) {
       await checkMemoryService();
