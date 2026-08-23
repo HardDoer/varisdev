@@ -9,7 +9,7 @@ const globalSaveSchema = Type.Object({
 });
 
 const globalSearchSchema = Type.Object({
-  q: Type.String({description: 'The search query to find relevant memories.'}),
+  q: Type.String({description: 'The search query to find relevant memories (searches both keywords and content).'}),
 });
 
 const sessionSaveSchema = Type.Object({
@@ -28,6 +28,12 @@ const sessionSearchSchema = Type.Object({
 const sessionSummarizeSchema = Type.Object({
   session_id: Type.String({description: 'The unique identifier for the session to summarize.'}),
   summary: Type.String({description: 'The summary of the session to store in global memory.'}),
+});
+
+const sessionSearchAllSchema = Type.Object({
+  q: Type.String({description: 'The search query to find relevant session memories across all sessions.'}),
+  start_time: Type.Optional(Type.String({description: 'Filter entries starting from this timestamp.'})),
+  end_time: Type.Optional(Type.String({description: 'Filter entries ending at this timestamp.'})),
 });
 
 async function checkMemoryService(): Promise<void> {
@@ -122,7 +128,7 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
   pi.registerTool<typeof sessionSummarizeSchema, {status: string}>({
     name: 'memory_session_summarize',
     label: 'Summarize Session',
-    description: 'Save a summary of a session to the global memory. The agent should summarize the session as necessary if it seems that makes sense to preserve key information long-term.',
+    description: 'Save a summary of a session to the global memory.',
     parameters: sessionSummarizeSchema,
     async execute(_toolCallId, params) {
       await checkMemoryService();
@@ -132,6 +138,27 @@ export function registerMemoryTools(pi: ExtensionAPI): void {
       const response = await fetch(url.toString(), {method: 'POST'});
       if (!response.ok) throw new Error(`Failed to summarize session: ${response.statusText}`);
       return {content: [{type: 'text', text: 'Session summarized and stored in global memory.'}], details: await response.json()};
+    },
+  });
+
+  pi.registerTool<typeof sessionSearchAllSchema, any[]>({
+    name: 'memory_session_search_all',
+    label: 'Search All Session Memory',
+    description: 'Search for information across all session memories using a content query.',
+    parameters: sessionSearchAllSchema,
+    async execute(_toolCallId, params) {
+      await checkMemoryService();
+      const url = new URL(`${MEMORY_URL}/session/search_all`);
+      if (params.q) url.searchParams.append('q', params.q);
+      if (params.start_time) url.searchParams.append('start_time', params.start_time);
+      if (params.end_time) url.searchParams.append('end_time', params.end_time);
+      const response = await fetch(url.toString());
+      if (!response.ok) throw new Error(`Failed to search all session memory: ${response.statusText}`);
+      const data = await response.json();
+      return {
+        content: [{type: 'text', text: data.length > 0 ? JSON.stringify(data, null, 2) : 'No matching session memories found.'}],
+        details: data,
+      };
     },
   });
 }
