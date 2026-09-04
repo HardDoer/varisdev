@@ -2,6 +2,7 @@
   "name": "varisware-pidev-plugins",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Varisware VarisDev Pi/pidev plugins.",
   "keywords": [
     "pi-package"

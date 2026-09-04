@@ -6,6 +6,7 @@ import type {
 import {truncateToWidth, visibleWidth} from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
 import {registerBrowseTool} from '../src/tools/browse.ts';
+import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerDownloadTool} from '../src/tools/download.ts';
 import {registerGameMakerQueryTool} from '../src/tools/gamemaker-query.ts';
 import {registerImageQueryTool} from '../src/tools/image-query.ts';
@@ -193,6 +194,7 @@ function applyBranding(ctx: ExtensionContext): void {
 
 export default function (pi: ExtensionAPI) {
   registerBrowseTool(pi);
+  registerCompletionAlert(pi);
   registerDownloadTool(pi);
   registerGameMakerQueryTool(pi);
   registerImageQueryTool(pi);
