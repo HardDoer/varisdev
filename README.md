@@ -6,6 +6,7 @@ Varisware VarisDev package.
 
 - `extensions/varisdev.ts` — replaces the startup header with the three-color Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, uses a small crow image-style loader with animated processing dots while the assistant is streaming, and registers VarisDev tools.
 - `src/tools/browse.ts` — agent-callable `browse` tool for compact HTTP/HTTPS browsing without dumping response headers or large body samples into the LLM context.
+- `src/tools/download.ts` — agent-callable `download` tool for streaming HTTP/HTTPS responses to project files.
 - `src/tools/gamemaker-query.ts` — agent-callable `gamemaker_query` tool for inspecting, filtering, grouping, and sampling trailing-comma GameMaker `.yy` and `.yyp` files.
 - `src/tools/image-query.ts` — agent-callable `image_query` tool for inspecting image metadata, transparency, visible bounds, and grid occupancy across files without one-off scripts.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
@@ -135,6 +136,7 @@ This repo targets Node.js 24+ and uses Google's TypeScript Style via `gts`.
 ```bash
 npm run lint
 npm run typecheck
+npm test
 npm run fix
 ```
 

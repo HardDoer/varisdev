@@ -11,7 +11,6 @@ import {registerGameMakerQueryTool} from '../src/tools/gamemaker-query.ts';
 import {registerImageQueryTool} from '../src/tools/image-query.ts';
 import {registerJsonQueryTool} from '../src/tools/json-query.ts';
 import {registerOpenAIImageTool} from '../src/tools/openai-image.ts';
-import {registerMemoryTools} from '../src/tools/memory.ts';
 
 const THEME_NAME = 'varisware';
 const TITLE = 'VarisDev';
@@ -199,7 +198,6 @@ export default function (pi: ExtensionAPI) {
   registerImageQueryTool(pi);
   registerJsonQueryTool(pi);
   registerOpenAIImageTool(pi);
-  registerMemoryTools(pi);
   pi.on('session_start', async (_event, ctx) => {
     applyBranding(ctx);
   });
