@@ -8,11 +8,13 @@ import type {
   AgentSession,
   AgentSessionEvent,
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {
   AgentOrchestrator,
+  type AgentRecord,
   type AgentSpec,
   type AgentWorker,
 } from '../src/agents/orchestrator.ts';
@@ -177,17 +179,25 @@ void test('startup failures and timeouts release slots and preserve errors', asy
     throw new Error('Missing credentials');
   });
   const slow = controlledWorker();
-  const timed = manager.spawn(
-    {...spec, timeoutMs: 20},
-    async () => slow.worker,
-  );
+  const timed = manager.spawn({...spec, timeoutMs: 20}, async () => ({
+    ...slow.worker,
+    async run(message, signal, onActivity) {
+      try {
+        return await slow.worker.run(message, signal, onActivity);
+      } catch {
+        // Providers may return a generic abort error when a deadline expires.
+        throw new Error('Request was aborted');
+      }
+    },
+  }));
   const results = await manager.wait([broken.id, timed.id], {timeoutMs: 1000});
   assert.deepEqual(
     results.map(result => result.status),
     ['failed', 'failed'],
   );
   assert.equal(results[0].error, 'Missing credentials');
-  assert.match(results[1].error ?? '', /exceeded 20 ms/);
+  assert.match(results[1].error ?? '', /Timed out after 20 milliseconds/);
+  assert.match(results[1].activity, /Timed out after 20 milliseconds/);
   assert.equal(slow.disposed, 1);
   assert.throws(
     () => manager.send(timed.id, 'retry'),
@@ -387,6 +397,11 @@ void test('agent tools inherit context, notify on completion, and clean up on se
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, () => Promise<void> | void>();
   const notifications: unknown[] = [];
+  const commands = new Map<
+    string,
+    Parameters<ExtensionAPI['registerCommand']>[1]
+  >();
+  const notices: string[] = [];
   const controlled = controlledWorker();
   const optionsSeen: unknown[] = [];
   const pi = {
@@ -396,25 +411,43 @@ void test('agent tools inherit context, notify on completion, and clean up on se
     on(event: string, handler: () => Promise<void> | void) {
       events.set(event, handler);
     },
-    registerCommand() {},
+    registerCommand(
+      name: string,
+      command: Parameters<ExtensionAPI['registerCommand']>[1],
+    ) {
+      commands.set(name, command);
+    },
     getThinkingLevel: () => 'high',
     sendMessage(message: unknown) {
       notifications.push(message);
     },
   } as unknown as ExtensionAPI;
   registerAgentTools(pi, async options => {
+    if (options.name === 'Broken') throw new Error('Missing credentials');
     optionsSeen.push(options);
     return controlled.worker;
   });
   const ctx = {
     cwd: process.cwd(),
     hasUI: false,
+    ui: {notify: (message: string) => notices.push(message)},
     model: {provider: 'test', id: 'parent-model'},
     modelRegistry: {find: () => undefined},
     sessionManager: {getSessionId: () => 'parent-session'},
   } as unknown as ExtensionContext;
   const execute = (name: string, params: Record<string, unknown>) =>
     tools.get(name)!.execute('call', params, undefined, undefined, ctx);
+  const list = async (view?: string) => {
+    const result = await execute('agent_list', view ? {view} : {});
+    const content = result.content[0];
+    assert.ok(content.type === 'text');
+    return JSON.parse(content.text) as {
+      agents: Array<{id: string; activity: string}>;
+      summary: Record<string, number>;
+    };
+  };
+  const command = (args: string) =>
+    commands.get('agents')!.handler(args, ctx as ExtensionCommandContext);
   try {
     const spawned = await execute('agent_spawn', {
       name: 'Review',
@@ -436,18 +469,60 @@ void test('agent tools inherit context, notify on completion, and clean up on se
     const waited = await execute('agent_wait', {ids: [id]});
     assert.match(JSON.stringify(waited.content), /review result/);
     assert.equal(notifications.length, 1);
+    const active = await list();
+    assert.deepEqual(active.agents, []);
+    assert.equal(active.summary.completed, 1);
+    assert.deepEqual(
+      (await list('history')).agents.map(agent => agent.id),
+      [id],
+    );
     await execute('agent_status', {id});
     assert.equal(notifications.length, 1);
+
+    const broken = await execute('agent_spawn', {
+      name: 'Broken',
+      task: 'Cannot start',
+      notify: false,
+    });
+    const brokenId = (broken.details as {agents: AgentRecord[]}).agents[0].id;
+    await execute('agent_wait', {ids: [brokenId]});
+    assert.equal((await list()).summary.failed, 1);
+    assert.equal(
+      (await list('history')).agents.find(agent => agent.id === brokenId)
+        ?.activity,
+      'Missing credentials',
+    );
+    await command('');
+    assert.match(notices.at(-1)!, /No active agents/);
+    assert.match(notices.at(-1)!, /2 finished agents.*\/agents history/);
+    assert.doesNotMatch(notices.at(-1)!, /Broken|Review/);
+    await command('history');
+    assert.match(notices.at(-1)!, /Broken: failed — Missing credentials/);
+    assert.match(notices.at(-1)!, /Review: completed/);
+
     await execute('agent_send', {id, message: 'Review the fix'});
     await until(() => controlled.runs.length === 2);
+    assert.deepEqual(
+      (await list()).agents.map(agent => agent.id),
+      [id],
+    );
+    assert.deepEqual(
+      (await list('history')).agents.map(agent => agent.id),
+      [brokenId],
+    );
+    assert.deepEqual(
+      (await list('all')).agents.map(agent => agent.id),
+      [id, brokenId],
+    );
     await events.get('session_shutdown')!();
     assert.equal(controlled.runs[1].signal.aborted, true);
     assert.equal(controlled.disposed, 1);
     assert.equal(notifications.length, 1);
     await events.get('session_start')!();
     await assert.rejects(execute('agent_status', {id}), /Unknown agent/);
-    const listed = await execute('agent_list', {});
-    assert.deepEqual(listed.details, {agents: []});
+    const listed = await list('all');
+    assert.deepEqual(listed.agents, []);
+    assert.ok(Object.values(listed.summary).every(count => count === 0));
     await assert.rejects(
       execute('agent_spawn', {
         name: 'bad',

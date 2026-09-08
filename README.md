@@ -21,7 +21,7 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 | Tool | Purpose |
 | --- | --- |
 | `agent_spawn` | Start an agent and immediately return its ID. |
-| `agent_list` | List agents and their current activity. |
+| `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths. |
 | `agent_send` | Queue follow-up instructions or resume a completed agent’s conversation. |
 | `agent_wait` | Wait for any or all selected agents and collect their results. |
@@ -63,7 +63,14 @@ Spawn options include `cwd` (relative to the parent directory), `model` (`provid
 
 By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
-Agents share their selected working directory and can change its files. Assign file ownership in each task, or provide separate working directories for independent edits. The terminal footer shows active agent counts. Use `/agents` to list agents and `/agents cancel <id|all>` to cancel work manually.
+Agents share their selected working directory and can change its files. Assign file ownership in each task, or provide separate working directories for independent edits. The terminal footer shows active agent counts.
+
+- `/agents` shows queued, running, and cancelling agents, with a hint when finished agents are available in history.
+- `/agents history` shows completed, failed, and cancelled agents, newest first.
+- `/agents all` shows active agents followed by history.
+- `/agents cancel <id|all>` cancels work manually.
+
+`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Timed out after 10 minutes.` Finished agents stay available in history, and completed agents return to the active view when sent new work.
 
 Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list belongs to the parent session: quitting, reloading, replacing, or forking that session cancels its active workers and disposes their conversations. Saved files remain available after shutdown.
 

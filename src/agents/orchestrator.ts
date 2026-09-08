@@ -50,6 +50,20 @@ export function isAgentFinished(status: AgentStatus): boolean {
   return ['completed', 'failed', 'cancelled'].includes(status);
 }
 
+function formatDuration(ms: number): string {
+  for (const [size, unit] of [
+    [3600000, 'hour'],
+    [60000, 'minute'],
+    [1000, 'second'],
+  ] as const) {
+    if (ms % size === 0) {
+      const value = ms / size;
+      return `${value} ${unit}${value === 1 ? '' : 's'}`;
+    }
+  }
+  return `${ms} millisecond${ms === 1 ? '' : 's'}`;
+}
+
 /** Owns background work for one parent session. */
 export class AgentOrchestrator {
   private readonly jobs = new Map<string, Job>();
@@ -187,7 +201,9 @@ export class AgentOrchestrator {
     const controller = job.controller!;
     const {signal} = controller;
     const timer = setTimeout(() => {
-      controller.abort(new Error(`Agent exceeded ${job.record.timeoutMs} ms.`));
+      controller.abort(
+        new Error(`Timed out after ${formatDuration(job.record.timeoutMs)}.`),
+      );
     }, job.record.timeoutMs);
     try {
       signal.throwIfAborted();
@@ -218,9 +234,12 @@ export class AgentOrchestrator {
     } catch (error) {
       job.record.status =
         job.record.status === 'cancelling' ? 'cancelled' : 'failed';
-      job.record.error = error instanceof Error ? error.message : String(error);
+      const cause = signal.aborted ? signal.reason : error;
+      job.record.error = cause instanceof Error ? cause.message : String(cause);
       job.record.activity =
-        job.record.status === 'cancelled' ? 'Cancelled' : 'Failed';
+        job.record.status === 'cancelled'
+          ? 'Cancelled'
+          : job.record.error.slice(0, 2000);
       job.messages = [];
       job.record.pendingMessages = 0;
     } finally {

@@ -83,6 +83,49 @@ const waitSchema = Type.Object({
   ),
 });
 
+type AgentListView = 'active' | 'history' | 'all';
+
+function selectAgents(records: AgentRecord[], view: AgentListView) {
+  const active = records.filter(record => !isAgentFinished(record.status));
+  if (view === 'active') return active;
+  const history = records
+    .filter(record => isAgentFinished(record.status))
+    .sort((a, b) =>
+      (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt),
+    );
+  return view === 'history' ? history : [...active, ...history];
+}
+
+function agentListResult(records: AgentRecord[], view: AgentListView) {
+  const summary = {
+    running: 0,
+    queued: 0,
+    cancelling: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0,
+  };
+  for (const record of records) summary[record.status]++;
+  const selected = selectAgents(records, view);
+  const agents = selected.map(record => ({
+    id: record.id,
+    name: record.name,
+    status: record.status,
+    activity: record.activity,
+    pendingMessages: record.pendingMessages,
+    finishedAt: record.finishedAt,
+  }));
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({view, summary, agents}, null, 2),
+      },
+    ],
+    details: {view, summary, agents: selected},
+  };
+}
+
 function toolResult(records: AgentRecord[], includeOutput = true) {
   const budget = Math.min(
     12000,
@@ -237,10 +280,24 @@ export function registerAgentTools(
     name: 'agent_list',
     label: 'List agents',
     description:
-      'List agents and their progress in the current parent session.',
-    parameters: Type.Object({}),
-    async execute(_id, _params, _signal, _onUpdate, ctx) {
-      return toolResult(getManager(ctx).list(), false);
+      'List active agents and their progress in the current parent session, with counts for every status. Use view="history" for finished agents or view="all" for both. History is newest first. Use agent_status for full results and transcript paths.',
+    parameters: Type.Object({
+      view: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal('active'),
+            Type.Literal('history'),
+            Type.Literal('all'),
+          ],
+          {
+            description:
+              'Defaults to active (queued, running, or cancelling). History includes completed, failed, and cancelled agents.',
+          },
+        ),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      return agentListResult(getManager(ctx).list(), params.view ?? 'active');
     },
   });
   pi.registerTool({
@@ -301,33 +358,56 @@ export function registerAgentTools(
 
   pi.registerCommand('agents', {
     description:
-      'List background agents, or cancel them with /agents cancel <id|all>.',
+      'List active agents. Use /agents history, /agents all, or /agents cancel <id|all>.',
     handler: async (args, ctx) => {
       const current = getManager(ctx);
       const parts = args.trim().split(/\s+/).filter(Boolean);
-      if (parts.length > 0) {
-        if (parts[0] !== 'cancel' || parts.length !== 2) {
-          ctx.ui.notify('Usage: /agents or /agents cancel <id|all>', 'info');
-          return;
-        }
+      let view: AgentListView = 'active';
+      if (parts.length === 1 && ['history', 'all'].includes(parts[0])) {
+        view = parts[0] as AgentListView;
+      } else if (parts.length === 2 && parts[0] === 'cancel') {
         const ids =
           parts[1] === 'all'
-            ? current.list().map(record => record.id)
+            ? selectAgents(current.list(), 'active').map(record => record.id)
             : [parts[1]];
         for (const id of ids) current.cancel(id);
+      } else if (parts.length > 0) {
+        ctx.ui.notify(
+          'Usage: /agents [history|all] or /agents cancel <id|all>',
+          'info',
+        );
+        return;
       }
       const records = current.list();
-      ctx.ui.notify(
-        records.length === 0
-          ? 'No agents in this session.'
-          : records
-              .map(
-                record =>
-                  `${record.id}  ${record.name}: ${record.status} — ${record.activity}`,
-              )
-              .join('\n'),
-        'info',
-      );
+      const selected = selectAgents(records, view);
+      const lines = selected.map(record => {
+        const activity = record.activity.replace(/\s+/g, ' ').trim();
+        const preview =
+          activity.length > 240 ? `${activity.slice(0, 237)}...` : activity;
+        const detail =
+          activity.toLowerCase() === record.status
+            ? record.status
+            : `${record.status} — ${preview}`;
+        return `${record.name}: ${detail}\n  ${record.id}`;
+      });
+      if (lines.length === 0) {
+        lines.push(
+          view === 'active'
+            ? 'No active agents.'
+            : view === 'history'
+              ? 'No finished agents in this session.'
+              : 'No agents in this session.',
+        );
+      }
+      const historyCount = records.filter(record =>
+        isAgentFinished(record.status),
+      ).length;
+      if (view === 'active' && historyCount > 0) {
+        lines.push(
+          `\n${historyCount} finished agent${historyCount === 1 ? '' : 's'}. Use /agents history to view them.`,
+        );
+      }
+      ctx.ui.notify(lines.join('\n'), 'info');
     },
   });
   pi.on('session_start', () => {
