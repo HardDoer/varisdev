@@ -48,7 +48,7 @@ const spawnSchema = Type.Object({
       minimum: 1000,
       maximum: 3600000,
       description:
-        'Execution timeout, excluding time in the queue. Defaults to 600000 ms; resets when a completed agent receives new work.',
+        'Execution timeout, excluding time in the queue. Defaults to 600000 ms; resets when a completed agent receives new work or an agent starts a fresh session.',
     }),
   ),
   notify: Type.Optional(
@@ -96,7 +96,11 @@ function selectAgents(records: AgentRecord[], view: AgentListView) {
   return view === 'history' ? history : [...active, ...history];
 }
 
-function agentListResult(records: AgentRecord[], view: AgentListView) {
+function agentListResult(
+  records: AgentRecord[],
+  view: AgentListView,
+  selfId?: string,
+) {
   const summary = {
     running: 0,
     queued: 0,
@@ -119,10 +123,14 @@ function agentListResult(records: AgentRecord[], view: AgentListView) {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify({view, summary, agents}, null, 2),
+        text: JSON.stringify(
+          {view, summary, agents, ...(selfId ? {selfId} : {})},
+          null,
+          2,
+        ),
       },
     ],
-    details: {view, summary, agents: selected},
+    details: {view, summary, agents: selected, ...(selfId ? {selfId} : {})},
   };
 }
 
@@ -144,6 +152,8 @@ function toolResult(records: AgentRecord[], includeOutput = true) {
     finishedAt: record.finishedAt,
     sessionFile: record.sessionFile,
     resultFile: record.resultFile,
+    sessionCount: record.sessionCount,
+    previousSessionFile: record.previousSessionFile,
     error: record.error?.slice(0, 2000),
     ...(includeOutput && record.output !== undefined
       ? {
@@ -158,6 +168,167 @@ function toolResult(records: AgentRecord[], includeOutput = true) {
     content: [{type: 'text' as const, text: JSON.stringify({agents}, null, 2)}],
     details: {agents: records},
   };
+}
+
+type GetManager = (ctx: ExtensionContext) => AgentOrchestrator;
+
+interface AgentMessage {
+  from: {id: string; name: string};
+  message: string;
+}
+
+function formatAgentMessage({from, message}: AgentMessage): string {
+  return `Message from agent ${JSON.stringify(from.name)} (${from.id}):\n${message}`;
+}
+
+function registerAgentListTool(
+  pi: ExtensionAPI,
+  getManager: GetManager,
+  selfId?: string,
+): void {
+  pi.registerTool({
+    name: 'agent_list',
+    label: 'List agents',
+    description:
+      'List active agents and their progress in the current parent session, with counts for every status. Use view="history" for finished agents or view="all" for both. History is newest first.' +
+      (selfId
+        ? ' Includes your own selfId. Use agent_send with a listed ID to message a peer, or id="parent" to message the parent.'
+        : ' Use agent_status for full results and transcript paths.'),
+    parameters: Type.Object({
+      view: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal('active'),
+            Type.Literal('history'),
+            Type.Literal('all'),
+          ],
+          {
+            description:
+              'Defaults to active (queued, running, or cancelling). History includes completed, failed, and cancelled agents.',
+          },
+        ),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      return agentListResult(
+        getManager(ctx).list(),
+        params.view ?? 'active',
+        selfId,
+      );
+    },
+  });
+}
+
+function registerAgentSendTool(
+  pi: ExtensionAPI,
+  getManager: GetManager,
+  sender?: {id: string; sendToParent: (message: AgentMessage) => void},
+): void {
+  pi.registerTool({
+    name: 'agent_send',
+    label: 'Send to agent',
+    description: sender
+      ? 'Send a message directly to another agent in this parent session, or use id="parent" to message the parent. Your name and ID are attached automatically. Peer messages queue after the current task and resume completed conversations. Failed or cancelled agents cannot receive messages.'
+      : 'Queue follow-up instructions for an agent after its current task. A completed agent resumes with its existing conversation. Failed or cancelled agents must be replaced with agent_spawn.',
+    parameters: Type.Object({
+      id: sender
+        ? Type.String({
+            description: 'Peer agent ID from agent_list, or "parent".',
+          })
+        : idSchema,
+      message: Type.String({minLength: 1, maxLength: 64000}),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      signal?.throwIfAborted();
+      const current = getManager(ctx);
+      let message = params.message;
+      if (sender) {
+        const from = current.get(sender.id);
+        if (from.status !== 'running') {
+          throw new Error('Only running agents can send messages.');
+        }
+        if (params.id === sender.id) {
+          throw new Error('An agent cannot send a message to itself.');
+        }
+        if (!message.trim()) throw new Error('Agent message cannot be empty.');
+        const attributed = {from: {id: from.id, name: from.name}, message};
+        if (params.id === 'parent') {
+          sender.sendToParent(attributed);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({recipient: 'parent', delivered: true}),
+              },
+            ],
+            details: {recipient: 'parent', delivered: true},
+          };
+        }
+        message = formatAgentMessage(attributed);
+      }
+      return toolResult([current.send(params.id, message)], false);
+    },
+  });
+}
+
+function registerAgentNewSessionTool(
+  pi: ExtensionAPI,
+  getManager: GetManager,
+  selfId?: string,
+): void {
+  const handoverSchema = Type.String({
+    minLength: 1,
+    maxLength: 64000,
+    description:
+      'Self-contained handover: the task, user instructions, progress, decisions, relevant files, checks, and next steps. This becomes the first prompt in the new conversation.',
+  });
+  const definition = {
+    name: 'agent_new_session',
+    label: 'Start fresh agent session',
+    description: selfId
+      ? 'Start a fresh conversation for yourself and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. Your agent ID and pending messages are retained; the old transcript is saved. A fresh execution timeout starts after the current tools stop.'
+      : 'Start a fresh conversation for a background agent and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. The agent keeps its ID and pending messages; the old transcript is saved. A fresh execution timeout starts after the current tools stop.',
+    promptGuidelines: [
+      'Use agent_new_session when the user requests a fresh session or has enabled an ongoing workflow with automatic handovers. Complete ordinary tasks in the current session.',
+      'Include the task, user instructions, progress, decisions, relevant files, checks, and concrete next steps in the handover. The new conversation starts from the handover and project instructions.',
+      ...(selfId
+        ? [
+            'Make this your last tool call in the current conversation. Work resumes automatically in the new conversation.',
+          ]
+        : []),
+    ],
+    executionMode: 'sequential' as const,
+  };
+  const request = (
+    id: string,
+    handover: string,
+    signal: AbortSignal | undefined,
+    ctx: ExtensionContext,
+  ) => {
+    signal?.throwIfAborted();
+    const current = getManager(ctx);
+    if (selfId && current.get(selfId).status !== 'running') {
+      throw new Error('Only running agents can restart their own session.');
+    }
+    return toolResult([current.newSession(id, handover)], false);
+  };
+  if (selfId) {
+    pi.registerTool({
+      ...definition,
+      parameters: Type.Object({handover: handoverSchema}),
+      async execute(_id, params, signal, _onUpdate, ctx) {
+        return request(selfId, params.handover, signal, ctx);
+      },
+    });
+  } else {
+    pi.registerTool({
+      ...definition,
+      parameters: Type.Object({id: idSchema, handover: handoverSchema}),
+      async execute(_id, params, signal, _onUpdate, ctx) {
+        return request(params.id, params.handover, signal, ctx);
+      },
+    });
+  }
 }
 
 export function registerAgentTools(
@@ -225,7 +396,7 @@ export function registerAgentTools(
     promptSnippet:
       'Delegate work to background agents and return their IDs immediately.',
     promptGuidelines: [
-      'Use agent_spawn for independent tasks. Include the necessary context, file ownership, and expected result in each task; agents receive their task, project instructions, and project tools.',
+      'Use agent_spawn for independent tasks. Include the necessary context, file ownership, and expected result in each task; agents receive their task, project instructions, project tools, agent_list and agent_send for direct communication, and agent_new_session for workflows with handovers.',
       'Coordinate agents working in the same directory so their edits do not conflict. Use separate working directories when needed.',
       'Use agent_status or agent_wait to collect delegated results before reporting completion. Use agent_send for follow-up work in the same agent conversation.',
     ],
@@ -270,36 +441,42 @@ export function registerAgentTools(
           timeoutMs: params.timeoutMs ?? 600000,
           notify: params.notify ?? true,
         },
-        id => createWorker({...workerOptions, id}),
+        (id, previousSessionFile) =>
+          createWorker({
+            ...workerOptions,
+            id,
+            previousSessionFile,
+            agentToolsExtension(workerPi) {
+              const getWorkerManager = () => {
+                if (shuttingDown || manager !== current) {
+                  throw new Error('This agent session has closed.');
+                }
+                return current;
+              };
+              registerAgentListTool(workerPi, getWorkerManager, id);
+              registerAgentSendTool(workerPi, getWorkerManager, {
+                id,
+                sendToParent(message) {
+                  pi.sendMessage(
+                    {
+                      customType: 'agent_message',
+                      content: formatAgentMessage(message),
+                      display: true,
+                      details: message,
+                    },
+                    {deliverAs: 'followUp', triggerTurn: true},
+                  );
+                },
+              });
+              registerAgentNewSessionTool(workerPi, getWorkerManager, id);
+            },
+          }),
       );
       return toolResult([record], false);
     },
   });
 
-  pi.registerTool({
-    name: 'agent_list',
-    label: 'List agents',
-    description:
-      'List active agents and their progress in the current parent session, with counts for every status. Use view="history" for finished agents or view="all" for both. History is newest first. Use agent_status for full results and transcript paths.',
-    parameters: Type.Object({
-      view: Type.Optional(
-        Type.Union(
-          [
-            Type.Literal('active'),
-            Type.Literal('history'),
-            Type.Literal('all'),
-          ],
-          {
-            description:
-              'Defaults to active (queued, running, or cancelling). History includes completed, failed, and cancelled agents.',
-          },
-        ),
-      ),
-    }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      return agentListResult(getManager(ctx).list(), params.view ?? 'active');
-    },
-  });
+  registerAgentListTool(pi, getManager);
   pi.registerTool({
     name: 'agent_status',
     label: 'Agent status',
@@ -310,23 +487,8 @@ export function registerAgentTools(
       return toolResult([getManager(ctx).get(params.id)]);
     },
   });
-  pi.registerTool({
-    name: 'agent_send',
-    label: 'Send to agent',
-    description:
-      'Queue follow-up instructions for an agent after its current task. A completed agent resumes with its existing conversation. Failed or cancelled agents must be replaced with agent_spawn.',
-    parameters: Type.Object({
-      id: idSchema,
-      message: Type.String({minLength: 1, maxLength: 64000}),
-    }),
-    async execute(_id, params, signal, _onUpdate, ctx) {
-      signal?.throwIfAborted();
-      return toolResult(
-        [getManager(ctx).send(params.id, params.message)],
-        false,
-      );
-    },
-  });
+  registerAgentSendTool(pi, getManager);
+  registerAgentNewSessionTool(pi, getManager);
   pi.registerTool({
     name: 'agent_wait',
     label: 'Wait for agents',

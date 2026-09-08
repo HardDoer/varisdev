@@ -11,19 +11,20 @@ Varisware VarisDev package.
 - `src/tools/image-query.ts` — agent-callable `image_query` tool for inspecting image metadata, transparency, visible bounds, and grid occupancy across files without one-off scripts.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
-- `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, follow-up messages, waiting, and cancellation.
+- `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
 
 ## Agent orchestration
 
-VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation, uses the parent’s model, credentials, and thinking level by default, and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Include the relevant context in the task; the parent conversation is not copied. Workers load the shared project tools directly, so they have no orchestration tools or terminal branding.
+VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation, uses the parent’s model, credentials, and thinking level by default, and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent, and `agent_new_session` to continue work in a fresh conversation.
 
 | Tool | Purpose |
 | --- | --- |
 | `agent_spawn` | Start an agent and immediately return its ID. |
 | `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths. |
-| `agent_send` | Queue follow-up instructions or resume a completed agent’s conversation. |
+| `agent_send` | Send instructions or messages to an agent, resuming completed conversations. Workers can also message `"parent"`. |
+| `agent_new_session` | Start a fresh background agent conversation and continue automatically from a handover. |
 | `agent_wait` | Wait for any or all selected agents and collect their results. |
 | `agent_cancel` | Cancel an agent and discard its pending messages. |
 
@@ -57,9 +58,20 @@ Send additional work through `agent_send`:
 }
 ```
 
+Workers use `agent_list` to discover peers by name and ID in the same parent session. Their list also includes `selfId`, and their system instructions include their own ID. A worker can call `agent_send` with a peer’s ID using the example above, or send a progress update or question directly to the parent:
+
+```json
+{
+  "id": "parent",
+  "message": "The asset dimensions are confirmed. Please use a 32-pixel grid."
+}
+```
+
+Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue; messages to the parent trigger a follow-up turn, including when the sender has `notify: false`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, and `agent_new_session`; the parent also manages spawning, status, waiting, and cancellation.
+
 Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
 
-Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. The default execution timeout is ten minutes, including initialization and pending follow-up messages, with a maximum of one hour. Queue time is excluded. Sending new work to a completed agent starts a fresh timeout. Each parent session can hold 64 agents, with up to 32 pending messages per agent.
+Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. The default execution timeout is ten minutes, including initialization and pending follow-up messages, with a maximum of one hour. Queue time is excluded. Sending new work to a completed agent starts a fresh timeout. Starting a fresh agent session also resets its timeout once the previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent.
 
 By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
@@ -73,6 +85,24 @@ Agents share their selected working directory and can change its files. Assign f
 `agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Timed out after 10 minutes.` Finished agents stay available in history, and completed agents return to the active view when sent new work.
 
 Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list belongs to the parent session: quitting, reloading, replacing, or forking that session cancels its active workers and disposes their conversations. Saved files remain available after shutdown.
+
+### Fresh agent sessions
+
+Use `agent_new_session` for requested session changes or ongoing workflows with automatic handovers. Its tool instructions tell agents to complete ordinary tasks in the current session. A standing instruction to continue through handovers supports repeated use during that workflow.
+
+A background agent calls the tool with a self-contained handover:
+
+```json
+{
+  "handover": "Continue the asset review. The user requested an ongoing workflow with automatic handovers near 80% context usage. Reviewed sprites/terrain; findings are in build/asset-review.md. Next, inspect sprites/units and append findings. Preserve the existing file ownership assignments."
+}
+```
+
+The parent can call the same tool with an `id` and `handover` to start a fresh conversation for that background agent. Include the task, user instructions, progress, decisions, relevant files, checks, and concrete next steps. Your existing workflow instructions determine when to hand over.
+
+The agent stops its current tools, opens a fresh conversation, and starts working from the handover automatically. It keeps its agent ID, configuration, and pending messages; queued messages run after the handover. The new conversation loads project instructions and tools along with the handover. Each fresh session gets the configured execution timeout.
+
+`agent_status` reports the current `sessionFile`, `previousSessionFile`, and `sessionCount`. Previous transcripts remain saved, and each new transcript links to the preceding session. The agent stays active through the transition and reports completion after its work finishes.
 
 ## Completion sound
 

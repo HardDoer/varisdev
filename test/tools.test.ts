@@ -129,6 +129,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'agent_list',
     'agent_status',
     'agent_send',
+    'agent_new_session',
     'agent_wait',
     'agent_cancel',
   ]);

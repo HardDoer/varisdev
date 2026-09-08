@@ -6,6 +6,7 @@ import {
   SettingsManager,
   type AgentSession,
   type CreateAgentSessionOptions,
+  type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -15,12 +16,14 @@ import type {AgentWorker} from './orchestrator.ts';
 interface WorkerOptions {
   id: string;
   parentSessionId: string;
+  previousSessionFile?: string;
   cwd: string;
   name: string;
   instructions?: string;
   model: NonNullable<CreateAgentSessionOptions['model']>;
   modelRegistry: NonNullable<CreateAgentSessionOptions['modelRegistry']>;
   thinkingLevel: CreateAgentSessionOptions['thinkingLevel'];
+  agentToolsExtension: ExtensionFactory;
 }
 
 /** Translate Pi's session lifecycle into a cancellable background worker. */
@@ -114,14 +117,20 @@ export async function createSessionWorker(
     noExtensions: true,
     noThemes: true,
     noPromptTemplates: true,
-    extensionFactories: [registerProjectTools],
+    extensionFactories: [registerProjectTools, options.agentToolsExtension],
     appendSystemPrompt: [
-      `You are the delegated agent ${JSON.stringify(options.name)}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
-      'Your conversation contains the delegated task and follow-up messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership through the parent and preserve their changes.',
+      `You are the delegated agent ${JSON.stringify(options.name)}. Your agent ID is ${options.id}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
+      'Your conversation contains the delegated task and follow-up messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
+      'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to message the parent. Your name and ID are attached automatically. Peer messages queue after the current task; completed agents resume their conversation to handle them.',
+      'Use agent_new_session for a requested session change or an ongoing workflow with automatic handovers. Complete ordinary tasks in the current session. Include the task, user instructions for continuing through handovers, progress, and next steps in the handover; make this your last tool call in the old conversation. You retain your agent ID and pending messages, and work continues automatically in a fresh conversation.',
       ...(options.instructions ? [options.instructions] : []),
     ],
   });
   await loader.reload();
+  const sessionManager = SessionManager.create(options.cwd, directory);
+  if (options.previousSessionFile) {
+    sessionManager.newSession({parentSession: options.previousSessionFile});
+  }
   const {session} = await createAgentSession({
     cwd: options.cwd,
     model: options.model,
@@ -130,7 +139,7 @@ export async function createSessionWorker(
     thinkingLevel: options.thinkingLevel,
     settingsManager,
     resourceLoader: loader,
-    sessionManager: SessionManager.create(options.cwd, directory),
+    sessionManager,
   });
   return sessionWorker(session, join(directory, 'result.txt'));
 }

@@ -20,6 +20,8 @@ export interface AgentRecord extends AgentSpec {
   finishedAt?: string;
   activity: string;
   pendingMessages: number;
+  sessionCount: number;
+  previousSessionFile?: string;
   output?: string;
   error?: string;
   sessionFile?: string;
@@ -39,10 +41,15 @@ export interface AgentWorker {
 
 interface Job {
   record: AgentRecord;
-  createWorker: (id: string) => Promise<AgentWorker>;
+  createWorker: (
+    id: string,
+    previousSessionFile?: string,
+  ) => Promise<AgentWorker>;
   worker?: AgentWorker;
   messages: string[];
+  handover?: string;
   controller?: AbortController;
+  runController?: AbortController;
   operation?: Promise<void>;
 }
 
@@ -62,6 +69,20 @@ function formatDuration(ms: number): string {
     }
   }
   return `${ms} millisecond${ms === 1 ? '' : 's'}`;
+}
+
+/** The transcript paragraph is omitted when there is no previous saved session. */
+function handoverPrompt(
+  handover: string,
+  previousSessionFile?: string,
+): string {
+  return [
+    'Continue the delegated task in this fresh session.',
+    ...(previousSessionFile
+      ? [`Previous session transcript: ${previousSessionFile}`]
+      : []),
+    `Handover:\n${handover}`,
+  ].join('\n\n');
 }
 
 /** Owns background work for one parent session. */
@@ -109,7 +130,10 @@ export class AgentOrchestrator {
 
   spawn(
     spec: AgentSpec,
-    createWorker: (id: string) => Promise<AgentWorker>,
+    createWorker: (
+      id: string,
+      previousSessionFile?: string,
+    ) => Promise<AgentWorker>,
   ): AgentRecord {
     this.ensureOpen();
     if (!spec.task.trim() || !spec.name.trim()) {
@@ -130,6 +154,7 @@ export class AgentOrchestrator {
         activity: 'Waiting for a worker slot',
         createdAt: new Date().toISOString(),
         pendingMessages: 1,
+        sessionCount: 0,
       },
       createWorker,
       messages: [spec.task],
@@ -152,7 +177,8 @@ export class AgentOrchestrator {
       throw new Error('This agent already has 32 pending messages.');
     }
     job.messages.push(message);
-    job.record.pendingMessages = job.messages.length;
+    job.record.pendingMessages =
+      job.messages.length + Number(job.handover !== undefined);
     if (job.record.status === 'completed') {
       job.record.status = 'queued';
       job.record.activity = 'Waiting for a worker slot';
@@ -164,10 +190,43 @@ export class AgentOrchestrator {
     return this.get(id);
   }
 
+  /** Queue a handover before pending messages, interrupting the current run. */
+  newSession(id: string, handover: string): AgentRecord {
+    this.ensureOpen();
+    const job = this.job(id);
+    if (!handover.trim()) throw new Error('Agent handover cannot be empty.');
+    if (handover.length > 64000) {
+      throw new Error('Agent handover cannot exceed 64000 characters.');
+    }
+    if (['failed', 'cancelled', 'cancelling'].includes(job.record.status)) {
+      throw new Error(
+        `Cannot start a new session for a ${job.record.status} agent. Spawn a new agent.`,
+      );
+    }
+    job.controller?.signal.throwIfAborted();
+    if (job.handover !== undefined) {
+      throw new Error('This agent already has a pending handover.');
+    }
+    job.handover = handover;
+    job.record.pendingMessages = job.messages.length + 1;
+    job.record.output = undefined;
+    job.record.finishedAt = undefined;
+    if (job.record.status === 'completed') job.record.status = 'queued';
+    job.record.activity =
+      job.record.status === 'queued'
+        ? 'Waiting for a worker slot'
+        : 'Stopping for a new session';
+    job.runController?.abort(new Error('Agent starting a new session.'));
+    this.pump();
+    this.changed();
+    return this.get(id);
+  }
+
   cancel(id: string): AgentRecord {
     const job = this.job(id);
     if (isAgentFinished(job.record.status)) return this.get(id);
     job.messages = [];
+    job.handover = undefined;
     job.record.pendingMessages = 0;
     if (job.controller) {
       job.record.status = 'cancelling';
@@ -200,35 +259,87 @@ export class AgentOrchestrator {
   private async run(job: Job): Promise<void> {
     const controller = job.controller!;
     const {signal} = controller;
-    const timer = setTimeout(() => {
-      controller.abort(
-        new Error(`Timed out after ${formatDuration(job.record.timeoutMs)}.`),
-      );
-    }, job.record.timeoutMs);
+    const startTimer = () =>
+      setTimeout(() => {
+        controller.abort(
+          new Error(`Timed out after ${formatDuration(job.record.timeoutMs)}.`),
+        );
+      }, job.record.timeoutMs);
+    let timer = startTimer();
+    const abort = () => {
+      job.messages = [];
+      job.handover = undefined;
+      job.record.pendingMessages = 0;
+      job.runController?.abort(signal.reason);
+    };
+    signal.addEventListener('abort', abort, {once: true});
     try {
       signal.throwIfAborted();
       job.record.startedAt ??= new Date().toISOString();
-      job.record.activity = 'Starting';
-      this.changed();
-      job.worker ??= await job.createWorker(job.record.id);
-      job.record.sessionFile = job.worker.sessionFile;
-      job.record.resultFile = job.worker.resultFile;
-      signal.throwIfAborted();
-      while (job.messages.length > 0) {
-        const message = job.messages.shift()!;
+      while (job.handover !== undefined || job.messages.length > 0) {
+        signal.throwIfAborted();
+        if (job.handover !== undefined && job.worker) {
+          // The previous run has settled, including any tools still stopping.
+          job.worker.dispose();
+          job.worker = undefined;
+          job.record.previousSessionFile = job.record.sessionFile;
+          job.record.sessionFile = undefined;
+          job.record.resultFile = undefined;
+          signal.throwIfAborted();
+          clearTimeout(timer);
+          timer = startTimer();
+        }
+        if (!job.worker) {
+          job.record.activity = 'Starting';
+          this.changed();
+          signal.throwIfAborted();
+          job.worker = await job.createWorker(
+            job.record.id,
+            job.record.previousSessionFile,
+          );
+          job.record.sessionCount++;
+          job.record.sessionFile = job.worker.sessionFile;
+          job.record.resultFile = job.worker.resultFile;
+        }
+        signal.throwIfAborted();
+        // A handover requested during initial startup can use that fresh worker.
+        const message =
+          job.handover !== undefined
+            ? handoverPrompt(job.handover, job.record.previousSessionFile)
+            : job.messages.shift()!;
+        job.handover = undefined;
         job.record.pendingMessages = job.messages.length;
         job.record.activity = 'Working';
+        const runController = new AbortController();
+        job.runController = runController;
         this.changed();
-        const output = await job.worker.run(message, signal, activity => {
-          job.record.activity = activity;
-          this.changed();
-        });
-        signal.throwIfAborted();
-        job.record.output =
-          output.length > 12000
-            ? `${output.slice(0, 12000)}\n[Output truncated. Read resultFile for the full result.]`
-            : output;
+        try {
+          runController.signal.throwIfAborted();
+          const output = await job.worker.run(
+            message,
+            runController.signal,
+            activity => {
+              if (runController.signal.aborted) return;
+              job.record.activity = activity;
+              this.changed();
+            },
+          );
+          signal.throwIfAborted();
+          if (job.handover !== undefined) continue;
+          job.record.output =
+            output.length > 12000
+              ? `${output.slice(0, 12000)}\n[Output truncated. Read resultFile for the full result.]`
+              : output;
+        } catch (error) {
+          signal.throwIfAborted();
+          if (job.handover === undefined || !runController.signal.aborted) {
+            throw error;
+          }
+        } finally {
+          job.runController = undefined;
+        }
       }
+      signal.throwIfAborted();
       job.record.status = 'completed';
       job.record.activity = 'Completed';
     } catch (error) {
@@ -241,9 +352,11 @@ export class AgentOrchestrator {
           ? 'Cancelled'
           : job.record.error.slice(0, 2000);
       job.messages = [];
+      job.handover = undefined;
       job.record.pendingMessages = 0;
     } finally {
       clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
       if (job.record.status !== 'completed') {
         job.worker?.dispose();
         job.worker = undefined;
