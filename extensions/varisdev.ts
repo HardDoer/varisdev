@@ -15,8 +15,6 @@ const TITLE = 'VarisDev';
 const TERMINAL_TITLE_PREFIX = TITLE;
 const TITLE_REFRESH_MS = 2000;
 
-let titleRefresh: ReturnType<typeof setInterval> | undefined;
-
 function unrefTimer(
   timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>,
 ): void {
@@ -45,26 +43,6 @@ function applyTerminalTitle(ctx?: ExtensionContext): void {
     // title updater uses OSC 0, so emit both and keep ours last.
     process.stdout.write(`\x1b]2;${terminalTitle}\x07`);
   }
-}
-
-function keepTerminalTitle(ctx: ExtensionContext): void {
-  applyTerminalTitle(ctx);
-
-  for (const delay of [0, 50, 250, 1000]) {
-    const timeout = setTimeout(() => applyTerminalTitle(ctx), delay);
-    unrefTimer(timeout);
-  }
-
-  if (!titleRefresh) {
-    titleRefresh = setInterval(() => applyTerminalTitle(ctx), TITLE_REFRESH_MS);
-    unrefTimer(titleRefresh);
-  }
-}
-
-function stopKeepingTerminalTitle(): void {
-  if (!titleRefresh) return;
-  clearInterval(titleRefresh);
-  titleRefresh = undefined;
 }
 
 // Generated from varisware_logo-512.png as a terminal-friendly ASCII mark.
@@ -172,24 +150,55 @@ function applyTheme(ctx: ExtensionContext): boolean {
   return result.success;
 }
 
-function applyBranding(ctx: ExtensionContext): void {
-  if (!ctx.hasUI) return;
-
-  keepTerminalTitle(ctx);
-
-  if (ctx.mode === 'tui') {
-    applyTheme(ctx);
-    ctx.ui.setHeader((_tui, theme) => makeHeader(theme));
-    ctx.ui.setWorkingMessage('');
-    ctx.ui.setWorkingIndicator({
-      frames: makeProcessingFrames(ctx.ui.theme),
-      intervalMs: 240,
-    });
-    ctx.ui.setHiddenThinkingLabel('thinking...');
-  }
-}
-
 export default function (pi: ExtensionAPI) {
+  let titleRefresh: ReturnType<typeof setInterval> | undefined;
+  const titleTimeouts = new Set<ReturnType<typeof setTimeout>>();
+
+  function stopKeepingTerminalTitle(): void {
+    if (titleRefresh !== undefined) {
+      clearInterval(titleRefresh);
+      titleRefresh = undefined;
+    }
+    for (const timeout of titleTimeouts) clearTimeout(timeout);
+    titleTimeouts.clear();
+  }
+
+  function keepTerminalTitle(ctx: ExtensionContext): void {
+    // All callbacks belong to this extension instance. Cancel the previous
+    // batch before capturing a context, and release it on session shutdown.
+    stopKeepingTerminalTitle();
+    applyTerminalTitle(ctx);
+
+    for (const delay of [0, 50, 250, 1000]) {
+      const timeout = setTimeout(() => {
+        titleTimeouts.delete(timeout);
+        applyTerminalTitle(ctx);
+      }, delay);
+      titleTimeouts.add(timeout);
+      unrefTimer(timeout);
+    }
+
+    titleRefresh = setInterval(() => applyTerminalTitle(ctx), TITLE_REFRESH_MS);
+    unrefTimer(titleRefresh);
+  }
+
+  function applyBranding(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+
+    keepTerminalTitle(ctx);
+
+    if (ctx.mode === 'tui') {
+      applyTheme(ctx);
+      ctx.ui.setHeader((_tui, theme) => makeHeader(theme));
+      ctx.ui.setWorkingMessage('');
+      ctx.ui.setWorkingIndicator({
+        frames: makeProcessingFrames(ctx.ui.theme),
+        intervalMs: 240,
+      });
+      ctx.ui.setHiddenThinkingLabel('thinking...');
+    }
+  }
+
   registerProjectTools(pi);
   const agents = registerAgentTools(pi);
   registerSessionNewTool(pi, agents);
