@@ -125,6 +125,12 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'image_query',
     'json_query',
     'openai_image',
+    'agent_spawn',
+    'agent_list',
+    'agent_status',
+    'agent_send',
+    'agent_wait',
+    'agent_cancel',
   ]);
   assert.equal(
     toolNames.some(name => name.startsWith('memory_')),

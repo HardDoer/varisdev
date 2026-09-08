@@ -11,7 +11,61 @@ Varisware VarisDev package.
 - `src/tools/image-query.ts` — agent-callable `image_query` tool for inspecting image metadata, transparency, visible bounds, and grid occupancy across files without one-off scripts.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
+- `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, follow-up messages, waiting, and cancellation.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
+
+## Agent orchestration
+
+VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation, uses the parent’s model, credentials, and thinking level by default, and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Include the relevant context in the task; the parent conversation is not copied. Workers load the shared project tools directly, so they have no orchestration tools or terminal branding.
+
+| Tool | Purpose |
+| --- | --- |
+| `agent_spawn` | Start an agent and immediately return its ID. |
+| `agent_list` | List agents and their current activity. |
+| `agent_status` | Read one agent’s latest result, error, and transcript paths. |
+| `agent_send` | Queue follow-up instructions or resume a completed agent’s conversation. |
+| `agent_wait` | Wait for any or all selected agents and collect their results. |
+| `agent_cancel` | Cancel an agent and discard its pending messages. |
+
+For example, call `agent_spawn` with:
+
+```json
+{
+  "name": "reviewer",
+  "task": "Review src/tools/browse.ts for response truncation bugs. Report findings with file and line references.",
+  "instructions": "Inspect and report findings; leave fixes to the parent agent.",
+  "notify": false
+}
+```
+
+Spawn another independent task the same way, then collect both results with `agent_wait`:
+
+```json
+{
+  "ids": ["<first agent ID>", "<second agent ID>"],
+  "mode": "all",
+  "timeoutMs": 60000
+}
+```
+
+Send additional work through `agent_send`:
+
+```json
+{
+  "id": "<first agent ID>",
+  "message": "Implement the first finding and run the relevant checks. You own src/tools/browse.ts for this change."
+}
+```
+
+Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
+
+Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. The default execution timeout is ten minutes, including initialization and pending follow-up messages, with a maximum of one hour. Queue time is excluded. Sending new work to a completed agent starts a fresh timeout. Each parent session can hold 64 agents, with up to 32 pending messages per agent.
+
+By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
+
+Agents share their selected working directory and can change its files. Assign file ownership in each task, or provide separate working directories for independent edits. The terminal footer shows active agent counts. Use `/agents` to list agents and `/agents cancel <id|all>` to cancel work manually.
+
+Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list belongs to the parent session: quitting, reloading, replacing, or forking that session cancels its active workers and disposes their conversations. Saved files remain available after shutdown.
 
 ## Completion sound
 
