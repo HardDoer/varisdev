@@ -2,10 +2,12 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
   type CreateAgentSessionOptions,
+  type ExtensionContext,
   type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import {mkdir, writeFile} from 'node:fs/promises';
@@ -21,7 +23,7 @@ interface WorkerOptions {
   name: string;
   instructions?: string;
   model: NonNullable<CreateAgentSessionOptions['model']>;
-  modelRegistry: NonNullable<CreateAgentSessionOptions['modelRegistry']>;
+  modelRegistry: ExtensionContext['modelRegistry'];
   thinkingLevel: CreateAgentSessionOptions['thinkingLevel'];
   agentToolsExtension: ExtensionFactory;
 }
@@ -131,11 +133,59 @@ export async function createSessionWorker(
   if (options.previousSessionFile) {
     sessionManager.newSession({parentSession: options.previousSessionFile});
   }
+  const provider = options.modelRegistry.getProvider(options.model.provider);
+  if (!provider) {
+    throw new Error(
+      `Parent model provider is unavailable: ${options.model.provider}`,
+    );
+  }
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(directory, 'auth.json'),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  modelRuntime.registerNativeProvider({
+    ...provider,
+    // The parent owns catalog refreshes and credential storage. Resolve auth for
+    // each request there, including runtime keys, OAuth and model header config.
+    refreshModels: undefined,
+    auth: {
+      ...provider.auth,
+      apiKey: {
+        name: 'Parent session',
+        async check() {
+          if (
+            !options.modelRegistry.getProviderAuthStatus(provider.id).configured
+          ) {
+            return undefined;
+          }
+          return {
+            type: options.modelRegistry.isUsingOAuth(options.model)
+              ? 'oauth'
+              : 'api_key',
+          };
+        },
+        async resolve() {
+          const result = await options.modelRegistry.getApiKeyAndHeaders(
+            options.model,
+          );
+          if (!result.ok) throw new Error(result.error);
+          return {
+            auth: {
+              apiKey: result.apiKey,
+              headers: result.headers,
+              baseUrl: result.baseUrl,
+            },
+            env: result.env,
+          };
+        },
+      },
+    },
+  });
   const {session} = await createAgentSession({
     cwd: options.cwd,
     model: options.model,
-    modelRegistry: options.modelRegistry,
-    authStorage: options.modelRegistry.authStorage,
+    modelRuntime,
     thinkingLevel: options.thinkingLevel,
     settingsManager,
     resourceLoader: loader,

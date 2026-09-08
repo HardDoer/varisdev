@@ -23,13 +23,6 @@ type SoundPlayerCommand = {
   args: string[];
 };
 
-type AgentSettledAPI = {
-  on(
-    event: 'agent_settled',
-    handler: (_event: unknown, ctx: ExtensionContext) => Promise<void>,
-  ): void;
-};
-
 function quotePowerShell(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -236,14 +229,11 @@ export function registerCompletionAlert(pi: ExtensionAPI): void {
     startFocusTracking(ctx);
   });
 
-  (pi as unknown as AgentSettledAPI).on(
-    'agent_settled',
-    async (_event, ctx) => {
-      if (ctx.mode !== 'tui' || focused) return;
-      requestAttention();
-      if (process.platform !== 'darwin') void playCompletionSound(pi);
-    },
-  );
+  pi.on('agent_settled', async (_event, ctx) => {
+    if (ctx.mode !== 'tui' || focused) return;
+    requestAttention();
+    if (process.platform !== 'darwin') void playCompletionSound(pi);
+  });
 
   pi.on('session_shutdown', async () => {
     stopFocusTracking();

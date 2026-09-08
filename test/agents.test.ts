@@ -24,6 +24,11 @@ import {
 } from '../src/agents/session.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 
+type AgentEventHandler = (
+  event: {reason?: string},
+  ctx: ExtensionContext,
+) => Promise<void> | void;
+
 const spec: AgentSpec = {
   name: 'worker',
   task: 'Inspect the project',
@@ -735,7 +740,7 @@ void test('session workers cancel again if a prompt starts after cancellation du
 
 void test('agent tools inherit context, notify on completion, and clean up on session replacement', async () => {
   const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, () => Promise<void> | void>();
+  const events = new Map<string, AgentEventHandler>();
   const notifications: unknown[] = [];
   const commands = new Map<
     string,
@@ -748,7 +753,7 @@ void test('agent tools inherit context, notify on completion, and clean up on se
     registerTool(tool: ToolDefinition) {
       tools.set(tool.name, tool);
     },
-    on(event: string, handler: () => Promise<void> | void) {
+    on(event: string, handler: AgentEventHandler) {
       events.set(event, handler);
     },
     registerCommand(
@@ -857,11 +862,11 @@ void test('agent tools inherit context, notify on completion, and clean up on se
       (await list('all')).agents.map(agent => agent.id),
       [id, brokenId],
     );
-    await events.get('session_shutdown')!();
+    await events.get('session_shutdown')!({reason: 'new'}, ctx);
     assert.equal(controlled.runs[1].signal.aborted, true);
     assert.equal(controlled.disposed, 1);
     assert.equal(notifications.length, 1);
-    await events.get('session_start')!();
+    await events.get('session_start')!({reason: 'new'}, ctx);
     await assert.rejects(execute('agent_status', {id}), /Unknown agent/);
     const listed = await list('all');
     assert.deepEqual(listed.agents, []);
@@ -875,13 +880,13 @@ void test('agent tools inherit context, notify on completion, and clean up on se
       /model is unavailable/,
     );
   } finally {
-    await events.get('session_shutdown')!();
+    await events.get('session_shutdown')!({reason: 'new'}, ctx);
   }
 });
 
 void test('worker messaging identifies senders, validates recipients, and stays in its parent session', async t => {
   const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, () => Promise<void> | void>();
+  const events = new Map<string, AgentEventHandler>();
   const notifications: Array<{
     message: unknown;
     options: unknown;
@@ -897,7 +902,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     registerTool(tool: ToolDefinition) {
       tools.set(tool.name, tool);
     },
-    on(event: string, handler: () => Promise<void> | void) {
+    on(event: string, handler: AgentEventHandler) {
       events.set(event, handler);
     },
     registerCommand() {},
@@ -940,7 +945,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     await until(() => workers.get(id)?.controlled.runs.length === 1);
     return {id, ...workers.get(id)!};
   };
-  t.after(() => events.get('session_shutdown')!());
+  t.after(() => events.get('session_shutdown')!({reason: 'new'}, ctx));
   const sender = await spawn('Designer');
   const receiver = await spawn('Builder');
   assert.deepEqual(
@@ -1007,8 +1012,8 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     send('parent', 'After cancellation'),
     /Only running agents/,
   );
-  await events.get('session_shutdown')!();
-  await events.get('session_start')!();
+  await events.get('session_shutdown')!({reason: 'new'}, ctx);
+  await events.get('session_start')!({reason: 'new'}, ctx);
   await spawn('New session worker');
   await assert.rejects(send('parent', 'Stale sender'), /session has closed/);
   await assert.rejects(
@@ -1016,4 +1021,446 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     /session has closed/,
   );
   assert.equal(notifications.length, 1);
+});
+
+function agentParent(
+  sessionId: string,
+  createWorker: typeof createSessionWorker,
+) {
+  const tools = new Map<string, ToolDefinition>();
+  const events = new Map<string, AgentEventHandler>();
+  const notifications: Array<{
+    message: {customType: string; content: string; details: unknown};
+    options: unknown;
+  }> = [];
+  const statuses: Array<string | undefined> = [];
+  const pi = {
+    registerTool(tool: ToolDefinition) {
+      tools.set(tool.name, tool);
+    },
+    on(event: string, handler: AgentEventHandler) {
+      events.set(event, handler);
+    },
+    registerCommand() {},
+    getThinkingLevel: () => 'off',
+    sendMessage(
+      message: (typeof notifications)[number]['message'],
+      options: unknown,
+    ) {
+      notifications.push({message, options});
+    },
+  } as unknown as ExtensionAPI;
+  const ctx = {
+    cwd: process.cwd(),
+    hasUI: true,
+    ui: {setStatus: (_key: string, status?: string) => statuses.push(status)},
+    model: {provider: 'test', id: 'model'},
+    modelRegistry: {},
+    sessionManager: {getSessionId: () => sessionId},
+  } as unknown as ExtensionContext;
+  const control = registerAgentTools(pi, createWorker);
+  const execute = async (
+    name: string,
+    params: Record<string, unknown> = {},
+  ) => {
+    const result = await tools
+      .get(name)!
+      .execute('call', params, undefined, undefined, ctx);
+    return {...result, details: result.details as {agents: AgentRecord[]}};
+  };
+  return {
+    pi,
+    ctx,
+    control,
+    execute,
+    notifications,
+    statuses,
+    emit: (event: string, reason?: string) => events.get(event)!({reason}, ctx),
+    shutdown: (reason = 'quit') =>
+      events.get('session_shutdown')!({reason}, ctx),
+    async spawn(name: string, notify = true) {
+      const result = await execute('agent_spawn', {name, task: name, notify});
+      return (result.details as {agents: AgentRecord[]}).agents[0].id;
+    },
+  };
+}
+
+function teamWorkers() {
+  const created: Array<{
+    options: Parameters<typeof createSessionWorker>[0];
+    controlled: ReturnType<typeof controlledWorker>;
+    execute: (
+      name: string,
+      params?: Record<string, unknown>,
+    ) => ReturnType<ToolDefinition['execute']>;
+  }> = [];
+  const byId = new Map<string, (typeof created)[number]>();
+  const create: typeof createSessionWorker = async options => {
+    const tools = new Map<string, ToolDefinition>();
+    await options.agentToolsExtension({
+      registerTool(tool: ToolDefinition) {
+        tools.set(tool.name, tool);
+      },
+    } as unknown as ExtensionAPI);
+    const worker = {
+      options,
+      controlled: controlledWorker(true, `/worker/${created.length}`),
+      execute: (name: string, params: Record<string, unknown> = {}) =>
+        tools.get(name)!.execute('call', params, undefined, undefined, {
+          sessionManager: {getSessionId: () => options.id},
+        } as unknown as ExtensionContext),
+    };
+    created.push(worker);
+    byId.set(options.id, worker);
+    return worker.controlled.worker;
+  };
+  return {created, byId, create};
+}
+
+void test('live teams survive repeated parent replacement with queued work and buffered messages', async t => {
+  const workers = teamWorkers();
+  const old = agentParent('transfer-old', workers.create);
+  const fresh = agentParent('transfer-fresh', workers.create);
+  const next = agentParent('transfer-next', workers.create);
+  t.after(async () => {
+    await old.shutdown();
+    await fresh.shutdown();
+    await next.shutdown();
+  });
+  const ids: string[] = [];
+  for (let i = 0; i < 5; i++) ids.push(await old.spawn(`Worker ${i}`, i === 1));
+  await until(
+    () =>
+      workers.created.length === 4 &&
+      workers.created.every(w => w.controlled.runs.length === 1),
+  );
+  const sender = workers.byId.get(ids[0])!;
+  const send = (message: string) =>
+    sender.execute('agent_send', {id: 'parent', message});
+  await sender.execute('agent_send', {
+    id: ids[4],
+    message: 'Then check the queue',
+  });
+  const lease = old.control.prepareHandover(old.ctx);
+  assert.throws(() => old.control.prepareHandover(old.ctx), /already pending/);
+  await send('Preparing');
+  await old.shutdown('new');
+  assert.equal(old.statuses.at(-1), undefined);
+  // A host may initialize the new extension before its setup transfers the team.
+  await fresh.emit('session_start', 'new');
+  lease.transfer('transfer-fresh');
+  await send('Detached');
+  workers.byId
+    .get(ids[1])!
+    .controlled.runs[0].finish('Completed during transfer');
+  workers.byId.get(ids[2])!.controlled.runs[0].finish('Silent completion');
+  await until(() => workers.byId.get(ids[4])?.controlled.runs.length === 1);
+  assert.equal(
+    workers.byId.get(ids[4])!.options.parentSessionId,
+    'transfer-fresh',
+  );
+  assert.equal(old.notifications.length, 0);
+  assert.equal(sender.controlled.runs[0].signal.aborted, false);
+  await assert.rejects(old.execute('agent_list'), /shutting down/);
+
+  // Other session IDs cannot consume the pending team.
+  const unrelated = agentParent('transfer-unrelated', workers.create);
+  t.after(() => unrelated.shutdown());
+  unrelated.control.attach(unrelated.ctx);
+  assert.deepEqual((await unrelated.execute('agent_list')).details.agents, []);
+
+  fresh.control.attach(fresh.ctx);
+  await send('Attached before the handover prompt');
+  assert.equal(fresh.notifications.length, 0);
+  assert.match(fresh.statuses.at(-1)!, /3 running/);
+  assert.deepEqual(
+    (
+      (await fresh.execute('agent_list', {view: 'all'})).details as {
+        agents: AgentRecord[];
+      }
+    ).agents
+      .map(a => a.id)
+      .sort(),
+    [...ids].sort(),
+  );
+  await fresh.emit('agent_start');
+  assert.deepEqual(
+    fresh.notifications.map(n => n.message.customType),
+    ['agent_message', 'agent_message', 'agent_result', 'agent_message'],
+  );
+  assert.match(
+    fresh.notifications[2].message.content,
+    /Completed during transfer/,
+  );
+  assert.ok(
+    fresh.notifications.every(
+      n =>
+        JSON.stringify(n.options) ===
+        JSON.stringify({deliverAs: 'followUp', triggerTurn: true}),
+    ),
+  );
+  await fresh.emit('agent_start');
+  await fresh.execute('agent_status', {id: ids[1]});
+  assert.equal(fresh.notifications.length, 4);
+  await send('Old worker, new parent');
+  assert.match(
+    fresh.notifications.at(-1)!.message.content,
+    /Old worker, new parent/,
+  );
+  assert.equal(old.notifications.length, 0);
+
+  const queued = workers.byId.get(ids[4])!;
+  queued.controlled.runs[0].finish('Initial queued work');
+  await until(() => queued.controlled.runs.length === 2);
+  assert.match(queued.controlled.runs[1].message, /Then check the queue/);
+  await queued.execute('agent_send', {
+    id: 'parent',
+    message: 'Queued factory works',
+  });
+  assert.match(
+    fresh.notifications.at(-1)!.message.content,
+    /Queued factory works/,
+  );
+  await fresh.execute('agent_send', {
+    id: ids[1],
+    message: 'Continue the completed worker',
+  });
+  await until(() => workers.byId.get(ids[1])!.controlled.runs.length === 2);
+  workers.byId.get(ids[1])!.controlled.runs[1].finish('Completed again');
+  await fresh.execute('agent_wait', {ids: [ids[1]]});
+  assert.equal(
+    fresh.notifications.filter(n => n.message.customType === 'agent_result')
+      .length,
+    2,
+  );
+
+  const spawned = await fresh.spawn('Fresh parent worker', false);
+  await until(() => workers.byId.get(spawned)?.controlled.runs.length === 1);
+  assert.equal(
+    workers.byId.get(spawned)!.options.parentSessionId,
+    'transfer-fresh',
+  );
+  const previous = workers.byId.get(ids[3])!;
+  await previous.execute('agent_new_session', {
+    handover: 'Continue after parent replacement',
+  });
+  await until(
+    () =>
+      workers.byId.get(ids[3]) !== previous &&
+      workers.byId.get(ids[3])?.controlled.runs.length === 1,
+  );
+  assert.equal(previous.controlled.disposed, 1);
+  assert.equal(
+    workers.byId.get(ids[3])!.options.parentSessionId,
+    'transfer-fresh',
+  );
+  assert.equal(
+    workers.byId.get(ids[3])!.options.previousSessionFile,
+    previous.controlled.worker.sessionFile,
+  );
+
+  const repeated = fresh.control.prepareHandover(fresh.ctx);
+  await fresh.shutdown('new');
+  repeated.transfer('transfer-next');
+  await send('Second transfer');
+  next.control.attach(next.ctx);
+  assert.equal(next.notifications.length, 0);
+  await next.emit('agent_start');
+  assert.equal(next.notifications.length, 1);
+  assert.match(next.notifications[0].message.content, /Second transfer/);
+  await next.execute('agent_cancel', {id: spawned});
+  await next.execute('agent_wait', {ids: [spawned]});
+  const latest = await next.spawn('Next parent worker', false);
+  await until(() => workers.byId.get(latest)?.controlled.runs.length === 1);
+  assert.equal(
+    workers.byId.get(latest)!.options.parentSessionId,
+    'transfer-next',
+  );
+  await send('Still connected');
+  assert.equal(next.notifications.length, 2);
+  await assert.rejects(fresh.execute('agent_list'), /shutting down/);
+  const listing = await sender.execute('agent_list');
+  assert.ok(
+    (listing.details as {agents: AgentRecord[]}).agents.some(
+      a => a.id === latest,
+    ),
+  );
+  await next.shutdown();
+  assert.ok(workers.created.every(w => w.controlled.disposed === 1));
+});
+
+for (const detached of [false, true]) {
+  void test(`cancelled handover restores the parent ${detached ? 'after' : 'before'} shutdown`, async t => {
+    const workers = teamWorkers();
+    const old = agentParent(`cancel-old-${detached}`, workers.create);
+    const destination = `cancel-next-${detached}`;
+    const fresh = agentParent(destination, workers.create);
+    t.after(async () => {
+      await old.shutdown();
+      await fresh.shutdown();
+    });
+    const doneId = await old.spawn('Finishing');
+    const liveId = await old.spawn('Still running', false);
+    await until(() => workers.byId.get(liveId)?.controlled.runs.length === 1);
+    const live = workers.byId.get(liveId)!;
+    const lease = old.control.prepareHandover(old.ctx);
+    if (detached) {
+      await old.shutdown('new');
+      lease.transfer(destination);
+    }
+    workers.byId.get(doneId)!.controlled.runs[0].finish('Buffered result');
+    await until(() => workers.byId.get(doneId)!.controlled.runs.length === 1);
+    await nextTick();
+    await live.execute('agent_send', {
+      id: 'parent',
+      message: 'Buffered direct message',
+    });
+    assert.equal(old.notifications.length, 0);
+    lease.cancel();
+    lease.cancel();
+    assert.equal(old.notifications.length, 2);
+    assert.match(old.statuses.at(-1)!, /1 running/);
+    await old.execute('agent_status', {id: liveId});
+    await live.execute('agent_send', {id: 'parent', message: 'Restored'});
+    assert.equal(old.notifications.length, 3);
+    assert.equal(live.controlled.runs[0].signal.aborted, false);
+    fresh.control.attach(fresh.ctx);
+    assert.deepEqual((await fresh.execute('agent_list')).details.agents, []);
+    await lease.close();
+    assert.equal(live.controlled.runs[0].signal.aborted, false);
+  });
+}
+
+for (const stage of ['prepared', 'pending', 'attached'] as const) {
+  void test(`failed ${stage} handover closes workers and removes the transfer`, async t => {
+    const workers = teamWorkers();
+    const old = agentParent(`failure-old-${stage}`, workers.create);
+    const fresh = agentParent(`failure-next-${stage}`, workers.create);
+    t.after(async () => {
+      await old.shutdown();
+      await fresh.shutdown();
+    });
+    for (let i = 0; i < 5; i++) await old.spawn(`Worker ${i}`);
+    await until(
+      () =>
+        workers.created.length === 4 &&
+        workers.created.every(w => w.controlled.runs.length === 1),
+    );
+    const lease = old.control.prepareHandover(old.ctx);
+    t.after(() => lease.close());
+    await old.shutdown('new');
+    if (stage !== 'prepared')
+      lease.transfer(fresh.ctx.sessionManager.getSessionId());
+    if (stage === 'attached') fresh.control.attach(fresh.ctx);
+    await workers.created[0].execute('agent_send', {
+      id: 'parent',
+      message: 'Undelivered',
+    });
+    await lease.close();
+    await lease.close();
+    assert.equal(workers.created.length, 4);
+    assert.ok(
+      workers.created.every(
+        w => w.controlled.disposed === 1 && w.controlled.runs[0].signal.aborted,
+      ),
+    );
+    assert.equal(old.notifications.length, 0);
+    assert.equal(fresh.notifications.length, 0);
+    assert.equal(fresh.statuses.at(-1), undefined);
+    await assert.rejects(
+      workers.created[0].execute('agent_list'),
+      /session has closed/,
+    );
+    if (stage === 'attached') {
+      const recovered = await fresh.spawn('Recovered parent worker', false);
+      await until(
+        () => workers.byId.get(recovered)?.controlled.runs.length === 1,
+      );
+      assert.equal(
+        workers.byId.get(recovered)!.controlled.runs[0].signal.aborted,
+        false,
+      );
+      await fresh.shutdown();
+    }
+    const retry = agentParent(
+      fresh.ctx.sessionManager.getSessionId(),
+      workers.create,
+    );
+    t.after(() => retry.shutdown());
+    retry.control.attach(retry.ctx);
+    assert.deepEqual((await retry.execute('agent_list')).details.agents, []);
+  });
+}
+
+void test('every ordinary shutdown closes running and queued workers, including an uncontrolled new session', async t => {
+  for (const reason of ['quit', 'reload', 'new', 'resume', 'fork']) {
+    const workers = teamWorkers();
+    const parent = agentParent(`ordinary-${reason}`, workers.create);
+    t.after(() => parent.shutdown());
+    for (let i = 0; i < 5; i++) await parent.spawn(`Worker ${i}`);
+    await until(
+      () =>
+        workers.created.length === 4 &&
+        workers.created.every(w => w.controlled.runs.length === 1),
+    );
+    // Arming a handover must not preserve a team for any other shutdown reason.
+    const lease =
+      reason === 'new' ? undefined : parent.control.prepareHandover(parent.ctx);
+    lease?.transfer(`ordinary-destination-${reason}`);
+    await parent.shutdown(reason);
+    assert.equal(workers.created.length, 4);
+    assert.ok(
+      workers.created.every(
+        w => w.controlled.disposed === 1 && w.controlled.runs[0].signal.aborted,
+      ),
+    );
+    assert.equal(parent.statuses.at(-1), undefined);
+    assert.equal(parent.notifications.length, 0);
+    await assert.rejects(parent.execute('agent_list'), /shutting down/);
+    await assert.rejects(
+      workers.created[0].execute('agent_list'),
+      /session has closed/,
+    );
+    const destination = agentParent(
+      `ordinary-destination-${reason}`,
+      workers.create,
+    );
+    t.after(() => destination.shutdown());
+    assert.deepEqual(
+      (await destination.execute('agent_list')).details.agents,
+      [],
+    );
+  }
+});
+
+void test('pending transfers survive reloading the team module and can only be claimed once', async t => {
+  const workers = teamWorkers();
+  const old = agentParent('module-old', workers.create);
+  const fresh = agentParent('module-fresh', workers.create);
+  const id = await old.spawn('Live worker', false);
+  t.after(() => old.shutdown());
+  await until(() => workers.byId.get(id)?.controlled.runs.length === 1);
+  const lease = old.control.prepareHandover(old.ctx);
+  t.after(() => lease.close());
+  await old.shutdown('new');
+  lease.transfer('module-fresh');
+  const moduleUrl = new URL('../src/agents/team.ts', import.meta.url);
+  moduleUrl.search = '?fresh-runtime';
+  const {AgentSessionController} = await import(moduleUrl.href);
+  const reloaded = new AgentSessionController(fresh.pi);
+  reloaded.attach(fresh.ctx);
+  assert.equal(
+    reloaded.getTeam(fresh.ctx).getManager().get(id).status,
+    'running',
+  );
+  t.after(() => fresh.shutdown());
+  const duplicate = agentParent('module-fresh', workers.create);
+  t.after(() => duplicate.shutdown());
+  assert.deepEqual((await duplicate.execute('agent_list')).details.agents, []);
+  await workers.byId
+    .get(id)!
+    .execute('agent_send', {id: 'parent', message: 'Across module reload'});
+  assert.equal(fresh.notifications.length, 0);
+  await fresh.emit('agent_start');
+  assert.equal(fresh.notifications.length, 1);
 });

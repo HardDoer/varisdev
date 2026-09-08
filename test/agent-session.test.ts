@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {createServer, type ServerResponse} from 'node:http';
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type ServerResponse,
+} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {
-  AuthStorage,
   ModelRegistry,
+  ModelRuntime,
   type ExtensionAPI,
   type ExtensionContext,
+  type SessionShutdownEvent,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {createSessionWorker} from '../src/agents/session.ts';
@@ -18,9 +23,13 @@ import type {AgentRecord, AgentWorker} from '../src/agents/orchestrator.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 
 interface ProviderRequest {
+  model: string;
+  reasoning_effort?: string;
   messages: Array<{role: string; content: unknown}>;
   tools: Array<{function: {name: string}}>;
 }
+
+type ShutdownHandler = (event: SessionShutdownEvent) => Promise<void> | void;
 
 function reply(
   response: ServerResponse,
@@ -74,13 +83,20 @@ void test(
     const cwd = join(directory, 'project');
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+    const modelRuntime = await ModelRuntime.create({
+      authPath: join(agentDir, 'auth.json'),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const registry = new ModelRegistry(modelRuntime);
     const requests: ProviderRequest[] = [];
+    const requestHeaders: IncomingHttpHeaders[] = [];
     const server = createServer(async (request, response) => {
       try {
         let body = '';
         for await (const chunk of request) body += chunk;
         requests.push(JSON.parse(body));
+        requestHeaders.push(request.headers);
         reply(
           response,
           requests.length === 1
@@ -122,18 +138,25 @@ void test(
       api: 'openai-completions',
       baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
       apiKey: 'local-test-key',
+      headers: {'x-parent-provider': 'provider-config'},
       models: [
         {
           id: 'worker-model',
           name: 'Worker model',
-          reasoning: false,
+          reasoning: true,
           input: ['text'],
           cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
           contextWindow: 128000,
           maxTokens: 1000,
+          headers: {'x-parent-model': 'model-config'},
+          compat: {supportsReasoningEffort: true},
         },
       ],
     });
+    await modelRuntime.setRuntimeApiKey(
+      'varisdev-agent-test',
+      'parent-runtime-key',
+    );
     worker = await createSessionWorker({
       id: 'worker-id',
       parentSessionId: 'parent-id',
@@ -142,7 +165,7 @@ void test(
       instructions: 'Worker instruction marker: inspect the fixture.',
       model: registry.find('varisdev-agent-test', 'worker-model')!,
       modelRegistry: registry,
-      thinkingLevel: 'off',
+      thinkingLevel: 'high',
       agentToolsExtension: () => {},
     });
     const activity: string[] = [];
@@ -191,6 +214,10 @@ void test(
       ),
       /Fixture contents from the worker directory/,
     );
+    await modelRuntime.setRuntimeApiKey(
+      'varisdev-agent-test',
+      'rotated-parent-key',
+    );
     assert.equal(
       await worker.run(
         'Summarize your previous answer.',
@@ -200,10 +227,161 @@ void test(
       'Final answer 3',
     );
     assert.match(JSON.stringify(requests[2].messages), /Final answer 2/);
+    assert.deepEqual(
+      requestHeaders.map(headers => headers.authorization),
+      [
+        'Bearer parent-runtime-key',
+        'Bearer parent-runtime-key',
+        'Bearer rotated-parent-key',
+      ],
+    );
+    for (const headers of requestHeaders) {
+      assert.equal(headers['x-parent-provider'], 'provider-config');
+      assert.equal(headers['x-parent-model'], 'model-config');
+    }
+    for (const request of requests) {
+      assert.equal(request.model, 'worker-model');
+      assert.equal(request.reasoning_effort, 'high');
+    }
     assert.equal(await readFile(worker.resultFile!, 'utf8'), 'Final answer 3');
     const transcript = await readFile(worker.sessionFile!, 'utf8');
     assert.match(transcript, /Fixture contents from the worker directory/);
     assert.match(transcript, /Summarize your previous answer/);
+  },
+);
+
+void test(
+  'SDK workers use native parent providers and refresh OAuth in the parent credential store',
+  {timeout: 15000},
+  async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-oauth-'));
+    const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, 'config');
+    const providerId = 'varisdev-oauth-test';
+    const authPath = join(directory, 'parent-auth.json');
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        [providerId]: {
+          type: 'oauth',
+          access: 'expired',
+          refresh: 'refresh-token',
+          expires: 1,
+        },
+      }),
+    );
+    const modelRuntime = await ModelRuntime.create({
+      authPath,
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const registry = new ModelRegistry(modelRuntime);
+    const requestHeaders: IncomingHttpHeaders[] = [];
+    const server = createServer((request, response) => {
+      request.resume();
+      requestHeaders.push(request.headers);
+      reply(response, 'OAuth worker result.');
+    });
+    let worker: AgentWorker | undefined;
+    t.after(async () => {
+      worker?.dispose();
+      worker = undefined;
+      registry.unregisterProvider(providerId);
+      await new Promise<void>((resolve, reject) =>
+        server.close(error => (error ? reject(error) : resolve())),
+      );
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    await mkdir(cwd, {recursive: true});
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    registry.registerProvider(providerId, {
+      api: 'openai-completions',
+      // The OAuth result supplies the actual endpoint for the native provider.
+      baseUrl: 'http://127.0.0.1:1/v1',
+      models: [
+        {
+          id: 'worker-model',
+          name: 'Worker model',
+          reasoning: false,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+        },
+      ],
+    });
+    const transport = registry.getProvider(providerId)!;
+    let refreshes = 0;
+    let streams = 0;
+    registry.registerProvider({
+      ...transport,
+      auth: {
+        oauth: {
+          name: 'Local OAuth',
+          isSubscription: true,
+          async login() {
+            throw new Error('Unexpected login');
+          },
+          async refresh(credential) {
+            refreshes++;
+            assert.equal(credential.refresh, 'refresh-token');
+            return {
+              ...credential,
+              access: 'refreshed-parent-token',
+              expires: Date.now() + 3600000,
+            };
+          },
+          async toAuth(credential) {
+            return {
+              apiKey: credential.access,
+              headers: {'x-parent-oauth': 'forwarded'},
+              baseUrl,
+            };
+          },
+        },
+      },
+      streamSimple(model, context, options) {
+        streams++;
+        assert.equal(model.baseUrl, baseUrl);
+        return transport.streamSimple(model, context, options);
+      },
+    });
+    await registry.refresh({allowNetwork: false, providers: [providerId]});
+    worker = await createSessionWorker({
+      id: 'oauth-worker',
+      parentSessionId: 'oauth-parent',
+      cwd,
+      name: 'OAuth worker',
+      model: registry.find(providerId, 'worker-model')!,
+      modelRegistry: registry,
+      thinkingLevel: 'off',
+      agentToolsExtension: () => {},
+    });
+    assert.equal(
+      await worker.run('Respond.', AbortSignal.timeout(5000), () => {}),
+      'OAuth worker result.',
+    );
+    assert.equal(
+      await worker.run('Follow up.', AbortSignal.timeout(5000), () => {}),
+      'OAuth worker result.',
+    );
+    assert.equal(refreshes, 1);
+    assert.equal(streams, 2);
+    assert.equal(requestHeaders.length, 2);
+    for (const headers of requestHeaders) {
+      assert.equal(headers.authorization, 'Bearer refreshed-parent-token');
+      assert.equal(headers['x-parent-oauth'], 'forwarded');
+    }
+    const stored = JSON.parse(await readFile(authPath, 'utf8'));
+    assert.equal(stored[providerId].access, 'refreshed-parent-token');
   },
 );
 
@@ -218,16 +396,22 @@ void test(
     const cwd = join(directory, 'project');
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+    const registry = new ModelRegistry(
+      await ModelRuntime.create({
+        authPath: join(agentDir, 'auth.json'),
+        modelsPath: null,
+        refreshOnCreate: false,
+      }),
+    );
     const tools = new Map<string, ToolDefinition>();
-    const events = new Map<string, () => Promise<void> | void>();
+    const events = new Map<string, ShutdownHandler>();
     const parentMessages: Array<Parameters<ExtensionAPI['sendMessage']>> = [];
     const pi = {
       registerTool(tool: ToolDefinition) {
         tools.set(tool.name, tool);
       },
       registerCommand() {},
-      on(event: string, handler: () => Promise<void> | void) {
+      on(event: string, handler: ShutdownHandler) {
         events.set(event, handler);
       },
       getThinkingLevel: () => 'off',
@@ -404,7 +588,10 @@ void test(
     t.after(async () => {
       spawned.resolve();
       peerQueued.resolve();
-      await events.get('session_shutdown')?.();
+      await events.get('session_shutdown')?.({
+        type: 'session_shutdown',
+        reason: 'quit',
+      });
       registry.unregisterProvider('varisdev-messaging-test');
       await new Promise<void>((resolve, reject) =>
         server.close(error => (error ? reject(error) : resolve())),
@@ -544,16 +731,22 @@ async function localParent(
   const cwd = join(directory, 'project');
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(directory, 'config');
-  const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+  const registry = new ModelRegistry(
+    await ModelRuntime.create({
+      authPath: join(directory, 'config', 'auth.json'),
+      modelsPath: null,
+      refreshOnCreate: false,
+    }),
+  );
   const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, () => Promise<void> | void>();
+  const events = new Map<string, ShutdownHandler>();
   const parentMessages: Array<Parameters<ExtensionAPI['sendMessage']>> = [];
   registerAgentTools({
     registerTool(tool: ToolDefinition) {
       tools.set(tool.name, tool);
     },
     registerCommand() {},
-    on(event: string, handler: () => Promise<void> | void) {
+    on(event: string, handler: ShutdownHandler) {
       events.set(event, handler);
     },
     getThinkingLevel: () => 'off',
@@ -574,7 +767,10 @@ async function localParent(
     }
   });
   t.after(async () => {
-    await events.get('session_shutdown')?.();
+    await events.get('session_shutdown')?.({
+      type: 'session_shutdown',
+      reason: 'quit',
+    });
     registry.unregisterProvider('varisdev-handover-test');
     await new Promise<void>((resolve, reject) =>
       server.close(error => (error ? reject(error) : resolve())),

@@ -8,6 +8,7 @@ import {basename} from 'node:path';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
+import {registerSessionNewTool} from '../src/tools/session-new.ts';
 
 const THEME_NAME = 'varisware';
 const TITLE = 'VarisDev';
@@ -190,7 +191,8 @@ function applyBranding(ctx: ExtensionContext): void {
 
 export default function (pi: ExtensionAPI) {
   registerProjectTools(pi);
-  registerAgentTools(pi);
+  const agents = registerAgentTools(pi);
+  registerSessionNewTool(pi, agents);
   registerCompletionAlert(pi);
   pi.on('session_start', async (_event, ctx) => {
     applyBranding(ctx);

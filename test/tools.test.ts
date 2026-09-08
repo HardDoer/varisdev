@@ -132,6 +132,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'agent_new_session',
     'agent_wait',
     'agent_cancel',
+    'session_new',
   ]);
   assert.equal(
     toolNames.some(name => name.startsWith('memory_')),

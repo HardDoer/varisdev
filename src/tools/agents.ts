@@ -6,11 +6,17 @@ import {stat} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {Type} from 'typebox';
 import {
-  AgentOrchestrator,
+  type AgentOrchestrator,
   isAgentFinished,
   type AgentRecord,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
+import {
+  AgentSessionController,
+  type AgentSessionControl,
+} from '../agents/team.ts';
+
+export type {AgentHandover, AgentSessionControl} from '../agents/team.ts';
 
 const idSchema = Type.String({
   description: 'Agent ID returned by agent_spawn.',
@@ -334,59 +340,10 @@ function registerAgentNewSessionTool(
 export function registerAgentTools(
   pi: ExtensionAPI,
   createWorker = createSessionWorker,
-): void {
-  let manager: AgentOrchestrator | undefined;
-  let context: ExtensionContext | undefined;
-  let shuttingDown = false;
-
-  function getManager(ctx: ExtensionContext): AgentOrchestrator {
-    if (shuttingDown) throw new Error('The parent session is shutting down.');
-    context = ctx;
-    if (manager) return manager;
-    const current = new AgentOrchestrator();
-    manager = current;
-    const notified = new Set<string>();
-    current.subscribe(() => {
-      if (shuttingDown || manager !== current) return;
-      const records = current.list();
-      try {
-        if (context?.hasUI) {
-          const active = records.filter(
-            record => !isAgentFinished(record.status),
-          );
-          context.ui.setStatus(
-            'varisdev-agents',
-            active.length > 0
-              ? `Agents: ${active.filter(record => record.status === 'running').length} running, ${active.filter(record => record.status === 'queued').length} queued, ${active.filter(record => record.status === 'cancelling').length} cancelling`
-              : undefined,
-          );
-        }
-        for (const record of records) {
-          if (!isAgentFinished(record.status)) {
-            notified.delete(record.id);
-            continue;
-          }
-          if (notified.has(record.id)) continue;
-          notified.add(record.id);
-          if (record.notify) {
-            pi.sendMessage(
-              {
-                customType: 'agent_result',
-                content: `Agent ${JSON.stringify(record.name)} (${record.id}) ${record.status}.\n${record.error ?? record.output?.slice(0, 2000) ?? ''}\nUse agent_status for the result and transcript paths.`,
-                display: true,
-                details: {agent: record},
-              },
-              {deliverAs: 'followUp', triggerTurn: true},
-            );
-          }
-        }
-      } catch (error) {
-        // A stale UI or notification must not interrupt worker cleanup.
-        console.error('Agent notification failed:', error);
-      }
-    });
-    return current;
-  }
+): AgentSessionControl {
+  const control = new AgentSessionController(pi);
+  const getManager = (ctx: ExtensionContext) =>
+    control.getTeam(ctx).getManager();
 
   pi.registerTool({
     name: 'agent_spawn',
@@ -403,7 +360,7 @@ export function registerAgentTools(
     parameters: spawnSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();
-      const current = getManager(ctx);
+      const team = control.getTeam(ctx);
       const cwd = resolve(ctx.cwd, params.cwd ?? '.');
       if (!(await stat(cwd)).isDirectory())
         throw new Error(`Agent cwd is not a directory: ${cwd}`);
@@ -429,9 +386,9 @@ export function registerAgentTools(
         model,
         modelRegistry: ctx.modelRegistry,
         thinkingLevel: pi.getThinkingLevel(),
-        parentSessionId: ctx.sessionManager.getSessionId(),
       };
       signal?.throwIfAborted();
+      const current = getManager(ctx);
       const record = current.spawn(
         {
           name: params.name,
@@ -444,28 +401,21 @@ export function registerAgentTools(
         (id, previousSessionFile) =>
           createWorker({
             ...workerOptions,
+            parentSessionId: team.sessionId,
             id,
             previousSessionFile,
             agentToolsExtension(workerPi) {
-              const getWorkerManager = () => {
-                if (shuttingDown || manager !== current) {
-                  throw new Error('This agent session has closed.');
-                }
-                return current;
-              };
+              const getWorkerManager = () => team.getManager();
               registerAgentListTool(workerPi, getWorkerManager, id);
               registerAgentSendTool(workerPi, getWorkerManager, {
                 id,
                 sendToParent(message) {
-                  pi.sendMessage(
-                    {
-                      customType: 'agent_message',
-                      content: formatAgentMessage(message),
-                      display: true,
-                      details: message,
-                    },
-                    {deliverAs: 'followUp', triggerTurn: true},
-                  );
+                  team.sendMessage({
+                    customType: 'agent_message',
+                    content: formatAgentMessage(message),
+                    display: true,
+                    details: message,
+                  });
                 },
               });
               registerAgentNewSessionTool(workerPi, getWorkerManager, id);
@@ -572,14 +522,5 @@ export function registerAgentTools(
       ctx.ui.notify(lines.join('\n'), 'info');
     },
   });
-  pi.on('session_start', () => {
-    shuttingDown = false;
-  });
-  pi.on('session_shutdown', async () => {
-    shuttingDown = true;
-    await manager?.close();
-    if (context?.hasUI) context.ui.setStatus('varisdev-agents', undefined);
-    manager = undefined;
-    context = undefined;
-  });
+  return control;
 }
