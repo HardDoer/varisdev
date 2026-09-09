@@ -54,7 +54,7 @@ const spawnSchema = Type.Object({
       minimum: 1000,
       maximum: 3600000,
       description:
-        'Execution timeout, excluding time in the queue. Defaults to 600000 ms; resets when a completed agent receives new work or an agent starts a fresh session.',
+        'Optional execution timeout. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work or an agent starts a fresh session.',
     }),
   ),
   notify: Type.Optional(
@@ -292,8 +292,8 @@ function registerAgentNewSessionTool(
     name: 'agent_new_session',
     label: 'Start fresh agent session',
     description: selfId
-      ? 'Start a fresh conversation for yourself and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. Your agent ID and pending messages are retained; the old transcript is saved. A fresh execution timeout starts after the current tools stop.'
-      : 'Start a fresh conversation for a background agent and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. The agent keeps its ID and pending messages; the old transcript is saved. A fresh execution timeout starts after the current tools stop.',
+      ? 'Start a fresh conversation for yourself and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. Your agent ID and pending messages are retained; the old transcript is saved. If an execution timeout is configured, it resets after the current tools stop.'
+      : 'Start a fresh conversation for a background agent and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. The agent keeps its ID and pending messages; the old transcript is saved. If an execution timeout is configured, it resets after the current tools stop.',
     promptGuidelines: [
       'Use agent_new_session when the user requests a fresh session or has enabled an ongoing workflow with automatic handovers. Complete ordinary tasks in the current session.',
       'Include the task, user instructions, progress, decisions, relevant files, checks, and concrete next steps in the handover. The new conversation starts from the handover and project instructions.',
@@ -395,7 +395,7 @@ export function registerAgentTools(
           task: params.task,
           cwd,
           model: `${model.provider}/${model.id}`,
-          timeoutMs: params.timeoutMs ?? 600000,
+          timeoutMs: params.timeoutMs,
           notify: params.notify ?? true,
         },
         (id, previousSessionFile) =>

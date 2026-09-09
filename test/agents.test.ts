@@ -34,7 +34,6 @@ const spec: AgentSpec = {
   task: 'Inspect the project',
   cwd: process.cwd(),
   model: 'test/model',
-  timeoutMs: 10000,
   notify: false,
 };
 
@@ -738,7 +737,8 @@ void test('session workers cancel again if a prompt starts after cancellation du
   assert.equal(fake.listeners.size, 0);
 });
 
-void test('agent tools inherit context, notify on completion, and clean up on session replacement', async () => {
+void test('agent tools run without a default deadline, inherit context, notify, and clean up', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
   const notifications: unknown[] = [];
@@ -800,6 +800,9 @@ void test('agent tools inherit context, notify on completion, and clean up on se
     });
     const id = (spawned.details as {agents: Array<{id: string}>}).agents[0].id;
     await until(() => controlled.runs.length === 1);
+    t.mock.timers.tick(3600001);
+    await nextTick();
+    assert.equal(controlled.runs[0].signal.aborted, false);
     const {agentToolsExtension, ...workerOptions} = optionsSeen[0];
     assert.equal(typeof agentToolsExtension, 'function');
     assert.deepEqual(workerOptions, {
@@ -850,6 +853,9 @@ void test('agent tools inherit context, notify on completion, and clean up on se
 
     await execute('agent_send', {id, message: 'Review the fix'});
     await until(() => controlled.runs.length === 2);
+    t.mock.timers.tick(3600001);
+    await nextTick();
+    assert.equal(controlled.runs[1].signal.aborted, false);
     assert.deepEqual(
       (await list()).agents.map(agent => agent.id),
       [id],

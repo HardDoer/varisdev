@@ -73,7 +73,7 @@ Worker messages automatically identify the sender by name and ID. Messages to pe
 
 Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
 
-Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. The default execution timeout is ten minutes, including initialization and pending follow-up messages, with a maximum of one hour. Queue time is excluded. Sending new work to a completed agent starts a fresh timeout. Starting a fresh agent session also resets its timeout once the previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent.
+Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent.
 
 By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
@@ -84,7 +84,7 @@ Agents share their selected working directory and can change its files. Assign f
 - `/agents all` shows active agents followed by history.
 - `/agents cancel <id|all>` cancels work manually.
 
-`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Timed out after 10 minutes.` Finished agents stay available in history, and completed agents return to the active view when sent new work.
+`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Missing credentials`. Finished agents stay available in history, and completed agents return to the active view when sent new work.
 
 Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list follows the parent across `session_new` handovers. Quitting, reloading, manually starting or switching sessions, or forking cancels the current agents and disposes their conversations. Saved files remain available after shutdown.
 
@@ -120,7 +120,7 @@ A background agent calls the tool with a self-contained handover:
 
 The parent can call the same tool with an `id` and `handover` to start a fresh conversation for that background agent. Include the task, user instructions, progress, decisions, relevant files, checks, and concrete next steps. Your existing workflow instructions determine when to hand over.
 
-The agent stops its current tools, opens a fresh conversation, and starts working from the handover automatically. It keeps its agent ID, configuration, and pending messages; queued messages run after the handover. The new conversation loads project instructions and tools along with the handover. Each fresh session gets the configured execution timeout.
+The agent stops its current tools, opens a fresh conversation, and starts working from the handover automatically. It keeps its agent ID, configuration, and pending messages; queued messages run after the handover. The new conversation loads project instructions and tools along with the handover. If an execution timeout is configured, each fresh session gets that duration; otherwise, it runs without a deadline.
 
 `agent_status` reports the current `sessionFile`, `previousSessionFile`, and `sessionCount`. Previous transcripts remain saved, and each new transcript links to the preceding session. The agent stays active through the transition and reports completion after its work finishes.
 

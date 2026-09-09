@@ -8,7 +8,7 @@ export interface AgentSpec {
   task: string;
   cwd: string;
   model: string;
-  timeoutMs: number;
+  timeoutMs?: number;
   notify: boolean;
 }
 
@@ -139,7 +139,10 @@ export class AgentOrchestrator {
     if (!spec.task.trim() || !spec.name.trim()) {
       throw new Error('Agent name and task cannot be empty.');
     }
-    if (!Number.isInteger(spec.timeoutMs) || spec.timeoutMs < 1) {
+    if (
+      spec.timeoutMs !== undefined &&
+      (!Number.isInteger(spec.timeoutMs) || spec.timeoutMs < 1)
+    ) {
       throw new Error('Agent timeout must be a positive integer.');
     }
     if (this.jobs.size >= 64) {
@@ -259,12 +262,15 @@ export class AgentOrchestrator {
   private async run(job: Job): Promise<void> {
     const controller = job.controller!;
     const {signal} = controller;
-    const startTimer = () =>
-      setTimeout(() => {
+    const {timeoutMs} = job.record;
+    const startTimer = () => {
+      if (timeoutMs === undefined) return;
+      return setTimeout(() => {
         controller.abort(
-          new Error(`Timed out after ${formatDuration(job.record.timeoutMs)}.`),
+          new Error(`Timed out after ${formatDuration(timeoutMs)}.`),
         );
-      }, job.record.timeoutMs);
+      }, timeoutMs);
+    };
     let timer = startTimer();
     const abort = () => {
       job.messages = [];
