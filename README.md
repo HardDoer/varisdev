@@ -21,11 +21,16 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 
 | Tool | Purpose |
 | --- | --- |
-| `session_new` | Clear the parent context by starting a fresh session, carry over its background agents, and continue automatically from a handover. |
+| `session_new` | Schedule a fresh parent session, carry over its background agents, and continue automatically from a handover. Returns a request ID and state. |
+| `session_handover_status` | Inspect a handover by ID or list recent requests and their delivery states. |
+| `session_handover_update` | Replace handover text before dispatch and increment its revision. |
+| `session_handover_cancel` | Cancel a handover before session replacement begins. |
 | `agent_spawn` | Start an agent and immediately return its ID. |
 | `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths. |
-| `agent_send` | Send instructions or messages to an agent, resuming completed conversations. Workers can also message `"parent"`. |
+| `agent_send` | Send instructions or replace selected pending messages with `supersedes`. Workers can also message `"parent"`. |
+| `agent_messages` | List message previews or retrieve one full message by ID, including its current delivery state. |
+| `agent_message_remove` | Remove selected pending messages while the active task continues. |
 | `agent_new_session` | Start a fresh background agent conversation and continue automatically from a handover. |
 | `agent_wait` | Wait for any or all selected agents and collect their results. |
 | `agent_cancel` | Cancel an agent and discard its pending messages. |
@@ -69,7 +74,7 @@ Workers use `agent_list` to discover peers by name and ID in the same parent ses
 }
 ```
 
-Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue; messages to the parent trigger a follow-up turn, including when the sender has `notify: false`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, and `agent_new_session`; the parent also manages spawning, status, waiting, and cancellation.
+Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue; messages to the parent trigger a follow-up turn, including when the sender has `notify: false`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, `agent_messages`, `agent_message_remove`, and `agent_new_session`; the parent also manages spawning, status, waiting, and cancellation.
 
 Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
 
@@ -88,6 +93,27 @@ Agents share their selected working directory and can change its files. Assign f
 
 Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list follows the parent across `session_new` handovers. Quitting, reloading, manually starting or switching sessions, or forking cancels the current agents and disposes their conversations. Saved files remain available after shutdown.
 
+### Inspecting and revising agent queues
+
+`agent_send` returns the new message ID, sender identity, creation time, and current state. Its optional `reference` associates the instruction with a task or artifact, such as an issue ID or file path. Initial task messages also have IDs and sender metadata.
+
+Call `agent_messages` with `{"id":"<agent ID>"}` to inspect pending messages in delivery order. Each entry has a preview of up to 500 characters; `limit` defaults to 10 and is capped at 20. Use `offset` and `nextOffset` for subsequent pages. `view: "history"` shows delivered, removed, superseded, and discarded entries; `view: "all"` includes both pending entries and history. Retrieve the full text and latest state using `{"id":"<agent ID>","messageId":"<message ID>"}`. Message history remains available for the lifetime of the team, including across handovers. `pendingHandover` separately reports a background session handover.
+
+Consolidate obsolete pending instructions with `agent_send`:
+
+```json
+{
+  "id": "<agent ID>",
+  "message": "The review findings are resolved. Build the updated project and report the result.",
+  "reference": "build/plan.md",
+  "supersedes": ["<obsolete review message ID>", "<obsolete build message ID>"]
+}
+```
+
+The new message takes the earliest selected position and preserves the order of unrelated instructions. This works even with 32 pending messages. Replaced entries report `superseded` and `replacedBy`. To remove instructions, call `agent_message_remove` with `id` and `messageIds`.
+
+Both edits validate all selected IDs before changing the queue. If any selected entry has left the queue, the response is `not_pending`, includes the current states, and makes no changes. `delivered` means the instruction was handed to the worker and work may have started; edits cannot undo that work. Cancellation and failures mark undelivered instructions `discarded`.
+
 ### Fresh parent sessions
 
 The parent calls `session_new` to clear its accumulated conversation and continue working automatically:
@@ -100,9 +126,19 @@ The parent calls `session_new` to clear its accumulated conversation and continu
 
 This creates a new parent session ID and transcript. Its model context starts with the handover and normal system/project instructions. Previous messages and tool outputs remain in the old transcript on disk. The old conversation is excluded from the new model context.
 
-Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Messages and completion reports received during the switch are delivered to the new parent. Model selection, thinking level, and active tools carry over.
+Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Worker messages and completion reports are buffered as soon as the handover is scheduled, so new worker notifications cannot keep adding turns while the parent waits for idle. They are delivered to the destination after the switch, or to the source if the request is cancelled. Model selection, thinking level, and active tools carry over.
 
 Make `session_new` the last tool call in the current conversation and finish that turn. The tool waits for the parent to become idle, switches sessions, and starts the handover automatically. A standing instruction for an ongoing workflow, including your preferred context threshold, covers repeated handovers. Its instructions tell agents to finish ordinary tasks in the current session.
+
+`session_new` returns a handover request with an `id`, state, timestamps, source and destination session information, and `pendingReason`. Repeating it while a request is pending returns `already_pending` with that request. Inspect it using `session_handover_status` with `{"id":"<request ID>"}`; omit `id` to list recent requests with previews. The latest 50 requests remain available across parent handovers in the running application.
+
+States progress through `scheduled`, `waiting_for_idle`, and `switching`, then `completed`, `cancelled`, or `failed`. Completion confirms that the destination received the handover prompt. It reports the exact `deliveredRevision`.
+
+If circumstances change while a request is pending:
+
+- Call `session_handover_update` with `id` and the complete replacement `handover`. Each update increments `revision`. Updates are accepted until prompt dispatch, including during session replacement.
+- Call `session_handover_cancel` with `id` before replacement begins. Once `switching` starts, the host may have disposed the source and cancellation returns `too_late`.
+- Inspect `canUpdate`, `canCancel`, and `pendingReason` to see what remains possible. Updates after dispatch also return `too_late`; a repeated cancellation returns `already_cancelled`.
 
 This requires Pi 0.85.1 or newer, which supports dispatching session commands from extension tools.
 

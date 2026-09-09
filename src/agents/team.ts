@@ -13,6 +13,8 @@ export interface AgentSessionControl {
 export interface AgentHandover {
   transfer(sessionId: string): void;
   cancel(): void;
+  /** Resume buffered notifications if the destination already owns the team. */
+  resume(): boolean;
   close(): Promise<void>;
 }
 
@@ -199,6 +201,7 @@ class AgentTeam {
 
 class TeamHandover implements AgentHandover {
   private destination?: string;
+  private attachedParent?: ParentBinding;
   private state: 'prepared' | 'pending' | 'attached' | 'cancelled' | 'closed' =
     'prepared';
 
@@ -244,16 +247,26 @@ class TeamHandover implements AgentHandover {
     this.team.finishHandover(this, parent, true);
     this.removeTransfer();
     this.state = 'attached';
+    this.attachedParent = parent;
     return this.team;
   }
 
   cancel(): void {
+    if (this.team.isClosed) return;
     if (this.state !== 'prepared' && this.state !== 'pending') return;
     this.removeTransfer();
     this.team.finishHandover(this, this.origin, false);
     this.state = 'cancelled';
     this.restore();
     this.team.activate(this.origin);
+  }
+
+  resume(): boolean {
+    if (!this.attachedParent || !this.team.owns(this.attachedParent)) {
+      return false;
+    }
+    this.team.activate(this.attachedParent);
+    return true;
   }
 
   close(): Promise<void> {

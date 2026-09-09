@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {test, type TestContext} from 'node:test';
 import type {
   ExtensionAPI,
@@ -14,12 +15,14 @@ type EventHandler = (
 function createExtension(t: TestContext, folder: string) {
   const handlers = new Map<string, EventHandler[]>();
   const titles: string[] = [];
+  const sessionId = randomUUID();
   let active = true;
   const ctx = new Proxy(
     {
       cwd: `/projects/${folder}`,
       mode: 'rpc',
       hasUI: true,
+      sessionManager: {getSessionId: () => sessionId},
       ui: {
         setTitle(title: string) {
           assert.ok(active, 'stale extension UI');
@@ -51,6 +54,7 @@ function createExtension(t: TestContext, folder: string) {
     }
   }
   async function shutdown(reason = 'new') {
+    if (!active) return;
     await emit('session_shutdown', reason);
     active = false;
   }

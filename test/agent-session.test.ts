@@ -489,7 +489,13 @@ void test(
               .map(tool => tool.function.name)
               .filter(tool => tool.startsWith('agent_'))
               .sort(),
-            ['agent_list', 'agent_new_session', 'agent_send'],
+            [
+              'agent_list',
+              'agent_message_remove',
+              'agent_messages',
+              'agent_new_session',
+              'agent_send',
+            ],
           );
           assert.ok(input.tools.some(tool => tool.function.name === 'read'));
           const prompt = JSON.stringify(
@@ -858,7 +864,13 @@ void test(
             .map(tool => tool.function.name)
             .filter(name => name.startsWith('agent_'))
             .sort(),
-          ['agent_list', 'agent_new_session', 'agent_send'],
+          [
+            'agent_list',
+            'agent_message_remove',
+            'agent_messages',
+            'agent_new_session',
+            'agent_send',
+          ],
         );
         assert.ok(input.tools.some(tool => tool.function.name === 'read'));
         if (step !== 1) {

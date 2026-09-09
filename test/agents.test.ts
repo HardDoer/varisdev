@@ -156,6 +156,142 @@ void test('follow-up messages are ordered and completed agents retain their conv
   );
 });
 
+void test('queue supersession at capacity preserves unrelated work and records delivery', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const controlled = controlledWorker();
+  const {id} = manager.spawn(spec, async () => controlled.worker);
+  await until(() => controlled.runs.length === 1);
+  const initial = manager.listMessages(id, {view: 'history'}).messages[0];
+  assert.equal(initial.state, 'delivered');
+  assert.ok(initial.deliveredAt);
+  const pending = Array.from(
+    {length: 32},
+    (_, index) => manager.send(id, `Instruction ${index}`).message!,
+  );
+  assert.throws(() => manager.send(id, 'Overflow'), /32 pending messages/);
+  const sender = {kind: 'agent' as const, id: 'reviewer', name: 'Reviewer'};
+  const result = manager.send(id, 'Consolidated review', {
+    sender,
+    reference: 'src/main.ts',
+    supersedes: [pending[3].id, pending[1].id],
+  });
+  assert.equal(result.outcome, 'superseded');
+  assert.equal(result.agent.pendingMessages, 31);
+  assert.deepEqual(
+    result.affected.map(message => message.replacedBy),
+    [result.message!.id, result.message!.id],
+  );
+  assert.equal(controlled.runs[0].signal.aborted, false);
+  assert.equal(controlled.disposed, 0);
+  const page = manager.listMessages(id, {limit: 3});
+  assert.equal(page.total, 31);
+  assert.equal(page.nextOffset, 3);
+  assert.deepEqual(
+    page.messages.map(message => message.message),
+    ['Instruction 0', 'Consolidated review', 'Instruction 2'],
+  );
+  assert.equal(
+    manager.listMessages(id, {offset: 3, limit: 1}).messages[0].id,
+    pending[4].id,
+  );
+  sender.name = 'Changed outside';
+  page.messages[1].sender.name = 'Changed snapshot';
+  assert.deepEqual(manager.getMessage(id, result.message!.id).sender, {
+    kind: 'agent',
+    id: 'reviewer',
+    name: 'Reviewer',
+  });
+  assert.equal(
+    manager.getMessage(id, result.message!.id).reference,
+    'src/main.ts',
+  );
+  assert.ok(Date.parse(result.message!.createdAt));
+  controlled.runs[0].finish('initial done');
+  await until(() => controlled.runs.length === 2);
+  controlled.runs[1].finish('instruction 0 done');
+  await until(() => controlled.runs.length === 3);
+  assert.equal(
+    controlled.runs[2].message,
+    'Message from agent "Reviewer" (reviewer):\nConsolidated review',
+  );
+  assert.equal(manager.getMessage(id, result.message!.id).state, 'delivered');
+  assert.equal(manager.getMessage(id, pending[1].id).state, 'superseded');
+  manager.cancel(id);
+  assert.equal(manager.getMessage(id, pending[2].id).state, 'discarded');
+});
+
+void test('stale message edits are atomic and removal leaves the active conversation running', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const controlled = controlledWorker();
+  const {id} = manager.spawn(spec, async () => controlled.worker);
+  await until(() => controlled.runs.length === 1);
+  const first = manager.send(id, 'First follow-up').message!;
+  const second = manager.send(id, 'Second follow-up').message!;
+  controlled.runs[0].finish('done');
+  await until(() => controlled.runs.length === 2);
+  const stale = manager.send(id, 'Obsolete replacement', {
+    supersedes: [first.id, second.id],
+  });
+  assert.equal(stale.outcome, 'not_pending');
+  assert.equal(stale.message, undefined);
+  assert.deepEqual(
+    stale.affected.map(message => message.state),
+    ['delivered', 'pending'],
+  );
+  assert.equal(
+    manager.removeMessages(id, [first.id, second.id]).outcome,
+    'not_pending',
+  );
+  assert.throws(
+    () => manager.removeMessages(id, [second.id, 'missing']),
+    /Unknown agent message/,
+  );
+  assert.throws(
+    () => manager.send(id, 'Replacement', {supersedes: [second.id, second.id]}),
+    /unique message IDs/,
+  );
+  assert.equal(manager.get(id).pendingMessages, 1);
+  assert.equal(manager.removeMessages(id, [second.id]).outcome, 'removed');
+  assert.equal(manager.removeMessages(id, [second.id]).outcome, 'not_pending');
+  assert.equal(controlled.runs[1].signal.aborted, false);
+  controlled.runs[1].finish('finished');
+  await manager.wait([id]);
+  assert.equal(controlled.runs.length, 2);
+  manager.send(id, 'New work');
+  await until(() => controlled.runs.length === 3);
+  assert.equal(controlled.disposed, 0);
+});
+
+void test('removing initial instructions during startup or while queued never delivers an empty prompt', async t => {
+  const manager = new AgentOrchestrator(1);
+  const starting = deferred<AgentWorker>();
+  const controlled = controlledWorker();
+  let queuedCreated = false;
+  const active = manager.spawn(spec, () => starting.promise);
+  const queued = manager.spawn(spec, async () => {
+    queuedCreated = true;
+    return controlled.worker;
+  });
+  t.after(() => manager.close());
+  await nextTick();
+  for (const {id} of [active, queued]) {
+    manager.removeMessages(id, [manager.listMessages(id).messages[0].id]);
+  }
+  starting.resolve(controlled.worker);
+  const results = await manager.wait([active.id, queued.id]);
+  assert.deepEqual(
+    results.map(result => result.status),
+    ['completed', 'completed'],
+  );
+  assert.equal(queuedCreated, false);
+  assert.equal(controlled.runs.length, 0);
+  manager.send(active.id, 'Resume startup');
+  await until(() => controlled.runs.length === 1);
+  assert.equal(controlled.runs[0].message, 'Resume startup');
+});
+
 void test('an in-task handover replaces the session and preserves follow-up messages', async t => {
   const manager = new AgentOrchestrator(1);
   t.after(() => manager.close());
@@ -956,7 +1092,13 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   const receiver = await spawn('Builder');
   assert.deepEqual(
     [...sender.tools.keys()],
-    ['agent_list', 'agent_send', 'agent_new_session'],
+    [
+      'agent_list',
+      'agent_send',
+      'agent_messages',
+      'agent_message_remove',
+      'agent_new_session',
+    ],
   );
   const listed = await execute(sender.tools, 'agent_list', {});
   const listing = listed.details as {selfId: string; agents: AgentRecord[]};
@@ -968,7 +1110,33 @@ void test('worker messaging identifies senders, validates recipients, and stays 
 
   const send = (id: string, message: string, signal?: AbortSignal) =>
     execute(sender.tools, 'agent_send', {id, message}, signal);
-  await send(receiver.id, 'Use a 32-pixel grid.');
+  const sent = await send(receiver.id, 'Use a 32-pixel grid.');
+  const sentMessage = (sent.details as {message: {id: string; sender: unknown}})
+    .message;
+  assert.deepEqual(sentMessage.sender, {
+    kind: 'agent',
+    id: sender.id,
+    name: 'Designer',
+  });
+  const listingResult = await execute(tools, 'agent_messages', {
+    id: receiver.id,
+  });
+  const queue = listingResult.details as {
+    messages: Array<{id: string; preview: string; state: string}>;
+  };
+  assert.deepEqual(
+    queue.messages.map(message => message.id),
+    [sentMessage.id],
+  );
+  assert.equal(queue.messages[0].state, 'pending');
+  const full = await execute(sender.tools, 'agent_messages', {
+    id: receiver.id,
+    messageId: sentMessage.id,
+  });
+  assert.equal(
+    (full.details as {message: {message: string}}).message.message,
+    'Use a 32-pixel grid.',
+  );
   assert.equal(receiver.controlled.runs.length, 1);
   receiver.controlled.runs[0].finish('Initial work');
   await until(() => receiver.controlled.runs.length === 2);
@@ -1002,6 +1170,53 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   assert.equal(notifications.length, 1);
   for (let i = 0; i < 32; i++) await send(receiver.id, `Update ${i}`);
   await assert.rejects(send(receiver.id, 'Overflow'), /32 pending messages/);
+  const pageResult = await execute(tools, 'agent_messages', {
+    id: receiver.id,
+    limit: 2,
+  });
+  const page = pageResult.details as {
+    messages: Array<{id: string}>;
+    total: number;
+    nextOffset: number;
+  };
+  assert.equal(page.messages.length, 2);
+  assert.equal(page.total, 32);
+  assert.equal(page.nextOffset, 2);
+  const replacement = await execute(tools, 'agent_send', {
+    id: receiver.id,
+    message: 'x'.repeat(2000),
+    reference: 'Build #4',
+    supersedes: page.messages.map(message => message.id),
+  });
+  const replaced = replacement.details as {
+    outcome: string;
+    message: {id: string; preview: string; length: number; sender: unknown};
+  };
+  assert.equal(replaced.outcome, 'superseded');
+  assert.equal(replaced.message.preview.length, 500);
+  assert.equal(replaced.message.length, 2000);
+  assert.deepEqual(replaced.message.sender, {
+    kind: 'parent',
+    id: 'parent-session',
+  });
+  const removed = await execute(tools, 'agent_message_remove', {
+    id: receiver.id,
+    messageIds: [replaced.message.id],
+  });
+  assert.equal((removed.details as {outcome: string}).outcome, 'removed');
+  const readRemoved = await execute(tools, 'agent_messages', {
+    id: receiver.id,
+    messageId: replaced.message.id,
+  });
+  assert.equal(
+    (readRemoved.details as {message: {message: string; state: string}}).message
+      .message.length,
+    2000,
+  );
+  assert.equal(
+    (readRemoved.details as {message: {state: string}}).message.state,
+    'removed',
+  );
   await execute(tools, 'agent_cancel', {id: receiver.id});
   await assert.rejects(
     send(receiver.id, 'Too late'),

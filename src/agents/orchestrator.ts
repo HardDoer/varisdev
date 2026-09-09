@@ -39,6 +39,37 @@ export interface AgentWorker {
   dispose(): void;
 }
 
+export interface AgentMessageSender {
+  kind: 'parent' | 'agent';
+  id: string;
+  name?: string;
+}
+
+export interface QueuedAgentMessage {
+  id: string;
+  message: string;
+  sender: AgentMessageSender;
+  reference?: string;
+  createdAt: string;
+  state: 'pending' | 'delivered' | 'removed' | 'superseded' | 'discarded';
+  deliveredAt?: string;
+  resolvedAt?: string;
+  replacedBy?: string;
+}
+
+export interface AgentMessageOptions {
+  sender?: AgentMessageSender;
+  reference?: string;
+  supersedes?: string[];
+}
+
+export interface AgentMessageChange {
+  agent: AgentRecord;
+  outcome: 'queued' | 'superseded' | 'removed' | 'not_pending';
+  message?: QueuedAgentMessage;
+  affected: QueuedAgentMessage[];
+}
+
 interface Job {
   record: AgentRecord;
   createWorker: (
@@ -46,7 +77,8 @@ interface Job {
     previousSessionFile?: string,
   ) => Promise<AgentWorker>;
   worker?: AgentWorker;
-  messages: string[];
+  messages: QueuedAgentMessage[];
+  messageHistory: Map<string, QueuedAgentMessage>;
   handover?: string;
   controller?: AbortController;
   runController?: AbortController;
@@ -134,6 +166,7 @@ export class AgentOrchestrator {
       id: string,
       previousSessionFile?: string,
     ) => Promise<AgentWorker>,
+    sender: AgentMessageSender = {kind: 'parent', id: 'parent'},
   ): AgentRecord {
     this.ensureOpen();
     if (!spec.task.trim() || !spec.name.trim()) {
@@ -149,6 +182,7 @@ export class AgentOrchestrator {
       throw new Error('This session has reached its limit of 64 agents.');
     }
     const id = randomUUID();
+    const initial = this.createMessage(spec.task, {sender});
     this.jobs.set(id, {
       record: {
         ...spec,
@@ -160,26 +194,173 @@ export class AgentOrchestrator {
         sessionCount: 0,
       },
       createWorker,
-      messages: [spec.task],
+      messages: [initial],
+      messageHistory: new Map([[initial.id, initial]]),
     });
     this.pump();
     this.changed();
     return this.get(id);
   }
 
-  send(id: string, message: string): AgentRecord {
+  private createMessage(
+    message: string,
+    options: AgentMessageOptions,
+  ): QueuedAgentMessage {
+    if (!message.trim()) throw new Error('Agent message cannot be empty.');
+    if (message.length > 64000) {
+      throw new Error('Agent message cannot exceed 64000 characters.');
+    }
+    if (
+      options.reference !== undefined &&
+      (!options.reference.trim() || options.reference.length > 1000)
+    ) {
+      throw new Error('Message reference must contain 1 to 1000 characters.');
+    }
+    return {
+      id: randomUUID(),
+      message,
+      sender: {...(options.sender ?? {kind: 'parent', id: 'parent'})},
+      reference: options.reference,
+      createdAt: new Date().toISOString(),
+      state: 'pending',
+    };
+  }
+
+  private copyMessage(message: QueuedAgentMessage): QueuedAgentMessage {
+    return {...message, sender: {...message.sender}};
+  }
+
+  getMessage(id: string, messageId: string): QueuedAgentMessage {
+    const message = this.job(id).messageHistory.get(messageId);
+    if (!message) throw new Error(`Unknown agent message: ${messageId}`);
+    return this.copyMessage(message);
+  }
+
+  listMessages(
+    id: string,
+    options: {
+      view?: 'pending' | 'history' | 'all';
+      offset?: number;
+      limit?: number;
+    } = {},
+  ) {
+    const {view = 'pending', offset = 0, limit = 10} = options;
+    if (
+      !Number.isInteger(offset) ||
+      offset < 0 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 20
+    ) {
+      throw new Error(
+        'Message offset must be non-negative and limit must be 1 to 20.',
+      );
+    }
+    const job = this.job(id);
+    const history = [...job.messageHistory.values()].filter(
+      message => message.state !== 'pending',
+    );
+    const messages =
+      view === 'pending'
+        ? job.messages
+        : view === 'history'
+          ? history
+          : [...job.messages, ...history];
+    return {
+      view,
+      total: messages.length,
+      pending: job.messages.length,
+      pendingHandover: job.handover !== undefined,
+      offset,
+      nextOffset: offset + limit < messages.length ? offset + limit : undefined,
+      messages: messages
+        .slice(offset, offset + limit)
+        .map(message => this.copyMessage(message)),
+    };
+  }
+
+  private selectedMessages(job: Job, ids: string[]): QueuedAgentMessage[] {
+    if (ids.length < 1 || ids.length > 32 || new Set(ids).size !== ids.length) {
+      throw new Error('Select 1 to 32 unique message IDs.');
+    }
+    return ids.map(id => {
+      const message = job.messageHistory.get(id);
+      if (!message) throw new Error(`Unknown agent message: ${id}`);
+      return message;
+    });
+  }
+
+  removeMessages(id: string, messageIds: string[]): AgentMessageChange {
     this.ensureOpen();
     const job = this.job(id);
-    if (!message.trim()) throw new Error('Agent message cannot be empty.');
+    const selected = this.selectedMessages(job, messageIds);
+    if (selected.some(message => message.state !== 'pending')) {
+      return {
+        agent: this.get(id),
+        outcome: 'not_pending',
+        affected: selected.map(message => this.copyMessage(message)),
+      };
+    }
+    const resolvedAt = new Date().toISOString();
+    for (const message of selected)
+      Object.assign(message, {state: 'removed', resolvedAt});
+    job.messages = job.messages.filter(message => message.state === 'pending');
+    job.record.pendingMessages =
+      job.messages.length + Number(job.handover !== undefined);
+    if (job.record.status === 'queued' && job.record.pendingMessages === 0) {
+      job.record.status = 'completed';
+      job.record.activity = 'No pending messages';
+      job.record.finishedAt = resolvedAt;
+    }
+    this.changed();
+    return {
+      agent: this.get(id),
+      outcome: 'removed',
+      affected: selected.map(message => this.copyMessage(message)),
+    };
+  }
+
+  send(
+    id: string,
+    message: string,
+    options: AgentMessageOptions = {},
+  ): AgentMessageChange {
+    this.ensureOpen();
+    const job = this.job(id);
+    const queued = this.createMessage(message, options);
+    const selected =
+      options.supersedes === undefined
+        ? []
+        : this.selectedMessages(job, options.supersedes);
+    // Validate the whole edit before changing anything, including at capacity.
+    if (selected.some(message => message.state !== 'pending')) {
+      return {
+        agent: this.get(id),
+        outcome: 'not_pending',
+        affected: selected.map(message => this.copyMessage(message)),
+      };
+    }
     if (['failed', 'cancelled', 'cancelling'].includes(job.record.status)) {
       throw new Error(
         `Cannot message a ${job.record.status} agent. Spawn a new agent.`,
       );
     }
-    if (job.messages.length >= 32) {
+    if (job.messages.length - selected.length >= 32) {
       throw new Error('This agent already has 32 pending messages.');
     }
-    job.messages.push(message);
+    const position = selected.length
+      ? Math.min(...selected.map(message => job.messages.indexOf(message)))
+      : job.messages.length;
+    const resolvedAt = new Date().toISOString();
+    for (const message of selected)
+      Object.assign(message, {
+        state: 'superseded',
+        resolvedAt,
+        replacedBy: queued.id,
+      });
+    job.messages = job.messages.filter(message => message.state === 'pending');
+    job.messages.splice(position, 0, queued);
+    job.messageHistory.set(queued.id, queued);
     job.record.pendingMessages =
       job.messages.length + Number(job.handover !== undefined);
     if (job.record.status === 'completed') {
@@ -190,7 +371,21 @@ export class AgentOrchestrator {
     }
     this.pump();
     this.changed();
-    return this.get(id);
+    return {
+      agent: this.get(id),
+      outcome: selected.length ? 'superseded' : 'queued',
+      message: this.copyMessage(queued),
+      affected: selected.map(message => this.copyMessage(message)),
+    };
+  }
+
+  private discardMessages(job: Job): void {
+    const resolvedAt = new Date().toISOString();
+    for (const message of job.messages)
+      Object.assign(message, {state: 'discarded', resolvedAt});
+    job.messages = [];
+    job.handover = undefined;
+    job.record.pendingMessages = 0;
   }
 
   /** Queue a handover before pending messages, interrupting the current run. */
@@ -228,9 +423,7 @@ export class AgentOrchestrator {
   cancel(id: string): AgentRecord {
     const job = this.job(id);
     if (isAgentFinished(job.record.status)) return this.get(id);
-    job.messages = [];
-    job.handover = undefined;
-    job.record.pendingMessages = 0;
+    this.discardMessages(job);
     if (job.controller) {
       job.record.status = 'cancelling';
       job.record.activity = 'Cancelling';
@@ -273,9 +466,7 @@ export class AgentOrchestrator {
     };
     let timer = startTimer();
     const abort = () => {
-      job.messages = [];
-      job.handover = undefined;
-      job.record.pendingMessages = 0;
+      this.discardMessages(job);
       job.runController?.abort(signal.reason);
     };
     signal.addEventListener('abort', abort, {once: true});
@@ -308,11 +499,24 @@ export class AgentOrchestrator {
           job.record.resultFile = job.worker.resultFile;
         }
         signal.throwIfAborted();
+        // Queue edits can remove all work while the worker is starting.
+        if (job.handover === undefined && job.messages.length === 0) continue;
         // A handover requested during initial startup can use that fresh worker.
-        const message =
-          job.handover !== undefined
-            ? handoverPrompt(job.handover, job.record.previousSessionFile)
-            : job.messages.shift()!;
+        let message: string;
+        if (job.handover !== undefined) {
+          message = handoverPrompt(
+            job.handover,
+            job.record.previousSessionFile,
+          );
+        } else {
+          const queued = job.messages.shift()!;
+          queued.state = 'delivered';
+          queued.deliveredAt = new Date().toISOString();
+          message =
+            queued.sender.kind === 'agent'
+              ? `Message from agent ${JSON.stringify(queued.sender.name)} (${queued.sender.id}):\n${queued.message}`
+              : queued.message;
+        }
         job.handover = undefined;
         job.record.pendingMessages = job.messages.length;
         job.record.activity = 'Working';
@@ -357,9 +561,7 @@ export class AgentOrchestrator {
         job.record.status === 'cancelled'
           ? 'Cancelled'
           : job.record.error.slice(0, 2000);
-      job.messages = [];
-      job.handover = undefined;
-      job.record.pendingMessages = 0;
+      this.discardMessages(job);
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);

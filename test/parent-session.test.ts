@@ -16,8 +16,13 @@ import {
   type AgentSession,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
+import {AgentSessionController} from '../src/agents/team.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerSessionNewTool} from '../src/tools/session-new.ts';
 
@@ -158,6 +163,7 @@ void test(
       content: unknown;
     }> = [];
     const archived: string[] = [];
+    const handoverIds: string[] = [];
 
     function assertSameWorker(record: AgentRecord, previous: AgentRecord) {
       for (const field of [
@@ -288,8 +294,9 @@ void test(
             ? 2
             : assert.fail(`Unexpected first fresh prompt: ${firstUser}`);
       parentRequests[phase].push(input);
-      const step = parentRequests[phase].length;
-      if (step === 1) {
+      const requestNumber = parentRequests[phase].length;
+      const step = phase > 0 ? requestNumber - 1 : requestNumber;
+      if (requestNumber === 1) {
         assert.equal(
           conversation.length,
           1,
@@ -333,6 +340,39 @@ void test(
           // withSession must return while the new model response is still pending.
           await replacementFinished[phase - 1].promise;
         }
+      }
+      if (phase > 0 && requestNumber === 1) {
+        return {
+          name: 'session_handover_status',
+          arguments: {id: handoverIds[phase - 1]},
+        };
+      }
+      if (phase > 0 && requestNumber === 2) {
+        const receipt = lastToolResult<{
+          outcome: string;
+          handover: {
+            id: string;
+            state: string;
+            revision: number;
+            deliveredRevision: number;
+            sourceSessionId: string;
+            destinationSessionId: string;
+          };
+        }>(input);
+        assert.equal(receipt.outcome, 'found');
+        assert.equal(receipt.handover.id, handoverIds[phase - 1]);
+        assert.equal(receipt.handover.state, 'completed');
+        assert.equal(receipt.handover.revision, phase === 1 ? 2 : 1);
+        assert.equal(receipt.handover.deliveredRevision, phase === 1 ? 2 : 1);
+        assert.equal(
+          receipt.handover.sourceSessionId,
+          sessions[phase - 1].sessionId,
+        );
+        assert.equal(
+          receipt.handover.destinationSessionId,
+          sessions[phase].sessionId,
+        );
+        if (phase === 1) assert.match(firstUser, /UPDATED BEFORE DISPATCH/);
       }
       if (phase === 0) {
         switch (step) {
@@ -382,6 +422,23 @@ void test(
             assert.equal(finisherBefore.status, 'running');
             assert.ok(finisherBefore.sessionFile);
             return {name: 'session_new', arguments: {handover: firstHandover}};
+          case 8: {
+            const scheduled = lastToolResult<{
+              handover: {id: string; state: string};
+            }>(input);
+            assert.equal(scheduled.handover.state, 'waiting_for_idle');
+            assert.equal(scheduled.handover.id, handoverIds[0]);
+            // Keep the source turn busy until a worker completes. Its result
+            // must be buffered from scheduling, before waitForIdle resolves.
+            await completionObserved.promise;
+            return {
+              name: 'session_handover_update',
+              arguments: {
+                id: handoverIds[0],
+                handover: `${firstHandover}\nUPDATED BEFORE DISPATCH`,
+              },
+            };
+          }
           default:
             return 'OUTGOING PARENT ANSWER';
         }
@@ -559,7 +616,6 @@ void test(
         archived.push(await readFile(sessions[phase - 1].sessionFile!, 'utf8'));
       }
       if (phase === 1) {
-        transitionStarted.resolve();
         await completionObserved.promise;
       }
       const modelRuntime = await ModelRuntime.create({
@@ -623,6 +679,15 @@ void test(
           executedTools[phase].push(event.toolName);
         if (event.type === 'tool_execution_end' && event.isError)
           fail(event.result);
+        if (
+          event.type === 'tool_execution_end' &&
+          event.toolName === 'session_new' &&
+          !event.isError
+        ) {
+          const details = event.result.details as {handover: {id: string}};
+          handoverIds[phase] = details.handover.id;
+          if (phase === 0) transitionStarted.resolve();
+        }
         if (event.type === 'message_end' && event.message.role === 'custom') {
           notifications.push({
             sessionId: session.sessionId,
@@ -683,7 +748,7 @@ void test(
     assert.equal(runtime.session, sessions[2]);
     assert.equal(runtime.session.model?.id, 'parent-model');
     assert.equal(runtime.session.thinkingLevel, 'high');
-    assert.equal(executedTools[0].at(-1), 'session_new');
+    assert.equal(executedTools[0].at(-1), 'session_handover_update');
     assert.equal(executedTools[1].at(-1), 'session_new');
     assert.ok(
       workerRequests.length >= 8,
@@ -782,3 +847,230 @@ void test(
       assert.ok(userMessages[index].includes(message));
   },
 );
+
+void test('cancel and destination recovery release buffered messages once while keeping live workers attached', async () => {
+  function parent(sessionId: string) {
+    const events = new Map<
+      string,
+      (event: object, ctx: ExtensionContext) => void | Promise<void>
+    >();
+    const messages: string[] = [];
+    const ctx = {
+      hasUI: false,
+      sessionManager: {getSessionId: () => sessionId},
+    } as unknown as ExtensionContext;
+    const pi = {
+      on(
+        name: string,
+        callback: (
+          event: object,
+          ctx: ExtensionContext,
+        ) => void | Promise<void>,
+      ) {
+        events.set(name, callback);
+      },
+      sendMessage(message: {content: string}) {
+        messages.push(message.content);
+      },
+    } as unknown as ExtensionAPI;
+    const control = new AgentSessionController(pi);
+    return {
+      ctx,
+      control,
+      messages,
+      emit: (name: string, event: object = {}) => events.get(name)!(event, ctx),
+    };
+  }
+  const source = parent(randomUUID());
+  const destination = parent(randomUUID());
+  const team = source.control.getTeam(source.ctx);
+  const manager = team.getManager();
+  const running = Promise.withResolvers<void>();
+  let disposed = 0;
+  const worker = manager.spawn(
+    {
+      name: 'Worker',
+      task: 'Work',
+      cwd: process.cwd(),
+      model: 'test/model',
+      notify: false,
+    },
+    async () => ({
+      sessionFile: '/worker.jsonl',
+      resultFile: '/worker-result.txt',
+      async run(_message, signal) {
+        running.resolve();
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+      dispose() {
+        disposed++;
+      },
+    }),
+  );
+  await running.promise;
+  const cancelled = source.control.prepareHandover(source.ctx);
+  team.sendMessage({
+    customType: 'agent_message',
+    content: 'Before cancellation',
+    display: true,
+    details: {},
+  });
+  await source.emit('agent_start');
+  assert.deepEqual(
+    source.messages,
+    [],
+    'A later source turn cannot unpause a pending handover',
+  );
+  cancelled.cancel();
+  cancelled.cancel();
+  assert.deepEqual(source.messages, ['Before cancellation']);
+  assert.equal(source.control.getTeam(source.ctx).getManager(), manager);
+  assert.equal(manager.get(worker.id).status, 'running');
+
+  const failed = source.control.prepareHandover(source.ctx);
+  team.sendMessage({
+    customType: 'agent_message',
+    content: 'Before destination recovery',
+    display: true,
+    details: {},
+  });
+  await source.emit('session_shutdown', {reason: 'new'});
+  failed.transfer(destination.ctx.sessionManager.getSessionId());
+  destination.control.attach(destination.ctx);
+  assert.deepEqual(
+    destination.messages,
+    [],
+    'Wait for the handover prompt or explicit recovery',
+  );
+  assert.equal(failed.resume(), true);
+  assert.equal(failed.resume(), true);
+  assert.deepEqual(destination.messages, ['Before destination recovery']);
+  assert.equal(
+    destination.control.getTeam(destination.ctx).getManager(),
+    manager,
+  );
+  assert.equal(manager.get(worker.id).status, 'running');
+  assert.equal(disposed, 0);
+  await destination.emit('session_shutdown', {reason: 'quit'});
+  assert.equal(disposed, 1);
+  assert.equal(
+    failed.resume(),
+    false,
+    'Recovery cannot reactivate a closed destination',
+  );
+});
+
+void test('ordinary source replacement closes a waiting handover team when its captured turn signal is no longer current', async () => {
+  const events = new Map<
+    string,
+    Array<(event: object, ctx: ExtensionContext) => void | Promise<void>>
+  >();
+  const commands = new Map<
+    string,
+    Parameters<ExtensionAPI['registerCommand']>[1]
+  >();
+  const tools = new Map<string, ToolDefinition>();
+  const commandRuns: Promise<void>[] = [];
+  const messages: string[] = [];
+  const idle = Promise.withResolvers<void>();
+  const sourceId = randomUUID();
+  const previousTurn = new AbortController();
+  const currentTurn = new AbortController();
+  const ctx = {
+    hasUI: false,
+    model: {provider: 'test', id: 'parent'},
+    signal: previousTurn.signal,
+    sessionManager: {
+      getSessionId: () => sourceId,
+      getSessionFile: () => `/${sourceId}.jsonl`,
+    },
+    waitForIdle: () => idle.promise,
+  } as unknown as ExtensionCommandContext;
+  const pi = {
+    on(
+      name: string,
+      callback: (event: object, ctx: ExtensionContext) => void | Promise<void>,
+    ) {
+      events.set(name, [...(events.get(name) ?? []), callback]);
+    },
+    registerTool(tool: ToolDefinition) {
+      tools.set(tool.name, tool);
+    },
+    registerCommand(
+      name: string,
+      command: Parameters<ExtensionAPI['registerCommand']>[1],
+    ) {
+      commands.set(name, command);
+    },
+    getThinkingLevel: () => 'high',
+    getActiveTools: () => ['session_new'],
+    sendMessage(message: {content: string}) {
+      messages.push(message.content);
+    },
+    sendUserMessage(message: string) {
+      const [command, id] = message.slice(1).split(' ');
+      commandRuns.push(commands.get(command)!.handler(id, ctx));
+    },
+  } as unknown as ExtensionAPI;
+  const control = new AgentSessionController(pi);
+  registerSessionNewTool(pi, control);
+  const team = control.getTeam(ctx);
+  const manager = team.getManager();
+  const started = Promise.withResolvers<void>();
+  let disposed = 0;
+  const worker = manager.spawn(
+    {
+      name: 'Worker',
+      task: 'Work',
+      cwd: process.cwd(),
+      model: 'test/model',
+      notify: false,
+    },
+    async () => ({
+      sessionFile: '/worker.jsonl',
+      resultFile: '/worker-result.txt',
+      async run(_message, signal) {
+        started.resolve();
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+      dispose() {
+        disposed++;
+      },
+    }),
+  );
+  await started.promise;
+  await tools
+    .get('session_new')!
+    .execute('schedule', {handover: 'Continue'}, undefined, undefined, ctx);
+  team.sendMessage({
+    customType: 'agent_message',
+    content: 'Buffered before ordinary shutdown',
+    display: true,
+    details: {},
+  });
+  // Pi retry/continuation can install another turn signal while the request
+  // still waits. Aborting that signal does not cancel the captured one.
+  ctx.signal = currentTurn.signal;
+  currentTurn.abort();
+  assert.equal(previousTurn.signal.aborted, false);
+  for (const handler of events.get('session_shutdown')!)
+    await handler({reason: 'new'}, ctx);
+  await Promise.all(commandRuns);
+  assert.equal(disposed, 1);
+  assert.equal(manager.get(worker.id).status, 'cancelled');
+  assert.equal(team.isClosed, true);
+  assert.deepEqual(
+    messages,
+    [],
+    'An outgoing source must not receive its buffered notifications',
+  );
+  assert.throws(() => control.attach(ctx), /shutting down/);
+});
