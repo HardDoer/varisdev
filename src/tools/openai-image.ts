@@ -11,7 +11,7 @@ import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename, extname, join, resolve} from 'node:path';
 import {Type} from 'typebox';
 
-const DEFAULT_IMAGE_MODEL = 'gpt-image-2-2026-04-21';
+const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst-2026-09-08';
 const DEFAULT_IMAGE_SIZE = '1024x1024';
 const DEFAULT_IMAGE_QUALITY = 'auto';
 const DEFAULT_OUTPUT_DIR = 'generated-images';
@@ -43,14 +43,24 @@ const openAIImageSchema = Type.Object({
   ),
   size: Type.Optional(
     Type.String({
-      description: `Image size, for example 1024x1024, 1024x1536, 1536x1024, or auto. Defaults to process.env.OPENAI_IMAGE_SIZE or ${DEFAULT_IMAGE_SIZE}.`,
+      description: `Image size as WIDTHxHEIGHT or auto. Recommended: 1024x1024, 1024x1536, or 1536x1024. Custom dimensions must be multiples of 16, with an aspect ratio between 1:3 and 3:1, neither edge above 3840 pixels, and 655360–8294400 total pixels. Defaults to process.env.OPENAI_IMAGE_SIZE or ${DEFAULT_IMAGE_SIZE}.`,
     }),
   ),
   quality: Type.Optional(
-    Type.String({
-      description: `Image quality, for example auto, low, medium, high, standard, or hd. The agent should choose this from the user's request; defaults to ${DEFAULT_IMAGE_QUALITY}.`,
-      default: DEFAULT_IMAGE_QUALITY,
-    }),
+    Type.Union(
+      [
+        Type.Literal('auto'),
+        Type.Literal('low'),
+        Type.Literal('medium'),
+        Type.Literal('high'),
+        Type.Literal('xhigh'),
+        Type.Literal('max'),
+      ],
+      {
+        description: `Image quality. Use low for quick drafts; choose higher settings from the user's requested detail, latency, and cost preferences. Defaults to ${DEFAULT_IMAGE_QUALITY}.`,
+        default: DEFAULT_IMAGE_QUALITY,
+      },
+    ),
   ),
   n: Type.Optional(
     Type.Number({
@@ -78,7 +88,7 @@ const openAIImageSchema = Type.Object({
   background: Type.Optional(
     Type.String({
       description:
-        'Optional background for supported models, for example auto, opaque, or transparent.',
+        'Optional background: auto, opaque, or transparent. Transparent backgrounds require png or webp output.',
     }),
   ),
   outputCompression: Type.Optional(
@@ -404,6 +414,7 @@ function makeImageRequest(params: {
     prompt: params.prompt,
     n: params.n,
     size: params.size,
+    output_format: params.outputFormat,
   };
 
   if (params.inputImages?.length) {
@@ -416,16 +427,6 @@ function makeImageRequest(params: {
     request.output_compression = Math.round(params.outputCompression);
   if (params.moderation) request.moderation = params.moderation;
   if (params.user) request.user = params.user;
-
-  // The current GPT image models support output_format. Older DALL-E models may not,
-  // so only send the default for GPT-image models unless the caller explicitly set it.
-  if (
-    params.model.startsWith('gpt-image') ||
-    params.outputFormat !== DEFAULT_OUTPUT_FORMAT ||
-    trimEnv('OPENAI_IMAGE_OUTPUT_FORMAT')
-  ) {
-    request.output_format = params.outputFormat;
-  }
 
   return request;
 }
@@ -456,7 +457,7 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
     name: OPENAI_IMAGE_TOOL_NAME,
     label: 'OpenAI Image',
     description:
-      'Create or edit one or more images with the OpenAI Images API and save them as files in the current project.',
+      'Create or edit one or more images with GPT Image 2.5 Sunburst through the OpenAI Images API and save them as files in the current project.',
     promptSnippet:
       'Create or edit images with the OpenAI Images API and save them to project files.',
     promptGuidelines: [
