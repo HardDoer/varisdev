@@ -106,7 +106,7 @@ function inspect(record: HandoverRecord, includeText = true) {
   };
 }
 
-function result(details: object) {
+function result<T extends object>(details: T) {
   return {
     content: [{type: 'text' as const, text: JSON.stringify(details, null, 2)}],
     details,
@@ -147,7 +147,7 @@ function cancel(request: HandoverRequest, reason: string): void {
 
 function handoverPrompt(record: HandoverRecord): string {
   return [
-    'Continue working from this handover in your fresh parent session.',
+    'Continue the plan from this handover in your fresh parent session.',
     `Parent handover ID: ${record.id}; revision: ${record.revision}. Use session_handover_status to inspect delivery and recent handovers.`,
     'Your background agents remain attached. Use agent_list to discover their IDs and progress, and agent_status or agent_wait to collect their results.',
     ...(record.sourceSessionFile
@@ -173,7 +173,107 @@ const handoverSchema = Type.String({
 export function registerSessionNewTool(
   pi: ExtensionAPI,
   agents: AgentSessionControl,
-): void {
+) {
+  async function schedule(
+    handover: string,
+    ctx: ExtensionContext,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    ctx.signal?.throwIfAborted();
+    validateText(handover);
+    const history = getHistory(ctx);
+    if (history.pending) {
+      return result({
+        outcome: 'already_pending',
+        handover: inspect(history.pending.record),
+      });
+    }
+    if (!ctx.model)
+      throw new Error('Select a model before starting a new session.');
+    const model = {provider: ctx.model.provider, id: ctx.model.id};
+    const thinkingLevel = pi.getThinkingLevel();
+    const activeTools = pi.getActiveTools();
+    const timestamp = new Date().toISOString();
+    const record: HandoverRecord = {
+      id: randomUUID(),
+      state: 'scheduled',
+      handover,
+      revision: 1,
+      sourceSessionId: ctx.sessionManager.getSessionId(),
+      sourceSessionFile: ctx.sessionManager.getSessionFile(),
+      requestedAt: timestamp,
+      updatedAt: timestamp,
+      pendingReason:
+        'Waiting for the session command to start. Worker messages are buffered.',
+    };
+    const request: HandoverRequest = {
+      record,
+      history,
+      // Pause before dispatching the waiting command. Incoming workers must
+      // not continually add follow-up turns while the parent seeks idle.
+      lease: agents.prepareHandover(ctx),
+      model,
+      thinkingLevel,
+      activeTools,
+      signal: ctx.signal ?? signal,
+      stopWaiting: Promise.withResolvers<void>(),
+      received: Promise.withResolvers<void>(),
+      commandStarted: false,
+      configured: false,
+    };
+    history.pending = request;
+    history.records.set(record.id, record);
+    while (history.records.size > historyLimit)
+      history.records.delete(history.records.keys().next().value!);
+    request.onAbort = () => {
+      if (cancellable(record))
+        cancel(
+          request,
+          'The source turn was stopped before session replacement began. Buffered worker messages return to the source session.',
+        );
+    };
+    request.signal?.addEventListener('abort', request.onAbort, {once: true});
+    try {
+      // Pi dispatches commands synchronously up to their first await, even
+      // during a tool call. Returning this result lets that turn settle.
+      pi.sendUserMessage(`/varisdev-new-session ${record.id}`, {
+        expandPromptTemplates: true,
+      });
+      if (!request.commandStarted) {
+        throw new Error(
+          'Pi did not dispatch the session handover command. Use Pi 0.85.1 or newer.',
+        );
+      }
+    } catch (error) {
+      record.error = error instanceof Error ? error.message : String(error);
+      finish(
+        request,
+        'failed',
+        `The session command could not start: ${record.error}`,
+      );
+      request.lease.cancel();
+      return result({outcome: 'failed', handover: inspect(record)});
+    }
+    return result({outcome: 'scheduled', handover: inspect(record)});
+  }
+
+  function hasPending(ctx: ExtensionContext): boolean {
+    return Boolean(getHistory(ctx).pending);
+  }
+
+  function cancelPending(
+    id: string,
+    ctx: ExtensionContext,
+    reason: string,
+  ): boolean {
+    const request = getHistory(ctx).pending;
+    if (!request || request.record.id !== id || !cancellable(request.record))
+      return false;
+    cancel(request, reason);
+    return true;
+  }
+
   pi.registerTool({
     name: 'session_new',
     label: 'Start fresh parent session',
@@ -187,83 +287,7 @@ export function registerSessionNewTool(
     executionMode: 'sequential',
     parameters: Type.Object({handover: handoverSchema}),
     async execute(_id, params, signal, _onUpdate, ctx) {
-      signal?.throwIfAborted();
-      ctx.signal?.throwIfAborted();
-      validateText(params.handover);
-      const history = getHistory(ctx);
-      if (history.pending) {
-        return result({
-          outcome: 'already_pending',
-          handover: inspect(history.pending.record),
-        });
-      }
-      if (!ctx.model)
-        throw new Error('Select a model before starting a new session.');
-      const model = {provider: ctx.model.provider, id: ctx.model.id};
-      const thinkingLevel = pi.getThinkingLevel();
-      const activeTools = pi.getActiveTools();
-      const timestamp = new Date().toISOString();
-      const record: HandoverRecord = {
-        id: randomUUID(),
-        state: 'scheduled',
-        handover: params.handover,
-        revision: 1,
-        sourceSessionId: ctx.sessionManager.getSessionId(),
-        sourceSessionFile: ctx.sessionManager.getSessionFile(),
-        requestedAt: timestamp,
-        updatedAt: timestamp,
-        pendingReason:
-          'Waiting for the session command to start. Worker messages are buffered.',
-      };
-      const request: HandoverRequest = {
-        record,
-        history,
-        // Pause before dispatching the waiting command. Incoming workers must
-        // not continually add follow-up turns while the parent seeks idle.
-        lease: agents.prepareHandover(ctx),
-        model,
-        thinkingLevel,
-        activeTools,
-        signal: ctx.signal ?? signal,
-        stopWaiting: Promise.withResolvers<void>(),
-        received: Promise.withResolvers<void>(),
-        commandStarted: false,
-        configured: false,
-      };
-      history.pending = request;
-      history.records.set(record.id, record);
-      while (history.records.size > historyLimit)
-        history.records.delete(history.records.keys().next().value!);
-      request.onAbort = () => {
-        if (cancellable(record))
-          cancel(
-            request,
-            'The source turn was stopped before session replacement began. Buffered worker messages return to the source session.',
-          );
-      };
-      request.signal?.addEventListener('abort', request.onAbort, {once: true});
-      try {
-        // Pi dispatches commands synchronously up to their first await, even
-        // during a tool call. Returning this result lets that turn settle.
-        pi.sendUserMessage(`/varisdev-new-session ${record.id}`, {
-          expandPromptTemplates: true,
-        });
-        if (!request.commandStarted) {
-          throw new Error(
-            'Pi did not dispatch the session handover command. Use Pi 0.85.1 or newer.',
-          );
-        }
-      } catch (error) {
-        record.error = error instanceof Error ? error.message : String(error);
-        finish(
-          request,
-          'failed',
-          `The session command could not start: ${record.error}`,
-        );
-        request.lease.cancel();
-        return result({outcome: 'failed', handover: inspect(record)});
-      }
-      return result({outcome: 'scheduled', handover: inspect(record)});
+      return schedule(params.handover, ctx, signal);
     },
   });
 
@@ -590,4 +614,6 @@ export function registerSessionNewTool(
     ))
       store.sessions.delete(id);
   });
+
+  return {schedule, hasPending, cancelPending};
 }

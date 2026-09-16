@@ -13,7 +13,52 @@ Varisware VarisDev package.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
 - `src/tools/session-new.ts` — starts a fresh parent session from a handover and continues automatically while keeping its background agents.
+- `src/auto-handover.ts` and `src/handover-settings.ts` — request a handover from the working parent at 80% context and optionally continue the plan in a fresh parent session.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
+
+## Automatic handovers
+
+VarisDev automates **plan → implementation → handover → fresh parent → continue the plan**. Both automation switches default to `on`:
+
+- **`auto-handover`**: when context usage reaches **80% or higher**, the harness sends the working parent a handover instruction after the current tool batch finishes. It requests one handover per conversation, with another opportunity after native fallback compaction.
+- **`auto-session-refresh`**: when the parent finishes writing the handover, the harness starts a fresh parent session using that final response and tells it to continue the plan.
+
+The working agent prepares the handover using its current understanding and normal tools. It can update the plan, inspect project files, check agent state, and record verified progress. The prompt asks for the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, background agent assignments, and precise next steps. It explicitly distinguishes conversation reports, current file evidence, and unverified claims.
+
+Only a completed final response to the handover instruction is accepted. Tool calls, interrupted responses, errors, and truncated responses do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The agent is asked to finish with handover text; the harness schedules the session change after that turn settles.
+
+The destination receives the handover and normal system/project instructions. Existing background agents retain their IDs, conversations, and queued work. Their notifications are buffered by the existing parent handover machinery when the session change is scheduled.
+
+### Configure automation
+
+Use these commands to save a setting for the current project:
+
+```text
+/auto-handover on
+/auto-session-refresh on
+```
+
+Each command accepts `on` or `off`; omit the argument to show the current settings. For example, leave `auto-handover` on and turn `auto-session-refresh` off to receive handover drafts without automatically switching sessions.
+
+Settings are read from `~/.pi/agent/varisdev.json` (or the configured Pi agent directory), then overridden by `<project>/.pi/varisdev.json`:
+
+```json
+{
+  "auto-handover": "on",
+  "auto-session-refresh": "on"
+}
+```
+
+The switches are independent. Disabling automatic prompts still allows a manually requested handover to start a fresh parent when automatic refresh is on. Changes to the refresh setting apply when the handover finishes; enabling it does not immediately consume an existing draft.
+
+### Manual steps
+
+- **`/handover`** asks the working parent to prepare a handover now, at any context usage.
+- **`/handover continue`** starts a fresh parent from the most recent completed draft.
+
+With both switches off, use those two commands to control each step. Completed drafts survive reloads and session resumes; new work invalidates an older draft. An interrupted handover can be requested again with `/handover`.
+
+Automatic native threshold compaction is held while the enabled handover workflow approaches 80% and while a handover is being prepared. This prevents Pi's fixed token reserve from compacting early on smaller models. Manual `/compact` and overflow recovery remain available. If preparation fails or is interrupted, native compaction can handle the existing conversation. Background agents use their existing session behavior.
 
 ## Agent orchestration
 

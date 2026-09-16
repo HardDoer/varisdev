@@ -5,6 +5,8 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {truncateToWidth, visibleWidth} from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
+import {registerAutoHandover} from '../src/auto-handover.ts';
+import {registerHandoverSettingsCommands} from '../src/handover-settings.ts';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
@@ -201,7 +203,9 @@ export default function (pi: ExtensionAPI) {
 
   registerProjectTools(pi);
   const agents = registerAgentTools(pi);
-  registerSessionNewTool(pi, agents);
+  const sessions = registerSessionNewTool(pi, agents);
+  registerHandoverSettingsCommands(pi);
+  registerAutoHandover(pi, sessions);
   registerCompletionAlert(pi);
   pi.on('session_start', async (_event, ctx) => {
     applyBranding(ctx);
