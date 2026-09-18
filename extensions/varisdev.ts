@@ -8,9 +8,7 @@ import {basename} from 'node:path';
 import {registerAutoHandover} from '../src/auto-handover.ts';
 import {registerHandoverSettingsCommands} from '../src/handover-settings.ts';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
-import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
-import {registerSessionNewTool} from '../src/tools/session-new.ts';
 
 const THEME_NAME = 'varisware';
 const TITLE = 'VarisDev';
@@ -202,10 +200,8 @@ export default function (pi: ExtensionAPI) {
   }
 
   registerProjectTools(pi);
-  const agents = registerAgentTools(pi);
-  const sessions = registerSessionNewTool(pi, agents);
   registerHandoverSettingsCommands(pi);
-  registerAutoHandover(pi, sessions);
+  registerAutoHandover(pi);
   registerCompletionAlert(pi);
   pi.on('session_start', async (_event, ctx) => {
     applyBranding(ctx);

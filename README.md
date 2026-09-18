@@ -11,23 +11,22 @@ Varisware VarisDev package.
 - `src/tools/image-query.ts` — agent-callable `image_query` tool for inspecting image metadata, transparency, visible bounds, and grid occupancy across files without one-off scripts.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
-- `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
-- `src/tools/session-new.ts` — starts a fresh parent session from a handover and continues automatically while keeping its background agents.
-- `src/auto-handover.ts` and `src/handover-settings.ts` — request a handover from the working parent at 80% context and optionally continue the plan in a fresh parent session.
+- `src/session-handover.ts` — switches sessions for the handover workflow and provides handover status, update, and cancellation tools.
+- `src/auto-handover.ts` and `src/handover-settings.ts` — request a handover from the working assistant at 80% context and optionally continue the plan in a fresh session.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
 
 ## Automatic handovers
 
-VarisDev automates **plan → implementation → handover → fresh parent → continue the plan**. Both automation switches default to `on`:
+VarisDev automates **plan → implementation → handover → fresh session → continue the plan**. Both automation switches default to `on`:
 
-- **`auto-handover`**: when context usage reaches **80% or higher**, the harness sends the working parent a handover instruction after the current tool batch finishes. It requests one handover per conversation, with another opportunity after native fallback compaction.
-- **`auto-session-refresh`**: when the parent finishes writing the handover, the harness starts a fresh parent session using that final response and tells it to continue the plan.
+- **`auto-handover`**: when context usage reaches **80% or higher**, the harness sends the working assistant a handover instruction after the current tool batch finishes. It requests one handover per conversation, with another opportunity after native fallback compaction.
+- **`auto-session-refresh`**: when the assistant finishes writing the handover, the harness starts a fresh session using that final response and tells it to continue the plan.
 
-The working agent prepares the handover using its current understanding and normal tools. It can update the plan, inspect project files, check agent state, and record verified progress. The prompt asks for the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, background agent assignments, and precise next steps. It explicitly distinguishes conversation reports, current file evidence, and unverified claims.
+The working agent prepares the handover using its current understanding and normal tools. It can update the plan, inspect project files and record verified progress. The prompt asks for the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, and precise next steps. It explicitly distinguishes conversation reports, current file evidence, and unverified claims.
 
-Only a completed final response to the handover instruction is accepted. Tool calls, interrupted responses, errors, and truncated responses do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The agent is asked to finish with handover text; the harness schedules the session change after that turn settles.
+Only a completed final response to the handover instruction is accepted. Tool calls, interrupted responses, errors, and truncated responses do not start a fresh session. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The agent is asked to finish with handover text; the harness schedules the session change after that turn settles.
 
-The destination receives the handover and normal system/project instructions. Existing background agents retain their IDs, conversations, and queued work. Their notifications are buffered by the existing parent handover machinery when the session change is scheduled.
+The destination receives the handover and normal system/project instructions. Model selection, thinking level, and active tools carry over. Each refresh creates a new session ID and transcript. Previous messages and tool outputs remain in the old transcript on disk.
 
 ### Configure automation
 
@@ -49,161 +48,32 @@ Settings are read from `~/.pi/agent/varisdev.json` (or the configured Pi agent d
 }
 ```
 
-The switches are independent. Disabling automatic prompts still allows a manually requested handover to start a fresh parent when automatic refresh is on. Changes to the refresh setting apply when the handover finishes; enabling it does not immediately consume an existing draft.
+The switches are independent. Disabling automatic prompts still allows a manually requested handover to start a fresh session when automatic refresh is on. Changes to the refresh setting apply when the handover finishes; enabling it does not immediately consume an existing draft.
 
 ### Manual steps
 
-- **`/handover`** asks the working parent to prepare a handover now, at any context usage.
-- **`/handover continue`** starts a fresh parent from the most recent completed draft.
+- **`/handover`** asks the working assistant to prepare a handover now, at any context usage.
+- **`/handover continue`** starts a fresh session from the most recent completed draft.
 
 With both switches off, use those two commands to control each step. Completed drafts survive reloads and session resumes; new work invalidates an older draft. An interrupted handover can be requested again with `/handover`.
 
-Automatic native threshold compaction is held while the enabled handover workflow approaches 80% and while a handover is being prepared. This prevents Pi's fixed token reserve from compacting early on smaller models. Manual `/compact` and overflow recovery remain available. If preparation fails or is interrupted, native compaction can handle the existing conversation. Background agents use their existing session behavior.
+Automatic native threshold compaction is held while the enabled handover workflow approaches 80% and while a handover is being prepared. This prevents Pi's fixed token reserve from compacting early on smaller models. Manual `/compact` and overflow recovery remain available. If preparation fails or is interrupted, native compaction can handle the existing conversation.
 
-## Agent orchestration
-
-VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation, uses the parent’s model, credentials, and thinking level by default, and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent, and `agent_new_session` to continue work in a fresh conversation.
+### Managing handovers
 
 | Tool | Purpose |
 | --- | --- |
-| `session_new` | Schedule a fresh parent session, carry over its background agents, and continue automatically from a handover. Returns a request ID and state. |
 | `session_handover_status` | Inspect a handover by ID or list recent requests and their delivery states. |
 | `session_handover_update` | Replace handover text before dispatch and increment its revision. |
 | `session_handover_cancel` | Cancel a handover before session replacement begins. |
-| `agent_spawn` | Start an agent and immediately return its ID. |
-| `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
-| `agent_status` | Read one agent’s latest result, error, and transcript paths. |
-| `agent_send` | Send instructions or replace selected pending messages with `supersedes`. Workers can also message `"parent"`. |
-| `agent_messages` | List message previews or retrieve one full message by ID, including its current delivery state. |
-| `agent_message_remove` | Remove selected pending messages while the active task continues. |
-| `agent_new_session` | Start a fresh background agent conversation and continue automatically from a handover. |
-| `agent_wait` | Wait for any or all selected agents and collect their results. |
-| `agent_cancel` | Cancel an agent and discard its pending messages. |
 
-For example, call `agent_spawn` with:
+Inspect requests using `session_handover_status` with `{"id":"<request ID>"}`; omit `id` to list recent requests with previews. The latest 50 requests remain available across handovers in the running application.
 
-```json
-{
-  "name": "reviewer",
-  "task": "Review src/tools/browse.ts for response truncation bugs. Report findings with file and line references.",
-  "instructions": "Inspect and report findings; leave fixes to the parent agent.",
-  "notify": false
-}
-```
+States progress through `scheduled`, `waiting_for_idle`, and `switching`, then `completed`, `cancelled`, or `failed`. Completion confirms that the destination received the handover prompt and reports its `deliveredRevision`.
 
-Spawn another independent task the same way, then collect both results with `agent_wait`:
+Call `session_handover_update` with `id` and the complete replacement `handover` to revise a pending request. Each update increments `revision`. Updates are accepted until prompt dispatch, including during session replacement.
 
-```json
-{
-  "ids": ["<first agent ID>", "<second agent ID>"],
-  "mode": "all",
-  "timeoutMs": 60000
-}
-```
-
-Send additional work through `agent_send`:
-
-```json
-{
-  "id": "<first agent ID>",
-  "message": "Implement the first finding and run the relevant checks. You own src/tools/browse.ts for this change."
-}
-```
-
-Workers use `agent_list` to discover peers by name and ID in the same parent session. Their list also includes `selfId`, and their system instructions include their own ID. A worker can call `agent_send` with a peer’s ID using the example above, or send a progress update or question directly to the parent:
-
-```json
-{
-  "id": "parent",
-  "message": "The asset dimensions are confirmed. Please use a 32-pixel grid."
-}
-```
-
-Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue; messages to the parent trigger a follow-up turn, including when the sender has `notify: false`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, `agent_messages`, `agent_message_remove`, and `agent_new_session`; the parent also manages spawning, status, waiting, and cancellation.
-
-Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
-
-Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent.
-
-By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
-
-Agents share their selected working directory and can change its files. Assign file ownership in each task, or provide separate working directories for independent edits. The terminal footer shows active agent counts.
-
-- `/agents` shows queued, running, and cancelling agents, with a hint when finished agents are available in history.
-- `/agents history` shows completed, failed, and cancelled agents, newest first.
-- `/agents all` shows active agents followed by history.
-- `/agents cancel <id|all>` cancels work manually.
-
-`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Missing credentials`. Finished agents stay available in history, and completed agents return to the active view when sent new work.
-
-Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list follows the parent across `session_new` handovers. Quitting, reloading, manually starting or switching sessions, or forking cancels the current agents and disposes their conversations. Saved files remain available after shutdown.
-
-### Inspecting and revising agent queues
-
-`agent_send` returns the new message ID, sender identity, creation time, and current state. Its optional `reference` associates the instruction with a task or artifact, such as an issue ID or file path. Initial task messages also have IDs and sender metadata.
-
-Call `agent_messages` with `{"id":"<agent ID>"}` to inspect pending messages in delivery order. Each entry has a preview of up to 500 characters; `limit` defaults to 10 and is capped at 20. Use `offset` and `nextOffset` for subsequent pages. `view: "history"` shows delivered, removed, superseded, and discarded entries; `view: "all"` includes both pending entries and history. Retrieve the full text and latest state using `{"id":"<agent ID>","messageId":"<message ID>"}`. Message history remains available for the lifetime of the team, including across handovers. `pendingHandover` separately reports a background session handover.
-
-Consolidate obsolete pending instructions with `agent_send`:
-
-```json
-{
-  "id": "<agent ID>",
-  "message": "The review findings are resolved. Build the updated project and report the result.",
-  "reference": "build/plan.md",
-  "supersedes": ["<obsolete review message ID>", "<obsolete build message ID>"]
-}
-```
-
-The new message takes the earliest selected position and preserves the order of unrelated instructions. This works even with 32 pending messages. Replaced entries report `superseded` and `replacedBy`. To remove instructions, call `agent_message_remove` with `id` and `messageIds`.
-
-Both edits validate all selected IDs before changing the queue. If any selected entry has left the queue, the response is `not_pending`, includes the current states, and makes no changes. `delivered` means the instruction was handed to the worker and work may have started; edits cannot undo that work. Cancellation and failures mark undelivered instructions `discarded`.
-
-### Fresh parent sessions
-
-The parent calls `session_new` to clear its accumulated conversation and continue working automatically:
-
-```json
-{
-  "handover": "Continue the asset pipeline. The user requested automatic parent handovers near 80% context usage. The plan and progress are in build/asset-plan.md. Asset generation and validation agents are still working; use agent_list to find them. Next, collect their results, resolve validation failures, and continue the remaining batches."
-}
-```
-
-This creates a new parent session ID and transcript. Its model context starts with the handover and normal system/project instructions. Previous messages and tool outputs remain in the old transcript on disk. The old conversation is excluded from the new model context.
-
-Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Worker messages and completion reports are buffered as soon as the handover is scheduled, so new worker notifications cannot keep adding turns while the parent waits for idle. They are delivered to the destination after the switch, or to the source if the request is cancelled. Model selection, thinking level, and active tools carry over.
-
-Make `session_new` the last tool call in the current conversation and finish that turn. The tool waits for the parent to become idle, switches sessions, and starts the handover automatically. A standing instruction for an ongoing workflow, including your preferred context threshold, covers repeated handovers. Its instructions tell agents to finish ordinary tasks in the current session.
-
-`session_new` returns a handover request with an `id`, state, timestamps, source and destination session information, and `pendingReason`. Repeating it while a request is pending returns `already_pending` with that request. Inspect it using `session_handover_status` with `{"id":"<request ID>"}`; omit `id` to list recent requests with previews. The latest 50 requests remain available across parent handovers in the running application.
-
-States progress through `scheduled`, `waiting_for_idle`, and `switching`, then `completed`, `cancelled`, or `failed`. Completion confirms that the destination received the handover prompt. It reports the exact `deliveredRevision`.
-
-If circumstances change while a request is pending:
-
-- Call `session_handover_update` with `id` and the complete replacement `handover`. Each update increments `revision`. Updates are accepted until prompt dispatch, including during session replacement.
-- Call `session_handover_cancel` with `id` before replacement begins. Once `switching` starts, the host may have disposed the source and cancellation returns `too_late`.
-- Inspect `canUpdate`, `canCancel`, and `pendingReason` to see what remains possible. Updates after dispatch also return `too_late`; a repeated cancellation returns `already_cancelled`.
-
-This requires Pi 0.85.1 or newer, which supports dispatching session commands from extension tools.
-
-### Fresh background agent sessions
-
-Use `agent_new_session` for requested session changes or ongoing workflows with automatic handovers. Its tool instructions tell agents to complete ordinary tasks in the current session. A standing instruction to continue through handovers supports repeated use during that workflow.
-
-A background agent calls the tool with a self-contained handover:
-
-```json
-{
-  "handover": "Continue the asset review. The user requested an ongoing workflow with automatic handovers near 80% context usage. Reviewed sprites/terrain; findings are in build/asset-review.md. Next, inspect sprites/units and append findings. Preserve the existing file ownership assignments."
-}
-```
-
-The parent can call the same tool with an `id` and `handover` to start a fresh conversation for that background agent. Include the task, user instructions, progress, decisions, relevant files, checks, and concrete next steps. Your existing workflow instructions determine when to hand over.
-
-The agent stops its current tools, opens a fresh conversation, and starts working from the handover automatically. It keeps its agent ID, configuration, and pending messages; queued messages run after the handover. The new conversation loads project instructions and tools along with the handover. If an execution timeout is configured, each fresh session gets that duration; otherwise, it runs without a deadline.
-
-`agent_status` reports the current `sessionFile`, `previousSessionFile`, and `sessionCount`. Previous transcripts remain saved, and each new transcript links to the preceding session. The agent stays active through the transition and reports completion after its work finishes.
+Call `session_handover_cancel` with `id` before replacement begins. Once `switching` starts, the host may have disposed the source and cancellation returns `too_late`.
 
 ## Completion sound
 

@@ -6,7 +6,7 @@ import {registerImageQueryTool} from './image-query.ts';
 import {registerJsonQueryTool} from './json-query.ts';
 import {registerOpenAIImageTool} from './openai-image.ts';
 
-/** Project tools shared by the main session and its workers. */
+/** Register the project tools available in each session. */
 export function registerProjectTools(pi: ExtensionAPI): void {
   registerBrowseTool(pi);
   registerDownloadTool(pi);

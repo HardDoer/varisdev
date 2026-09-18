@@ -4,9 +4,9 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {randomUUID} from 'node:crypto';
 import {readHandoverSettings} from './handover-settings.ts';
-import type {registerSessionNewTool} from './tools/session-new.ts';
+import {registerSessionHandover} from './session-handover.ts';
 
-type Sessions = ReturnType<typeof registerSessionNewTool>;
+type Sessions = ReturnType<typeof registerSessionHandover>;
 type Status =
   'idle' | 'requested' | 'writing' | 'ready' | 'scheduled' | 'failed';
 interface Checkpoint {
@@ -23,10 +23,10 @@ const planInstructions = `Plan and handover workflow:
 For tasks with multiple steps, maintain a concise plan and record progress in the conversation or the project's task document. Follow the user's requested workflow and level of detail. Keep the current step, decisions, relevant files, verification results, unfinished work, and next action clear.
 When the harness requests a handover, pause implementation and prepare a complete continuation prompt using your current understanding and tools. Update the existing plan and verify relevant file state as needed. Distinguish what the conversation reports, what current files confirm, and what remains unverified. The harness handles the session change after your final handover response.`;
 
-/** Ask the working parent for a handover, then optionally continue in a fresh parent. */
+/** Ask the working assistant for a handover, then optionally continue in a fresh session. */
 export function registerAutoHandover(
   pi: ExtensionAPI,
-  sessions: Sessions,
+  sessions: Sessions = registerSessionHandover(pi),
 ): void {
   let checkpoint: Checkpoint = {status: 'idle', attempted: false};
   let running = false;
@@ -78,7 +78,7 @@ export function registerAutoHandover(
     ) {
       if (!automatic)
         ctx.ui.notify(
-          'A handover or parent session change is already in progress.',
+          'A handover or session change is already in progress.',
           'info',
         );
       return;
@@ -107,13 +107,13 @@ export function registerAutoHandover(
         automatic
           ? `Context usage has reached ${usage!.toFixed(1)}%, at or above the ${threshold}% handover threshold.`
           : 'The user requested a handover checkpoint.',
-        'Pause implementation now and prepare a complete handover so the plan can continue in a fresh parent session. Use your tools to update the plan and inspect relevant files or agent state where needed. Keep this work focused on preparing the handover.',
-        'Include the goal and user instructions; the complete remaining plan or the exact path to its saved document; completed parts and verified results; the current stopping point; decisions and reasons; relevant files and symbols; unfinished work and blockers; background agent IDs, assignments and pending messages; and concrete next steps in order. State clearly if the task is complete or waiting for user input.',
-        'Distinguish what the conversation reports, what current files confirm, and what remains unverified. Record actual check results separately from checks still needed. Include references that let the next parent recover detail without repeating finished work.',
-        ...(transcript ? [`Current parent transcript: ${transcript}`] : []),
-        'Finish with the complete handover text as your final response, within 64000 characters. This final response is the continuation prompt. The harness handles the session change; finish the handover here rather than calling session_new yourself.',
+        'Pause implementation now and prepare a complete handover so the plan can continue in a fresh session. Use your tools to update the plan and inspect relevant files where needed. Keep this work focused on preparing the handover.',
+        'Include the goal and user instructions; the complete remaining plan or the exact path to its saved document; completed parts and verified results; the current stopping point; decisions and reasons; relevant files and symbols; unfinished work and blockers; and concrete next steps in order. State clearly if the task is complete or waiting for user input.',
+        'Distinguish what the conversation reports, what current files confirm, and what remains unverified. Record actual check results separately from checks still needed. Include references that let the next session recover detail without repeating finished work.',
+        ...(transcript ? [`Current transcript: ${transcript}`] : []),
+        'Finish with the complete handover text as your final response, within 64000 characters. This final response is the continuation prompt. The harness handles the session change after your final handover response.',
         settings['auto-session-refresh'] === 'on'
-          ? 'Automatic session refresh is on. After your handover is complete, the harness starts a fresh parent session and tells it to continue the plan. Existing background agents remain attached.'
+          ? 'Automatic session refresh is on. After your handover is complete, the harness starts a fresh session and tells it to continue the plan.'
           : 'Automatic session refresh is off. The completed handover will be available for the user to continue manually with /handover continue.',
       ].join('\n\n'),
     };
@@ -132,7 +132,7 @@ export function registerAutoHandover(
       return;
     }
     if (sessions.hasPending(ctx)) {
-      ctx.ui.notify('A parent session change is already pending.', 'info');
+      ctx.ui.notify('A session change is already pending.', 'info');
       return;
     }
     const generation = epoch;
@@ -214,7 +214,7 @@ export function registerAutoHandover(
       checkpoint.status = 'writing';
       return;
     }
-    // A queued user instruction must reach the continuing parent. Cancel our
+    // A queued user instruction must reach the continuing session. Cancel our
     // still-waiting replacement rather than switch with an outdated handover.
     if (
       checkpoint.status === 'scheduled' &&
@@ -223,7 +223,7 @@ export function registerAutoHandover(
       sessions.cancelPending(
         scheduledId,
         ctx,
-        'A new user instruction superseded the automatic handover. The source session continues with its background agents.',
+        'A new user instruction superseded the automatic handover. The source session continues.',
       )
     ) {
       scheduledId = undefined;
@@ -347,7 +347,7 @@ export function registerAutoHandover(
 
   pi.registerCommand('handover', {
     description:
-      'Prepare a handover, or use /handover continue to resume a completed handover in a fresh parent.',
+      'Prepare a handover, or use /handover continue to resume a completed handover in a fresh session.',
     handler: async (args, ctx) => {
       const generation = epoch;
       try {
