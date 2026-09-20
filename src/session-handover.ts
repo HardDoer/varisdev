@@ -4,7 +4,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {randomUUID} from 'node:crypto';
 import {Type} from 'typebox';
-import type {AgentHandover, AgentSessionControl} from '../agents/team.ts';
+import type {AgentHandover, AgentSessionControl} from './agents/team.ts';
 
 type HandoverState =
   | 'scheduled'
@@ -62,7 +62,7 @@ interface HandoverRequest {
 
 // Replacement runtimes reload extension modules. Keep the current session's
 // bounded history and in-flight dispatch shared until its replacement claims it.
-const storeKey = Symbol.for('varisdev.parentSessionHandovers');
+const storeKey = Symbol.for('varisdev.sessionHandovers');
 const shared = globalThis as typeof globalThis & {
   [storeKey]?: {
     sessions: Map<string, HandoverHistory>;
@@ -159,8 +159,7 @@ function handoverPrompt(record: HandoverRecord): string {
 
 const idSchema = Type.String({
   minLength: 1,
-  description:
-    'Parent handover request ID returned by session_new or session_handover_status.',
+  description: 'Handover request ID returned by session_handover_status.',
 });
 const handoverSchema = Type.String({
   minLength: 1,
@@ -169,17 +168,12 @@ const handoverSchema = Type.String({
     'Complete handover for the fresh parent: task, user instructions, progress, decisions, files, checks, agent assignments, and next steps.',
 });
 
-/** Replace the parent runtime using Pi's command context, then resume work. */
-export function registerSessionNewTool(
+/** Switch sessions for the handover workflow and preserve background agents. */
+export function registerSessionHandover(
   pi: ExtensionAPI,
   agents: AgentSessionControl,
 ) {
-  async function schedule(
-    handover: string,
-    ctx: ExtensionContext,
-    signal?: AbortSignal,
-  ) {
-    signal?.throwIfAborted();
+  async function schedule(handover: string, ctx: ExtensionContext) {
     ctx.signal?.throwIfAborted();
     validateText(handover);
     const history = getHistory(ctx);
@@ -216,7 +210,7 @@ export function registerSessionNewTool(
       model,
       thinkingLevel,
       activeTools,
-      signal: ctx.signal ?? signal,
+      signal: ctx.signal,
       stopWaiting: Promise.withResolvers<void>(),
       received: Promise.withResolvers<void>(),
       commandStarted: false,
@@ -235,9 +229,9 @@ export function registerSessionNewTool(
     };
     request.signal?.addEventListener('abort', request.onAbort, {once: true});
     try {
-      // Pi dispatches commands synchronously up to their first await, even
-      // during a tool call. Returning this result lets that turn settle.
-      pi.sendUserMessage(`/varisdev-new-session ${record.id}`, {
+      // Pi dispatches commands synchronously up to their first await.
+      // Returning lets the current turn settle before the switch.
+      pi.sendUserMessage(`/varisdev-handover-switch ${record.id}`, {
         expandPromptTemplates: true,
       });
       if (!request.commandStarted) {
@@ -273,23 +267,6 @@ export function registerSessionNewTool(
     cancel(request, reason);
     return true;
   }
-
-  pi.registerTool({
-    name: 'session_new',
-    label: 'Start fresh parent session',
-    description:
-      'Schedule a fresh parent session and continue automatically from a handover. Returns a request ID and state. Background agents and queued work remain attached. Worker notifications are buffered immediately until the handover completes or is cancelled. A duplicate call returns the existing pending request.',
-    promptGuidelines: [
-      'Use session_new when the user requests a fresh parent session or has enabled an ongoing workflow with automatic handovers, including an instructed context usage threshold. A standing workflow instruction covers repeated handovers. Complete ordinary tasks in the current session.',
-      'Write a self-contained handover with the task, user instructions, progress, decisions, files, checks, agent assignments, and concrete next steps. Only the handover and normal system/project instructions carry into the fresh parent context.',
-      'Make session_new your last tool call in this conversation and finish the current turn. The parent starts a fresh session after this turn settles. If circumstances change while it is pending, use session_handover_status, session_handover_update or session_handover_cancel to manage the request.',
-    ],
-    executionMode: 'sequential',
-    parameters: Type.Object({handover: handoverSchema}),
-    async execute(_id, params, signal, _onUpdate, ctx) {
-      return schedule(params.handover, ctx, signal);
-    },
-  });
 
   pi.registerTool({
     name: 'session_handover_status',
@@ -377,9 +354,9 @@ export function registerSessionNewTool(
     },
   });
 
-  pi.registerCommand('varisdev-new-session', {
+  pi.registerCommand('varisdev-handover-switch', {
     description:
-      'Internal session_new command: wait for idle, replace the parent, and dispatch the handover.',
+      'Internal handover command: wait for idle, replace the parent, and dispatch the handover.',
     handler: async (args, ctx) => {
       const request = getHistory(ctx).pending;
       if (
@@ -421,9 +398,12 @@ export function registerSessionNewTool(
           },
           withSession: async next => {
             request.replacement = next;
-            await next.sendUserMessage(`/varisdev-resume-parent ${record.id}`, {
-              expandPromptTemplates: true,
-            });
+            await next.sendUserMessage(
+              `/varisdev-handover-resume ${record.id}`,
+              {
+                expandPromptTemplates: true,
+              },
+            );
             if (!request.configured) {
               throw (
                 request.error ??
@@ -511,9 +491,9 @@ export function registerSessionNewTool(
     },
   });
 
-  pi.registerCommand('varisdev-resume-parent', {
+  pi.registerCommand('varisdev-handover-resume', {
     description:
-      'Internal session_new command: attach agents and restore the fresh parent settings.',
+      'Internal handover command: attach agents and restore the fresh parent settings.',
     handler: async (args, ctx) => {
       const request = store.switching.get(args.trim());
       if (

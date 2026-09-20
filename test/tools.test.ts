@@ -134,7 +134,6 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'agent_new_session',
     'agent_wait',
     'agent_cancel',
-    'session_new',
     'session_handover_status',
     'session_handover_update',
     'session_handover_cancel',

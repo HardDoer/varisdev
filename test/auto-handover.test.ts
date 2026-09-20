@@ -16,9 +16,9 @@ import type {
 } from '../src/handover-agent.ts';
 import {registerAutoHandover} from '../src/auto-handover.ts';
 import type {HandoverSettings} from '../src/handover-settings.ts';
-import type {registerSessionNewTool} from '../src/tools/session-new.ts';
+import type {registerSessionHandover} from '../src/session-handover.ts';
 
-type Sessions = ReturnType<typeof registerSessionNewTool>;
+type Sessions = ReturnType<typeof registerSessionHandover>;
 type Assistant = Extract<TurnEndEvent['message'], {role: 'assistant'}>;
 type Handler = (event: object, ctx: ExtensionContext) => unknown;
 type Sent = Parameters<ExtensionAPI['sendMessage']>[0];

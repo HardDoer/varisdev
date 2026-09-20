@@ -72,8 +72,8 @@ void test('title timers release the old context before session replacement', asy
   for (const reason of ['new', 'reload']) {
     const previous = createExtension(t, 'previous');
     await previous.emit('session_start', 'startup');
-    // Agent completion also schedules delayed title updates just before a
-    // session_new handover can replace the runtime.
+    // Completion also schedules delayed title updates just before an
+    // automatic handover can replace the runtime.
     await previous.emit('agent_end');
     assert.equal(previous.titles.at(-1), 'VarisDev - previous');
     await previous.shutdown(reason);

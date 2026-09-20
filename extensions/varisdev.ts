@@ -10,7 +10,7 @@ import {registerHandoverSettingsCommands} from '../src/handover-settings.ts';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
-import {registerSessionNewTool} from '../src/tools/session-new.ts';
+import {registerSessionHandover} from '../src/session-handover.ts';
 
 const THEME_NAME = 'varisware';
 const TITLE = 'VarisDev';
@@ -203,7 +203,7 @@ export default function (pi: ExtensionAPI) {
 
   registerProjectTools(pi);
   const agents = registerAgentTools(pi);
-  const sessions = registerSessionNewTool(pi, agents);
+  const sessions = registerSessionHandover(pi, agents);
   registerHandoverSettingsCommands(pi);
   registerAutoHandover(pi, sessions);
   registerCompletionAlert(pi);

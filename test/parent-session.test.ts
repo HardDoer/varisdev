@@ -6,6 +6,7 @@ import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
+import {Type} from 'typebox';
 import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
@@ -22,9 +23,33 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
-import {AgentSessionController} from '../src/agents/team.ts';
+import {
+  AgentSessionController,
+  type AgentSessionControl,
+} from '../src/agents/team.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
-import {registerSessionNewTool} from '../src/tools/session-new.ts';
+import {registerSessionHandover} from '../src/session-handover.ts';
+
+// Trigger the production handover scheduler during an SDK tool batch so the
+// test can exercise queued worker messages and revisions before the turn settles.
+function registerHandoverTrigger(
+  pi: ExtensionAPI,
+  agents: AgentSessionControl,
+) {
+  const sessions = registerSessionHandover(pi, agents);
+  pi.registerTool({
+    name: 'test_handover',
+    label: 'Schedule test handover',
+    description: 'Trigger a handover for the integration test.',
+    executionMode: 'sequential',
+    parameters: Type.Object({
+      handover: Type.String({minLength: 1, maxLength: 64000}),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      return sessions.schedule(params.handover, ctx);
+    },
+  });
+}
 
 interface ProviderRequest {
   model: string;
@@ -309,22 +334,6 @@ void test(
           ),
         );
         assert.match(system, /PROJECT PARENT INSTRUCTION/);
-        assert.match(system, /session_new/);
-        assert.match(system, /last tool call/i);
-        assert.match(system, /ordinary tasks.*current session/i);
-        const tool = input.tools.find(
-          tool => tool.function.name === 'session_new',
-        )!;
-        assert.ok(tool, 'Fresh resource loaders must register session_new');
-        assert.deepEqual(tool.function.parameters.required, ['handover']);
-        assert.equal(
-          tool.function.parameters.properties?.handover.minLength,
-          1,
-        );
-        assert.equal(
-          tool.function.parameters.properties?.handover.maxLength,
-          64000,
-        );
         assert.equal(runtime!.session.thinkingLevel, 'high');
         if (phase > 0) {
           assert.doesNotMatch(
@@ -421,7 +430,10 @@ void test(
             finisherBefore = records(input)[0];
             assert.equal(finisherBefore.status, 'running');
             assert.ok(finisherBefore.sessionFile);
-            return {name: 'session_new', arguments: {handover: firstHandover}};
+            return {
+              name: 'test_handover',
+              arguments: {handover: firstHandover},
+            };
           case 8: {
             const scheduled = lastToolResult<{
               handover: {id: string; state: string};
@@ -496,7 +508,10 @@ void test(
             };
           case 7:
             assert.equal(records(input)[0].pendingMessages, 1);
-            return {name: 'session_new', arguments: {handover: secondHandover}};
+            return {
+              name: 'test_handover',
+              arguments: {handover: secondHandover},
+            };
           default:
             return 'FIRST FRESH PARENT OUTGOING ANSWER';
         }
@@ -655,7 +670,7 @@ void test(
             pi => {
               registrations.push(pi);
               const control = registerAgentTools(pi);
-              registerSessionNewTool(pi, control);
+              registerHandoverTrigger(pi, control);
             },
           ],
         },
@@ -681,7 +696,7 @@ void test(
           fail(event.result);
         if (
           event.type === 'tool_execution_end' &&
-          event.toolName === 'session_new' &&
+          event.toolName === 'test_handover' &&
           !event.isError
         ) {
           const details = event.result.details as {handover: {id: string}};
@@ -732,7 +747,7 @@ void test(
     runtime.setRebindSession(bind);
     await bind(runtime.session);
     // The first and only manually submitted prompt is an ordinary user task.
-    // session_new must obtain its command context through Pi's real dispatcher.
+    // test_handover must obtain its command context through Pi's real dispatcher.
     initialPrompt = runtime.session.prompt(originalTask);
     void initialPrompt.catch(fail);
     await Promise.race([finished.promise, failed.promise]);
@@ -749,7 +764,7 @@ void test(
     assert.equal(runtime.session.model?.id, 'parent-model');
     assert.equal(runtime.session.thinkingLevel, 'high');
     assert.equal(executedTools[0].at(-1), 'session_handover_update');
-    assert.equal(executedTools[1].at(-1), 'session_new');
+    assert.equal(executedTools[1].at(-1), 'test_handover');
     assert.ok(
       workerRequests.length >= 8,
       'Queued tasks must reach the real worker provider',
@@ -1007,7 +1022,7 @@ void test('ordinary source replacement closes a waiting handover team when its c
       commands.set(name, command);
     },
     getThinkingLevel: () => 'high',
-    getActiveTools: () => ['session_new'],
+    getActiveTools: () => ['session_handover_status'],
     sendMessage(message: {content: string}) {
       messages.push(message.content);
     },
@@ -1017,7 +1032,7 @@ void test('ordinary source replacement closes a waiting handover team when its c
     },
   } as unknown as ExtensionAPI;
   const control = new AgentSessionController(pi);
-  registerSessionNewTool(pi, control);
+  const handovers = registerSessionHandover(pi, control);
   const team = control.getTeam(ctx);
   const manager = team.getManager();
   const started = Promise.withResolvers<void>();
@@ -1047,9 +1062,7 @@ void test('ordinary source replacement closes a waiting handover team when its c
     }),
   );
   await started.promise;
-  await tools
-    .get('session_new')!
-    .execute('schedule', {handover: 'Continue'}, undefined, undefined, ctx);
+  await handovers.schedule('Continue', ctx);
   team.sendMessage({
     customType: 'agent_message',
     content: 'Buffered before ordinary shutdown',

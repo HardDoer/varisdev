@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionControl} from '../src/agents/team.ts';
-import {registerSessionNewTool} from '../src/tools/session-new.ts';
+import {registerSessionHandover} from '../src/session-handover.ts';
 
 interface RecordView {
   id: string;
@@ -149,7 +149,6 @@ function fixture(sessionId = randomUUID(), calls: string[] = []) {
     getThinkingLevel: () => 'high',
     getActiveTools: () => [
       'read',
-      'session_new',
       'session_handover_status',
       'session_handover_update',
       'session_handover_cancel',
@@ -167,7 +166,7 @@ function fixture(sessionId = randomUUID(), calls: string[] = []) {
       commandRuns.push(commands.get(command)!.handler(token, ctx));
     },
   } as unknown as ExtensionAPI;
-  registerSessionNewTool(pi, agents);
+  const sessions = registerSessionHandover(pi, agents);
   async function invoke(name: string, params: object): Promise<ToolResult> {
     const response = await tools
       .get(name)!
@@ -185,8 +184,8 @@ function fixture(sessionId = randomUUID(), calls: string[] = []) {
     prompts,
     tools,
     invoke,
-    execute: (handover = 'Continue the ongoing workflow.') =>
-      invoke('session_new', {handover}),
+    schedule: async (handover = 'Continue the ongoing workflow.') =>
+      (await sessions.schedule(handover, ctx)).details,
     status: (id?: string) => invoke('session_handover_status', id ? {id} : {}),
     update: (id: string, handover: string) =>
       invoke('session_handover_update', {id, handover}),
@@ -228,7 +227,7 @@ function fixture(sessionId = randomUUID(), calls: string[] = []) {
 
 void test('pending handovers expose IDs, reasons, revisions, previews and duplicate requests', async () => {
   const parent = fixture();
-  const scheduled = await parent.execute();
+  const scheduled = await parent.schedule();
   const record = scheduled.handover!;
   assert.equal(scheduled.outcome, 'scheduled');
   assert.equal(record.state, 'waiting_for_idle');
@@ -242,7 +241,7 @@ void test('pending handovers expose IDs, reasons, revisions, previews and duplic
     /source turn.*worker messages are buffered/i,
   );
   assert.deepEqual(parent.calls, ['prepare'], 'Buffer workers from scheduling');
-  const duplicate = await parent.execute('A duplicate must not replace text.');
+  const duplicate = await parent.schedule('A duplicate must not replace text.');
   assert.equal(duplicate.outcome, 'already_pending');
   assert.equal(duplicate.handover?.id, record.id);
   assert.equal(duplicate.handover?.revision, 1);
@@ -268,7 +267,7 @@ void test('pending handovers expose IDs, reasons, revisions, previews and duplic
 
 void test('explicit cancellation and stopping the source turn release workers immediately', async () => {
   const parent = fixture();
-  const {id} = (await parent.execute()).handover!;
+  const {id} = (await parent.schedule()).handover!;
   const cancelled = await parent.cancel(id);
   assert.equal(cancelled.outcome, 'cancelled');
   assert.equal(cancelled.handover?.state, 'cancelled');
@@ -277,14 +276,14 @@ void test('explicit cancellation and stopping the source turn release workers im
   assert.equal((await parent.cancel(id)).outcome, 'already_cancelled');
   assert.equal((await parent.update(id, 'Too late')).outcome, 'too_late');
   await parent.drainCommands();
-  const second = (await parent.execute()).handover!;
+  const second = (await parent.schedule()).handover!;
   assert.notEqual(second.id, id);
   parent.abort.abort(new Error('User stopped the turn'));
   await parent.drainCommands();
   assert.equal((await parent.status(second.id)).handover?.state, 'cancelled');
   assert.deepEqual(parent.calls, ['prepare', 'cancel', 'prepare', 'cancel']);
   const closing = fixture();
-  await closing.execute();
+  await closing.schedule();
   closing.shutdown('quit');
   await closing.drainCommands();
   assert.deepEqual(closing.calls, ['prepare', 'close']);
@@ -292,7 +291,7 @@ void test('explicit cancellation and stopping the source turn release workers im
 
 void test('cancellation wins over a concurrent idle failure', async () => {
   const parent = fixture();
-  const {id} = (await parent.execute()).handover!;
+  const {id} = (await parent.schedule()).handover!;
   parent.idle.reject(new Error('The host stopped waiting'));
   await parent.cancel(id);
   await parent.drainCommands();
@@ -302,14 +301,14 @@ void test('cancellation wins over a concurrent idle failure', async () => {
 
 void test('Pi veto restores the source and allows another request', async () => {
   const parent = fixture();
-  const first = (await parent.execute()).handover!;
+  const first = (await parent.schedule()).handover!;
   await parent.finish();
   assert.deepEqual(parent.calls, ['prepare', 'cancel']);
   assert.match(
     (await parent.status(first.id)).handover!.pendingReason,
     /Pi cancelled/,
   );
-  await parent.execute('Try the handover again.');
+  await parent.schedule('Try the handover again.');
   await parent.finish();
   assert.equal((await parent.status()).total, 2);
 });
@@ -343,7 +342,7 @@ void test('switching rejects cancellation, accepts text updates until dispatch, 
     await options!.withSession!(next.ctx);
     return {cancelled: false};
   });
-  const {id} = (await parent.execute()).handover!;
+  const {id} = (await parent.schedule()).handover!;
   await parent.update(id, 'Revision before idle');
   parent.idle.resolve();
   await restoring.promise;
@@ -414,7 +413,7 @@ void test('failures restore the source, retain an attached destination, or close
       await options!.withSession!(next.ctx);
       return {cancelled: false};
     });
-    const {id} = (await parent.execute()).handover!;
+    const {id} = (await parent.schedule()).handover!;
     await parent.finish();
     if (stage === 'cleanup') {
       const failed = (await next.status(id)).handover!;
@@ -458,7 +457,7 @@ void test('an unrelated destination replacement releases its abandoned handover 
     next.shutdown('new');
     throw new Error('Destination replaced before handover delivery');
   });
-  const {id} = (await parent.execute()).handover!;
+  const {id} = (await parent.schedule()).handover!;
   await parent.finish();
   const reopened = fixture(next.manager.getSessionId());
   assert.equal((await reopened.status(id)).outcome, 'not_found');
@@ -467,27 +466,29 @@ void test('an unrelated destination replacement releases its abandoned handover 
 
 void test('invalid handovers, missing IDs and unsolicited commands cannot initiate a switch', async () => {
   const parent = fixture();
-  await assert.rejects(parent.execute('  '), /cannot be empty/);
-  await assert.rejects(parent.execute('x'.repeat(64001)), /64000 characters/);
+  await assert.rejects(parent.schedule('  '), /cannot be empty/);
+  await assert.rejects(parent.schedule('x'.repeat(64001)), /64000 characters/);
   assert.equal((await parent.status('missing')).outcome, 'not_found');
   assert.equal((await parent.update('missing', 'Task')).outcome, 'not_found');
   assert.equal((await parent.cancel('missing')).outcome, 'not_found');
   await assert.rejects(
-    parent.commands.get('varisdev-new-session')!.handler('missing', parent.ctx),
+    parent.commands
+      .get('varisdev-handover-switch')!
+      .handler('missing', parent.ctx),
     /No matching/,
   );
   await assert.rejects(
     parent.commands
-      .get('varisdev-resume-parent')!
+      .get('varisdev-handover-resume')!
       .handler('missing', parent.ctx),
     /No handover/,
   );
   parent.abort.abort(new Error('Aborted'));
-  await assert.rejects(parent.execute(), /Aborted/);
+  await assert.rejects(parent.schedule(), /Aborted/);
   assert.deepEqual(parent.calls, []);
   const undispatched = fixture();
   undispatched.disableDispatch();
-  const failed = await undispatched.execute();
+  const failed = await undispatched.schedule();
   assert.equal(failed.outcome, 'failed');
   assert.match(failed.handover!.pendingReason, /did not dispatch/);
   assert.deepEqual(undispatched.calls, ['prepare', 'cancel']);
@@ -498,7 +499,7 @@ void test('history retains the latest 50 requests with bounded listing', async (
   let firstId = '';
   let lastId = '';
   for (let index = 0; index < 52; index++) {
-    const record = (await parent.execute(`Task ${index}`)).handover!;
+    const record = (await parent.schedule(`Task ${index}`)).handover!;
     firstId ||= record.id;
     lastId = record.id;
     await parent.cancel(record.id);

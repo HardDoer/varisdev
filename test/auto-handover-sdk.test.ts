@@ -23,7 +23,7 @@ import {registerAutoHandover} from '../src/auto-handover.ts';
 import type {AgentRecord, AgentWorker} from '../src/agents/orchestrator.ts';
 import {createSessionWorker} from '../src/agents/session.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
-import {registerSessionNewTool} from '../src/tools/session-new.ts';
+import {registerSessionHandover} from '../src/session-handover.ts';
 
 interface ProviderRequest {
   model: string;
@@ -138,7 +138,9 @@ void test(
       if (input.model === 'worker-model') {
         workerRequests.push(input);
         assert.ok(
-          !input.tools.some(tool => tool.function.name === 'session_new'),
+          !input.tools.some(
+            tool => tool.function.name === 'session_handover_status',
+          ),
         );
         if (workerRequests.length === 1) {
           assert.match(JSON.stringify(input.messages), /WORKER TASK/);
@@ -276,7 +278,9 @@ void test(
             /ORIGINAL TASK|PRIVATE TOOL OUTPUT|BELOW CHECKPOINT|EXACT CONTEXT BOUNDARY|Context usage has reached/,
           );
           assert.ok(
-            input.tools.some(tool => tool.function.name === 'session_new'),
+            input.tools.some(
+              tool => tool.function.name === 'session_handover_status',
+            ),
           );
           assert.equal(summaryDisposed, true);
           await replacementReady.promise;
@@ -433,7 +437,7 @@ void test(
                 workers.push(worker);
                 return worker;
               });
-              const sessionControl = registerSessionNewTool(pi, control);
+              const sessionControl = registerSessionHandover(pi, control);
               pi.on('turn_end', (event, ctx) => {
                 if (
                   JSON.stringify(event.message).includes(

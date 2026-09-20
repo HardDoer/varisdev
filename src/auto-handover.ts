@@ -5,9 +5,9 @@ import type {
 import {randomUUID} from 'node:crypto';
 import {createHandoverAgent, type HandoverAgent} from './handover-agent.ts';
 import {readHandoverSettings} from './handover-settings.ts';
-import type {registerSessionNewTool} from './tools/session-new.ts';
+import type {registerSessionHandover} from './session-handover.ts';
 
-type Sessions = ReturnType<typeof registerSessionNewTool>;
+type Sessions = ReturnType<typeof registerSessionHandover>;
 type Status =
   | 'idle'
   | 'requested'
@@ -132,7 +132,7 @@ export function registerAutoHandover(
           : 'The user requested a handover checkpoint.',
         'Pause implementation now and finish this turn with a brief acknowledgement. A dedicated Codex GPT 5.6 agent with high reasoning will read this conversation and relevant project files to write the summary handover prompt.',
         ...(transcript ? [`Current parent transcript: ${transcript}`] : []),
-        'Your final response signals that the parent is paused. The harness then runs the handover agent and handles the session change. Finish here rather than calling session_new yourself.',
+        'Your final response signals that the parent is paused. The harness then runs the handover agent and handles the session change.',
         settings['auto-session-refresh'] === 'on'
           ? 'Automatic session refresh is on. After the handover agent finishes, the harness starts a fresh parent session and tells it to continue the plan. Existing background agents remain attached.'
           : 'Automatic session refresh is off. The completed handover will be available for the user to continue manually with /handover continue.',

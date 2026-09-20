@@ -108,7 +108,7 @@ export function registerHandoverSettingsCommands(pi: ExtensionAPI): void {
     'auto-handover':
       'Show settings or turn automatic handover prompts at 90% context on/off',
     'auto-session-refresh':
-      'Show settings or turn fresh parent sessions after handovers on/off',
+      'Show settings or turn fresh sessions after handovers on/off',
   };
   for (const key of settingKeys) {
     pi.registerCommand(key, {
