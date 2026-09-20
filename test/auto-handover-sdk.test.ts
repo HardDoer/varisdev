@@ -83,7 +83,7 @@ function records(request: ProviderRequest): AgentRecord[] {
 }
 
 void test(
-  'Pi summarizes at 90% using Codex GPT 5.6 high, destroys the summarizer, and preserves live workers',
+  'Pi summarizes at 90% using Codex GPT-5.6 Sol high, destroys the summarizer, and preserves live workers',
   {timeout: 30000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-auto-sdk-'));
@@ -167,7 +167,7 @@ void test(
         return {output: 'WORKER REVIEW COMPLETE'};
       }
 
-      if (input.model === 'gpt-5.6') {
+      if (input.model === 'gpt-5.6-sol') {
         summaryRequests.push(input);
         assert.equal(input.reasoning_effort, 'high');
         assert.deepEqual(input.tools.map(tool => tool.function.name).sort(), [
@@ -248,7 +248,7 @@ void test(
             assert.equal(automaticMessages.length, 1);
             assert.match(
               automaticMessages[0],
-              /dedicated Codex GPT 5.6 agent with high reasoning/,
+              /dedicated Codex GPT-5\.6 Sol agent with high reasoning/,
             );
             assert.match(
               JSON.stringify(conversation.at(-1)),
@@ -402,8 +402,8 @@ void test(
         apiKey: 'local-codex-test-key',
         models: [
           {
-            id: 'gpt-5.6',
-            name: 'Codex GPT 5.6',
+            id: 'gpt-5.6-sol',
+            name: 'Codex GPT-5.6 Sol',
             reasoning: true,
             input: ['text'],
             cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},

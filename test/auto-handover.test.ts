@@ -284,7 +284,7 @@ void test('89.99% and unknown usage wait; exactly 90% pauses the parent once', a
   assert.match(String(f.sent[0].message.content), /90\.0%/);
   assert.match(
     String(f.sent[0].message.content),
-    /dedicated Codex GPT 5.6 agent with high reasoning/,
+    /dedicated Codex GPT-5\.6 Sol agent with high reasoning/,
   );
   assert.match(String(f.sent[0].message.content), /read/i);
   assert.match(String(f.sent[0].message.content), /final response/);

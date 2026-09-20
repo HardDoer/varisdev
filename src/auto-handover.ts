@@ -32,7 +32,7 @@ const requestType = 'varisdev_handover_request';
 const threshold = 90;
 const planInstructions = `Plan and handover workflow:
 For tasks with multiple steps, maintain a concise plan and record progress in the conversation or the project's task document. Follow the user's requested workflow and level of detail. Keep the current step, decisions, relevant files, verification results, unfinished work, and next action clear.
-When the harness requests a handover, pause implementation and finish the turn with a brief acknowledgement. A dedicated Codex GPT 5.6 agent with high reasoning reads the conversation and project files to prepare the continuation prompt. The harness handles the session change.`;
+When the harness requests a handover, pause implementation and finish the turn with a brief acknowledgement. A dedicated Codex GPT-5.6 Sol agent with high reasoning reads the conversation and project files to prepare the continuation prompt. The harness handles the session change.`;
 
 /** Pause the parent, summarize with a temporary agent, then optionally refresh. */
 export function registerAutoHandover(
@@ -130,7 +130,7 @@ export function registerAutoHandover(
         automatic
           ? `Context usage has reached ${usage!.toFixed(1)}%, at or above the ${threshold}% handover threshold.`
           : 'The user requested a handover checkpoint.',
-        'Pause implementation now and finish this turn with a brief acknowledgement. A dedicated Codex GPT 5.6 agent with high reasoning will read this conversation and relevant project files to write the summary handover prompt.',
+        'Pause implementation now and finish this turn with a brief acknowledgement. A dedicated Codex GPT-5.6 Sol agent with high reasoning will read this conversation and relevant project files to write the summary handover prompt.',
         ...(transcript ? [`Current parent transcript: ${transcript}`] : []),
         'Your final response signals that the parent is paused. The harness then runs the handover agent and handles the session change.',
         settings['auto-session-refresh'] === 'on'

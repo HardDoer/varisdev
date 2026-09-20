@@ -25,9 +25,9 @@ export async function createHandoverAgent(
   ctx: ExtensionContext,
   id: string,
 ): Promise<HandoverAgent> {
-  const model = ctx.modelRegistry.find('openai-codex', 'gpt-5.6');
+  const model = ctx.modelRegistry.find('openai-codex', 'gpt-5.6-sol');
   if (!model) {
-    throw new Error('Handover model is unavailable: openai-codex/gpt-5.6');
+    throw new Error('Handover model is unavailable: openai-codex/gpt-5.6-sol');
   }
   const agentDir = getAgentDir();
   const directory = join(

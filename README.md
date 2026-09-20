@@ -13,7 +13,7 @@ Varisware VarisDev package.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
 - `src/session-handover.ts` — switches sessions for the handover workflow, preserves background agents, and provides handover status, update, and cancellation tools.
-- `src/auto-handover.ts` and `src/handover-settings.ts` — prepare a handover with a temporary Codex GPT 5.6 high agent at 90% context and optionally continue the plan in a fresh parent session.
+- `src/auto-handover.ts` and `src/handover-settings.ts` — prepare a handover with a temporary Codex GPT-5.6 Sol high agent at 90% context and optionally continue the plan in a fresh parent session.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
 
 ## Automatic handovers
@@ -23,7 +23,7 @@ VarisDev automates **plan → implementation → handover → fresh parent → c
 - **`auto-handover`**: when context usage reaches **90% or higher**, the harness asks the working parent to pause after the current tool batch finishes. It requests one automatic handover per conversation.
 - **`auto-session-refresh`**: when the handover agent finishes, the harness starts a fresh parent session using its summary and tells it to continue the plan.
 
-The parent finishes its turn with a brief acknowledgement. A dedicated **Codex GPT 5.6** agent (`openai-codex/gpt-5.6`) with **high** reasoning then reads a snapshot of the current conversation, parent instructions, and relevant project files. It writes the continuation prompt with the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, known background agent assignments, and precise next steps. It distinguishes conversation reports, current file evidence, and unverified claims.
+The parent finishes its turn with a brief acknowledgement. A dedicated **Codex GPT-5.6 Sol** agent (`openai-codex/gpt-5.6-sol`) with **high** reasoning then reads a snapshot of the current conversation, parent instructions, and relevant project files. It writes the continuation prompt with the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, known background agent assignments, and precise next steps. It distinguishes conversation reports, current file evidence, and unverified claims.
 
 Only a completed final response from the handover agent is accepted. Interrupted, failed, truncated, empty, or oversized summaries do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The harness displays the completed draft and schedules the session change after the parent turn settles. The configured Codex model must be available through the parent's model registry and credentials; preparation errors leave the source session available for a retry with `/handover`.
 
