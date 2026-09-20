@@ -10,6 +10,10 @@ import type {
   ExtensionContext,
   TurnEndEvent,
 } from '@earendil-works/pi-coding-agent';
+import type {
+  createHandoverAgent,
+  HandoverAgent,
+} from '../src/handover-agent.ts';
 import {registerAutoHandover} from '../src/auto-handover.ts';
 import type {HandoverSettings} from '../src/handover-settings.ts';
 import type {registerSessionNewTool} from '../src/tools/session-new.ts';
@@ -72,6 +76,26 @@ async function fixture(t: TestContext) {
   const cancelled: string[] = [];
   const toolChanges: unknown[] = [];
   const abort = new AbortController();
+  const agents: Array<{disposed: boolean; signal?: AbortSignal}> = [];
+  const drafts: Sent[] = [];
+  let output = 'Summary from the dedicated agent';
+  let factory: typeof createHandoverAgent = async () => {
+    const state: (typeof agents)[number] = {disposed: false};
+    agents.push(state);
+    return {
+      prompt: 'Read the source conversation',
+      worker: {
+        async run(prompt, signal) {
+          assert.equal(prompt, 'Read the source conversation');
+          state.signal = signal;
+          return output;
+        },
+        dispose() {
+          state.disposed = true;
+        },
+      },
+    };
+  };
   let percent: number | null | undefined = 0;
   let sessionId = 'source';
   let pending = false;
@@ -141,7 +165,9 @@ async function fixture(t: TestContext) {
       message: Sent,
       options: Parameters<ExtensionAPI['sendMessage']>[1],
     ) {
-      sent.push({message, options});
+      if (message.customType === 'varisdev_handover_draft')
+        drafts.push(message);
+      else sent.push({message, options});
     },
     registerTool: (tool: unknown) => toolChanges.push(tool),
     setActiveTools: (tools: unknown) => toolChanges.push(tools),
@@ -153,14 +179,20 @@ async function fixture(t: TestContext) {
     return results;
   }
   async function reload() {
+    await emit('session_shutdown');
     events.clear();
     commands.clear();
-    registerAutoHandover(pi, sessions);
+    registerAutoHandover(pi, sessions, (ctx, id) => factory(ctx, id));
     await emit('session_start');
   }
   await reload();
   return {
     sent,
+    agents,
+    drafts,
+    factory: (value: typeof factory) => {
+      factory = value;
+    },
     entries,
     notices,
     scheduled,
@@ -188,9 +220,16 @@ async function fixture(t: TestContext) {
     error: (value?: Error) => {
       scheduleError = value;
     },
-    settings: (value: Partial<HandoverSettings>) =>
-      writeFile(join(cwd, '.pi', 'varisdev.json'), JSON.stringify(value)),
+    settings: (value: Partial<HandoverSettings> | string) =>
+      writeFile(
+        join(cwd, '.pi', 'varisdev.json'),
+        typeof value === 'string' ? value : JSON.stringify(value),
+      ),
     turn: (message = answer()) => emit('turn_end', {message}),
+    complete: (text: string) => {
+      output = text;
+      return emit('turn_end', {message: answer('Parent paused')});
+    },
     deliver: (details = sent.at(-1)!.message.details) =>
       emit('message_start', {
         message: {role: 'custom', ...sent.at(-1)!.message, details},
@@ -200,9 +239,9 @@ async function fixture(t: TestContext) {
   };
 }
 
-void test('resuming at 80% returns an inline handover before the first turn and schedules only its final answer', async t => {
+void test('resuming at 90% pauses the parent and schedules the dedicated agent summary', async t => {
   const f = await fixture(t);
-  f.usage(80);
+  f.usage(90);
   await f.reload();
   const start = async () => {
     const [result] = await f.emit('before_agent_start', {
@@ -214,13 +253,13 @@ void test('resuming at 80% returns an inline handover before the first turn and 
   const {message, systemPrompt} = await start();
   assert.ok(message);
   assert.equal(message.customType, 'varisdev_handover_request');
-  assert.match(String(message.content), /80\.0%/);
+  assert.match(String(message.content), /90\.0%/);
   assert.match(systemPrompt!, /^Existing system instructions/);
   assert.equal(f.sent.length, 0, 'The existing prompt delivers the request');
   await f.turn(answer('A response before inline request delivery'));
   assert.equal(f.scheduled.length, 0);
   await f.emit('message_start', {message: {role: 'custom', ...message}});
-  await f.turn(answer('Resume tasks.md with its remaining verification step.'));
+  await f.complete('Resume tasks.md with its remaining verification step.');
   assert.deepEqual(f.scheduled, [
     'Resume tasks.md with its remaining verification step.',
   ]);
@@ -230,21 +269,24 @@ void test('resuming at 80% returns an inline handover before the first turn and 
   assert.equal(f.sent.length, 0);
 });
 
-void test('79.99% and unknown usage wait; exactly 80% requests the active parent once', async t => {
+void test('89.99% and unknown usage wait; exactly 90% pauses the parent once', async t => {
   const f = await fixture(t);
   await f.emit('agent_start');
-  for (const value of [79.99, undefined, null, NaN, Infinity]) {
+  for (const value of [80, 89.99, undefined, null, NaN, Infinity]) {
     f.usage(value);
     await f.turn();
   }
   assert.equal(f.sent.length, 0);
-  f.usage(80);
+  f.usage(90);
   await f.turn(answer('Preparing work', 'toolUse', true));
   assert.equal(f.sent.length, 1);
   assert.deepEqual(f.sent[0].options, {deliverAs: 'steer', triggerTurn: true});
-  assert.match(String(f.sent[0].message.content), /80\.0%/);
-  assert.match(String(f.sent[0].message.content), /plan|Plan/);
-  assert.match(String(f.sent[0].message.content), /inspect|verify/i);
+  assert.match(String(f.sent[0].message.content), /90\.0%/);
+  assert.match(
+    String(f.sent[0].message.content),
+    /dedicated Codex GPT 5.6 agent with high reasoning/,
+  );
+  assert.match(String(f.sent[0].message.content), /read/i);
   assert.match(String(f.sent[0].message.content), /final response/);
   assert.match(String(f.sent[0].message.content), /source\.jsonl/);
   await f.turn(answer('An answer from before request delivery'));
@@ -258,7 +300,7 @@ void test('79.99% and unknown usage wait; exactly 80% requests the active parent
   );
   assert.equal(f.sent.length, 1);
   assert.equal(f.scheduled.length, 0);
-  await f.turn(answer('  Verified plan in tasks.md. Continue with checks.  '));
+  await f.complete('  Verified plan in tasks.md. Continue with checks.  ');
   assert.deepEqual(f.scheduled, [
     'Verified plan in tasks.md. Continue with checks.',
   ]);
@@ -274,7 +316,7 @@ void test('79.99% and unknown usage wait; exactly 80% requests the active parent
   );
 });
 
-void test('persisted request suppresses repeats after reload; a fresh session can request again above 80%', async t => {
+void test('persisted request suppresses repeats after reload; a fresh session can request again above 90%', async t => {
   const f = await fixture(t);
   f.usage(91);
   await f.turn();
@@ -289,18 +331,16 @@ void test('persisted request suppresses repeats after reload; a fresh session ca
   assert.notDeepEqual(f.sent[1].message.details, firstId);
 });
 
-void test('failed, aborted, truncated, empty and oversized drafts never schedule or reuse a later answer', async t => {
+void test('failed, aborted and truncated parent responses never start the summarizer', async t => {
   const f = await fixture(t);
   for (const [text, stop] of [
     ['Partial draft', 'error'],
     ['Stopped draft', 'aborted'],
     ['Truncated draft', 'length'],
     ['Preparation never reached a final answer', 'toolUse'],
-    ['', 'stop'],
-    ['x'.repeat(64001), 'stop'],
   ] as const) {
     await f.freshSession();
-    f.usage(80);
+    f.usage(90);
     await f.turn();
     await f.deliver();
     await f.turn(answer(text, stop, stop === 'toolUse'));
@@ -318,7 +358,7 @@ void test('failed, aborted, truncated, empty and oversized drafts never schedule
 
 void test('a new user instruction invalidates drafting and cancels a scheduled replacement', async t => {
   const f = await fixture(t);
-  f.usage(80);
+  f.usage(90);
   await f.turn();
   await f.deliver();
   await f.emit('message_start', {
@@ -331,7 +371,7 @@ void test('a new user instruction invalidates drafting and cancels a scheduled r
   await f.freshSession();
   await f.turn();
   await f.deliver();
-  await f.turn(answer('Captured draft awaiting replacement'));
+  await f.complete('Captured draft awaiting replacement');
   assert.equal(f.isPending(), true);
   await f.emit('message_start', {
     message: {
@@ -353,14 +393,14 @@ void test('automatic prompts off still permit manual handover and manual continu
   await f.turn();
   assert.deepEqual(
     await f.emit('session_before_compact', {reason: 'threshold'}),
-    [undefined],
+    [{cancel: true}],
   );
   assert.equal(f.sent.length, 0);
   await f.manual();
   assert.equal(f.sent.length, 1);
   assert.match(String(f.sent[0].message.content), /refresh is off/);
   await f.deliver();
-  await f.turn(answer('Saved manual handover'));
+  await f.complete('Saved manual handover');
   await f.emit('agent_settled');
   assert.equal(f.scheduled.length, 0);
   assert.ok(JSON.stringify(f.entries).includes('Saved manual handover'));
@@ -371,7 +411,7 @@ void test('automatic prompts off still permit manual handover and manual continu
 
 void test('settings changes apply at request and completion, independently', async t => {
   const f = await fixture(t);
-  f.usage(85);
+  f.usage(95);
   await f.settings({'auto-handover': 'off'});
   await f.turn();
   assert.equal(f.sent.length, 0);
@@ -379,68 +419,98 @@ void test('settings changes apply at request and completion, independently', asy
   await f.turn();
   await f.deliver();
   await f.settings({'auto-session-refresh': 'off'});
-  await f.turn(answer('Draft retained after disabling refresh'));
+  await f.complete('Draft retained after disabling refresh');
   assert.equal(f.scheduled.length, 0);
   await f.manual();
   await f.deliver();
   await f.settings({'auto-handover': 'off', 'auto-session-refresh': 'on'});
-  await f.turn(answer('Draft completed after enabling refresh'));
+  await f.complete('Draft completed after enabling refresh');
   assert.deepEqual(f.scheduled, ['Draft completed after enabling refresh']);
 });
 
-void test('threshold compaction waits below 80% and during drafting; manual and overflow compaction work', async t => {
+void test('native compaction stays blocked below 90%, with unknown usage, and throughout a handover', async t => {
   const f = await fixture(t);
-  f.usage(79.99);
-  assert.deepEqual(
-    await f.emit('session_before_compact', {reason: 'threshold'}),
-    [{cancel: true}],
-  );
-  assert.equal(f.sent.length, 0);
-  for (const reason of ['manual', 'overflow']) {
-    assert.deepEqual(await f.emit('session_before_compact', {reason}), [
-      undefined,
-    ]);
+  const blocked = async () => {
+    for (const reason of ['threshold', 'manual', 'overflow']) {
+      assert.deepEqual(await f.emit('session_before_compact', {reason}), [
+        {cancel: true},
+      ]);
+    }
+  };
+  for (const usage of [0, 80, 89.99, undefined, null, NaN, Infinity]) {
+    f.usage(usage);
+    await blocked();
+    assert.equal(f.sent.length, 0);
   }
-  f.usage(undefined);
-  assert.deepEqual(
-    await f.emit('session_before_compact', {reason: 'threshold'}),
-    [undefined],
-  );
-  f.usage(80);
-  assert.deepEqual(
-    await f.emit('session_before_compact', {reason: 'threshold'}),
-    [{cancel: true}],
-  );
+  f.usage(90);
+  await blocked();
+  assert.equal(f.sent.length, 1);
   assert.deepEqual(f.sent[0].options, {
     deliverAs: 'nextTurn',
     triggerTurn: true,
   });
   await f.deliver();
-  assert.deepEqual(
-    await f.emit('session_before_compact', {reason: 'threshold'}),
-    [{cancel: true}],
-  );
+  await blocked();
+  await f.complete('Draft survives attempted compaction');
+  assert.deepEqual(f.scheduled, ['Draft survives attempted compaction']);
+  await blocked();
   assert.equal(f.sent.length, 1);
-  assert.deepEqual(await f.emit('session_before_compact', {reason: 'manual'}), [
-    undefined,
-  ]);
-  await f.turn();
-  assert.equal(f.scheduled.length, 0);
-  await f.emit('session_compact');
-  f.usage(85);
+
+  await f.freshSession();
   await f.emit('agent_start');
-  await f.emit('session_before_compact', {reason: 'threshold'});
+  await blocked();
   assert.equal(f.sent.length, 2);
   assert.equal(f.sent[1].options?.deliverAs, 'steer');
 });
 
+void test('failed or interrupted handovers never enable native compaction', async t => {
+  const f = await fixture(t);
+  f.usage(95);
+  await f.turn();
+  await f.deliver();
+  await f.complete('');
+  for (const reason of ['threshold', 'manual', 'overflow']) {
+    assert.deepEqual(await f.emit('session_before_compact', {reason}), [
+      {cancel: true},
+    ]);
+  }
+  assert.equal(f.scheduled.length, 0);
+  assert.equal(f.sent.length, 1);
+  await f.manual();
+  assert.equal(f.sent.length, 2, 'Manual retry is still available');
+  f.abort.abort();
+  for (const reason of ['threshold', 'manual', 'overflow']) {
+    assert.deepEqual(await f.emit('session_before_compact', {reason}), [
+      {cancel: true},
+    ]);
+  }
+});
+
+void test('disabled or invalid handover settings never enable native compaction', async t => {
+  const f = await fixture(t);
+  f.usage(95);
+  for (const settings of [
+    {'auto-handover': 'off', 'auto-session-refresh': 'off'} as const,
+    '{invalid json',
+  ]) {
+    await f.settings(settings);
+    for (const reason of ['threshold', 'manual', 'overflow']) {
+      assert.deepEqual(await f.emit('session_before_compact', {reason}), [
+        {cancel: true},
+      ]);
+    }
+    assert.equal(f.sent.length, 0);
+  }
+  assert.match(f.notices.at(-1)!, /Handover:/);
+});
+
 void test('dispatch errors retain a draft and allow a manual retry', async t => {
   const f = await fixture(t);
-  f.usage(80);
+  f.usage(90);
   await f.turn();
   await f.deliver();
   f.result('failed');
-  await f.turn(answer('Recoverable draft'));
+  await f.complete('Recoverable draft');
   assert.match(f.notices.at(-1)!, /Dispatch failed/);
   f.error(new Error('Replacement unavailable'));
   await f.manual('continue');
@@ -455,10 +525,10 @@ void test('dispatch errors retain a draft and allow a manual retry', async t => 
 
 void test('a cancelled or vetoed scheduled replacement leaves its draft available to retry', async t => {
   const f = await fixture(t);
-  f.usage(80);
+  f.usage(90);
   await f.turn();
   await f.deliver();
-  await f.turn(answer('Draft survives cancellation'));
+  await f.complete('Draft survives cancellation');
   assert.equal(f.scheduled.length, 1);
   // The session controller releases its pending request after cancellation or veto.
   f.pending(false);
@@ -473,7 +543,7 @@ void test('a cancelled or vetoed scheduled replacement leaves its draft availabl
 void test('new work invalidates a saved draft and an existing session change blocks requests', async t => {
   const f = await fixture(t);
   await f.settings({'auto-session-refresh': 'off'});
-  f.usage(80);
+  f.usage(90);
   f.pending(true);
   await f.turn();
   await f.manual();
@@ -481,10 +551,110 @@ void test('new work invalidates a saved draft and an existing session change blo
   f.pending(false);
   await f.turn();
   await f.deliver();
-  await f.turn(answer('Now stale draft'));
+  await f.complete('Now stale draft');
   await f.emit('message_start', {
     message: {role: 'user', content: 'Do more work'},
   });
   await f.manual('continue');
   assert.equal(f.scheduled.length, 0);
 });
+
+void test('empty and oversized summaries never schedule; agent errors allow manual retry', async t => {
+  const f = await fixture(t);
+  for (const output of ['', 'x'.repeat(64001)]) {
+    await f.freshSession();
+    await f.manual();
+    await f.deliver();
+    await f.complete(output);
+    assert.equal(f.scheduled.length, 0);
+    assert.equal(f.agents.at(-1)!.disposed, true);
+  }
+  f.factory(async () => {
+    throw new Error('Model unavailable');
+  });
+  await f.manual();
+  await f.deliver();
+  await f.turn();
+  assert.match(f.notices.at(-1)!, /Model unavailable/);
+  assert.equal(f.scheduled.length, 0);
+  await f.manual();
+  assert.equal(f.sent.length, 4);
+});
+
+void test('completed summarizer is disposed on session change and the next session gets a new agent', async t => {
+  const f = await fixture(t);
+  await f.manual();
+  await f.deliver();
+  await f.complete('Dedicated summary');
+  assert.deepEqual(f.scheduled, ['Dedicated summary']);
+  assert.equal(f.drafts[0].content, 'Dedicated summary');
+  assert.equal(f.agents[0].disposed, false);
+  await f.emit('session_shutdown');
+  assert.equal(f.agents[0].disposed, true);
+  await f.freshSession();
+  await f.manual();
+  await f.deliver();
+  await f.complete('Next dedicated summary');
+  assert.equal(f.agents.length, 2);
+  assert.equal(f.agents[1].disposed, false);
+  await f.freshSession();
+  assert.equal(f.agents[1].disposed, true);
+});
+
+for (const phase of ['initializing', 'running']) {
+  for (const interruption of [
+    'session_shutdown',
+    'session_start',
+    'user',
+    'abort',
+  ]) {
+    void test(`${interruption} during summarizer ${phase} discards late output and disposes the agent`, async t => {
+      const f = await fixture(t);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let disposed = 0;
+      let signal: AbortSignal | undefined;
+      f.factory(async () => {
+        if (phase === 'initializing') {
+          entered.resolve();
+          await release.promise;
+        }
+        return {
+          prompt: 'Snapshot',
+          worker: {
+            async run(_prompt, runSignal) {
+              signal = runSignal;
+              entered.resolve();
+              await release.promise;
+              runSignal.throwIfAborted();
+              return 'Obsolete summary';
+            },
+            dispose() {
+              disposed++;
+            },
+          },
+        } satisfies HandoverAgent;
+      });
+      await f.manual();
+      await f.deliver();
+      const turn = f.turn();
+      await entered.promise;
+      if (interruption === 'user') {
+        await f.emit('message_start', {
+          message: {role: 'user', content: 'New requirement'},
+        });
+      } else if (interruption === 'abort') {
+        f.abort.abort();
+      } else {
+        await f.emit(interruption);
+      }
+      if (phase === 'running') assert.equal(signal!.aborted, true);
+      release.resolve();
+      await turn;
+      assert.equal(disposed, 1);
+      assert.equal(f.scheduled.length, 0);
+      assert.equal(f.drafts.length, 0);
+      assert.deepEqual(f.notices, []);
+    });
+  }
+}

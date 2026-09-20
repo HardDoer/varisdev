@@ -2,7 +2,6 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
@@ -14,6 +13,7 @@ import {mkdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {registerProjectTools} from '../tools/index.ts';
 import type {AgentWorker} from './orchestrator.ts';
+import {createWorkerModelRuntime} from './model-runtime.ts';
 
 interface WorkerOptions {
   id: string;
@@ -74,8 +74,8 @@ export function sessionWorker(
           throw new Error('Agent finished without an assistant response.');
         }
         if (
-          lastAssistant.stopReason === 'error' ||
-          lastAssistant.stopReason === 'aborted'
+          lastAssistant.stopReason !== 'stop' ||
+          lastAssistant.content.some(part => part.type === 'toolCall')
         ) {
           throw new Error(
             lastAssistant.errorMessage || `Agent ${lastAssistant.stopReason}.`,
@@ -134,55 +134,11 @@ export async function createSessionWorker(
   if (options.previousSessionFile) {
     sessionManager.newSession({parentSession: options.previousSessionFile});
   }
-  const provider = options.modelRegistry.getProvider(options.model.provider);
-  if (!provider) {
-    throw new Error(
-      `Parent model provider is unavailable: ${options.model.provider}`,
-    );
-  }
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(directory, 'auth.json'),
-    modelsPath: null,
-    refreshOnCreate: false,
-  });
-  modelRuntime.registerNativeProvider({
-    ...provider,
-    // The parent owns catalog refreshes and credential storage. Resolve auth for
-    // each request there, including runtime keys, OAuth and model header config.
-    refreshModels: undefined,
-    auth: {
-      ...provider.auth,
-      apiKey: {
-        name: 'Parent session',
-        async check() {
-          if (
-            !options.modelRegistry.getProviderAuthStatus(provider.id).configured
-          ) {
-            return undefined;
-          }
-          return {
-            type: options.modelRegistry.isUsingOAuth(options.model)
-              ? 'oauth'
-              : 'api_key',
-          };
-        },
-        async resolve() {
-          const result = await options.modelRegistry.getApiKeyAndHeaders(
-            options.model,
-          );
-          if (!result.ok) throw new Error(result.error);
-          return {
-            auth: {
-              apiKey: result.apiKey,
-              headers: result.headers,
-              baseUrl: result.baseUrl,
-            },
-            env: result.env,
-          };
-        },
-      },
-    },
-  });
+  const modelRuntime = await createWorkerModelRuntime(
+    options.modelRegistry,
+    options.model,
+    directory,
+  );
   const {session} = await createAgentSession({
     cwd: options.cwd,
     model: options.model,

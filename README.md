@@ -13,21 +13,23 @@ Varisware VarisDev package.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
 - `src/tools/session-new.ts` — starts a fresh parent session from a handover and continues automatically while keeping its background agents.
-- `src/auto-handover.ts` and `src/handover-settings.ts` — request a handover from the working parent at 80% context and optionally continue the plan in a fresh parent session.
+- `src/auto-handover.ts` and `src/handover-settings.ts` — prepare a handover with a temporary Codex GPT 5.6 high agent at 90% context and optionally continue the plan in a fresh parent session.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
 
 ## Automatic handovers
 
 VarisDev automates **plan → implementation → handover → fresh parent → continue the plan**. Both automation switches default to `on`:
 
-- **`auto-handover`**: when context usage reaches **80% or higher**, the harness sends the working parent a handover instruction after the current tool batch finishes. It requests one handover per conversation, with another opportunity after native fallback compaction.
-- **`auto-session-refresh`**: when the parent finishes writing the handover, the harness starts a fresh parent session using that final response and tells it to continue the plan.
+- **`auto-handover`**: when context usage reaches **90% or higher**, the harness asks the working parent to pause after the current tool batch finishes. It requests one automatic handover per conversation.
+- **`auto-session-refresh`**: when the handover agent finishes, the harness starts a fresh parent session using its summary and tells it to continue the plan.
 
-The working agent prepares the handover using its current understanding and normal tools. It can update the plan, inspect project files, check agent state, and record verified progress. The prompt asks for the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, background agent assignments, and precise next steps. It explicitly distinguishes conversation reports, current file evidence, and unverified claims.
+The parent finishes its turn with a brief acknowledgement. A dedicated **Codex GPT 5.6** agent (`openai-codex/gpt-5.6`) with **high** reasoning then reads a snapshot of the current conversation, parent instructions, and relevant project files. It writes the continuation prompt with the remaining plan or its saved path, completed work, decisions, file references, check results, remaining uncertainties, known background agent assignments, and precise next steps. It distinguishes conversation reports, current file evidence, and unverified claims.
 
-Only a completed final response to the handover instruction is accepted. Tool calls, interrupted responses, errors, and truncated responses do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The agent is asked to finish with handover text; the harness schedules the session change after that turn settles.
+Only a completed final response from the handover agent is accepted. Interrupted, failed, truncated, empty, or oversized summaries do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The harness displays the completed draft and schedules the session change after the parent turn settles. The configured Codex model must be available through the parent's model registry and credentials; preparation errors leave the source session available for a retry with `/handover`.
 
-The destination receives the handover and normal system/project instructions. Existing background agents retain their IDs, conversations, and queued work. Their notifications are buffered by the existing parent handover machinery when the session change is scheduled.
+The handover agent belongs to the source session and is destroyed when that session changes or shuts down. A later handover creates a new agent. Its source snapshot, transcript, and result remain under `~/.pi/agent/varisdev/handovers/<source-session-id>/<request-id>/` (or the configured Pi agent directory).
+
+The destination receives the handover and normal system/project instructions. Existing background workers retain their IDs, conversations, and queued work. Their notifications are buffered by the existing parent handover machinery when the session change is scheduled.
 
 ### Configure automation
 
@@ -53,12 +55,12 @@ The switches are independent. Disabling automatic prompts still allows a manuall
 
 ### Manual steps
 
-- **`/handover`** asks the working parent to prepare a handover now, at any context usage.
+- **`/handover`** pauses the parent and runs the handover agent now, at any context usage.
 - **`/handover continue`** starts a fresh parent from the most recent completed draft.
 
 With both switches off, use those two commands to control each step. Completed drafts survive reloads and session resumes; new work invalidates an older draft. An interrupted handover can be requested again with `/handover`.
 
-Automatic native threshold compaction is held while the enabled handover workflow approaches 80% and while a handover is being prepared. This prevents Pi's fixed token reserve from compacting early on smaller models. Manual `/compact` and overflow recovery remain available. If preparation fails or is interrupted, native compaction can handle the existing conversation. Background agents use their existing session behavior.
+VarisDev blocks native compaction in parent sessions, including automatic threshold compaction, overflow compaction, and manual `/compact`. Compaction stays blocked when handover automation is off, context usage is unknown, or a handover fails or is interrupted. Use `/handover` to retry preparation, or `/handover continue` to retry a session change from a completed draft. Background agents use their existing session behavior.
 
 ## Agent orchestration
 
@@ -165,7 +167,7 @@ The parent calls `session_new` to clear its accumulated conversation and continu
 
 ```json
 {
-  "handover": "Continue the asset pipeline. The user requested automatic parent handovers near 80% context usage. The plan and progress are in build/asset-plan.md. Asset generation and validation agents are still working; use agent_list to find them. Next, collect their results, resolve validation failures, and continue the remaining batches."
+  "handover": "Continue the asset pipeline. The user requested automatic parent handovers near 90% context usage. The plan and progress are in build/asset-plan.md. Asset generation and validation agents are still working; use agent_list to find them. Next, collect their results, resolve validation failures, and continue the remaining batches."
 }
 ```
 
@@ -195,7 +197,7 @@ A background agent calls the tool with a self-contained handover:
 
 ```json
 {
-  "handover": "Continue the asset review. The user requested an ongoing workflow with automatic handovers near 80% context usage. Reviewed sprites/terrain; findings are in build/asset-review.md. Next, inspect sprites/units and append findings. Preserve the existing file ownership assignments."
+  "handover": "Continue the asset review. The user requested an ongoing workflow with automatic handovers near 90% context usage. Reviewed sprites/terrain; findings are in build/asset-review.md. Next, inspect sprites/units and append findings. Preserve the existing file ownership assignments."
 }
 ```
 
@@ -207,7 +209,7 @@ The agent stops its current tools, opens a fresh conversation, and starts workin
 
 ## Completion sound
 
-In interactive mode, VarisDev tracks terminal focus and raises an alert only when the terminal is unfocused as the `agent_settled` event fires. This waits until automatic retries, compaction, and queued follow-up work have finished.
+In interactive mode, VarisDev tracks terminal focus and raises an alert only when the terminal is unfocused as the `agent_settled` event fires. This waits until automatic retries and queued follow-up work have finished.
 
 Focus detection uses the standard terminal focus-reporting protocol and works across supported macOS, Windows, and Linux terminals. When running inside tmux, `set -g focus-events on` may be required. An unfocused completion also requests visual attention: iTerm2 bounces its Dock icon once, Windows flashes the owning terminal or IDE window, and other terminals receive the standard bell/urgency signal. A completed terminal progress indicator remains visible until focus returns.
 

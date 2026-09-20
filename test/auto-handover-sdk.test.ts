@@ -18,6 +18,7 @@ import {
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
 } from '@earendil-works/pi-coding-agent';
+import {createHandoverAgent} from '../src/handover-agent.ts';
 import {registerAutoHandover} from '../src/auto-handover.ts';
 import type {AgentRecord, AgentWorker} from '../src/agents/orchestrator.ts';
 import {createSessionWorker} from '../src/agents/session.ts';
@@ -26,6 +27,7 @@ import {registerSessionNewTool} from '../src/tools/session-new.ts';
 
 interface ProviderRequest {
   model: string;
+  reasoning_effort?: string;
   messages: Array<{role: string; content: unknown}>;
   tools: Array<{function: {name: string}}>;
 }
@@ -81,7 +83,7 @@ function records(request: ProviderRequest): AgentRecord[] {
 }
 
 void test(
-  'Pi steers the parent at exactly 80%, holds earlier native compaction, and resumes a fresh runtime with its live worker',
+  'Pi summarizes at 90% using Codex GPT 5.6 high, destroys the summarizer, and preserves live workers',
   {timeout: 30000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-auto-sdk-'));
@@ -91,7 +93,7 @@ void test(
     process.env.PI_CODING_AGENT_DIR = agentDir;
     const originalTask = 'ORIGINAL TASK: carry out the requested file review.';
     const verified = 'VERIFIED PLAN: review draft.txt; validation is pending.';
-    const handover = `HANDOVER FROM WORKING PARENT: ${verified}`;
+    const handover = `HANDOVER FROM DEDICATED AGENT: ${verified}`;
     const workerTask = 'WORKER TASK: inspect worker.txt and report findings.';
     const workerStarted = Promise.withResolvers<void>();
     const finishWorker = Promise.withResolvers<void>();
@@ -116,6 +118,8 @@ void test(
     const workers: AgentWorker[] = [];
     const requests: ProviderRequest[][] = [[], []];
     const workerRequests: ProviderRequest[] = [];
+    const summaryRequests: ProviderRequest[] = [];
+    let summaryDisposed = false;
     const tools: string[][] = [[], []];
     const events: AgentSessionEvent[] = [];
     const automaticMessages: string[] = [];
@@ -129,7 +133,7 @@ void test(
       assert.doesNotMatch(
         JSON.stringify(input.messages),
         /You are a context summarization assistant/,
-        'Native threshold compaction must wait for the parent checkpoint',
+        'Native compaction must never reach the provider',
       );
       if (input.model === 'worker-model') {
         workerRequests.push(input);
@@ -140,7 +144,7 @@ void test(
           assert.match(JSON.stringify(input.messages), /WORKER TASK/);
           return {
             output: {name: 'read', arguments: {path: 'worker.txt'}},
-            tokens: 51200,
+            tokens: 57600,
           };
         }
         assert.equal(workerRequests.length, 2);
@@ -150,7 +154,7 @@ void test(
         assert.deepEqual(
           conversation.map(message => message.role),
           ['user', 'assistant', 'tool'],
-          'A worker at 80% must continue without an automatic steering message',
+          'A worker at 90% must continue without an automatic steering message',
         );
         assert.match(
           JSON.stringify(conversation.at(-1)),
@@ -159,6 +163,46 @@ void test(
         workerStarted.resolve();
         await finishWorker.promise;
         return {output: 'WORKER REVIEW COMPLETE'};
+      }
+
+      if (input.model === 'gpt-5.6') {
+        summaryRequests.push(input);
+        assert.equal(input.reasoning_effort, 'high');
+        assert.deepEqual(input.tools.map(tool => tool.function.name).sort(), [
+          'find',
+          'grep',
+          'ls',
+          'read',
+        ]);
+        const text = JSON.stringify(input.messages);
+        assert.match(text, /session handover agent/);
+        assert.match(text, /PROJECT REVIEW INSTRUCTION/);
+        switch (summaryRequests.length) {
+          case 1: {
+            const content = input.messages.at(-1)!.content;
+            const prompt =
+              typeof content === 'string'
+                ? content
+                : (content as Array<{text: string}>)
+                    .map(part => part.text)
+                    .join('\n');
+            const path = JSON.parse(
+              prompt.match(/snapshot at (".*?")\./)![1],
+            ) as string;
+            return {output: {name: 'read', arguments: {path}}};
+          }
+          case 2:
+            assert.match(text, /ORIGINAL TASK|EXACT CONTEXT BOUNDARY/);
+            assert.ok(text.includes(workerId));
+            return {
+              output: {name: 'read', arguments: {path: 'checkpoint.txt'}},
+            };
+          case 3:
+            assert.ok(text.includes(verified));
+            return {output: handover};
+          default:
+            assert.fail('Unexpected summarizer turn');
+        }
       }
 
       assert.equal(input.model, 'parent-model');
@@ -192,38 +236,30 @@ void test(
             assert.equal(workerBefore.status, 'running');
             return {
               output: 'BELOW CHECKPOINT: review is ongoing.',
-              tokens: 50000,
+              tokens: 57599,
             };
           case 4:
             assert.equal(automaticMessages.length, 0);
-            return {output: 'EXACT CONTEXT BOUNDARY', tokens: 51200};
+            return {output: 'EXACT CONTEXT BOUNDARY', tokens: 57600};
           case 5:
-            assert.equal(boundaryPercent, 80);
+            assert.equal(boundaryPercent, 90);
             assert.equal(automaticMessages.length, 1);
-            assert.match(automaticMessages[0], /final response/i);
             assert.match(
               automaticMessages[0],
-              /harness handles the session change/i,
+              /dedicated Codex GPT 5.6 agent with high reasoning/,
             );
-            assert.match(automaticMessages[0], /verify|inspect|read/i);
             assert.match(
               JSON.stringify(conversation.at(-1)),
-              /Context usage has reached 80\.0%/,
+              /Context usage has reached 90.0%/,
             );
             return {
-              output: {name: 'read', arguments: {path: 'checkpoint.txt'}},
-              tokens: 51200,
+              output: 'Parent paused for the summarizing agent.',
+              tokens: 57600,
             };
-          case 6:
-            assert.equal(
-              automaticMessages.length,
-              1,
-              'Steering must not repeat every turn',
-            );
-            assert.ok(JSON.stringify(conversation.at(-1)).includes(verified));
-            return {output: handover, tokens: 51200};
           default:
-            assert.fail('The old parent must finish with its handover');
+            assert.fail(
+              'The old parent must stop after acknowledging the pause',
+            );
         }
       }
       switch (requests[1].length) {
@@ -242,6 +278,7 @@ void test(
           assert.ok(
             input.tools.some(tool => tool.function.name === 'session_new'),
           );
+          assert.equal(summaryDisposed, true);
           await replacementReady.promise;
           return {output: {name: 'agent_status', arguments: {id: workerId}}};
         case 2: {
@@ -355,6 +392,23 @@ void test(
           maxTokens: 1000,
         })),
       });
+      modelRuntime.registerProvider('openai-codex', {
+        api: 'openai-completions',
+        baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+        apiKey: 'local-codex-test-key',
+        models: [
+          {
+            id: 'gpt-5.6',
+            name: 'Codex GPT 5.6',
+            reasoning: true,
+            input: ['text'],
+            cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+            contextWindow: 128000,
+            maxTokens: 1000,
+            compat: {supportsReasoningEffort: true},
+          },
+        ],
+      });
       const services = await createAgentSessionServices({
         cwd,
         agentDir,
@@ -388,7 +442,16 @@ void test(
                 )
                   boundaryPercent = ctx.getContextUsage()?.percent;
               });
-              registerAutoHandover(pi, sessionControl);
+              registerAutoHandover(pi, sessionControl, async (ctx, id) => {
+                const agent = await createHandoverAgent(ctx, id);
+                const dispose = agent.worker.dispose;
+                agent.worker.dispose = () => {
+                  assert.equal(summaryDisposed, false);
+                  summaryDisposed = true;
+                  dispose();
+                };
+                return agent;
+              });
             },
           ],
         },
@@ -411,7 +474,11 @@ void test(
           tools[phase].push(event.toolName);
         if (event.type === 'tool_execution_end' && event.isError)
           fail(event.result);
-        if (event.type === 'message_end' && event.message.role === 'custom')
+        if (
+          event.type === 'message_end' &&
+          event.message.role === 'custom' &&
+          event.message.customType === 'varisdev_handover_request'
+        )
           automaticMessages.push(JSON.stringify(event.message.content));
         if (phase === 1 && event.type === 'agent_settled') finished.resolve();
       });
@@ -448,7 +515,7 @@ void test(
     await Promise.race([first, failed.promise]);
     assert.equal(requests[0].length, 3);
     assert.equal(automaticMessages.length, 0);
-    assert.equal(runtime.session.getContextUsage()?.tokens, 50000);
+    assert.equal(runtime.session.getContextUsage()?.tokens, 57599);
     assert.ok(
       events.some(
         event =>
@@ -469,7 +536,9 @@ void test(
     assert.equal(runtime.session.model?.id, 'parent-model');
     assert.equal(runtime.session.thinkingLevel, 'high');
     assert.equal(automaticMessages.length, 1);
-    assert.deepEqual(tools[0], ['agent_spawn', 'agent_status', 'read']);
+    assert.deepEqual(tools[0], ['agent_spawn', 'agent_status']);
+    assert.equal(summaryRequests.length, 3);
+    assert.equal(summaryDisposed, true);
     assert.deepEqual(tools[1], ['agent_status', 'agent_wait']);
     assert.equal(workers.length, 1);
     assert.equal(workerRequests.length, 2);

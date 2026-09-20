@@ -847,6 +847,15 @@ void test('session workers save the final answer, track tools, and detect API fa
     /Provider failed/,
   );
   assert.equal(fake.listeners.size, 0);
+  fake.session.prompt = async () => {
+    fake.session.messages.push(assistant('Incomplete handover', 'length'));
+  };
+  await assert.rejects(
+    worker.run('summarize', new AbortController().signal, () => {}),
+    /Agent length/,
+  );
+  assert.equal(await readFile(resultFile, 'utf8'), 'complete answer');
+  assert.equal(fake.listeners.size, 0);
   worker.dispose();
   assert.equal(fake.disposed, 1);
 });

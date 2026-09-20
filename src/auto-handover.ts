@@ -3,30 +3,42 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import {randomUUID} from 'node:crypto';
+import {createHandoverAgent, type HandoverAgent} from './handover-agent.ts';
 import {readHandoverSettings} from './handover-settings.ts';
 import type {registerSessionNewTool} from './tools/session-new.ts';
 
 type Sessions = ReturnType<typeof registerSessionNewTool>;
 type Status =
-  'idle' | 'requested' | 'writing' | 'ready' | 'scheduled' | 'failed';
+  | 'idle'
+  | 'requested'
+  | 'pausing'
+  | 'summarizing'
+  | 'ready'
+  | 'scheduled'
+  | 'failed';
 interface Checkpoint {
   status: Status;
   attempted: boolean;
   id?: string;
   handover?: string;
 }
+interface Summarizer {
+  controller: AbortController;
+  agent?: HandoverAgent;
+}
 
 const entryType = 'varisdev_handover';
 const requestType = 'varisdev_handover_request';
-const threshold = 80;
+const threshold = 90;
 const planInstructions = `Plan and handover workflow:
 For tasks with multiple steps, maintain a concise plan and record progress in the conversation or the project's task document. Follow the user's requested workflow and level of detail. Keep the current step, decisions, relevant files, verification results, unfinished work, and next action clear.
-When the harness requests a handover, pause implementation and prepare a complete continuation prompt using your current understanding and tools. Update the existing plan and verify relevant file state as needed. Distinguish what the conversation reports, what current files confirm, and what remains unverified. The harness handles the session change after your final handover response.`;
+When the harness requests a handover, pause implementation and finish the turn with a brief acknowledgement. A dedicated Codex GPT 5.6 agent with high reasoning reads the conversation and project files to prepare the continuation prompt. The harness handles the session change.`;
 
-/** Ask the working parent for a handover, then optionally continue in a fresh parent. */
+/** Pause the parent, summarize with a temporary agent, then optionally refresh. */
 export function registerAutoHandover(
   pi: ExtensionAPI,
   sessions: Sessions,
+  createAgent: typeof createHandoverAgent = createHandoverAgent,
 ): void {
   let checkpoint: Checkpoint = {status: 'idle', attempted: false};
   let running = false;
@@ -34,12 +46,21 @@ export function registerAutoHandover(
   let epoch = 0;
   let reportedError: string | undefined;
   let scheduledId: string | undefined;
+  let summarizer: Summarizer | undefined;
+
+  function disposeAgent(): void {
+    const current = summarizer;
+    summarizer = undefined;
+    current?.controller.abort();
+    current?.agent?.worker.dispose();
+  }
 
   function save(): void {
     pi.appendEntry(entryType, {...checkpoint});
   }
 
   function fail(): void {
+    disposeAgent();
     checkpoint = {status: 'failed', attempted: true, id: checkpoint.id};
     save();
   }
@@ -72,7 +93,9 @@ export function registerAutoHandover(
   ) {
     restoreDraft(ctx);
     if (
-      ['requested', 'writing', 'scheduled'].includes(checkpoint.status) ||
+      ['requested', 'pausing', 'summarizing', 'scheduled'].includes(
+        checkpoint.status,
+      ) ||
       sessions.hasPending(ctx) ||
       ctx.signal?.aborted
     ) {
@@ -107,13 +130,11 @@ export function registerAutoHandover(
         automatic
           ? `Context usage has reached ${usage!.toFixed(1)}%, at or above the ${threshold}% handover threshold.`
           : 'The user requested a handover checkpoint.',
-        'Pause implementation now and prepare a complete handover so the plan can continue in a fresh parent session. Use your tools to update the plan and inspect relevant files or agent state where needed. Keep this work focused on preparing the handover.',
-        'Include the goal and user instructions; the complete remaining plan or the exact path to its saved document; completed parts and verified results; the current stopping point; decisions and reasons; relevant files and symbols; unfinished work and blockers; background agent IDs, assignments and pending messages; and concrete next steps in order. State clearly if the task is complete or waiting for user input.',
-        'Distinguish what the conversation reports, what current files confirm, and what remains unverified. Record actual check results separately from checks still needed. Include references that let the next parent recover detail without repeating finished work.',
+        'Pause implementation now and finish this turn with a brief acknowledgement. A dedicated Codex GPT 5.6 agent with high reasoning will read this conversation and relevant project files to write the summary handover prompt.',
         ...(transcript ? [`Current parent transcript: ${transcript}`] : []),
-        'Finish with the complete handover text as your final response, within 64000 characters. This final response is the continuation prompt. The harness handles the session change; finish the handover here rather than calling session_new yourself.',
+        'Your final response signals that the parent is paused. The harness then runs the handover agent and handles the session change. Finish here rather than calling session_new yourself.',
         settings['auto-session-refresh'] === 'on'
-          ? 'Automatic session refresh is on. After your handover is complete, the harness starts a fresh parent session and tells it to continue the plan. Existing background agents remain attached.'
+          ? 'Automatic session refresh is on. After the handover agent finishes, the harness starts a fresh parent session and tells it to continue the plan. Existing background agents remain attached.'
           : 'Automatic session refresh is off. The completed handover will be available for the user to continue manually with /handover continue.',
       ].join('\n\n'),
     };
@@ -158,6 +179,7 @@ export function registerAutoHandover(
 
   pi.on('session_start', (_event, ctx) => {
     epoch++;
+    disposeAgent();
     active = true;
     running = false;
     reportedError = undefined;
@@ -190,8 +212,8 @@ export function registerAutoHandover(
       return result;
     const generation = epoch;
     try {
-      // Resumed sessions can already be above 80% without hitting Pi's native
-      // compaction threshold. Add the request to this prompt, avoiding a second run.
+      // Resumed sessions can already be above the handover threshold. Add the
+      // request to this prompt, avoiding a second run.
       const message = await request(ctx, true, 'inline');
       return {...result, message};
     } catch (error) {
@@ -211,7 +233,7 @@ export function registerAutoHandover(
       message.customType === requestType &&
       (message.details as {id?: string} | undefined)?.id === checkpoint.id
     ) {
-      checkpoint.status = 'writing';
+      checkpoint.status = 'pausing';
       return;
     }
     // A queued user instruction must reach the continuing parent. Cancel our
@@ -233,14 +255,17 @@ export function registerAutoHandover(
     // A new user instruction supersedes a handover currently being drafted.
     // New work after a saved draft also makes that draft unsuitable to resume.
     if (
-      (checkpoint.status === 'writing' && message.role === 'user') ||
+      (['pausing', 'summarizing'].includes(checkpoint.status) &&
+        message.role === 'user') ||
       (checkpoint.status === 'ready' &&
-        (message.role === 'user' || message.role === 'custom'))
+        (message.role === 'user' ||
+          (message.role === 'custom' &&
+            message.customType !== 'varisdev_handover_draft')))
     )
       fail();
     if (
       ctx.signal?.aborted &&
-      ['requested', 'writing'].includes(checkpoint.status)
+      ['requested', 'pausing', 'summarizing'].includes(checkpoint.status)
     )
       fail();
   });
@@ -251,18 +276,37 @@ export function registerAutoHandover(
     if (message.stopReason === 'error' || message.stopReason === 'aborted')
       return;
     const generation = epoch;
+    let current: Summarizer | undefined;
     try {
-      if (checkpoint.status === 'writing') {
+      if (checkpoint.status === 'pausing') {
         if (
           message.stopReason !== 'stop' ||
           message.content.some(part => part.type === 'toolCall')
         )
           return;
-        const handover = message.content
-          .filter(part => part.type === 'text')
-          .map(part => part.text)
-          .join('\n')
-          .trim();
+        checkpoint = {...checkpoint, status: 'summarizing'};
+        save();
+        disposeAgent();
+        current = {controller: new AbortController()};
+        summarizer = current;
+        const signal = ctx.signal
+          ? AbortSignal.any([ctx.signal, current.controller.signal])
+          : current.controller.signal;
+        const agent = await createAgent(ctx, checkpoint.id!);
+        if (generation !== epoch || summarizer !== current || signal.aborted) {
+          agent.worker.dispose();
+          if (generation === epoch && summarizer === current) fail();
+          return;
+        }
+        current.agent = agent;
+        const handover = (
+          await agent.worker.run(agent.prompt, signal, () => {})
+        ).trim();
+        if (generation !== epoch || summarizer !== current) return;
+        if (signal.aborted) {
+          fail();
+          return;
+        }
         if (!handover || handover.length > 64000) {
           fail();
           report(
@@ -273,6 +317,15 @@ export function registerAutoHandover(
         }
         checkpoint = {...checkpoint, status: 'ready', handover};
         save();
+        pi.sendMessage(
+          {
+            customType: 'varisdev_handover_draft',
+            content: handover,
+            display: true,
+            details: {id: checkpoint.id},
+          },
+          {triggerTurn: false},
+        );
         const completed = checkpoint;
         const settings = await readHandoverSettings(ctx.cwd);
         if (
@@ -288,59 +341,39 @@ export function registerAutoHandover(
         if (usage !== undefined && usage >= threshold) await request(ctx, true);
       }
     } catch (error) {
-      if (generation !== epoch) return;
-      if (['requested', 'writing'].includes(checkpoint.status)) fail();
-      report(error, ctx);
+      if (generation !== epoch || (current && summarizer !== current)) return;
+      if (['requested', 'pausing', 'summarizing'].includes(checkpoint.status))
+        fail();
+      if (!ctx.signal?.aborted) report(error, ctx);
     }
   });
 
   pi.on('session_before_compact', async (event, ctx) => {
-    if (event.reason !== 'threshold') {
-      if (['requested', 'writing'].includes(checkpoint.status)) fail();
-      return undefined;
-    }
-    if (ctx.signal?.aborted) return undefined;
-    if (
-      sessions.hasPending(ctx) ||
-      ['requested', 'writing'].includes(checkpoint.status)
-    )
-      return {cancel: true};
-    if (checkpoint.attempted) return undefined;
     const generation = epoch;
     try {
-      const settings = await readHandoverSettings(ctx.cwd);
-      if (generation !== epoch || settings['auto-handover'] !== 'on')
-        return undefined;
-      const usage = percent(ctx);
-      if (usage === undefined) return undefined;
-      if (usage >= threshold) {
+      if (event.reason === 'threshold') {
         // Before prompt submission there is no active agent loop. Queue the
         // instruction for that upcoming prompt instead of starting a second run.
         await request(ctx, true, running ? 'steer' : 'nextTurn');
       }
-      // Native token reserves can trigger below 80% on smaller models. Let
-      // this workflow reach its threshold; manual and overflow compaction work.
-      return {cancel: true};
     } catch (error) {
       if (generation === epoch) report(error, ctx);
-      return undefined;
     }
-  });
-
-  pi.on('session_compact', (_event, ctx) => {
-    if (checkpoint.status === 'ready' || sessions.hasPending(ctx)) return;
-    checkpoint = {status: 'idle', attempted: false};
-    save();
+    // Native compaction stays disabled regardless of settings, usage estimates,
+    // or handover failures. This also blocks manual and overflow compaction.
+    return {cancel: true};
   });
 
   pi.on('agent_settled', (_event, ctx) => {
     if (!active) return;
     running = false;
     restoreDraft(ctx);
-    if (['requested', 'writing'].includes(checkpoint.status)) fail();
+    if (['requested', 'pausing', 'summarizing'].includes(checkpoint.status))
+      fail();
   });
   pi.on('session_shutdown', () => {
     epoch++;
+    disposeAgent();
     active = false;
     running = false;
   });

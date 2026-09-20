@@ -106,7 +106,7 @@ export async function writeHandoverSetting(
 export function registerHandoverSettingsCommands(pi: ExtensionAPI): void {
   const descriptions: Record<SettingKey, string> = {
     'auto-handover':
-      'Show settings or turn automatic handover prompts at 80% context on/off',
+      'Show settings or turn automatic handover prompts at 90% context on/off',
     'auto-session-refresh':
       'Show settings or turn fresh parent sessions after handovers on/off',
   };
