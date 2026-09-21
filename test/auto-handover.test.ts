@@ -72,6 +72,7 @@ async function fixture(t: TestContext) {
   const entries: Array<{type: 'custom'; customType: string; data: unknown}> =
     [];
   const notices: string[] = [];
+  const workingMessages: Array<string | undefined> = [];
   const scheduled: string[] = [];
   const cancelled: string[] = [];
   const toolChanges: unknown[] = [];
@@ -110,7 +111,10 @@ async function fixture(t: TestContext) {
       getSessionFile: () => join(root, `${sessionId}.jsonl`),
       getSessionId: () => sessionId,
     },
-    ui: {notify: (text: string) => notices.push(text)},
+    ui: {
+      notify: (text: string) => notices.push(text),
+      setWorkingMessage: (text?: string) => workingMessages.push(text),
+    },
   } as unknown as ExtensionContext;
   const sessions: Sessions = {
     hasPending: () => pending,
@@ -195,6 +199,7 @@ async function fixture(t: TestContext) {
     },
     entries,
     notices,
+    workingMessages,
     scheduled,
     cancelled,
     isPending: () => pending,
@@ -656,5 +661,108 @@ for (const phase of ['initializing', 'running']) {
       assert.equal(f.drafts.length, 0);
       assert.deepEqual(f.notices, []);
     });
+  }
+}
+
+void test('summary activity and elapsed time replace Processing and clear on completion', async t => {
+  const f = await fixture(t);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  f.factory(async () => ({
+    prompt: 'Snapshot',
+    worker: {
+      async run(_prompt, _signal, activity) {
+        activity('Using read');
+        entered.resolve();
+        await release.promise;
+        return 'Completed summary';
+      },
+      dispose() {},
+    },
+  }));
+  await f.manual();
+  await f.deliver();
+  t.mock.timers.enable({apis: ['Date', 'setInterval', 'setTimeout']});
+  const turn = f.turn();
+  await entered.promise;
+  assert.match(f.workingMessages[0]!, /Handover: Starting summary agent/);
+  assert.match(f.workingMessages.at(-1)!, /Using read.*0m 0s.*Esc to cancel/);
+  t.mock.timers.tick(61000);
+  assert.match(f.workingMessages.at(-1)!, /Using read.*1m 1s/);
+  release.resolve();
+  await turn;
+  assert.deepEqual(f.scheduled, ['Completed summary']);
+  assert.equal(f.workingMessages.at(-1), '');
+  const updates = f.workingMessages.length;
+  t.mock.timers.tick(5 * 60 * 1000);
+  assert.equal(f.workingMessages.length, updates);
+  assert.deepEqual(f.notices, []);
+});
+
+for (const phase of ['initializing', 'running']) {
+  for (const interruption of ['timeout', 'abort']) {
+    void test(
+      `${interruption} releases a stuck summarizer ${phase} and discards late output`,
+      {timeout: 10000},
+      async t => {
+        const f = await fixture(t);
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        let disposed = 0;
+        let runSignal: AbortSignal | undefined;
+        f.factory(async () => {
+          if (phase === 'initializing') {
+            entered.resolve();
+            await release.promise;
+          }
+          return {
+            prompt: 'Snapshot',
+            worker: {
+              async run(_prompt, signal) {
+                runSignal = signal;
+                entered.resolve();
+                // Simulate a provider that ignores cancellation.
+                await release.promise;
+                return 'Late summary';
+              },
+              dispose() {
+                disposed++;
+              },
+            },
+          };
+        });
+        await f.manual();
+        await f.deliver();
+        t.mock.timers.enable({apis: ['setTimeout', 'setInterval']});
+        const turn = f.turn();
+        await entered.promise;
+        if (interruption === 'timeout') t.mock.timers.tick(5 * 60 * 1000);
+        else f.abort.abort();
+        // Neither initialization nor the provider has returned yet.
+        await turn;
+        if (phase === 'running') assert.equal(runSignal!.aborted, true);
+        assert.equal(f.workingMessages.at(-1), '');
+        assert.equal(disposed, phase === 'running' ? 1 : 0);
+        if (interruption === 'timeout')
+          assert.match(f.notices.at(-1)!, /exceeded 5 minutes.*\/handover/);
+        else assert.deepEqual(f.notices, []);
+        const updates = f.workingMessages.length;
+        release.resolve();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(disposed, 1);
+        assert.equal(f.scheduled.length, 0);
+        assert.equal(f.drafts.length, 0);
+        t.mock.timers.tick(1000);
+        assert.equal(f.workingMessages.length, updates);
+        if (interruption === 'timeout') {
+          await f.manual();
+          assert.equal(
+            f.sent.length,
+            2,
+            'Timed out preparation can be retried',
+          );
+        }
+      },
+    );
   }
 }

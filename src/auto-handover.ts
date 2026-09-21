@@ -25,11 +25,70 @@ interface Checkpoint {
 interface Summarizer {
   controller: AbortController;
   agent?: HandoverAgent;
+  activity: (text: string) => void;
+  stopProgress: () => void;
 }
 
 const entryType = 'varisdev_handover';
 const requestType = 'varisdev_handover_request';
 const threshold = 90;
+const summaryTimeoutMs = 5 * 60 * 1000;
+
+/** Release the parent even if initialization or the provider ignores abort. */
+async function withAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, {once: true});
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function startSummarizer(ctx: ExtensionContext): Summarizer {
+  const controller = new AbortController();
+  const started = Date.now();
+  let activity = 'Starting summary agent';
+  let stopped = false;
+  const render = () => {
+    if (stopped) return;
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    const elapsed = `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    ctx.ui.setWorkingMessage(
+      `Handover: ${activity} (${elapsed}; Esc to cancel)`,
+    );
+  };
+  const progress = setInterval(render, 1000);
+  const deadline = setTimeout(() => {
+    controller.abort(
+      new Error(
+        'Summary preparation exceeded 5 minutes. Use /handover to retry.',
+      ),
+    );
+  }, summaryTimeoutMs);
+  render();
+  return {
+    controller,
+    activity(text) {
+      activity = text;
+      render();
+    },
+    stopProgress() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(progress);
+      clearTimeout(deadline);
+      ctx.ui.setWorkingMessage('');
+    },
+  };
+}
 const planInstructions = `Plan and handover workflow:
 For tasks with multiple steps, maintain a concise plan and record progress in the conversation or the project's task document. Follow the user's requested workflow and level of detail. Keep the current step, decisions, relevant files, verification results, unfinished work, and next action clear.
 When the harness requests a handover, pause implementation and finish the turn with a brief acknowledgement. A dedicated Codex GPT-5.6 Sol agent with high reasoning reads the conversation and project files to prepare the continuation prompt. The harness handles the session change.`;
@@ -51,6 +110,7 @@ export function registerAutoHandover(
   function disposeAgent(): void {
     const current = summarizer;
     summarizer = undefined;
+    current?.stopProgress();
     current?.controller.abort();
     current?.agent?.worker.dispose();
   }
@@ -287,20 +347,27 @@ export function registerAutoHandover(
         checkpoint = {...checkpoint, status: 'summarizing'};
         save();
         disposeAgent();
-        current = {controller: new AbortController()};
-        summarizer = current;
+        const summary = startSummarizer(ctx);
+        current = summary;
+        summarizer = summary;
         const signal = ctx.signal
-          ? AbortSignal.any([ctx.signal, current.controller.signal])
-          : current.controller.signal;
-        const agent = await createAgent(ctx, checkpoint.id!);
-        if (generation !== epoch || summarizer !== current || signal.aborted) {
-          agent.worker.dispose();
-          if (generation === epoch && summarizer === current) fail();
-          return;
-        }
-        current.agent = agent;
+          ? AbortSignal.any([ctx.signal, summary.controller.signal])
+          : summary.controller.signal;
+        const initializing = createAgent(ctx, checkpoint.id!).then(agent => {
+          // Initialization can finish after cancellation released the parent.
+          if (signal.aborted) {
+            agent.worker.dispose();
+            signal.throwIfAborted();
+          }
+          summary.agent = agent;
+          return agent;
+        });
+        const agent = await withAbort(initializing, signal);
         const handover = (
-          await agent.worker.run(agent.prompt, signal, () => {})
+          await withAbort(
+            agent.worker.run(agent.prompt, signal, summary.activity),
+            signal,
+          )
         ).trim();
         if (generation !== epoch || summarizer !== current) return;
         if (signal.aborted) {
@@ -315,6 +382,7 @@ export function registerAutoHandover(
           );
           return;
         }
+        summary.stopProgress();
         checkpoint = {...checkpoint, status: 'ready', handover};
         save();
         pi.sendMessage(
@@ -345,6 +413,8 @@ export function registerAutoHandover(
       if (['requested', 'pausing', 'summarizing'].includes(checkpoint.status))
         fail();
       if (!ctx.signal?.aborted) report(error, ctx);
+    } finally {
+      current?.stopProgress();
     }
   });
 

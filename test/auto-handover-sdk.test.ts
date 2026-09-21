@@ -17,6 +17,7 @@ import {
   type AgentSessionEvent,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type ExtensionUIContext,
 } from '@earendil-works/pi-coding-agent';
 import {createHandoverAgent} from '../src/handover-agent.ts';
 import {registerAutoHandover} from '../src/auto-handover.ts';
@@ -123,6 +124,7 @@ void test(
     const tools: string[][] = [[], []];
     const events: AgentSessionEvent[] = [];
     const automaticMessages: string[] = [];
+    const workingMessages: Array<string | undefined> = [];
     const operations: Promise<unknown>[] = [];
     let boundaryPercent: number | null | undefined;
 
@@ -181,6 +183,18 @@ void test(
         assert.match(text, /PROJECT REVIEW INSTRUCTION/);
         switch (summaryRequests.length) {
           case 1: {
+            const instructions = JSON.stringify(
+              input.messages.filter(message =>
+                ['system', 'developer'].includes(message.role),
+              ),
+            );
+            assert.doesNotMatch(instructions, /expert coding assistant/);
+            assert.doesNotMatch(instructions, /implementation-skill-marker/);
+            assert.ok(
+              workingMessages.some(message =>
+                message?.includes('Starting summary agent'),
+              ),
+            );
             const content = input.messages.at(-1)!.content;
             const prompt =
               typeof content === 'string'
@@ -194,6 +208,9 @@ void test(
             return {output: {name: 'read', arguments: {path}}};
           }
           case 2:
+            assert.ok(
+              workingMessages.some(message => message?.includes('Using read')),
+            );
             assert.match(text, /ORIGINAL TASK|EXACT CONTEXT BOUNDARY/);
             assert.ok(text.includes(workerId));
             return {
@@ -283,6 +300,7 @@ void test(
             ),
           );
           assert.equal(summaryDisposed, true);
+          assert.equal(workingMessages.at(-1), '');
           await replacementReady.promise;
           return {output: {name: 'agent_status', arguments: {id: workerId}}};
         case 2: {
@@ -354,7 +372,11 @@ void test(
       await rm(directory, {recursive: true, force: true});
     });
     await mkdir(cwd, {recursive: true});
-    await mkdir(agentDir, {recursive: true});
+    await mkdir(join(agentDir, 'skills', 'implementation'), {recursive: true});
+    await writeFile(
+      join(agentDir, 'skills', 'implementation', 'SKILL.md'),
+      '---\nname: implementation\ndescription: implementation-skill-marker\n---\nContinue implementation until the task is complete.',
+    );
     await writeFile(
       join(agentDir, 'settings.json'),
       JSON.stringify({compaction: {enabled: false}, retry: {enabled: false}}),
@@ -496,6 +518,14 @@ void test(
     async function bind(session: AgentSession) {
       await session.bindExtensions({
         mode: 'print',
+        uiContext: {
+          setWorkingMessage: (message?: string) =>
+            workingMessages.push(message),
+          setStatus: () => {},
+          notify: (message: string, type?: string) => {
+            if (type === 'error') fail(new Error(message));
+          },
+        } as unknown as ExtensionUIContext,
         onError: fail,
         commandContextActions: {
           waitForIdle: () => session.waitForIdle(),
