@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {execFile} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {
@@ -10,6 +11,7 @@ import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
+import {promisify} from 'node:util';
 import {
   ModelRegistry,
   ModelRuntime,
@@ -732,7 +734,18 @@ async function localParent(
     request: ProviderRequest,
     step: number,
   ) => Promise<Parameters<typeof reply>[1]>,
+  options: {
+    provider?: string;
+    parentModel?: string;
+    models?: Array<{
+      id: string;
+      reasoning: boolean;
+      thinkingLevelMap?: {xhigh: string};
+    }>;
+  } = {},
 ) {
+  const provider = options.provider ?? 'varisdev-handover-test';
+  const models = options.models ?? [{id: 'worker-model', reasoning: false}];
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-handover-sdk-'));
   const cwd = join(directory, 'project');
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -777,7 +790,7 @@ async function localParent(
       type: 'session_shutdown',
       reason: 'quit',
     });
-    registry.unregisterProvider('varisdev-handover-test');
+    registry.unregisterProvider(provider);
     await new Promise<void>((resolve, reject) =>
       server.close(error => (error ? reject(error) : resolve())),
     );
@@ -790,26 +803,24 @@ async function localParent(
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
-  registry.registerProvider('varisdev-handover-test', {
+  registry.registerProvider(provider, {
     api: 'openai-completions',
     baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
     apiKey: 'local-test-key',
-    models: [
-      {
-        id: 'worker-model',
-        name: 'Worker model',
-        reasoning: false,
-        input: ['text'],
-        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-        contextWindow: 128000,
-        maxTokens: 1000,
-      },
-    ],
+    models: models.map(model => ({
+      ...model,
+      name: model.id,
+      input: ['text'],
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+      contextWindow: 128000,
+      maxTokens: 1000,
+      compat: {supportsReasoningEffort: true},
+    })),
   });
   const ctx = {
     cwd,
     hasUI: false,
-    model: registry.find('varisdev-handover-test', 'worker-model')!,
+    model: registry.find(provider, options.parentModel ?? models[0].id)!,
     modelRegistry: registry,
     sessionManager: {getSessionId: () => 'handover-parent'},
   } as unknown as ExtensionContext;
@@ -828,6 +839,136 @@ async function localParent(
     },
   };
 }
+
+void test(
+  'git_commit_push uses GPT-5.5 xhigh to commit and push through SDK tools and persists its result',
+  {timeout: 20000},
+  async t => {
+    const task =
+      'Commit the README.md release note update for fixture ticket SDK-417 and push it to origin/main.';
+    const projectInstruction =
+      'Commit fixture instruction marker: include the changed paths in your report.';
+    const output = 'Committed and pushed the README.md release note update.';
+    const mayCommit = Promise.withResolvers<void>();
+    t.after(() => mayCommit.resolve());
+    const requests: ProviderRequest[] = [];
+    const parent = await localParent(
+      t,
+      async (input, step) => {
+        requests.push(input);
+        assert.equal(input.model, 'gpt-5.5');
+        assert.equal(input.reasoning_effort, 'xhigh');
+        if (step === 1) {
+          const messages = JSON.stringify(input.messages);
+          assert.ok(messages.includes(task));
+          assert.ok(messages.includes(projectInstruction));
+          const toolNames = input.tools.map(tool => tool.function.name);
+          for (const name of ['bash', 'read', 'json_query', 'agent_list']) {
+            assert.ok(toolNames.includes(name), `${name} must be available`);
+          }
+          // The parent must receive the agent ID before the worker finishes.
+          await mayCommit.promise;
+          return {
+            name: 'bash',
+            arguments: {
+              command:
+                'git diff -- README.md && git add -- README.md && ' +
+                'git commit -m "Update fixture release notes" && ' +
+                'git push origin HEAD && git rev-parse HEAD',
+            },
+          };
+        }
+        assert.equal(step, 2, 'Expected one bash execution and a final reply');
+        const toolResult = input.messages.findLast(
+          message => message.role === 'tool',
+        );
+        assert.ok(toolResult, 'The SDK must return the bash result');
+        assert.match(JSON.stringify(toolResult.content), /README\.md/);
+        assert.match(
+          JSON.stringify(toolResult.content),
+          /Update fixture release notes/,
+        );
+        return output;
+      },
+      {
+        provider: 'openai-codex',
+        parentModel: 'parent-model',
+        models: [
+          {id: 'parent-model', reasoning: false},
+          {
+            id: 'gpt-5.5',
+            reasoning: true,
+            thinkingLevelMap: {xhigh: 'xhigh'},
+          },
+        ],
+      },
+    );
+    const repository = join(parent.cwd, 'repository');
+    const remote = join(parent.cwd, 'remote.git');
+    await mkdir(repository);
+    const executeFile = promisify(execFile);
+    const git = async (...args: string[]) => {
+      const {stdout} = await executeFile('git', args, {
+        cwd: repository,
+        timeout: 5000,
+      });
+      return stdout.trim();
+    };
+    await git('init', '--template=', '--initial-branch=main');
+    await git('config', 'user.name', 'SDK Fixture');
+    await git('config', 'user.email', 'sdk-fixture@example.invalid');
+    await git('config', 'commit.gpgsign', 'false');
+    await git('config', 'core.hooksPath', join(repository, '.git', 'hooks'));
+    await writeFile(join(repository, 'AGENTS.md'), projectInstruction);
+    await writeFile(join(repository, 'README.md'), 'Original release notes.\n');
+    await git('add', '--', 'AGENTS.md', 'README.md');
+    await git('commit', '-m', 'Initialize SDK fixture');
+    const originalHead = await git('rev-parse', 'HEAD');
+    await git('init', '--bare', '--template=', '--initial-branch=main', remote);
+    await git('remote', 'add', 'origin', remote);
+    await git('push', '-u', 'origin', 'main');
+    const updatedReadme = 'Release notes for fixture ticket SDK-417.\n';
+    await writeFile(join(repository, 'README.md'), updatedReadme);
+
+    const spawned = await parent.execute('git_commit_push', {
+      task,
+      cwd: 'repository',
+    });
+    const agents = (spawned.details as {agents: AgentRecord[]}).agents;
+    assert.equal(agents.length, 1);
+    const started = agents[0];
+    assert.ok(['queued', 'running'].includes(started.status));
+    assert.equal(started.cwd, repository);
+    assert.equal(started.model, 'openai-codex/gpt-5.5');
+    assert.equal(started.notify, true);
+    mayCommit.resolve();
+    const completed = await parent.wait(started.id);
+    assert.equal(requests.length, 2);
+    assert.equal(completed.output, output);
+    const head = await git('rev-parse', 'HEAD');
+    assert.notEqual(head, originalHead);
+    assert.equal(await git('--git-dir', remote, 'rev-parse', 'main'), head);
+    assert.equal(
+      await git('--git-dir', remote, 'show', 'main:README.md'),
+      updatedReadme.trim(),
+    );
+    assert.equal(await git('status', '--porcelain'), '');
+    assert.equal(await readFile(completed.resultFile!, 'utf8'), output);
+    const transcript = await readFile(completed.sessionFile!, 'utf8');
+    assert.ok(transcript.includes(task));
+    assert.ok(transcript.includes(output));
+    assert.match(transcript, /"name":"bash"/);
+    assert.equal(parent.parentMessages.length, 1);
+    const [notification, delivery] = parent.parentMessages[0];
+    assert.equal(notification.customType, 'agent_result');
+    const notified = (notification.details as {agent: AgentRecord}).agent;
+    assert.equal(notified.id, started.id);
+    assert.equal(notified.status, 'completed');
+    assert.equal(notified.output, output);
+    assert.equal(notified.resultFile, completed.resultFile);
+    assert.deepEqual(delivery, {deliverAs: 'followUp', triggerTurn: true});
+  },
+);
 
 void test(
   'SDK workers automatically continue through fresh sessions and retain queued follow-ups',
