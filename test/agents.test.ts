@@ -882,7 +882,7 @@ void test('session workers cancel again if a prompt starts after cancellation du
   assert.equal(fake.listeners.size, 0);
 });
 
-void test('agent tools run without a default deadline, inherit context, notify, and clean up', async t => {
+void test('agent tools inherit context, support effort overrides, notify, and clean up without a default deadline', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
@@ -917,12 +917,18 @@ void test('agent tools run without a default deadline, inherit context, notify, 
     optionsSeen.push(options);
     return controlled.worker;
   });
+  const cheapModel = {provider: 'openai-codex', id: 'gpt-5.6-sol'};
   const ctx = {
     cwd: process.cwd(),
     hasUI: false,
     ui: {notify: (message: string) => notices.push(message)},
     model: {provider: 'test', id: 'parent-model'},
-    modelRegistry: {find: () => undefined},
+    modelRegistry: {
+      find: (provider: string, id: string) =>
+        provider === cheapModel.provider && id === cheapModel.id
+          ? cheapModel
+          : undefined,
+    },
     sessionManager: {getSessionId: () => 'parent-session'},
   } as unknown as ExtensionContext;
   const execute = (name: string, params: Record<string, unknown>) =>
@@ -1030,6 +1036,22 @@ void test('agent tools run without a default deadline, inherit context, notify, 
       }),
       /model is unavailable/,
     );
+
+    const routine = await execute('agent_spawn', {
+      name: 'Routine checks',
+      task: 'Run the required checks and report results.',
+      model: 'openai-codex/gpt-5.6-sol',
+      thinkingLevel: 'xhigh',
+      autoCleanup: true,
+      notify: false,
+    });
+    const routineId = (routine.details as {agents: AgentRecord[]}).agents[0].id;
+    await until(() => controlled.runs.length === 3);
+    assert.equal(optionsSeen.at(-1)!.model, cheapModel);
+    assert.equal(optionsSeen.at(-1)!.thinkingLevel, 'xhigh');
+    controlled.runs[2].finish('Checks passed');
+    await execute('agent_wait', {ids: [routineId]});
+    assert.equal(controlled.disposed, 2);
   } finally {
     await events.get('session_shutdown')!({reason: 'new'}, ctx);
   }

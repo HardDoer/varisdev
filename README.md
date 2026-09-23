@@ -12,7 +12,7 @@ Varisware VarisDev package.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
-- `src/commit.ts` — adds `/commit [instructions]` to delegate committing and pushing to Codex GPT-5.5, with automatic worker cleanup.
+- `src/commit.ts` — adds `/commit [instructions]` to delegate committing and pushing to Codex GPT-5.5 with xhigh effort and automatic worker cleanup.
 - `src/session-handover.ts` — switches sessions for the handover workflow, preserves background agents, and provides handover status, update, and cancellation tools.
 - `src/auto-handover.ts` and `src/handover-settings.ts` — prepare a handover with a temporary Codex GPT-5.6 Sol high agent at 90% context and optionally continue the plan in a fresh parent session.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
@@ -84,6 +84,8 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 | `agent_wait` | Wait for any or all selected agents and collect their results. |
 | `agent_cancel` | Cancel an agent and discard its pending messages. |
 
+The agent tool description and prompt guidance tell the parent to delegate routine work, such as running checks, small mechanical edits, and committing and pushing, to a cheap **Codex GPT-5.6 Sol** agent using `model: "openai-codex/gpt-5.6-sol"` and `thinkingLevel: "xhigh"`. The parent supplies context, coordinates workers, and collects results. Explicit user choices take precedence. The `/commit` shortcut requests Codex GPT-5.5 with xhigh effort.
+
 For example, call `agent_spawn` with:
 
 ```json
@@ -127,7 +129,7 @@ Worker messages automatically identify the sender by name and ID. Messages to pe
 
 Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
 
-Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, `autoCleanup`, and `notify`. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent. Finished agents with `autoCleanup: true` do not count toward that limit.
+Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`), `instructions`, `timeoutMs`, `autoCleanup`, and `notify`. Omitted model and thinking level inherit the parent's settings. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent. Finished agents with `autoCleanup: true` do not count toward that limit.
 
 Set `autoCleanup: true` for a task whose worker should be disposed after all queued work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work or start another session. The default is `false`, allowing completed agents to resume.
 
@@ -146,14 +148,14 @@ Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/age
 
 ### Commit and push
 
-Use `/commit` to ask the current session to **commit and push** through a **Codex GPT-5.5** background agent (`openai-codex/gpt-5.5`). Add optional instructions after the command:
+Use `/commit` to ask the current session to **commit and push** through a **Codex GPT-5.5** background agent (`openai-codex/gpt-5.5`) with **xhigh** effort. Add optional instructions after the command:
 
 ```text
 /commit
 /commit Only include the browse fix. Use the commit message "Fix browse truncation".
 ```
 
-With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `autoCleanup: true` and `notify: true`. The worker inherits the parent's thinking level. If the parent is working, the request is queued as a follow-up.
+With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `model: "openai-codex/gpt-5.5"`, `thinkingLevel: "xhigh"`, `autoCleanup: true`, and `notify: true`. If the parent is working, the request is queued as a follow-up.
 
 The worker follows repository instructions, inspects changes, runs required checks, commits, and pushes. The parent collects its result and reports the outcome. The worker session is automatically disposed when the task finishes, fails, or is cancelled. Saved results and transcript paths can be inspected with `agent_status`; `/agents cancel <id>` cancels active work.
 
