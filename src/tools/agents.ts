@@ -79,7 +79,7 @@ const spawnSchema = Type.Object({
       ],
       {
         description:
-          'Reasoning effort for the worker. Defaults to the parent thinking level. Use xhigh with openai-codex/gpt-5.6-sol for routine delegated work.',
+          'Reasoning effort for the worker. Defaults to the parent thinking level.',
       },
     ),
   ),
@@ -88,7 +88,7 @@ const spawnSchema = Type.Object({
       minimum: 1000,
       maximum: 3600000,
       description:
-        'Optional execution timeout. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work or an agent starts a fresh session.',
+        'Optional execution timeout. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work or an agent starts a fresh session.',
     }),
   ),
   autoCleanup: Type.Optional(
@@ -518,15 +518,9 @@ export function registerAgentTools(
     name: 'agent_spawn',
     label: 'Spawn agent',
     description:
-      'Start a background agent with its own conversation. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Delegate routine work to a cheap agent using model="openai-codex/gpt-5.6-sol" and thinkingLevel="xhigh".',
+      'Start a background agent with its own conversation. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory.',
     promptSnippet:
-      'Delegate work to background agents and return their IDs immediately.',
-    promptGuidelines: [
-      'Delegate routine work such as running checks, small mechanical edits, and committing and pushing to a cheap agent. Use model="openai-codex/gpt-5.6-sol" with thinkingLevel="xhigh" unless the user specifies otherwise. Keep planning and coordination in the parent session and collect delegated results before reporting completion.',
-      'Use agent_spawn for independent tasks. Include the necessary context, file ownership, and expected result in each task; agents receive their task, project instructions, project tools, agent_list and agent_send for direct communication, agent_messages and agent_message_remove for queue management, and agent_new_session for workflows with handovers.',
-      'Coordinate agents working in the same directory so their edits do not conflict. Use separate working directories when needed.',
-      'Use agent_status or agent_wait to collect delegated results before reporting completion. Use agent_send for follow-up work in the same agent conversation.',
-    ],
+      'Start a background agent with its own conversation and return its ID immediately.',
     parameters: spawnSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();

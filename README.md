@@ -84,7 +84,7 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 | `agent_wait` | Wait for any or all selected agents and collect their results. |
 | `agent_cancel` | Cancel an agent and discard its pending messages. |
 
-The agent tool description and prompt guidance tell the parent to delegate routine work, such as running checks, small mechanical edits, and committing and pushing, to a cheap **Codex GPT-5.6 Sol** agent using `model: "openai-codex/gpt-5.6-sol"` and `thinkingLevel: "xhigh"`. The parent supplies context, coordinates workers, and collects results. Explicit user choices take precedence. The `/commit` shortcut requests Codex GPT-5.5 with xhigh effort.
+The `/commit` shortcut requests Codex GPT-5.5 with xhigh effort.
 
 For example, call `agent_spawn` with:
 
