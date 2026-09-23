@@ -1,12 +1,10 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
-  CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent';
 import {stat} from 'node:fs/promises';
 import {resolve} from 'node:path';
-import {Type, type Static} from 'typebox';
-import {registerGitCommitPushTool} from './git-commit-push.ts';
+import {Type} from 'typebox';
 import {
   type AgentOrchestrator,
   isAgentFinished,
@@ -75,6 +73,12 @@ const spawnSchema = Type.Object({
       maximum: 3600000,
       description:
         'Optional execution timeout. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work or an agent starts a fresh session.',
+    }),
+  ),
+  autoCleanup: Type.Optional(
+    Type.Boolean({
+      description:
+        'Dispose the worker session after all queued work finishes, including failure or cancellation. Results stay available, but a finished agent cannot resume. Defaults to false.',
     }),
   ),
   notify: Type.Optional(
@@ -176,6 +180,7 @@ function toolResult(
     activity: record.activity,
     cwd: record.cwd,
     model: record.model,
+    autoCleanup: record.autoCleanup,
     pendingMessages: record.pendingMessages,
     createdAt: record.createdAt,
     startedAt: record.startedAt,
@@ -204,14 +209,6 @@ function toolResult(
     details: {agents: records, ...extra},
   };
 }
-
-export type SpawnAgent = (
-  params: Static<typeof spawnSchema> & {
-    thinkingLevel?: CreateAgentSessionOptions['thinkingLevel'];
-  },
-  signal: AbortSignal | undefined,
-  ctx: ExtensionContext,
-) => Promise<ReturnType<typeof toolResult>>;
 
 type GetManager = (ctx: ExtensionContext) => AgentOrchestrator;
 
@@ -501,77 +498,6 @@ export function registerAgentTools(
   const getManager = (ctx: ExtensionContext) =>
     control.getTeam(ctx).getManager();
 
-  const spawn: SpawnAgent = async (params, signal, ctx) => {
-    signal?.throwIfAborted();
-    const team = control.getTeam(ctx);
-    const cwd = resolve(ctx.cwd, params.cwd ?? '.');
-    if (!(await stat(cwd)).isDirectory())
-      throw new Error(`Agent cwd is not a directory: ${cwd}`);
-    let model = ctx.model;
-    if (params.model) {
-      const slash = params.model.indexOf('/');
-      if (slash < 1 || slash === params.model.length - 1) {
-        throw new Error('Use provider/model-id for the agent model.');
-      }
-      model = ctx.modelRegistry.find(
-        params.model.slice(0, slash),
-        params.model.slice(slash + 1),
-      );
-    }
-    if (!model)
-      throw new Error(
-        params.model
-          ? `Agent model is unavailable: ${params.model}`
-          : 'Agent model is unavailable. Select a model or pass provider/model-id.',
-      );
-    const workerOptions = {
-      cwd,
-      name: params.name,
-      instructions: params.instructions,
-      model,
-      modelRegistry: ctx.modelRegistry,
-      thinkingLevel: params.thinkingLevel ?? pi.getThinkingLevel(),
-    };
-    signal?.throwIfAborted();
-    const current = getManager(ctx);
-    const record = current.spawn(
-      {
-        name: params.name,
-        task: params.task,
-        cwd,
-        model: `${model.provider}/${model.id}`,
-        timeoutMs: params.timeoutMs,
-        notify: params.notify ?? true,
-      },
-      (id, previousSessionFile) =>
-        createWorker({
-          ...workerOptions,
-          parentSessionId: team.sessionId,
-          id,
-          previousSessionFile,
-          agentToolsExtension(workerPi) {
-            const getWorkerManager = () => team.getManager();
-            registerAgentListTool(workerPi, getWorkerManager, id);
-            registerAgentSendTool(workerPi, getWorkerManager, {
-              id,
-              sendToParent(message) {
-                team.sendMessage({
-                  customType: 'agent_message',
-                  content: formatAgentMessage(message),
-                  display: true,
-                  details: message,
-                });
-              },
-            });
-            registerAgentMessageTools(workerPi, getWorkerManager, id);
-            registerAgentNewSessionTool(workerPi, getWorkerManager, id);
-          },
-        }),
-      {kind: 'parent', id: ctx.sessionManager.getSessionId()},
-    );
-    return toolResult([record], false);
-  };
-
   pi.registerTool({
     name: 'agent_spawn',
     label: 'Spawn agent',
@@ -586,10 +512,75 @@ export function registerAgentTools(
     ],
     parameters: spawnSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return spawn(params, signal, ctx);
+      signal?.throwIfAborted();
+      const team = control.getTeam(ctx);
+      const cwd = resolve(ctx.cwd, params.cwd ?? '.');
+      if (!(await stat(cwd)).isDirectory())
+        throw new Error(`Agent cwd is not a directory: ${cwd}`);
+      let model = ctx.model;
+      if (params.model) {
+        const slash = params.model.indexOf('/');
+        if (slash < 1 || slash === params.model.length - 1) {
+          throw new Error('Use provider/model-id for the agent model.');
+        }
+        model = ctx.modelRegistry.find(
+          params.model.slice(0, slash),
+          params.model.slice(slash + 1),
+        );
+      }
+      if (!model)
+        throw new Error(
+          'Agent model is unavailable. Select a model or pass provider/model-id.',
+        );
+      const workerOptions = {
+        cwd,
+        name: params.name,
+        instructions: params.instructions,
+        model,
+        modelRegistry: ctx.modelRegistry,
+        thinkingLevel: pi.getThinkingLevel(),
+      };
+      signal?.throwIfAborted();
+      const current = getManager(ctx);
+      const record = current.spawn(
+        {
+          name: params.name,
+          task: params.task,
+          cwd,
+          model: `${model.provider}/${model.id}`,
+          timeoutMs: params.timeoutMs,
+          autoCleanup: params.autoCleanup,
+          notify: params.notify ?? true,
+        },
+        (id, previousSessionFile) =>
+          createWorker({
+            ...workerOptions,
+            parentSessionId: team.sessionId,
+            id,
+            previousSessionFile,
+            agentToolsExtension(workerPi) {
+              const getWorkerManager = () => team.getManager();
+              registerAgentListTool(workerPi, getWorkerManager, id);
+              registerAgentSendTool(workerPi, getWorkerManager, {
+                id,
+                sendToParent(message) {
+                  team.sendMessage({
+                    customType: 'agent_message',
+                    content: formatAgentMessage(message),
+                    display: true,
+                    details: message,
+                  });
+                },
+              });
+              registerAgentMessageTools(workerPi, getWorkerManager, id);
+              registerAgentNewSessionTool(workerPi, getWorkerManager, id);
+            },
+          }),
+        {kind: 'parent', id: ctx.sessionManager.getSessionId()},
+      );
+      return toolResult([record], false);
     },
   });
-  registerGitCommitPushTool(pi, spawn);
 
   registerAgentListTool(pi, getManager);
   pi.registerTool({

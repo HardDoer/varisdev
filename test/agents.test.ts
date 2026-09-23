@@ -1695,57 +1695,78 @@ void test('pending transfers survive reloading the team module and can only be c
   assert.equal(fresh.notifications.length, 1);
 });
 
-void test('commit and push rejects unavailable Codex, empty scope, and cancelled requests before spawning', async t => {
-  const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, AgentEventHandler>();
-  const lookups: string[] = [];
-  let workers = 0;
-  const pi = {
-    registerTool(tool: ToolDefinition) {
-      tools.set(tool.name, tool);
-    },
-    on(event: string, handler: AgentEventHandler) {
-      events.set(event, handler);
-    },
-    registerCommand() {},
-    getThinkingLevel: () => 'low',
-  } as unknown as ExtensionAPI;
-  registerAgentTools(pi, async () => {
-    workers++;
-    throw new Error('Unexpected worker');
-  });
-  const ctx = {
-    cwd: process.cwd(),
-    hasUI: false,
-    model: {provider: 'test', id: 'parent-model'},
-    modelRegistry: {
-      find(provider: string, model: string) {
-        lookups.push(`${provider}/${model}`);
-        return undefined;
-      },
-    },
-    sessionManager: {getSessionId: () => 'commit-parent'},
-  } as unknown as ExtensionContext;
-  t.after(() => events.get('session_shutdown')!({reason: 'quit'}, ctx));
-  const execute = (task: string, signal?: AbortSignal) =>
-    tools
-      .get('git_commit_push')!
-      .execute('commit-call', {task}, signal, undefined, ctx);
+void test('automatic cleanup waits for queued work, disposes once, and keeps the final result', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const controlled = controlledWorker();
+  const {id} = manager.spawn(
+    {...spec, autoCleanup: true},
+    async () => controlled.worker,
+  );
+  await until(() => controlled.runs.length === 1);
+  manager.send(id, 'Include the final push result');
+  controlled.runs[0].finish('Committed');
+  await until(() => controlled.runs.length === 2);
+  assert.equal(controlled.disposed, 0);
+  controlled.runs[1].finish('Committed and pushed');
+  const [result] = await manager.wait([id]);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output, 'Committed and pushed');
+  assert.equal(result.sessionFile, controlled.worker.sessionFile);
+  assert.equal(result.resultFile, controlled.worker.resultFile);
+  assert.equal(controlled.disposed, 1);
+  assert.throws(() => manager.send(id, 'More work'), /cleaned up/);
+  assert.throws(() => manager.newSession(id, 'Continue'), /cleaned up/);
+  await manager.close();
+  assert.equal(controlled.disposed, 1);
+});
 
-  await assert.rejects(execute('  '), /task cannot be empty/);
-  await assert.rejects(
-    execute('Commit and push', AbortSignal.abort(new Error('Cancelled'))),
-    /Cancelled/,
-  );
-  assert.deepEqual(lookups, []);
-  await assert.rejects(
-    execute('Commit and push the completed changes'),
-    /Agent model is unavailable: openai-codex\/gpt-5\.5/,
-  );
-  assert.deepEqual(lookups, ['openai-codex/gpt-5.5']);
-  assert.equal(workers, 0, 'The parent model must not be used as a fallback');
-  const result = await tools
-    .get('agent_list')!
-    .execute('list-call', {view: 'all'}, undefined, undefined, ctx);
-  assert.deepEqual((result.details as {agents: AgentRecord[]}).agents, []);
+void test('automatic cleanup waits for cancellation to settle and handles failures', async t => {
+  for (const outcome of ['cancelled', 'failed'] as const) {
+    await t.test(outcome, async t => {
+      const manager = new AgentOrchestrator(1);
+      t.after(() => manager.close());
+      const controlled = controlledWorker(false);
+      const {id} = manager.spawn({...spec, autoCleanup: true}, async () => ({
+        ...controlled.worker,
+        async run(...args) {
+          await controlled.worker.run(...args);
+          throw new Error('Push failed');
+        },
+      }));
+      await until(() => controlled.runs.length === 1);
+      if (outcome === 'cancelled') manager.cancel(id);
+      assert.equal(controlled.disposed, 0);
+      controlled.runs[0].finish('Tools stopped');
+      const [result] = await manager.wait([id]);
+      assert.equal(result.status, outcome);
+      assert.match(
+        result.error!,
+        outcome === 'failed' ? /Push failed/ : /cancelled/,
+      );
+      assert.equal(controlled.disposed, 1);
+      await manager.close();
+      assert.equal(controlled.disposed, 1);
+    });
+  }
+});
+
+void test('cleaned agents release the session capacity for later commands', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  let disposed = 0;
+  for (let index = 0; index < 65; index++) {
+    const {id} = manager.spawn({...spec, autoCleanup: true}, async () => ({
+      async run() {
+        return `Result ${index}`;
+      },
+      dispose() {
+        disposed++;
+      },
+    }));
+    const [result] = await manager.wait([id]);
+    assert.equal(result.output, `Result ${index}`);
+  }
+  assert.equal(disposed, 65);
+  assert.equal(manager.list().length, 65);
 });

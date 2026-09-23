@@ -9,6 +9,7 @@ export interface AgentSpec {
   cwd: string;
   model: string;
   timeoutMs?: number;
+  autoCleanup?: boolean;
   notify: boolean;
 }
 
@@ -72,7 +73,7 @@ export interface AgentMessageChange {
 
 interface Job {
   record: AgentRecord;
-  createWorker: (
+  createWorker?: (
     id: string,
     previousSessionFile?: string,
   ) => Promise<AgentWorker>;
@@ -178,7 +179,10 @@ export class AgentOrchestrator {
     ) {
       throw new Error('Agent timeout must be a positive integer.');
     }
-    if (this.jobs.size >= 64) {
+    const retained = [...this.jobs.values()].filter(
+      job => !job.record.autoCleanup || !isAgentFinished(job.record.status),
+    );
+    if (retained.length >= 64) {
       throw new Error('This session has reached its limit of 64 agents.');
     }
     const id = randomUUID();
@@ -311,6 +315,7 @@ export class AgentOrchestrator {
       job.record.status = 'completed';
       job.record.activity = 'No pending messages';
       job.record.finishedAt = resolvedAt;
+      if (job.record.autoCleanup) this.dispose(job);
     }
     this.changed();
     return {
@@ -345,6 +350,7 @@ export class AgentOrchestrator {
         `Cannot message a ${job.record.status} agent. Spawn a new agent.`,
       );
     }
+    this.ensureResumable(job);
     if (job.messages.length - selected.length >= 32) {
       throw new Error('This agent already has 32 pending messages.');
     }
@@ -379,6 +385,19 @@ export class AgentOrchestrator {
     };
   }
 
+  private ensureResumable(job: Job): void {
+    if (job.record.autoCleanup && isAgentFinished(job.record.status)) {
+      throw new Error('Agent session has been cleaned up. Spawn a new agent.');
+    }
+  }
+
+  private dispose(job: Job): void {
+    const worker = job.worker;
+    job.worker = undefined;
+    job.createWorker = undefined;
+    worker?.dispose();
+  }
+
   private discardMessages(job: Job): void {
     const resolvedAt = new Date().toISOString();
     for (const message of job.messages)
@@ -401,6 +420,7 @@ export class AgentOrchestrator {
         `Cannot start a new session for a ${job.record.status} agent. Spawn a new agent.`,
       );
     }
+    this.ensureResumable(job);
     job.controller?.signal.throwIfAborted();
     if (job.handover !== undefined) {
       throw new Error('This agent already has a pending handover.');
@@ -432,8 +452,7 @@ export class AgentOrchestrator {
       job.record.status = 'cancelled';
       job.record.activity = 'Cancelled';
       job.record.finishedAt = new Date().toISOString();
-      job.worker?.dispose();
-      job.worker = undefined;
+      this.dispose(job);
     }
     this.changed();
     return this.get(id);
@@ -490,7 +509,7 @@ export class AgentOrchestrator {
           job.record.activity = 'Starting';
           this.changed();
           signal.throwIfAborted();
-          job.worker = await job.createWorker(
+          job.worker = await job.createWorker!(
             job.record.id,
             job.record.previousSessionFile,
           );
@@ -565,9 +584,8 @@ export class AgentOrchestrator {
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
-      if (job.record.status !== 'completed') {
-        job.worker?.dispose();
-        job.worker = undefined;
+      if (job.record.autoCleanup || job.record.status !== 'completed') {
+        this.dispose(job);
       }
       job.record.finishedAt = new Date().toISOString();
       job.controller = undefined;
@@ -631,10 +649,7 @@ export class AgentOrchestrator {
     this.closing = Promise.all(
       [...this.jobs.values()].map(job => job.operation),
     ).then(() => {
-      for (const job of this.jobs.values()) {
-        job.worker?.dispose();
-        job.worker = undefined;
-      }
+      for (const job of this.jobs.values()) this.dispose(job);
       this.listeners.clear();
     });
     return this.closing;

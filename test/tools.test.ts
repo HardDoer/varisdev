@@ -126,7 +126,6 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'json_query',
     'openai_image',
     'agent_spawn',
-    'git_commit_push',
     'agent_list',
     'agent_status',
     'agent_send',

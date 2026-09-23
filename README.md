@@ -12,7 +12,7 @@ Varisware VarisDev package.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, fresh sessions with handovers, waiting, and cancellation.
-- `src/tools/git-commit-push.ts` — delegates committing and pushing to Codex GPT-5.5 with xhigh reasoning, following repository instructions.
+- `src/commit.ts` — adds `/commit [instructions]` to delegate committing and pushing to Codex GPT-5.5, with automatic worker cleanup.
 - `src/session-handover.ts` — switches sessions for the handover workflow, preserves background agents, and provides handover status, update, and cancellation tools.
 - `src/auto-handover.ts` and `src/handover-settings.ts` — prepare a handover with a temporary Codex GPT-5.6 Sol high agent at 90% context and optionally continue the plan in a fresh parent session.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
@@ -75,7 +75,6 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 | `session_handover_update` | Replace handover text before dispatch and increment its revision. |
 | `session_handover_cancel` | Cancel a handover before session replacement begins. |
 | `agent_spawn` | Start an agent and immediately return its ID. |
-| `git_commit_push` | Commit and push through a Codex GPT-5.5 agent with xhigh reasoning. |
 | `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths. |
 | `agent_send` | Send instructions or replace selected pending messages with `supersedes`. Workers can also message `"parent"`. |
@@ -128,7 +127,9 @@ Worker messages automatically identify the sender by name and ID. Messages to pe
 
 Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
 
-Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, and `notify`. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent.
+Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `instructions`, `timeoutMs`, `autoCleanup`, and `notify`. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent. Finished agents with `autoCleanup: true` do not count toward that limit.
+
+Set `autoCleanup: true` for a task whose worker should be disposed after all queued work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work or start another session. The default is `false`, allowing completed agents to resume.
 
 By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
@@ -139,28 +140,22 @@ Agents share their selected working directory and can change its files. Assign f
 - `/agents all` shows active agents followed by history.
 - `/agents cancel <id|all>` cancels work manually.
 
-`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Missing credentials`. Finished agents stay available in history, and completed agents return to the active view when sent new work.
+`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Missing credentials`. Finished agents stay available in history, and completed agents with `autoCleanup: false` return to the active view when sent new work.
 
 Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. The live agent list follows the parent across automatic and manually continued handovers. Quitting, reloading, manually starting or switching sessions, or forking cancels the current agents and disposes their conversations. Saved files remain available after shutdown.
 
 ### Commit and push
 
-Use `git_commit_push` to delegate the commit and push workflow to **Codex GPT-5.5** (`openai-codex/gpt-5.5`) with **xhigh** reasoning, regardless of the parent’s model or thinking level:
+Use `/commit` to ask the current session to **commit and push** through a **Codex GPT-5.5** background agent (`openai-codex/gpt-5.5`). Add optional instructions after the command:
 
-```json
-{
-  "task": "Commit and push the browse response truncation fix and its tests. npm test and npm run typecheck passed for the current changes. Follow the repository's commit conventions.",
-  "cwd": "."
-}
+```text
+/commit
+/commit Only include the browse fix. Use the commit message "Fix browse truncation".
 ```
 
-`task` supplies the change scope, relevant user instructions, completed checks, and any requested commit message or destination. `cwd` is optional and defaults to the parent’s working directory. The worker receives repository context files and reads applicable instructions, including instructions for affected subdirectories. The parent conversation is not copied.
+With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `autoCleanup: true` and `notify: true`. The worker inherits the parent's thinking level. If the parent is working, the request is queued as a follow-up.
 
-The agent inspects the changes, runs required checks, stages the intended changes, creates commits according to repository conventions, and pushes to the requested destination or configured upstream. Its report includes commit hashes, check results, push destination and outcome, and any remaining changes or blockers. If there are no new changes, it checks whether existing commits need pushing.
-
-The tool returns an agent ID immediately and sends a completion notification. Use `agent_status` or `agent_wait` to collect the result, `agent_send` for follow-up instructions, and `agent_cancel` to cancel. It shares the existing worker queue, transcripts, and parent handover lifecycle. The Codex model and credentials must be available through the parent’s model registry; an unavailable model produces an error.
-
-Finish edits and coordinate other workers before starting this tool so the agent can verify and commit a stable set of changes.
+The worker follows repository instructions, inspects changes, runs required checks, commits, and pushes. The parent collects its result and reports the outcome. The worker session is automatically disposed when the task finishes, fails, or is cancelled. Saved results and transcript paths can be inspected with `agent_status`; `/agents cancel <id>` cancels active work.
 
 ### Inspecting and revising agent queues
 
