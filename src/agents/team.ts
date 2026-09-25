@@ -47,6 +47,9 @@ class AgentTeam {
   private parent?: ParentBinding;
   private handover?: TeamHandover;
   private paused = false;
+  private deliveryPending = false;
+  private interrupted = false;
+  private runSignal?: AbortSignal;
   private closed = false;
   sessionId: string;
 
@@ -112,6 +115,23 @@ class AgentTeam {
     this.flush();
   }
 
+  started(parent: ParentBinding): void {
+    if (!this.owns(parent)) return;
+    this.deliveryPending = false;
+    this.interrupted = false;
+    this.runSignal = parent.context.signal;
+    this.activate(parent);
+  }
+
+  settled(parent: ParentBinding): void {
+    if (!this.owns(parent)) return;
+    this.deliveryPending = false;
+    // The host clears ctx.signal before settlement. Retain the run's signal
+    // so Esc leaves the parent stopped until the user starts another run.
+    this.interrupted = this.runSignal?.aborted ?? false;
+    this.flush();
+  }
+
   sendMessage(message: ParentMessage): void {
     this.getManager();
     this.messages.push(message);
@@ -119,19 +139,29 @@ class AgentTeam {
   }
 
   private flush(): void {
-    while (
+    if (
       !this.closed &&
       !this.paused &&
+      !this.deliveryPending &&
+      !this.interrupted &&
       this.parent &&
-      this.messages.length
+      this.messages.length &&
+      // Keep notifications in the team until the parent settles. A host
+      // follow-up queued during work would restart the source after its
+      // handover acknowledgement, before the waiting switch can run.
+      this.parent.context.isIdle()
     ) {
       const message = this.messages.shift()!;
+      // Pi defers prompts sent during agent_settled, leaving isIdle true
+      // until the handlers return. Reserve one delivery until the next run.
+      this.deliveryPending = true;
       try {
         this.parent.pi.sendMessage(message, {
           deliverAs: 'followUp',
           triggerTurn: true,
         });
       } catch (error) {
+        this.deliveryPending = false;
         // Notification failures must not interrupt workers or their cleanup.
         console.error('Agent notification failed:', error);
       }
@@ -292,7 +322,11 @@ export class AgentSessionController implements AgentSessionControl {
     pi.on('agent_start', (_event, ctx) => {
       if (this.shuttingDown) return;
       this.attach(ctx);
-      this.team!.activate(this.parent!);
+      this.team!.started(this.parent!);
+    });
+    pi.on('agent_settled', () => {
+      if (!this.shuttingDown && this.team && this.parent)
+        this.team.settled(this.parent);
     });
     pi.on('session_shutdown', async event => {
       this.shuttingDown = true;

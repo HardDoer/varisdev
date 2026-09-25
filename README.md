@@ -28,11 +28,11 @@ The parent finishes its turn with a brief acknowledgement. A dedicated **Codex G
 
 During preparation, the working indicator shows the handover agent's activity and elapsed time. Press **Esc** to cancel. Preparation has a **five minute limit**, including agent initialization; a timeout reports an error and allows a retry with `/handover`.
 
-Only a completed final response from the handover agent is accepted. Interrupted, failed, truncated, empty, or oversized summaries do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The harness displays the completed draft and schedules the session change after the parent turn settles. The configured Codex model must be available through the parent's model registry and credentials; preparation errors leave the source session available for a retry with `/handover`.
+Only a completed final response from the handover agent is accepted. Interrupted, failed, truncated, empty, or oversized summaries do not start a fresh parent. A new user instruction supersedes a handover being drafted or waiting to switch sessions. The harness displays and saves the completed draft as a session entry outside the old parent's model context, then schedules the session change after the parent turn settles. The configured Codex model must be available through the parent's model registry and credentials; preparation errors leave the source session available for a retry with `/handover`.
 
 The handover agent belongs to the source session and is destroyed when that session changes or shuts down. A later handover creates a new agent. Its source snapshot, transcript, and result remain under `~/.pi/agent/varisdev/handovers/<source-session-id>/<request-id>/` (or the configured Pi agent directory).
 
-The destination receives the handover and normal system/project instructions. Existing background workers retain their IDs, conversations, and queued work. Their notifications are buffered by the existing parent handover machinery when the session change is scheduled.
+The destination receives the handover and normal system/project instructions. Existing background workers retain their IDs, conversations, and queued work. Their notifications stay buffered while the parent is working, including during summary preparation, and transfer with the team when the session changes.
 
 ### Configure automation
 
@@ -184,7 +184,7 @@ Both edits validate all selected IDs before changing the queue. If any selected 
 
 The handover workflow creates a new parent session ID and transcript. Its model context starts with the handover and normal system/project instructions. Previous messages and tool outputs remain in the old transcript on disk.
 
-Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Worker messages and completion reports are buffered as soon as the handover is scheduled, so new worker notifications cannot keep adding turns while the parent waits for idle. They are delivered to the destination after the switch, or to the source if the request is cancelled. Model selection, thinking level, and active tools carry over.
+Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Worker messages and completion reports remain in the team's inbox while the parent is working. A handover transfers that inbox, including notifications received before the pause request. Reports trigger turns one at a time after the destination settles, or after the source settles if the request is cancelled. Pressing Esc keeps reports buffered until the user starts another run. Model selection, thinking level, and active tools carry over.
 
 Inspect requests using `session_handover_status` with `{"id":"<request ID>"}`; omit `id` to list recent requests with previews. The latest 50 requests remain available across parent handovers in the running application.
 

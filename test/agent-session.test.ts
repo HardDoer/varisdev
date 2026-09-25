@@ -29,7 +29,9 @@ interface ProviderRequest {
   tools: Array<{function: {name: string}}>;
 }
 
-type ShutdownHandler = (event: SessionShutdownEvent) => Promise<void> | void;
+type ShutdownHandler = (
+  event: SessionShutdownEvent | {type: 'agent_settled'},
+) => Promise<void> | void;
 
 function reply(
   response: ServerResponse,
@@ -633,6 +635,7 @@ void test(
       hasUI: false,
       model: registry.find('varisdev-messaging-test', 'worker-model')!,
       modelRegistry: registry,
+      isIdle: () => true,
       sessionManager: {getSessionId: () => 'messaging-parent'},
     } as unknown as ExtensionContext;
     const execute = (name: string, params: Record<string, unknown>) =>
@@ -811,6 +814,7 @@ async function localParent(
     hasUI: false,
     model: registry.find('varisdev-handover-test', 'worker-model')!,
     modelRegistry: registry,
+    isIdle: () => true,
     sessionManager: {getSessionId: () => 'handover-parent'},
   } as unknown as ExtensionContext;
   const execute = (name: string, params: Record<string, unknown>) =>
@@ -819,6 +823,7 @@ async function localParent(
     cwd,
     execute,
     parentMessages,
+    settle: () => events.get('agent_settled')!({type: 'agent_settled'}),
     async wait(id: string) {
       const result = await execute('agent_wait', {ids: [id], timeoutMs: 10000});
       assert.deepEqual(providerErrors, []);
@@ -1035,6 +1040,8 @@ void test(
       transcripts[2],
       /ORIGINAL TOOL CONTEXT MARKER|FIRST HANDOVER|QUEUED FOLLOWUP/,
     );
+    assert.equal(parent.parentMessages.length, 1);
+    await parent.settle();
     assert.equal(parent.parentMessages.length, 2);
     for (const [message, delivery] of parent.parentMessages) {
       assert.equal(message.customType, 'agent_message');

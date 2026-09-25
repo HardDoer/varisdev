@@ -816,7 +816,7 @@ void test(
       1,
       'Completion buffered during replacement must be delivered exactly once',
     );
-    assert.equal(completionMessages[0].sessionId, sessions[1].sessionId);
+    assert.equal(completionMessages[0].sessionId, sessions[2].sessionId);
     assert.ok(
       JSON.stringify(completionMessages[0].content).includes(completionOutput),
     );
@@ -829,7 +829,7 @@ void test(
       secondWorkerMessage,
     ].entries()) {
       const message = workerMessages[index];
-      assert.equal(message.sessionId, sessions[index + 1].sessionId);
+      assert.equal(message.sessionId, sessions[2].sessionId);
       assert.ok(JSON.stringify(message.content).includes(marker));
       assert.ok(JSON.stringify(message.content).includes(liveId));
     }
@@ -872,6 +872,7 @@ void test('cancel and destination recovery release buffered messages once while 
     const messages: string[] = [];
     const ctx = {
       hasUI: false,
+      isIdle: () => true,
       sessionManager: {getSessionId: () => sessionId},
     } as unknown as ExtensionContext;
     const pi = {
@@ -945,6 +946,8 @@ void test('cancel and destination recovery release buffered messages once while 
   assert.deepEqual(source.messages, ['Before cancellation']);
   assert.equal(source.control.getTeam(source.ctx).getManager(), manager);
   assert.equal(manager.get(worker.id).status, 'running');
+  await source.emit('agent_start');
+  await source.emit('agent_settled');
 
   const failed = source.control.prepareHandover(source.ctx);
   team.sendMessage({

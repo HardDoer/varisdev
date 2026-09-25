@@ -78,7 +78,7 @@ async function fixture(t: TestContext) {
   const toolChanges: unknown[] = [];
   const abort = new AbortController();
   const agents: Array<{disposed: boolean; signal?: AbortSignal}> = [];
-  const drafts: Sent[] = [];
+  const drafts: Array<{handover: string}> = [];
   let output = 'Summary from the dedicated agent';
   let factory: typeof createHandoverAgent = async () => {
     const state: (typeof agents)[number] = {disposed: false};
@@ -162,16 +162,17 @@ async function fixture(t: TestContext) {
     ) {
       commands.set(name, command);
     },
+    registerEntryRenderer() {},
     appendEntry(customType: string, data: unknown) {
       entries.push({type: 'custom', customType, data: structuredClone(data)});
+      if (customType === 'varisdev_handover_draft')
+        drafts.push(data as {handover: string});
     },
     sendMessage(
       message: Sent,
       options: Parameters<ExtensionAPI['sendMessage']>[1],
     ) {
-      if (message.customType === 'varisdev_handover_draft')
-        drafts.push(message);
-      else sent.push({message, options});
+      sent.push({message, options});
     },
     registerTool: (tool: unknown) => toolChanges.push(tool),
     setActiveTools: (tools: unknown) => toolChanges.push(tools),
@@ -592,7 +593,7 @@ void test('completed summarizer is disposed on session change and the next sessi
   await f.deliver();
   await f.complete('Dedicated summary');
   assert.deepEqual(f.scheduled, ['Dedicated summary']);
-  assert.equal(f.drafts[0].content, 'Dedicated summary');
+  assert.equal(f.drafts[0].handover, 'Dedicated summary');
   assert.equal(f.agents[0].disposed, false);
   await f.emit('session_shutdown');
   assert.equal(f.agents[0].disposed, true);

@@ -1,7 +1,9 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  getMarkdownTheme,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
+import {Markdown} from '@earendil-works/pi-tui';
 import {randomUUID} from 'node:crypto';
 import {createHandoverAgent, type HandoverAgent} from './handover-agent.ts';
 import {readHandoverSettings} from './handover-settings.ts';
@@ -31,6 +33,7 @@ interface Summarizer {
 
 const entryType = 'varisdev_handover';
 const requestType = 'varisdev_handover_request';
+const draftType = 'varisdev_handover_draft';
 const threshold = 90;
 const summaryTimeoutMs = 5 * 60 * 1000;
 
@@ -237,6 +240,11 @@ export function registerAutoHandover(
     }
   }
 
+  pi.registerEntryRenderer<{handover: string}>(
+    draftType,
+    entry => new Markdown(entry.data?.handover ?? '', 1, 1, getMarkdownTheme()),
+  );
+
   pi.on('session_start', (_event, ctx) => {
     epoch++;
     disposeAgent();
@@ -318,9 +326,7 @@ export function registerAutoHandover(
       (['pausing', 'summarizing'].includes(checkpoint.status) &&
         message.role === 'user') ||
       (checkpoint.status === 'ready' &&
-        (message.role === 'user' ||
-          (message.role === 'custom' &&
-            message.customType !== 'varisdev_handover_draft')))
+        (message.role === 'user' || message.role === 'custom'))
     )
       fail();
     if (
@@ -385,15 +391,9 @@ export function registerAutoHandover(
         summary.stopProgress();
         checkpoint = {...checkpoint, status: 'ready', handover};
         save();
-        pi.sendMessage(
-          {
-            customType: 'varisdev_handover_draft',
-            content: handover,
-            display: true,
-            details: {id: checkpoint.id},
-          },
-          {triggerTurn: false},
-        );
+        // Display and persist the draft without placing its continuation
+        // instructions in the source parent's model context.
+        pi.appendEntry(draftType, {id: checkpoint.id, handover});
         const completed = checkpoint;
         const settings = await readHandoverSettings(ctx.cwd);
         if (

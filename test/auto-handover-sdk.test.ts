@@ -22,6 +22,7 @@ import {
 import {createHandoverAgent} from '../src/handover-agent.ts';
 import {registerAutoHandover} from '../src/auto-handover.ts';
 import type {AgentRecord, AgentWorker} from '../src/agents/orchestrator.ts';
+import type {AgentSessionController} from '../src/agents/team.ts';
 import {createSessionWorker} from '../src/agents/session.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerSessionHandover} from '../src/session-handover.ts';
@@ -84,7 +85,7 @@ function records(request: ProviderRequest): AgentRecord[] {
 }
 
 void test(
-  'Pi summarizes at 90% using Codex GPT-5.6 Sol high, destroys the summarizer, and preserves live workers',
+  'Pi summarizes at 90%, transfers already waiting notifications, and preserves live workers',
   {timeout: 30000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-auto-sdk-'));
@@ -96,6 +97,9 @@ void test(
     const verified = 'VERIFIED PLAN: review draft.txt; validation is pending.';
     const handover = `HANDOVER FROM DEDICATED AGENT: ${verified}`;
     const workerTask = 'WORKER TASK: inspect worker.txt and report findings.';
+    const notification = 'CANCELLED WORKER: notification waiting before pause.';
+    const duringSummary =
+      'WORKER RESULT: completed during summary preparation.';
     const workerStarted = Promise.withResolvers<void>();
     const finishWorker = Promise.withResolvers<void>();
     const replacementReady = Promise.withResolvers<void>();
@@ -332,7 +336,16 @@ void test(
         case 3:
           assert.equal(records(input)[0].status, 'completed');
           assert.equal(records(input)[0].output, 'WORKER REVIEW COMPLETE');
+          assert.ok(!JSON.stringify(conversation).includes(notification));
           return {output: 'FRESH PARENT REVIEW COMPLETE'};
+        case 4:
+          assert.ok(JSON.stringify(conversation.at(-1)).includes(notification));
+          return {output: 'FRESH PARENT RECEIVED WAITING NOTIFICATION'};
+        case 5:
+          assert.ok(
+            JSON.stringify(conversation.at(-1)).includes(duringSummary),
+          );
+          return {output: 'FRESH PARENT RECEIVED SUMMARY-TIME NOTIFICATION'};
         default:
           assert.fail('Unexpected fresh parent response');
       }
@@ -465,10 +478,26 @@ void test(
                   JSON.stringify(event.message).includes(
                     'EXACT CONTEXT BOUNDARY',
                   )
-                )
+                ) {
                   boundaryPercent = ctx.getContextUsage()?.percent;
+                  // A worker result can be waiting long before the pause request.
+                  // Sending it straight to Pi's follow-up queue wakes the old
+                  // parent after the summary and blocks the idle session switch.
+                  (control as AgentSessionController).getTeam(ctx).sendMessage({
+                    customType: 'agent_result',
+                    content: notification,
+                    display: true,
+                    details: {},
+                  });
+                }
               });
               registerAutoHandover(pi, sessionControl, async (ctx, id) => {
+                (control as AgentSessionController).getTeam(ctx).sendMessage({
+                  customType: 'agent_result',
+                  content: duringSummary,
+                  display: true,
+                  details: {},
+                });
                 const agent = await createHandoverAgent(ctx, id);
                 const dispose = agent.worker.dispose;
                 agent.worker.dispose = () => {
@@ -506,7 +535,12 @@ void test(
           event.message.customType === 'varisdev_handover_request'
         )
           automaticMessages.push(JSON.stringify(event.message.content));
-        if (phase === 1 && event.type === 'agent_settled') finished.resolve();
+        if (
+          phase === 1 &&
+          event.type === 'agent_settled' &&
+          requests[1].length === 5
+        )
+          finished.resolve();
       });
       return {...created, services, diagnostics: services.diagnostics};
     };
@@ -566,6 +600,28 @@ void test(
     await runtime.session.waitForIdle();
     assert.deepEqual(errors, []);
     assert.equal(sessions.length, 2);
+    assert.equal(
+      requests[0].length,
+      5,
+      'The source stops at its acknowledgement',
+    );
+    assert.equal(requests[1].length, 5);
+    const sourceEntries = sessions[0].sessionManager.getEntries();
+    assert.ok(
+      sourceEntries.some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev_handover_draft' &&
+          (entry.data as {handover: string}).handover === handover,
+      ),
+      'The saved draft remains available for display and recovery',
+    );
+    assert.ok(
+      !sessions[0].messages.some(message =>
+        JSON.stringify(message).includes(handover),
+      ),
+      'The continuation draft must not become source model context',
+    );
     assert.equal(runtime.session, sessions[1]);
     assert.equal(runtime.session.model?.id, 'parent-model');
     assert.equal(runtime.session.thinkingLevel, 'high');
