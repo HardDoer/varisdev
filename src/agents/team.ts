@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -13,22 +14,30 @@ export interface AgentSessionControl {
 export interface AgentHandover {
   transfer(sessionId: string): void;
   cancel(): void;
-  /** Resume buffered notifications if the destination already owns the team. */
-  resume(): boolean;
+  /** Check whether the destination still owns the team during recovery. */
+  hasDestination(): boolean;
   close(): Promise<void>;
 }
 
 interface ParentBinding {
-  pi: ExtensionAPI;
   context: ExtensionContext;
   sessionId: string;
 }
 
-interface ParentMessage {
-  customType: string;
-  content: string;
-  display: boolean;
-  details: unknown;
+export interface AgentMessage {
+  from: {id: string; name: string};
+  message: string;
+}
+
+export interface ParentMessage extends AgentMessage {
+  id: string;
+  createdAt: string;
+}
+
+const maxParentMessages = 100;
+
+function copyMessage(message: ParentMessage): ParentMessage {
+  return {...message, from: {...message.from}};
 }
 
 // Fresh extension runtimes may reload this module. Only unclaimed transfers
@@ -42,21 +51,16 @@ const pendingTransfers = (shared[transfersKey] ??= new Map());
 /** Owns workers independently of the extension runtime displaying them. */
 class AgentTeam {
   private readonly manager = new AgentOrchestrator();
-  private readonly notified = new Set<string>();
   private readonly messages: ParentMessage[] = [];
   private parent?: ParentBinding;
   private handover?: TeamHandover;
-  private paused = false;
-  private deliveryPending = false;
-  private interrupted = false;
-  private runSignal?: AbortSignal;
   private closed = false;
   sessionId: string;
 
   constructor(parent: ParentBinding) {
     this.sessionId = parent.sessionId;
-    this.bind(parent, false);
-    this.manager.subscribe(() => this.changed());
+    this.bind(parent);
+    this.manager.subscribe(() => this.updateStatus());
   }
 
   get isClosed(): boolean {
@@ -100,113 +104,75 @@ class AgentTeam {
     this.parent = undefined;
   }
 
-  bind(parent: ParentBinding, paused: boolean): void {
+  bind(parent: ParentBinding): void {
     this.getManager();
     this.detach();
     this.parent = parent;
     this.sessionId = parent.sessionId;
-    this.paused = paused;
     this.updateStatus();
   }
 
-  activate(parent: ParentBinding): void {
-    if (!this.owns(parent) || this.handover) return;
-    this.paused = false;
-    this.flush();
-  }
-
-  started(parent: ParentBinding): void {
-    if (!this.owns(parent)) return;
-    this.deliveryPending = false;
-    this.interrupted = false;
-    this.runSignal = parent.context.signal;
-    this.activate(parent);
-  }
-
-  settled(parent: ParentBinding): void {
-    if (!this.owns(parent)) return;
-    this.deliveryPending = false;
-    // The host clears ctx.signal before settlement. Retain the run's signal
-    // so Esc leaves the parent stopped until the user starts another run.
-    this.interrupted = this.runSignal?.aborted ?? false;
-    this.flush();
-  }
-
-  sendMessage(message: ParentMessage): void {
+  storeMessage(message: AgentMessage): ParentMessage {
     this.getManager();
-    this.messages.push(message);
-    this.flush();
+    if (!message.message.trim())
+      throw new Error('Agent message cannot be empty.');
+    if (message.message.length > 64000)
+      throw new Error('Agent message cannot exceed 64000 characters.');
+    const stored = {
+      ...message,
+      from: {...message.from},
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    this.messages.push(stored);
+    if (this.messages.length > maxParentMessages) this.messages.shift();
+    return copyMessage(stored);
   }
 
-  private flush(): void {
+  getMessage(id: string): ParentMessage {
+    this.getManager();
+    const message = this.messages.find(message => message.id === id);
+    if (!message) throw new Error(`Unknown parent inbox message: ${id}`);
+    return copyMessage(message);
+  }
+
+  listMessages(options: {offset?: number; limit?: number} = {}) {
+    this.getManager();
+    const {offset = 0, limit = 10} = options;
     if (
-      !this.closed &&
-      !this.paused &&
-      !this.deliveryPending &&
-      !this.interrupted &&
-      this.parent &&
-      this.messages.length &&
-      // Keep notifications in the team until the parent settles. A host
-      // follow-up queued during work would restart the source after its
-      // handover acknowledgement, before the waiting switch can run.
-      this.parent.context.isIdle()
-    ) {
-      const message = this.messages.shift()!;
-      // Pi defers prompts sent during agent_settled, leaving isIdle true
-      // until the handlers return. Reserve one delivery until the next run.
-      this.deliveryPending = true;
-      try {
-        this.parent.pi.sendMessage(message, {
-          deliverAs: 'followUp',
-          triggerTurn: true,
-        });
-      } catch (error) {
-        this.deliveryPending = false;
-        // Notification failures must not interrupt workers or their cleanup.
-        console.error('Agent notification failed:', error);
-      }
-    }
-  }
-
-  private changed(): void {
-    if (this.closed) return;
-    this.updateStatus();
-    for (const record of this.manager.list()) {
-      if (!isAgentFinished(record.status)) {
-        this.notified.delete(record.id);
-        continue;
-      }
-      if (this.notified.has(record.id)) continue;
-      this.notified.add(record.id);
-      if (record.notify) {
-        this.sendMessage({
-          customType: 'agent_result',
-          content: `Agent ${JSON.stringify(record.name)} (${record.id}) ${record.status}.\n${record.error ?? record.output?.slice(0, 2000) ?? ''}\nUse agent_status for the result and transcript paths.`,
-          display: true,
-          details: {agent: record},
-        });
-      }
-    }
+      !Number.isInteger(offset) ||
+      offset < 0 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 20
+    )
+      throw new Error(
+        'Message offset must be non-negative and limit must be 1 to 20.',
+      );
+    const total = this.messages.length;
+    const messages = this.messages.toReversed().slice(offset, offset + limit);
+    return {
+      total,
+      offset,
+      nextOffset:
+        offset + messages.length < total ? offset + messages.length : undefined,
+      messages: messages.map(copyMessage),
+    };
   }
 
   prepare(parent: ParentBinding, restore: () => void): AgentHandover {
     if (!this.owns(parent)) throw new Error('This parent session has closed.');
     if (this.handover) throw new Error('An agent handover is already pending.');
-    this.paused = true;
     this.handover = new TeamHandover(this, parent, restore);
     return this.handover;
   }
 
-  finishHandover(
-    handover: TeamHandover,
-    parent: ParentBinding,
-    paused: boolean,
-  ): void {
+  finishHandover(handover: TeamHandover, parent: ParentBinding): void {
     if (this.closed || this.handover !== handover) {
       throw new Error('This agent handover has closed.');
     }
     this.handover = undefined;
-    this.bind(parent, paused);
+    this.bind(parent);
   }
 
   shutdown(
@@ -274,7 +240,7 @@ class TeamHandover implements AgentHandover {
     if (this.state !== 'pending' || parent.sessionId !== this.destination) {
       throw new Error('This agent handover belongs to another session.');
     }
-    this.team.finishHandover(this, parent, true);
+    this.team.finishHandover(this, parent);
     this.removeTransfer();
     this.state = 'attached';
     this.attachedParent = parent;
@@ -285,18 +251,15 @@ class TeamHandover implements AgentHandover {
     if (this.team.isClosed) return;
     if (this.state !== 'prepared' && this.state !== 'pending') return;
     this.removeTransfer();
-    this.team.finishHandover(this, this.origin, false);
+    this.team.finishHandover(this, this.origin);
     this.state = 'cancelled';
     this.restore();
-    this.team.activate(this.origin);
   }
 
-  resume(): boolean {
-    if (!this.attachedParent || !this.team.owns(this.attachedParent)) {
-      return false;
-    }
-    this.team.activate(this.attachedParent);
-    return true;
+  hasDestination(): boolean {
+    return (
+      this.attachedParent !== undefined && this.team.owns(this.attachedParent)
+    );
   }
 
   close(): Promise<void> {
@@ -312,21 +275,13 @@ export class AgentSessionController implements AgentSessionControl {
   private team?: AgentTeam;
   private parent?: ParentBinding;
   private shuttingDown = false;
-  private readonly pi: ExtensionAPI;
-
   constructor(pi: ExtensionAPI) {
-    this.pi = pi;
     pi.on('session_start', () => {
       this.shuttingDown = false;
     });
     pi.on('agent_start', (_event, ctx) => {
       if (this.shuttingDown) return;
       this.attach(ctx);
-      this.team!.started(this.parent!);
-    });
-    pi.on('agent_settled', () => {
-      if (!this.shuttingDown && this.team && this.parent)
-        this.team.settled(this.parent);
     });
     pi.on('session_shutdown', async event => {
       this.shuttingDown = true;
@@ -353,7 +308,7 @@ export class AgentSessionController implements AgentSessionControl {
       this.parent.context = ctx;
       return;
     }
-    const parent = {pi: this.pi, context: ctx, sessionId};
+    const parent = {context: ctx, sessionId};
     const transfer = pendingTransfers.get(sessionId);
     this.team = transfer ? transfer.attach(parent) : new AgentTeam(parent);
     this.parent = parent;

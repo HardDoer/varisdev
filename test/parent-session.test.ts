@@ -112,7 +112,7 @@ function records(request: ProviderRequest): AgentRecord[] {
 }
 
 void test(
-  'Pi parent handovers replace the runtime twice while live workers, queued work and notifications survive',
+  'Pi parent handovers retain live workers, queued work and results without completion notifications',
   {timeout: 45000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-parent-sdk-'));
@@ -172,6 +172,8 @@ void test(
     let parentFinished = false;
     let liveId = '';
     let finisherId = '';
+    let firstInboxMessageId = '';
+    let secondInboxMessageId = '';
     let liveBefore: AgentRecord;
     let finisherBefore: AgentRecord;
     let finalWorkers: AgentRecord[] = [];
@@ -241,7 +243,7 @@ void test(
         assert.ok(['running', 'completed'].includes(peer.status));
         if (peer.status !== 'completed') {
           // Observe actual orchestrator completion through a live worker's SDK tool.
-          // The parent factory remains gated until this confirms the notification was buffered.
+          // The parent factory remains gated until the result is available.
           return {name: 'agent_list', arguments: {view: 'all'}};
         }
         assert.equal(
@@ -252,7 +254,7 @@ void test(
         assert.equal(
           notifications.length,
           0,
-          'Detached parent must buffer completion',
+          'Worker completion must not message the paused parent',
         );
         completionObserved.resolve();
         await finishLiveInitialTask.promise;
@@ -265,10 +267,15 @@ void test(
       if (lastUser.includes(queuedBeforeFirst)) {
         assert.equal(users.length, 2);
         if (lastMessage?.role === 'tool') {
-          assert.deepEqual(lastToolResult(input), {
-            recipient: 'parent',
-            delivered: true,
-          });
+          const result = lastToolResult<{
+            recipient: 'parent';
+            stored: true;
+            messageId: string;
+          }>(input);
+          assert.equal(result.recipient, 'parent');
+          assert.equal(result.stored, true);
+          assert.ok(result.messageId);
+          firstInboxMessageId = result.messageId;
           return 'FIRST QUEUED WORK COMPLETE';
         }
         return {
@@ -279,10 +286,15 @@ void test(
       if (lastUser.includes(queuedByFirst)) {
         assert.equal(users.length, 3);
         if (lastMessage?.role === 'tool') {
-          assert.deepEqual(lastToolResult(input), {
-            recipient: 'parent',
-            delivered: true,
-          });
+          const result = lastToolResult<{
+            recipient: 'parent';
+            stored: true;
+            messageId: string;
+          }>(input);
+          assert.equal(result.recipient, 'parent');
+          assert.equal(result.stored, true);
+          assert.ok(result.messageId);
+          secondInboxMessageId = result.messageId;
           return 'SECOND QUEUED WORK COMPLETE';
         }
         secondQueuedTaskStarted.resolve();
@@ -394,8 +406,7 @@ void test(
               arguments: {
                 name: 'Live',
                 task: 'LIVE INITIAL TASK',
-                model: 'varisdev-parent-test/worker-model',
-                notify: false,
+                model: 'openai-codex/gpt-5.5',
                 timeoutMs: 30000,
               },
             };
@@ -406,8 +417,7 @@ void test(
               arguments: {
                 name: 'Finisher',
                 task: 'FINISHER INITIAL TASK',
-                model: 'varisdev-parent-test/worker-model',
-                notify: true,
+                model: 'openai-codex/gpt-5.5',
                 timeoutMs: 30000,
               },
             };
@@ -441,7 +451,7 @@ void test(
             assert.equal(scheduled.handover.state, 'waiting_for_idle');
             assert.equal(scheduled.handover.id, handoverIds[0]);
             // Keep the source turn busy until a worker completes. Its result
-            // must be buffered from scheduling, before waitForIdle resolves.
+            // must remain available after the parent runtime is replaced.
             await completionObserved.promise;
             return {
               name: 'session_handover_update',
@@ -477,27 +487,57 @@ void test(
               listed.find(agent => agent.id === finisherId)?.status,
               'completed',
             );
-            return {name: 'agent_status', arguments: {id: liveId}};
+            return {name: 'agent_status', arguments: {id: finisherId}};
           }
           case 3:
+            assertSameWorker(records(input)[0], finisherBefore);
+            assert.equal(records(input)[0].status, 'completed');
+            assert.equal(records(input)[0].output, completionOutput);
+            return {name: 'agent_status', arguments: {id: liveId}};
+          case 4:
             assertSameWorker(records(input)[0], liveBefore);
             return {
               name: 'agent_send',
               arguments: {id: liveId, message: queuedByFirst},
             };
-          case 4:
+          case 5:
             assert.equal(records(input)[0].pendingMessages, 2);
             finishLiveInitialTask.resolve();
             await secondQueuedTaskStarted.promise;
+            return {name: 'agent_inbox', arguments: {}};
+          case 6: {
+            const inbox = lastToolResult<{
+              total: number;
+              offset: number;
+              nextOffset?: number;
+              messages: Array<{
+                id: string;
+                from: {id: string; name: string};
+                createdAt: string;
+                length: number;
+                preview: string;
+              }>;
+            }>(input);
+            assert.equal(inbox.total, 1);
+            assert.equal(inbox.offset, 0);
+            assert.equal(inbox.nextOffset, undefined);
+            assert.equal(inbox.messages.length, 1);
+            assert.ok(Date.parse(inbox.messages[0].createdAt));
+            const message = inbox.messages[0];
+            assert.equal(message.id, firstInboxMessageId);
+            assert.deepEqual(message.from, {id: liveId, name: 'Live'});
+            assert.equal(message.length, firstWorkerMessage.length);
+            assert.equal(message.preview, firstWorkerMessage);
             return {
               name: 'agent_wait',
               arguments: {ids: [liveId], timeoutMs: 0},
             };
-          case 5:
+          }
+          case 7:
             assertSameWorker(records(input)[0], liveBefore);
             assert.equal(records(input)[0].status, 'running');
             return {name: 'read', arguments: {path: 'first-fresh.txt'}};
-          case 6:
+          case 8:
             assert.match(
               JSON.stringify(input.messages),
               /FIRST FRESH PARENT TOOL CONTEXT/,
@@ -506,7 +546,7 @@ void test(
               name: 'agent_send',
               arguments: {id: liveId, message: queuedBeforeSecond},
             };
-          case 7:
+          case 9:
             assert.equal(records(input)[0].pendingMessages, 1);
             return {
               name: 'test_handover',
@@ -558,10 +598,97 @@ void test(
             'ALL LIVE WORKER TASKS COMPLETE',
           );
           assert.equal(finalWorkers[1].output, completionOutput);
+          return {
+            name: 'agent_inbox',
+            arguments: {offset: 0, limit: 1},
+          };
+        case 6: {
+          const page = lastToolResult<{
+            total: number;
+            offset: number;
+            nextOffset?: number;
+            messages: Array<{
+              id: string;
+              from: {id: string; name: string};
+              createdAt: string;
+              length: number;
+              preview: string;
+            }>;
+          }>(input);
+          assert.equal(page.total, 2);
+          assert.equal(page.offset, 0);
+          assert.equal(page.nextOffset, 1);
+          assert.equal(page.messages.length, 1);
+          assert.ok(Date.parse(page.messages[0].createdAt));
+          const message = page.messages[0];
+          assert.equal(message.id, secondInboxMessageId);
+          assert.deepEqual(message.from, {id: liveId, name: 'Live'});
+          assert.equal(message.length, secondWorkerMessage.length);
+          assert.equal(message.preview, secondWorkerMessage);
+          return {
+            name: 'agent_inbox',
+            arguments: {offset: 1, limit: 1},
+          };
+        }
+        case 7: {
+          const page = lastToolResult<{
+            total: number;
+            offset: number;
+            nextOffset?: number;
+            messages: Array<{
+              id: string;
+              from: {id: string; name: string};
+              createdAt: string;
+              length: number;
+              preview: string;
+            }>;
+          }>(input);
+          assert.equal(page.total, 2);
+          assert.equal(page.offset, 1);
+          assert.equal(page.nextOffset, undefined);
+          assert.equal(page.messages.length, 1);
+          assert.ok(Date.parse(page.messages[0].createdAt));
+          const message = page.messages[0];
+          assert.equal(message.id, firstInboxMessageId);
+          assert.deepEqual(message.from, {id: liveId, name: 'Live'});
+          assert.equal(message.length, firstWorkerMessage.length);
+          assert.equal(message.preview, firstWorkerMessage);
+          return {
+            name: 'agent_inbox',
+            arguments: {messageId: secondInboxMessageId},
+          };
+        }
+        case 8: {
+          const full = lastToolResult<{
+            message: {
+              id: string;
+              from: {id: string; name: string};
+              createdAt: string;
+              message: string;
+            };
+          }>(input).message;
+          assert.equal(full.id, secondInboxMessageId);
+          assert.deepEqual(full.from, {id: liveId, name: 'Live'});
+          assert.ok(Date.parse(full.createdAt));
+          assert.equal(full.message, secondWorkerMessage);
+          return {name: 'agent_inbox', arguments: {}};
+        }
+        case 9: {
+          const inbox = lastToolResult<{
+            total: number;
+            messages: Array<{id: string}>;
+          }>(input);
+          assert.equal(inbox.total, 2);
+          assert.deepEqual(
+            inbox.messages.map(message => message.id),
+            [secondInboxMessageId, firstInboxMessageId],
+            'Inbox reads must not consume messages',
+          );
           parentFinished = true;
           return 'PARENT WORKFLOW COMPLETE';
+        }
         default:
-          return 'Worker notifications acknowledged.';
+          return 'Worker messages acknowledged.';
       }
     }
 
@@ -579,7 +706,7 @@ void test(
         });
         const output = cleaningUp
           ? 'Cleanup.'
-          : await (input.model === 'worker-model'
+          : await (input.model === 'gpt-5.5'
               ? respondToWorker(input)
               : respondToParent(input));
         reply(response, input.model, output);
@@ -643,7 +770,7 @@ void test(
         api: 'openai-completions',
         baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
         apiKey: 'local-test-key',
-        models: ['parent-model', 'worker-model', 'default-model'].map(id => ({
+        models: ['parent-model', 'default-model'].map(id => ({
           id,
           name: id,
           reasoning: true,
@@ -652,6 +779,22 @@ void test(
           contextWindow: 128000,
           maxTokens: 1000,
         })),
+      });
+      modelRuntime.registerProvider('openai-codex', {
+        api: 'openai-completions',
+        baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+        apiKey: 'local-test-key',
+        models: [
+          {
+            id: 'gpt-5.5',
+            name: 'Codex GPT-5.5',
+            reasoning: true,
+            input: ['text'],
+            cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+            contextWindow: 128000,
+            maxTokens: 1000,
+          },
+        ],
       });
       const services = await createAgentSessionServices({
         cwd: options.cwd,
@@ -710,7 +853,12 @@ void test(
             content: event.message.content,
           });
         }
-        if (event.type === 'agent_settled' && phase === 2 && parentFinished)
+        if (
+          event.type === 'message_end' &&
+          event.message.role === 'assistant' &&
+          phase === 2 &&
+          parentFinished
+        )
           finished.resolve();
       });
       return {...created, services, diagnostics: services.diagnostics};
@@ -808,31 +956,11 @@ void test(
       /ORIGINAL PARENT TASK|ORIGINAL PARENT TOOL OUTPUT|FIRST PARENT HANDOVER|FIRST FRESH PARENT TOOL CONTEXT/,
     );
 
-    const completionMessages = notifications.filter(
-      message => message.customType === 'agent_result',
+    assert.deepEqual(
+      notifications,
+      [],
+      'Worker messages and completions must keep every parent session silent',
     );
-    assert.equal(
-      completionMessages.length,
-      1,
-      'Completion buffered during replacement must be delivered exactly once',
-    );
-    assert.equal(completionMessages[0].sessionId, sessions[2].sessionId);
-    assert.ok(
-      JSON.stringify(completionMessages[0].content).includes(completionOutput),
-    );
-    const workerMessages = notifications.filter(
-      message => message.customType === 'agent_message',
-    );
-    assert.equal(workerMessages.length, 2);
-    for (const [index, marker] of [
-      firstWorkerMessage,
-      secondWorkerMessage,
-    ].entries()) {
-      const message = workerMessages[index];
-      assert.equal(message.sessionId, sessions[2].sessionId);
-      assert.ok(JSON.stringify(message.content).includes(marker));
-      assert.ok(JSON.stringify(message.content).includes(liveId));
-    }
     assert.equal(
       await readFile(finalWorkers[0].resultFile!, 'utf8'),
       'ALL LIVE WORKER TASKS COMPLETE',
@@ -863,7 +991,7 @@ void test(
   },
 );
 
-void test('cancel and destination recovery release buffered messages once while keeping live workers attached', async () => {
+void test('cancel and destination recovery retain inbox messages while keeping live workers attached', async () => {
   function parent(sessionId: string) {
     const events = new Map<
       string,
@@ -894,7 +1022,8 @@ void test('cancel and destination recovery release buffered messages once while 
       ctx,
       control,
       messages,
-      emit: (name: string, event: object = {}) => events.get(name)!(event, ctx),
+      emit: (name: string, event: object = {}) =>
+        events.get(name)?.(event, ctx),
     };
   }
   const source = parent(randomUUID());
@@ -909,7 +1038,6 @@ void test('cancel and destination recovery release buffered messages once while 
       task: 'Work',
       cwd: process.cwd(),
       model: 'test/model',
-      notify: false,
     },
     async () => ({
       sessionFile: '/worker.jsonl',
@@ -929,11 +1057,9 @@ void test('cancel and destination recovery release buffered messages once while 
   );
   await running.promise;
   const cancelled = source.control.prepareHandover(source.ctx);
-  team.sendMessage({
-    customType: 'agent_message',
-    content: 'Before cancellation',
-    display: true,
-    details: {},
+  const beforeCancellation = team.storeMessage({
+    from: {id: worker.id, name: 'Worker'},
+    message: 'Before cancellation',
   });
   await source.emit('agent_start');
   assert.deepEqual(
@@ -943,18 +1069,22 @@ void test('cancel and destination recovery release buffered messages once while 
   );
   cancelled.cancel();
   cancelled.cancel();
-  assert.deepEqual(source.messages, ['Before cancellation']);
+  assert.deepEqual(source.messages, []);
+  assert.deepEqual(source.control.getTeam(source.ctx).listMessages(), {
+    total: 1,
+    offset: 0,
+    nextOffset: undefined,
+    messages: [beforeCancellation],
+  });
   assert.equal(source.control.getTeam(source.ctx).getManager(), manager);
   assert.equal(manager.get(worker.id).status, 'running');
   await source.emit('agent_start');
   await source.emit('agent_settled');
 
   const failed = source.control.prepareHandover(source.ctx);
-  team.sendMessage({
-    customType: 'agent_message',
-    content: 'Before destination recovery',
-    display: true,
-    details: {},
+  const beforeRecovery = team.storeMessage({
+    from: {id: worker.id, name: 'Worker'},
+    message: 'Before destination recovery',
   });
   await source.emit('session_shutdown', {reason: 'new'});
   failed.transfer(destination.ctx.sessionManager.getSessionId());
@@ -964,21 +1094,29 @@ void test('cancel and destination recovery release buffered messages once while 
     [],
     'Wait for the handover prompt or explicit recovery',
   );
-  assert.equal(failed.resume(), true);
-  assert.equal(failed.resume(), true);
-  assert.deepEqual(destination.messages, ['Before destination recovery']);
-  assert.equal(
-    destination.control.getTeam(destination.ctx).getManager(),
-    manager,
+  assert.equal(failed.hasDestination(), true);
+  assert.equal(failed.hasDestination(), true);
+  assert.deepEqual(destination.messages, []);
+  const attachedTeam = destination.control.getTeam(destination.ctx);
+  assert.deepEqual(attachedTeam.listMessages(), {
+    total: 2,
+    offset: 0,
+    nextOffset: undefined,
+    messages: [beforeRecovery, beforeCancellation],
+  });
+  assert.deepEqual(
+    attachedTeam.getMessage(beforeCancellation.id),
+    beforeCancellation,
   );
+  assert.equal(attachedTeam.getManager(), manager);
   assert.equal(manager.get(worker.id).status, 'running');
   assert.equal(disposed, 0);
   await destination.emit('session_shutdown', {reason: 'quit'});
   assert.equal(disposed, 1);
   assert.equal(
-    failed.resume(),
+    failed.hasDestination(),
     false,
-    'Recovery cannot reactivate a closed destination',
+    'A closed destination no longer owns the team',
   );
 });
 
@@ -1046,7 +1184,6 @@ void test('ordinary source replacement closes a waiting handover team when its c
       task: 'Work',
       cwd: process.cwd(),
       model: 'test/model',
-      notify: false,
     },
     async () => ({
       sessionFile: '/worker.jsonl',
@@ -1066,11 +1203,9 @@ void test('ordinary source replacement closes a waiting handover team when its c
   );
   await started.promise;
   await handovers.schedule('Continue', ctx);
-  team.sendMessage({
-    customType: 'agent_message',
-    content: 'Buffered before ordinary shutdown',
-    display: true,
-    details: {},
+  team.storeMessage({
+    from: {id: worker.id, name: 'Worker'},
+    message: 'Stored before ordinary shutdown',
   });
   // Pi retry/continuation can install another turn signal while the request
   // still waits. Aborting that signal does not cancel the captured one.

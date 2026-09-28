@@ -388,7 +388,7 @@ void test(
 );
 
 void test(
-  'SDK workers discover peers, queue messages, resume conversations, and message the parent',
+  'SDK workers discover peers, queue messages, resume conversations, and store parent inbox messages silently',
   {timeout: 20000},
   async t => {
     const directory = await mkdtemp(
@@ -408,6 +408,7 @@ void test(
     const tools = new Map<string, ToolDefinition>();
     const events = new Map<string, ShutdownHandler>();
     const parentMessages: Array<Parameters<ExtensionAPI['sendMessage']>> = [];
+    let parentInboxMessageId = '';
     const pi = {
       registerTool(tool: ToolDefinition) {
         tools.set(tool.name, tool);
@@ -547,6 +548,15 @@ void test(
             arguments: {id: 'parent', message: parentMessage},
           });
         } else if (name === 'Receiver' && step === 4) {
+          const result = lastToolResult<{
+            recipient: 'parent';
+            stored: true;
+            messageId: string;
+          }>(input);
+          assert.equal(result.recipient, 'parent');
+          assert.equal(result.stored, true);
+          assert.ok(result.messageId);
+          parentInboxMessageId = result.messageId;
           reply(response, 'Receiver handled the queued finding.');
         } else if (name === 'Sender' && step === 4) {
           assert.match(
@@ -600,7 +610,7 @@ void test(
         type: 'session_shutdown',
         reason: 'quit',
       });
-      registry.unregisterProvider('varisdev-messaging-test');
+      registry.unregisterProvider('openai-codex');
       await new Promise<void>((resolve, reject) =>
         server.close(error => (error ? reject(error) : resolve())),
       );
@@ -614,14 +624,14 @@ void test(
       server.once('error', reject);
       server.listen(0, '127.0.0.1', resolve);
     });
-    registry.registerProvider('varisdev-messaging-test', {
+    registry.registerProvider('openai-codex', {
       api: 'openai-completions',
       baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
       apiKey: 'local-test-key',
       models: [
         {
-          id: 'worker-model',
-          name: 'Worker model',
+          id: 'gpt-5.6-sol',
+          name: 'Codex GPT-5.6 Sol',
           reasoning: false,
           input: ['text'],
           cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
@@ -633,7 +643,7 @@ void test(
     const ctx = {
       cwd,
       hasUI: false,
-      model: registry.find('varisdev-messaging-test', 'worker-model')!,
+      model: registry.find('openai-codex', 'gpt-5.6-sol')!,
       modelRegistry: registry,
       isIdle: () => true,
       sessionManager: {getSessionId: () => 'messaging-parent'},
@@ -646,7 +656,6 @@ void test(
       const result = await execute('agent_spawn', {
         name,
         task: `${name} initial task.`,
-        notify: false,
         timeoutMs: 10000,
       });
       return (result.details as {agents: AgentRecord[]}).agents[0];
@@ -675,24 +684,71 @@ void test(
         'Sender queued the peer finding.',
       ],
     );
-    assert.equal(parentMessages.length, 1);
-    const [notification, delivery] = parentMessages[0];
-    assert.equal(notification.customType, 'agent_message');
-    const notificationText = JSON.stringify(notification.content);
-    assert.match(notificationText, new RegExp(receiver.name));
-    assert.match(notificationText, new RegExp(receiver.id));
-    assert.match(notificationText, new RegExp(parentMessage));
-    assert.deepEqual(delivery, {deliverAs: 'followUp', triggerTurn: true});
+    assert.deepEqual(parentMessages, [], 'Worker messages must not reach Pi');
+    const inbox = (await execute('agent_inbox', {offset: 0, limit: 10}))
+      .details as {
+      total: number;
+      offset: number;
+      nextOffset?: number;
+      messages: Array<{
+        id: string;
+        from: {id: string; name: string};
+        createdAt: string;
+        length: number;
+        preview: string;
+      }>;
+    };
+    assert.equal(inbox.total, 1);
+    assert.equal(inbox.offset, 0);
+    assert.equal(inbox.nextOffset, undefined);
+    assert.equal(inbox.messages.length, 1);
+    assert.equal(inbox.messages[0].id, parentInboxMessageId);
+    assert.deepEqual(inbox.messages[0].from, {
+      id: receiver.id,
+      name: receiver.name,
+    });
+    assert.ok(Date.parse(inbox.messages[0].createdAt));
+    assert.equal(inbox.messages[0].length, parentMessage.length);
+    assert.equal(inbox.messages[0].preview, parentMessage);
+    const fullInboxMessage = (
+      await execute('agent_inbox', {messageId: parentInboxMessageId})
+    ).details as {
+      message: {
+        id: string;
+        from: {id: string; name: string};
+        createdAt: string;
+        message: string;
+      };
+    };
+    assert.deepEqual(fullInboxMessage.message, {
+      id: parentInboxMessageId,
+      from: {id: receiver.id, name: receiver.name},
+      createdAt: inbox.messages[0].createdAt,
+      message: parentMessage,
+    });
 
     await execute('agent_send', {
       id: sender.id,
       message: 'Send a second peer finding.',
     });
     const resumed = await wait();
-    assert.equal(
-      parentMessages.length,
-      1,
-      'notify=false suppresses completion messages',
+    await events.get('agent_settled')?.({type: 'agent_settled'});
+    assert.deepEqual(
+      parentMessages,
+      [],
+      'Worker activity and completion must keep the parent session silent',
+    );
+    assert.deepEqual(
+      (await execute('agent_inbox', {})).details,
+      inbox,
+      'Inbox reads must not consume stored messages',
+    );
+    assert.deepEqual(
+      resumed.map(agent => agent.output),
+      [
+        'Receiver handled the second finding.',
+        'Sender sent the second finding.',
+      ],
     );
     assert.deepEqual(
       resumed.map(agent => agent.sessionFile),
@@ -780,7 +836,7 @@ async function localParent(
       type: 'session_shutdown',
       reason: 'quit',
     });
-    registry.unregisterProvider('varisdev-handover-test');
+    registry.unregisterProvider('openai-codex');
     await new Promise<void>((resolve, reject) =>
       server.close(error => (error ? reject(error) : resolve())),
     );
@@ -793,14 +849,14 @@ async function localParent(
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
-  registry.registerProvider('varisdev-handover-test', {
+  registry.registerProvider('openai-codex', {
     api: 'openai-completions',
     baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
     apiKey: 'local-test-key',
     models: [
       {
-        id: 'worker-model',
-        name: 'Worker model',
+        id: 'gpt-5.6-sol',
+        name: 'Codex GPT-5.6 Sol',
         reasoning: false,
         input: ['text'],
         cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
@@ -812,7 +868,7 @@ async function localParent(
   const ctx = {
     cwd,
     hasUI: false,
-    model: registry.find('varisdev-handover-test', 'worker-model')!,
+    model: registry.find('openai-codex', 'gpt-5.6-sol')!,
     modelRegistry: registry,
     isIdle: () => true,
     sessionManager: {getSessionId: () => 'handover-parent'},
@@ -823,7 +879,6 @@ async function localParent(
     cwd,
     execute,
     parentMessages,
-    settle: () => events.get('agent_settled')!({type: 'agent_settled'}),
     async wait(id: string) {
       const result = await execute('agent_wait', {ids: [id], timeoutMs: 10000});
       assert.deepEqual(providerErrors, []);
@@ -835,7 +890,7 @@ async function localParent(
 }
 
 void test(
-  'SDK workers automatically continue through fresh sessions and retain queued follow-ups',
+  'SDK workers retain results and queued follow-ups across fresh sessions without completion notifications',
   {timeout: 20000},
   async t => {
     const originalTask =
@@ -933,12 +988,17 @@ void test(
             name: 'agent_send',
             arguments: {id: 'parent', message: 'First fresh session ready.'},
           };
-        case 7:
-          assert.deepEqual(lastToolResult(input), {
-            recipient: 'parent',
-            delivered: true,
-          });
+        case 7: {
+          const result = lastToolResult<{
+            recipient: 'parent';
+            stored: true;
+            messageId: string;
+          }>(input);
+          assert.equal(result.recipient, 'parent');
+          assert.equal(result.stored, true);
+          assert.ok(result.messageId);
           return 'First handover result.';
+        }
         case 8:
           assert.ok(
             JSON.stringify(conversation.at(-1)?.content).includes(
@@ -958,12 +1018,17 @@ void test(
             name: 'agent_send',
             arguments: {id: 'parent', message: 'Second fresh session ready.'},
           };
-        case 11:
-          assert.deepEqual(lastToolResult(input), {
-            recipient: 'parent',
-            delivered: true,
-          });
+        case 11: {
+          const result = lastToolResult<{
+            recipient: 'parent';
+            stored: true;
+            messageId: string;
+          }>(input);
+          assert.equal(result.recipient, 'parent');
+          assert.equal(result.stored, true);
+          assert.ok(result.messageId);
           return 'Second handover result.';
+        }
         case 12:
           assert.equal(
             conversation.filter(message => message.role === 'user').length,
@@ -1000,11 +1065,16 @@ void test(
       instructions:
         'Persistent worker instruction marker: follow the project instructions.',
       timeoutMs: 10000,
-      notify: false,
     });
     const {id} = (spawned.details as {agents: AgentRecord[]}).agents[0];
     const completed = await parent.wait(id);
     assert.equal(completed.output, 'Second handover result.');
+    const status = await parent.execute('agent_status', {id});
+    assert.deepEqual(
+      (status.details as {agents: AgentRecord[]}).agents,
+      [completed],
+      'Status must retain the result returned by wait after worker handovers',
+    );
     assert.deepEqual(
       sessions.map(agent => agent.sessionCount),
       [1, 2, 3],
@@ -1040,20 +1110,73 @@ void test(
       transcripts[2],
       /ORIGINAL TOOL CONTEXT MARKER|FIRST HANDOVER|QUEUED FOLLOWUP/,
     );
-    assert.equal(parent.parentMessages.length, 1);
-    await parent.settle();
-    assert.equal(parent.parentMessages.length, 2);
-    for (const [message, delivery] of parent.parentMessages) {
-      assert.equal(message.customType, 'agent_message');
-      assert.match(JSON.stringify(message.content), new RegExp(id));
-      assert.match(JSON.stringify(message.content), /Ongoing worker/);
-      assert.deepEqual(delivery, {deliverAs: 'followUp', triggerTurn: true});
-    }
+    assert.deepEqual(
+      parent.parentMessages,
+      [],
+      'Worker messages and completions must not reach the parent session',
+    );
+    const inbox = (await parent.execute('agent_inbox', {})).details as {
+      total: number;
+      offset: number;
+      nextOffset?: number;
+      messages: Array<{
+        id: string;
+        from: {id: string; name: string};
+        createdAt: string;
+        length: number;
+        preview: string;
+      }>;
+    };
+    assert.equal(inbox.total, 2);
+    assert.equal(inbox.offset, 0);
+    assert.equal(inbox.nextOffset, undefined);
+    assert.deepEqual(
+      inbox.messages.map(message => ({
+        from: message.from,
+        length: message.length,
+        preview: message.preview,
+      })),
+      ['Second fresh session ready.', 'First fresh session ready.'].map(
+        message => ({
+          from: {id, name: 'Ongoing worker'},
+          length: message.length,
+          preview: message,
+        }),
+      ),
+      'Worker handovers retain parent messages in newest-first order',
+    );
+    const oldest = inbox.messages[1];
+    const full = (await parent.execute('agent_inbox', {messageId: oldest.id}))
+      .details as {
+      message: {
+        id: string;
+        from: {id: string; name: string};
+        createdAt: string;
+        message: string;
+      };
+    };
+    assert.deepEqual(full.message, {
+      id: oldest.id,
+      from: oldest.from,
+      createdAt: oldest.createdAt,
+      message: 'First fresh session ready.',
+    });
+    assert.deepEqual(
+      (await parent.execute('agent_inbox', {})).details,
+      inbox,
+      'Inbox reads must not consume messages',
+    );
     await parent.execute('agent_send', {id, message: latestFollowup});
     const followedUp = await parent.wait(id);
     assert.equal(followedUp.sessionFile, paths[2]);
     assert.equal(followedUp.sessionCount, 3);
     assert.equal(followedUp.output, 'Latest followup result.');
+    const latestStatus = await parent.execute('agent_status', {id});
+    assert.deepEqual((latestStatus.details as {agents: AgentRecord[]}).agents, [
+      followedUp,
+    ]);
+    assert.deepEqual(parent.parentMessages, []);
+    assert.deepEqual((await parent.execute('agent_inbox', {})).details, inbox);
     assert.equal(
       await readFile(followedUp.resultFile!, 'utf8'),
       'Latest followup result.',

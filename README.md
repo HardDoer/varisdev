@@ -32,7 +32,7 @@ Only a completed final response from the handover agent is accepted. Interrupted
 
 The handover agent belongs to the source session and is destroyed when that session changes or shuts down. A later handover creates a new agent. Its source snapshot, transcript, and result remain under `~/.pi/agent/varisdev/handovers/<source-session-id>/<request-id>/` (or the configured Pi agent directory).
 
-The destination receives the handover and normal system/project instructions. Existing background workers retain their IDs, conversations, and queued work. Their notifications stay buffered while the parent is working, including during summary preparation, and transfer with the team when the session changes.
+The destination receives the handover and normal system/project instructions. Existing background workers retain their IDs, conversations, and queued work. Messages they send to the parent stay in `agent_inbox` and transfer with the team when the session changes. The parent retrieves them explicitly; they never add prompts or start turns.
 
 ### Configure automation
 
@@ -67,7 +67,7 @@ VarisDev blocks native compaction in parent sessions, including automatic thresh
 
 ## Agent orchestration
 
-VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation, uses the parent’s model, credentials, and thinking level by default, and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent, and `agent_new_session` to continue work in a fresh conversation.
+VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Allowed models are `openai-codex/gpt-5.5`, `openai-codex/gpt-5.6-sol`, and `openai-codex/gpt-6-sol`. An allowed parent model is inherited; otherwise the default is `openai-codex/gpt-5.6-sol`. Workers use the parent’s credential registry and inherit its thinking level, with `xhigh` as the maximum. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent, and `agent_new_session` to continue work in a fresh conversation.
 
 | Tool | Purpose |
 | --- | --- |
@@ -77,6 +77,7 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 | `agent_spawn` | Start an agent and immediately return its ID. |
 | `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths. |
+| `agent_inbox` | Read messages workers sent to the parent, newest first, or retrieve full text by message ID. |
 | `agent_send` | Send instructions or replace selected pending messages with `supersedes`. Workers can also message `"parent"`. |
 | `agent_messages` | List message previews or retrieve one full message by ID, including its current delivery state. |
 | `agent_message_remove` | Remove selected pending messages while the active task continues. |
@@ -92,8 +93,7 @@ For example, call `agent_spawn` with:
 {
   "name": "reviewer",
   "task": "Review src/tools/browse.ts for response truncation bugs. Report findings with file and line references.",
-  "instructions": "Inspect and report findings; leave fixes to the parent agent.",
-  "notify": false
+  "instructions": "Inspect and report findings; leave fixes to the parent agent."
 }
 ```
 
@@ -125,15 +125,17 @@ Workers use `agent_list` to discover peers by name and ID in the same parent ses
 }
 ```
 
-Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue; messages to the parent trigger a follow-up turn, including when the sender has `notify: false`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, `agent_messages`, `agent_message_remove`, and `agent_new_session`; the parent also manages spawning, status, waiting, and cancellation.
+Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue. Messages to the parent are stored in `agent_inbox`; they never add prompts or trigger parent turns. The parent reads the inbox explicitly. Workers put their final result in their final answer, which the parent retrieves through `agent_status` or `agent_wait`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, `agent_messages`, `agent_message_remove`, and `agent_new_session`; the parent also manages spawning, status, inbox access, waiting, and cancellation.
+
+`agent_inbox` retains the latest 100 explicit worker messages, newest first. With no arguments it returns up to 10 previews of 500 characters with message IDs, sender names, and timestamps. Use `limit` (up to 20), `offset`, and `nextOffset` to browse, or `{"messageId":"<message ID>"}` to retrieve full text. Reading does not remove messages.
 
 Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
 
-Spawn options include `cwd` (relative to the parent directory), `model` (`provider/model-id`), `thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`), `instructions`, `timeoutMs`, `autoCleanup`, and `notify`. Omitted model and thinking level inherit the parent's settings. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Use this for less capable models, such as models below GPT-5.5, when you want a hard stop. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent. Finished agents with `autoCleanup: true` do not count toward that limit.
+Spawn options include `cwd` (relative to the parent directory), `model` (one of the three allowed Codex models), `thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`), `instructions`, `timeoutMs`, and `autoCleanup`. The tool description lists the allowed models and effort cap, and runtime validation enforces both. Omitted model inherits an allowed parent model or defaults to GPT-5.6-sol; omitted thinking level inherits the parent's setting. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work or an agent starts a fresh session after its previous tools have stopped. Each parent session can hold 64 agents, with up to 32 pending messages and one pending handover per agent. Finished agents with `autoCleanup: true` do not count toward that limit.
 
 Set `autoCleanup: true` for a task whose worker should be disposed after all queued work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work or start another session. The default is `false`, allowing completed agents to resume.
 
-By default, completion sends the parent a message and triggers a follow-up turn. Set `notify: false` when collecting results explicitly. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
+Collect results with `agent_status` or `agent_wait`. Completion, failure, and cancellation update the agent's stored status without sending a parent message or triggering a turn. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
 Agents share their selected working directory and can change its files. Assign file ownership in each task, or provide separate working directories for independent edits. The terminal footer shows active agent counts.
 
@@ -155,7 +157,7 @@ Use `/commit` to ask the current session to **commit and push** through a **Code
 /commit Only include the browse fix. Use the commit message "Fix browse truncation".
 ```
 
-With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `model: "openai-codex/gpt-5.5"`, `thinkingLevel: "xhigh"`, `autoCleanup: true`, and `notify: true`. If the parent is working, the request is queued as a follow-up.
+With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `model: "openai-codex/gpt-5.5"`, `thinkingLevel: "xhigh"`, and `autoCleanup: true`. If the parent is working, the request is queued as a follow-up.
 
 The worker follows repository instructions, inspects changes, runs required checks, commits, and pushes. The parent collects its result and reports the outcome. The worker session is automatically disposed when the task finishes, fails, or is cancelled. Saved results and transcript paths can be inspected with `agent_status`; `/agents cancel <id>` cancels active work.
 
@@ -184,7 +186,7 @@ Both edits validate all selected IDs before changing the queue. If any selected 
 
 The handover workflow creates a new parent session ID and transcript. Its model context starts with the handover and normal system/project instructions. Previous messages and tool outputs remain in the old transcript on disk.
 
-Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Worker messages and completion reports remain in the team's inbox while the parent is working. A handover transfers that inbox, including notifications received before the pause request. Reports trigger turns one at a time after the destination settles, or after the source settles if the request is cancelled. Pressing Esc keeps reports buffered until the user starts another run. Model selection, thinking level, and active tools carry over.
+Background agents keep running throughout the handover. The new parent can list, message, wait for, and cancel them using their existing IDs. Messages sent to the parent with `agent_send` remain in `agent_inbox` across handovers, including messages received before the handover request. The current parent can retrieve them explicitly after a completed or cancelled handover. Neither messages nor completed results trigger parent turns. Results remain available through `agent_status` and `agent_wait`. Model selection, thinking level, and active tools carry over.
 
 Inspect requests using `session_handover_status` with `{"id":"<request ID>"}`; omit `id` to list recent requests with previews. The latest 50 requests remain available across parent handovers in the running application.
 
@@ -214,7 +216,7 @@ The parent can call the same tool with an `id` and `handover` to start a fresh c
 
 The agent stops its current tools, opens a fresh conversation, and starts working from the handover automatically. It keeps its agent ID, configuration, and pending messages; queued messages run after the handover. The new conversation loads project instructions and tools along with the handover. If an execution timeout is configured, each fresh session gets that duration; otherwise, it runs without a deadline.
 
-`agent_status` reports the current `sessionFile`, `previousSessionFile`, and `sessionCount`. Previous transcripts remain saved, and each new transcript links to the preceding session. The agent stays active through the transition and reports completion after its work finishes.
+`agent_status` reports the current `sessionFile`, `previousSessionFile`, and `sessionCount`. Previous transcripts remain saved, and each new transcript links to the preceding session. The agent stays active through the transition and its status changes to completed after its work finishes.
 
 ## Completion sound
 

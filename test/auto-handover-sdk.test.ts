@@ -76,16 +76,20 @@ function reply(response: ServerResponse, output: Output, tokens = 500) {
   );
 }
 
-function records(request: ProviderRequest): AgentRecord[] {
+function lastToolResult<T>(request: ProviderRequest): T {
   const content = request.messages.findLast(
     message => message.role === 'tool',
   )?.content;
   assert.equal(typeof content, 'string');
-  return (JSON.parse(content as string) as {agents: AgentRecord[]}).agents;
+  return JSON.parse(content as string) as T;
+}
+
+function records(request: ProviderRequest): AgentRecord[] {
+  return lastToolResult<{agents: AgentRecord[]}>(request).agents;
 }
 
 void test(
-  'Pi summarizes at 90%, transfers already waiting notifications, and preserves live workers',
+  'Pi summarizes at 90%, transfers waiting direct messages, and retains worker results without completion notifications',
   {timeout: 30000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-auto-sdk-'));
@@ -97,9 +101,9 @@ void test(
     const verified = 'VERIFIED PLAN: review draft.txt; validation is pending.';
     const handover = `HANDOVER FROM DEDICATED AGENT: ${verified}`;
     const workerTask = 'WORKER TASK: inspect worker.txt and report findings.';
-    const notification = 'CANCELLED WORKER: notification waiting before pause.';
+    const waitingMessage = 'Draft review finding: validation is still pending.';
     const duringSummary =
-      'WORKER RESULT: completed during summary preparation.';
+      'Worker review progress: evidence is ready for validation.';
     const workerStarted = Promise.withResolvers<void>();
     const finishWorker = Promise.withResolvers<void>();
     const replacementReady = Promise.withResolvers<void>();
@@ -127,6 +131,8 @@ void test(
     let summaryDisposed = false;
     const tools: string[][] = [[], []];
     const events: AgentSessionEvent[] = [];
+    let waitingMessageId = '';
+    let duringSummaryMessageId = '';
     const automaticMessages: string[] = [];
     const workingMessages: Array<string | undefined> = [];
     const operations: Promise<unknown>[] = [];
@@ -141,7 +147,7 @@ void test(
         /You are a context summarization assistant/,
         'Native compaction must never reach the provider',
       );
-      if (input.model === 'worker-model') {
+      if (input.model === 'gpt-5.5') {
         workerRequests.push(input);
         assert.ok(
           !input.tools.some(
@@ -245,8 +251,7 @@ void test(
                 arguments: {
                   name: 'Reviewer',
                   task: workerTask,
-                  model: 'auto-handover-sdk/worker-model',
-                  notify: false,
+                  model: 'openai-codex/gpt-5.5',
                 },
               },
             };
@@ -336,16 +341,104 @@ void test(
         case 3:
           assert.equal(records(input)[0].status, 'completed');
           assert.equal(records(input)[0].output, 'WORKER REVIEW COMPLETE');
-          assert.ok(!JSON.stringify(conversation).includes(notification));
-          return {output: 'FRESH PARENT REVIEW COMPLETE'};
-        case 4:
-          assert.ok(JSON.stringify(conversation.at(-1)).includes(notification));
-          return {output: 'FRESH PARENT RECEIVED WAITING NOTIFICATION'};
-        case 5:
-          assert.ok(
-            JSON.stringify(conversation.at(-1)).includes(duringSummary),
+          assert.doesNotMatch(
+            JSON.stringify(conversation),
+            new RegExp(`${waitingMessage}|${duringSummary}`),
           );
-          return {output: 'FRESH PARENT RECEIVED SUMMARY-TIME NOTIFICATION'};
+          return {
+            output: {
+              name: 'agent_inbox',
+              arguments: {offset: 0, limit: 1},
+            },
+          };
+        case 4: {
+          const page = lastToolResult<{
+            total: number;
+            offset: number;
+            nextOffset?: number;
+            messages: Array<{
+              id: string;
+              from: {id: string; name: string};
+              createdAt: string;
+              length: number;
+              preview: string;
+            }>;
+          }>(input);
+          assert.equal(page.total, 2);
+          assert.equal(page.offset, 0);
+          assert.equal(page.nextOffset, 1);
+          assert.equal(page.messages.length, 1);
+          assert.ok(Date.parse(page.messages[0].createdAt));
+          const message = page.messages[0];
+          assert.equal(message.id, duringSummaryMessageId);
+          assert.deepEqual(message.from, {id: workerId, name: 'Reviewer'});
+          assert.equal(message.length, duringSummary.length);
+          assert.equal(message.preview, duringSummary);
+          return {
+            output: {
+              name: 'agent_inbox',
+              arguments: {offset: 1, limit: 1},
+            },
+          };
+        }
+        case 5: {
+          const page = lastToolResult<{
+            total: number;
+            offset: number;
+            nextOffset?: number;
+            messages: Array<{
+              id: string;
+              from: {id: string; name: string};
+              createdAt: string;
+              length: number;
+              preview: string;
+            }>;
+          }>(input);
+          assert.equal(page.total, 2);
+          assert.equal(page.offset, 1);
+          assert.equal(page.nextOffset, undefined);
+          assert.equal(page.messages.length, 1);
+          assert.ok(Date.parse(page.messages[0].createdAt));
+          const message = page.messages[0];
+          assert.equal(message.id, waitingMessageId);
+          assert.deepEqual(message.from, {id: workerId, name: 'Reviewer'});
+          assert.equal(message.length, waitingMessage.length);
+          assert.equal(message.preview, waitingMessage);
+          return {
+            output: {
+              name: 'agent_inbox',
+              arguments: {messageId: waitingMessageId},
+            },
+          };
+        }
+        case 6: {
+          const full = lastToolResult<{
+            message: {
+              id: string;
+              from: {id: string; name: string};
+              createdAt: string;
+              message: string;
+            };
+          }>(input).message;
+          assert.equal(full.id, waitingMessageId);
+          assert.deepEqual(full.from, {id: workerId, name: 'Reviewer'});
+          assert.ok(Date.parse(full.createdAt));
+          assert.equal(full.message, waitingMessage);
+          return {output: {name: 'agent_inbox', arguments: {}}};
+        }
+        case 7: {
+          const inbox = lastToolResult<{
+            total: number;
+            messages: Array<{id: string}>;
+          }>(input);
+          assert.equal(inbox.total, 2);
+          assert.deepEqual(
+            inbox.messages.map(message => message.id),
+            [duringSummaryMessageId, waitingMessageId],
+            'Inbox reads must not consume messages',
+          );
+          return {output: 'FRESH PARENT REVIEW COMPLETE'};
+        }
         default:
           assert.fail('Unexpected fresh parent response');
       }
@@ -421,7 +514,7 @@ void test(
         api: 'openai-completions',
         baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
         apiKey: 'local-test-key',
-        models: ['parent-model', 'worker-model', 'default-model'].map(id => ({
+        models: ['parent-model', 'default-model'].map(id => ({
           id,
           name: id,
           reasoning: true,
@@ -436,6 +529,16 @@ void test(
         baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
         apiKey: 'local-codex-test-key',
         models: [
+          {
+            id: 'gpt-5.5',
+            name: 'Codex GPT-5.5',
+            reasoning: true,
+            input: ['text'],
+            cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+            contextWindow: 128000,
+            maxTokens: 1000,
+            compat: {supportsReasoningEffort: true},
+          },
           {
             id: 'gpt-5.6-sol',
             name: 'Codex GPT-5.6 Sol',
@@ -480,24 +583,24 @@ void test(
                   )
                 ) {
                   boundaryPercent = ctx.getContextUsage()?.percent;
-                  // A worker result can be waiting long before the pause request.
+                  // A direct worker message can wait before the pause request.
                   // Sending it straight to Pi's follow-up queue wakes the old
                   // parent after the summary and blocks the idle session switch.
-                  (control as AgentSessionController).getTeam(ctx).sendMessage({
-                    customType: 'agent_result',
-                    content: notification,
-                    display: true,
-                    details: {},
-                  });
+                  waitingMessageId = (control as AgentSessionController)
+                    .getTeam(ctx)
+                    .storeMessage({
+                      from: {id: workerId, name: 'Reviewer'},
+                      message: waitingMessage,
+                    }).id;
                 }
               });
               registerAutoHandover(pi, sessionControl, async (ctx, id) => {
-                (control as AgentSessionController).getTeam(ctx).sendMessage({
-                  customType: 'agent_result',
-                  content: duringSummary,
-                  display: true,
-                  details: {},
-                });
+                duringSummaryMessageId = (control as AgentSessionController)
+                  .getTeam(ctx)
+                  .storeMessage({
+                    from: {id: workerId, name: 'Reviewer'},
+                    message: duringSummary,
+                  }).id;
                 const agent = await createHandoverAgent(ctx, id);
                 const dispose = agent.worker.dispose;
                 agent.worker.dispose = () => {
@@ -537,8 +640,9 @@ void test(
           automaticMessages.push(JSON.stringify(event.message.content));
         if (
           phase === 1 &&
-          event.type === 'agent_settled' &&
-          requests[1].length === 5
+          event.type === 'message_end' &&
+          event.message.role === 'assistant' &&
+          requests[1].length === 7
         )
           finished.resolve();
       });
@@ -605,7 +709,17 @@ void test(
       5,
       'The source stops at its acknowledgement',
     );
-    assert.equal(requests[1].length, 5);
+    assert.equal(requests[1].length, 7);
+    for (const session of sessions)
+      assert.equal(
+        session.messages.some(
+          message =>
+            message.role === 'custom' &&
+            ['agent_message', 'agent_result'].includes(message.customType),
+        ),
+        false,
+        'Worker messages and completion must keep parent sessions silent',
+      );
     const sourceEntries = sessions[0].sessionManager.getEntries();
     assert.ok(
       sourceEntries.some(
@@ -629,7 +743,14 @@ void test(
     assert.deepEqual(tools[0], ['agent_spawn', 'agent_status']);
     assert.equal(summaryRequests.length, 3);
     assert.equal(summaryDisposed, true);
-    assert.deepEqual(tools[1], ['agent_status', 'agent_wait']);
+    assert.deepEqual(tools[1], [
+      'agent_status',
+      'agent_wait',
+      'agent_inbox',
+      'agent_inbox',
+      'agent_inbox',
+      'agent_inbox',
+    ]);
     assert.equal(workers.length, 1);
     assert.equal(workerRequests.length, 2);
     for (const session of sessions)

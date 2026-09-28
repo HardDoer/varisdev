@@ -10,7 +10,6 @@ export interface AgentSpec {
   model: string;
   timeoutMs?: number;
   autoCleanup?: boolean;
-  notify: boolean;
 }
 
 export interface AgentRecord extends AgentSpec {

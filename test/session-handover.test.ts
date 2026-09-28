@@ -122,8 +122,8 @@ function fixture(sessionId = randomUUID(), calls: string[] = []) {
         cancel() {
           calls.push('cancel');
         },
-        resume() {
-          calls.push('resume');
+        hasDestination() {
+          calls.push('hasDestination');
           return attached;
         },
         async close() {
@@ -238,7 +238,7 @@ void test('pending handovers expose IDs, reasons, revisions, previews and duplic
   assert.ok(Date.parse(record.waitingAt!));
   assert.match(
     record.pendingReason,
-    /source turn.*worker messages are buffered/i,
+    /source turn.*worker messages remain in agent_inbox/i,
   );
   assert.deepEqual(parent.calls, ['prepare'], 'Buffer workers from scheduling');
   const duplicate = await parent.schedule('A duplicate must not replace text.');
@@ -424,7 +424,7 @@ void test('failures restore the source, retain an attached destination, or close
       );
       next.shutdown('quit');
     } else if (['model', 'rebind', 'delivery'].includes(stage)) {
-      assert.equal(parent.calls.at(-1), 'resume', stage);
+      assert.equal(parent.calls.at(-1), 'hasDestination', stage);
       assert.equal(parent.calls.includes('close'), false, stage);
       const failed = (await next.status(id)).handover!;
       assert.equal(failed.state, 'failed');
@@ -461,7 +461,7 @@ void test('an unrelated destination replacement releases its abandoned handover 
   await parent.finish();
   const reopened = fixture(next.manager.getSessionId());
   assert.equal((await reopened.status(id)).outcome, 'not_found');
-  assert.deepEqual(parent.calls.slice(-2), ['resume', 'close']);
+  assert.deepEqual(parent.calls.slice(-2), ['hasDestination', 'close']);
 });
 
 void test('invalid handovers, missing IDs and unsolicited commands cannot initiate a switch', async () => {

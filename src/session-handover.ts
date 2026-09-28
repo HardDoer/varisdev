@@ -199,7 +199,7 @@ export function registerSessionHandover(
       requestedAt: timestamp,
       updatedAt: timestamp,
       pendingReason:
-        'Waiting for the session command to start. Worker messages are buffered.',
+        'Waiting for the session command to start. Worker messages remain in agent_inbox.',
     };
     const request: HandoverRequest = {
       record,
@@ -224,7 +224,7 @@ export function registerSessionHandover(
       if (cancellable(record))
         cancel(
           request,
-          'The source turn was stopped before session replacement began. Buffered worker messages return to the source session.',
+          'The source turn was stopped before session replacement began. Worker messages remain available through agent_inbox in the source session.',
         );
     };
     request.signal?.addEventListener('abort', request.onAbort, {once: true});
@@ -331,7 +331,7 @@ export function registerSessionHandover(
     name: 'session_handover_cancel',
     label: 'Cancel parent handover',
     description:
-      'Cancel a scheduled parent handover or one waiting for idle. Buffered worker messages return to the source. Once switching starts, Pi may dispose the source and cancellation returns too_late. Repeated cancellation returns already_cancelled. Other outcomes are cancelled and not_found.',
+      'Cancel a scheduled parent handover or one waiting for idle. Worker messages remain available through agent_inbox in the source. Once switching starts, Pi may dispose the source and cancellation returns too_late. Repeated cancellation returns already_cancelled. Other outcomes are cancelled and not_found.',
     executionMode: 'sequential',
     parameters: Type.Object({id: idSchema}),
     async execute(_id, params, signal, _onUpdate, ctx) {
@@ -348,7 +348,7 @@ export function registerSessionHandover(
         return result({outcome: 'too_late', handover: inspect(record)});
       cancel(
         history.pending!,
-        'Cancelled before session replacement began. Buffered worker messages return to the source session.',
+        'Cancelled before session replacement began. Worker messages remain available through agent_inbox in the source session.',
       );
       return result({outcome: 'cancelled', handover: inspect(record)});
     },
@@ -371,7 +371,7 @@ export function registerSessionHandover(
       record.state = 'waiting_for_idle';
       record.waitingAt = record.updatedAt = new Date().toISOString();
       record.pendingReason =
-        'Waiting for the source turn and already queued host work to settle. Finish this turn. New worker messages are buffered. The handover can be updated or cancelled.';
+        'Waiting for the source turn and already queued host work to settle. Finish this turn. Worker messages remain in agent_inbox. The handover can be updated or cancelled.';
       try {
         await Promise.race([ctx.waitForIdle(), request.stopWaiting.promise]);
         if (!cancellable(record)) return;
@@ -432,7 +432,7 @@ export function registerSessionHandover(
         if (switched.cancelled) {
           cancel(
             request,
-            'Pi cancelled the session switch. Buffered worker messages return to the source session.',
+            'Pi cancelled the session switch. Worker messages remain available through agent_inbox in the source session.',
           );
         } else if (record.deliveredRevision === undefined) {
           throw new Error('The session host did not start the fresh parent.');
@@ -454,10 +454,10 @@ export function registerSessionHandover(
           if (sourceIsActive) {
             lease.cancel();
             recovery =
-              'Background agents and buffered messages remain with the source session.';
-          } else if (lease.resume()) {
+              'Background agents and their inbox remain with the source session.';
+          } else if (lease.hasDestination()) {
             recovery =
-              'Background agents and buffered messages remain with the destination session.';
+              'Background agents and their inbox remain with the destination session.';
           } else {
             await lease.close();
             recovery =

@@ -17,9 +17,26 @@ import {createSessionWorker} from '../agents/session.ts';
 import {
   AgentSessionController,
   type AgentSessionControl,
+  type AgentMessage,
+  type ParentMessage,
 } from '../agents/team.ts';
 
 export type {AgentHandover, AgentSessionControl} from '../agents/team.ts';
+
+const allowedModels = [
+  'openai-codex/gpt-5.5',
+  'openai-codex/gpt-5.6-sol',
+  'openai-codex/gpt-6-sol',
+] as const;
+const allowedEfforts = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+] as const;
+const defaultModel = 'openai-codex/gpt-5.6-sol';
 
 const idSchema = Type.String({
   description: 'Agent ID returned by agent_spawn.',
@@ -63,23 +80,20 @@ const spawnSchema = Type.Object({
     }),
   ),
   model: Type.Optional(
-    Type.String({
-      description: 'Model as provider/model-id. Defaults to the parent model.',
-    }),
+    Type.Union(
+      allowedModels.map(model => Type.Literal(model)),
+      {
+        description:
+          'Allowed Codex model. Inherits an allowed parent model; otherwise defaults to openai-codex/gpt-5.6-sol.',
+      },
+    ),
   ),
   thinkingLevel: Type.Optional(
     Type.Union(
-      [
-        Type.Literal('off'),
-        Type.Literal('minimal'),
-        Type.Literal('low'),
-        Type.Literal('medium'),
-        Type.Literal('high'),
-        Type.Literal('xhigh'),
-      ],
+      allowedEfforts.map(effort => Type.Literal(effort)),
       {
         description:
-          'Reasoning effort for the worker. Defaults to the parent thinking level.',
+          'Reasoning effort for the worker, up to xhigh. Defaults to the parent thinking level.',
       },
     ),
   ),
@@ -95,12 +109,6 @@ const spawnSchema = Type.Object({
     Type.Boolean({
       description:
         'Dispose the worker session after all queued work finishes, including failure or cancellation. Results stay available, but a finished agent cannot resume. Defaults to false.',
-    }),
-  ),
-  notify: Type.Optional(
-    Type.Boolean({
-      description:
-        'Send a completion message to the parent and trigger a follow-up turn. Defaults to true.',
     }),
   ),
 });
@@ -228,15 +236,6 @@ function toolResult(
 
 type GetManager = (ctx: ExtensionContext) => AgentOrchestrator;
 
-interface AgentMessage {
-  from: {id: string; name: string};
-  message: string;
-}
-
-function formatAgentMessage({from, message}: AgentMessage): string {
-  return `Message from agent ${JSON.stringify(from.name)} (${from.id}):\n${message}`;
-}
-
 function registerAgentListTool(
   pi: ExtensionAPI,
   getManager: GetManager,
@@ -275,7 +274,7 @@ function registerAgentListTool(
   });
 }
 
-function messagePreview(message: QueuedAgentMessage) {
+function messagePreview(message: QueuedAgentMessage | ParentMessage) {
   const {message: text, ...metadata} = message;
   return {...metadata, length: text.length, preview: text.slice(0, 500)};
 }
@@ -373,13 +372,13 @@ function registerAgentMessageTools(
 function registerAgentSendTool(
   pi: ExtensionAPI,
   getManager: GetManager,
-  sender?: {id: string; sendToParent: (message: AgentMessage) => void},
+  sender?: {id: string; sendToParent: (message: AgentMessage) => ParentMessage},
 ): void {
   pi.registerTool({
     name: 'agent_send',
     label: 'Send to agent',
     description: sender
-      ? 'Send a message directly to another agent in this parent session, or use id="parent" to message the parent. Your name and ID are attached automatically. Peer messages queue after the current task and resume completed conversations. Failed or cancelled agents cannot receive messages.'
+      ? 'Send a message to another agent in this parent session, or use id="parent" to store a message in the parent inbox. Parent messages never trigger turns; the parent reads them with agent_inbox. Your name and ID are attached automatically. Peer messages queue after the current task and resume completed conversations. Failed or cancelled agents cannot receive messages.'
       : 'Queue follow-up instructions for an agent after its current task. A completed agent resumes with its existing conversation. Failed or cancelled agents must be replaced with agent_spawn.',
     executionMode: 'sequential',
     promptGuidelines: [
@@ -423,15 +422,15 @@ function registerAgentSendTool(
               'Queue references and supersession require an agent recipient.',
             );
           }
-          sender.sendToParent(attributed);
+          const stored = sender.sendToParent(attributed);
+          const data = {
+            recipient: 'parent',
+            stored: true,
+            messageId: stored.id,
+          };
           return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({recipient: 'parent', delivered: true}),
-              },
-            ],
-            details: {recipient: 'parent', delivered: true},
+            content: [{type: 'text' as const, text: JSON.stringify(data)}],
+            details: data,
           };
         }
       }
@@ -518,7 +517,7 @@ export function registerAgentTools(
     name: 'agent_spawn',
     label: 'Spawn agent',
     description:
-      'Start a background agent with its own conversation. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory.',
+      'Start a background agent with its own conversation. Allowed models: openai-codex/gpt-5.5, openai-codex/gpt-5.6-sol, openai-codex/gpt-6-sol. Inherits an allowed parent model; otherwise defaults to openai-codex/gpt-5.6-sol. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
     promptSnippet:
       'Start a background agent with its own conversation and return its ID immediately.',
     parameters: spawnSchema,
@@ -528,20 +527,30 @@ export function registerAgentTools(
       const cwd = resolve(ctx.cwd, params.cwd ?? '.');
       if (!(await stat(cwd)).isDirectory())
         throw new Error(`Agent cwd is not a directory: ${cwd}`);
-      let model = ctx.model;
-      if (params.model) {
-        const slash = params.model.indexOf('/');
-        if (slash < 1 || slash === params.model.length - 1) {
-          throw new Error('Use provider/model-id for the agent model.');
-        }
-        model = ctx.modelRegistry.find(
-          params.model.slice(0, slash),
-          params.model.slice(slash + 1),
-        );
-      }
-      if (!model)
+      const inheritedModel =
+        ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
+      const selectedModel =
+        params.model ??
+        (allowedModels.some(model => model === inheritedModel)
+          ? inheritedModel!
+          : defaultModel);
+      if (!allowedModels.some(model => model === selectedModel))
         throw new Error(
-          'Agent model is unavailable. Select a model or pass provider/model-id.',
+          `Agent model must be one of: ${allowedModels.join(', ')}.`,
+        );
+      const model =
+        selectedModel === inheritedModel
+          ? ctx.model
+          : ctx.modelRegistry.find(
+              'openai-codex',
+              selectedModel.slice('openai-codex/'.length),
+            );
+      if (!model || `${model.provider}/${model.id}` !== selectedModel)
+        throw new Error(`Agent model is unavailable: ${selectedModel}.`);
+      const thinkingLevel = params.thinkingLevel ?? pi.getThinkingLevel();
+      if (!allowedEfforts.some(effort => effort === thinkingLevel))
+        throw new Error(
+          'Agent thinkingLevel must be off, minimal, low, medium, high, or xhigh.',
         );
       const workerOptions = {
         cwd,
@@ -549,7 +558,7 @@ export function registerAgentTools(
         instructions: params.instructions,
         model,
         modelRegistry: ctx.modelRegistry,
-        thinkingLevel: params.thinkingLevel ?? pi.getThinkingLevel(),
+        thinkingLevel,
       };
       signal?.throwIfAborted();
       const current = getManager(ctx);
@@ -561,7 +570,6 @@ export function registerAgentTools(
           model: `${model.provider}/${model.id}`,
           timeoutMs: params.timeoutMs,
           autoCleanup: params.autoCleanup,
-          notify: params.notify ?? true,
         },
         (id, previousSessionFile) =>
           createWorker({
@@ -574,14 +582,7 @@ export function registerAgentTools(
               registerAgentListTool(workerPi, getWorkerManager, id);
               registerAgentSendTool(workerPi, getWorkerManager, {
                 id,
-                sendToParent(message) {
-                  team.sendMessage({
-                    customType: 'agent_message',
-                    content: formatAgentMessage(message),
-                    display: true,
-                    details: message,
-                  });
-                },
+                sendToParent: message => team.storeMessage(message),
               });
               registerAgentMessageTools(workerPi, getWorkerManager, id);
               registerAgentNewSessionTool(workerPi, getWorkerManager, id);
@@ -594,6 +595,42 @@ export function registerAgentTools(
   });
 
   registerAgentListTool(pi, getManager);
+  pi.registerTool({
+    name: 'agent_inbox',
+    label: 'Read worker messages to parent',
+    description:
+      'Read messages workers explicitly sent to the parent. Messages are stored without adding prompts or triggering turns. Lists the latest 100 retained messages, newest first, with sender, timestamp, and 500-character previews. Pass messageId for full text. Reading does not remove messages; the inbox follows parent handovers.',
+    parameters: Type.Object({
+      messageId: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            'Retrieve this message in full. Takes precedence over list options.',
+        }),
+      ),
+      offset: Type.Optional(
+        Type.Integer({minimum: 0, description: 'List offset. Defaults to 0.'}),
+      ),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 20,
+          description: 'Maximum previews. Defaults to 10.',
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const team = control.getTeam(ctx);
+      const listing = params.messageId ? undefined : team.listMessages(params);
+      const data = listing
+        ? {...listing, messages: listing.messages.map(messagePreview)}
+        : {message: team.getMessage(params.messageId!)};
+      return {
+        content: [{type: 'text', text: JSON.stringify(data, null, 2)}],
+        details: data,
+      };
+    },
+  });
   pi.registerTool({
     name: 'agent_status',
     label: 'Agent status',
