@@ -122,6 +122,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
   assert.deepEqual(toolNames, [
     'browse',
     'download',
+    'elevenlabs',
     'gamemaker_query',
     'image_query',
     'json_query',

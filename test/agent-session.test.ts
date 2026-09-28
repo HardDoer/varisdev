@@ -188,6 +188,7 @@ void test(
       'write',
       'browse',
       'download',
+      'elevenlabs',
       'gamemaker_query',
       'image_query',
       'json_query',

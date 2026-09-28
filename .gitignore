@@ -5,3 +5,4 @@ build/
 *.tgz
 .DS_Store
 generated-images
+generated-audio/

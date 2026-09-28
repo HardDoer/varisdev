@@ -7,6 +7,7 @@ Varisware VarisDev package.
 - `extensions/varisdev.ts` — replaces the startup header with the three-color Varisware ASCII logo, keeps the tab/window title set to `VarisDev - <folder>`, uses a small crow image-style loader with animated processing dots while the assistant is streaming, raises a completion alert when the agent settles, and registers VarisDev tools.
 - `src/tools/browse.ts` — agent-callable `browse` tool for compact HTTP/HTTPS browsing without dumping response headers or large body samples into the LLM context.
 - `src/tools/download.ts` — agent-callable `download` tool for streaming HTTP/HTTPS responses to project files.
+- `src/tools/elevenlabs.ts` — agent-callable `elevenlabs` tool for finding voices and generating speech or sound effects as local audio files.
 - `src/tools/gamemaker-query.ts` — agent-callable `gamemaker_query` tool for inspecting, filtering, grouping, and sampling trailing-comma GameMaker `.yy` and `.yyp` files.
 - `src/tools/image-query.ts` — agent-callable `image_query` tool for inspecting image metadata, transparency, visible bounds, and grid occupancy across files without one-off scripts.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
@@ -343,6 +344,69 @@ Optional defaults:
 export OPENAI_IMAGE_SIZE="1024x1024"
 export OPENAI_IMAGE_OUTPUT_DIR="generated-images"
 ```
+
+## ElevenLabs audio tool
+
+The `elevenlabs` tool is available to the main agent and background workers. Set the API key in the environment before starting Pi:
+
+```bash
+export ELEVENLABS_API_KEY="your-api-key"
+```
+
+In PowerShell:
+
+```powershell
+$env:ELEVENLABS_API_KEY = "your-api-key"
+```
+
+Find a voice with `list_voices`. Results include voice IDs, descriptions, labels, preview URLs, and pagination:
+
+```json
+{
+  "action": "list_voices",
+  "search": "narrator",
+  "pageSize": 20
+}
+```
+
+When `hasMore` is true, pass `nextPageToken` from the result with the same search to get the next page. Use a returned `voiceId` to generate spoken audio:
+
+```json
+{
+  "action": "text_to_speech",
+  "voiceId": "<voiceId from list_voices>",
+  "text": "Welcome aboard. All systems are ready.",
+  "filenamePrefix": "welcome",
+  "voiceSettings": {
+    "stability": 0.5,
+    "similarityBoost": 0.75,
+    "speed": 1
+  }
+}
+```
+
+Speech defaults to `eleven_multilingual_v2`. Set `modelId` to use another speech model. Optional speech controls include `languageCode` (when supported by the model), `seed`, and `voiceSettings` with `stability`, `similarityBoost`, `style`, `speed`, and `useSpeakerBoost`.
+
+Generate a sound effect from a description:
+
+```json
+{
+  "action": "sound_effects",
+  "text": "Soft mechanical hum inside a spaceship, with occasional quiet electrical clicks",
+  "durationSeconds": 8,
+  "loop": true,
+  "promptInfluence": 0.3,
+  "filenamePrefix": "spaceship-ambience"
+}
+```
+
+Sound effects use `eleven_text_to_sound_v2`. Duration can be 0.5–30 seconds; omit `durationSeconds` to let the model choose. `promptInfluence` ranges from 0 to 1, and `loop` requests a seamless loop.
+
+Both generation actions save files under `generated-audio/` by default. Set `outputDir` to change the directory; relative paths resolve under the agent's working directory. Filenames include a sanitized prefix, timestamp, and random suffix. Results report the saved path, format, byte count, and request ID and character cost when returned by the API.
+
+`outputFormat` defaults to `mp3_44100_128`. The tool also supports the API's other MP3, PCM, Opus, μ-law, and A-law formats; speech additionally supports WAV. PCM files contain raw samples without a WAV header. Format availability depends on the ElevenLabs subscription. `timeoutMs` covers the request and audio download, defaults to 300,000 ms, and accepts up to 600,000 ms. Failed or cancelled downloads remove incomplete files. Each call sends one generation request without automatic retries.
+
+API references: [speech](https://elevenlabs.io/docs/api-reference/text-to-speech/convert), [sound effects](https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert), [voices](https://elevenlabs.io/docs/api-reference/voices/search).
 
 ## Development
 
