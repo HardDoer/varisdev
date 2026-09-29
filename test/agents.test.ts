@@ -914,7 +914,7 @@ void test('agent tools select supported models and effort without adding parent 
     optionsSeen.push(options);
     return controlled.worker;
   });
-  const supportedModels = ['gpt-5.5', 'gpt-5.6-sol', 'gpt-6-sol'].map(id => ({
+  const supportedModels = ['gpt-5.5', 'gpt-5.6-sol', 'gpt-6.1-sol'].map(id => ({
     provider: 'openai-codex',
     id,
   }));
@@ -1056,7 +1056,7 @@ void test('agent tools select supported models and effort without adding parent 
     ]) {
       await assert.rejects(
         execute('agent_spawn', {name: 'bad model', task: 'test', model}),
-        /model must be one of.*gpt-5\.5.*gpt-5\.6-sol.*gpt-6-sol/i,
+        /model must be one of.*gpt-5\.5.*gpt-5\.6-sol.*gpt-6\.1-sol/i,
       );
     }
     await assert.rejects(

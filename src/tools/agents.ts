@@ -26,7 +26,7 @@ export type {AgentHandover, AgentSessionControl} from '../agents/team.ts';
 const allowedModels = [
   'openai-codex/gpt-5.5',
   'openai-codex/gpt-5.6-sol',
-  'openai-codex/gpt-6-sol',
+  'openai-codex/gpt-6.1-sol',
 ] as const;
 const allowedEfforts = [
   'off',
@@ -517,7 +517,7 @@ export function registerAgentTools(
     name: 'agent_spawn',
     label: 'Spawn agent',
     description:
-      'Start a background agent with its own conversation. Allowed models: openai-codex/gpt-5.5, openai-codex/gpt-5.6-sol, openai-codex/gpt-6-sol. Inherits an allowed parent model; otherwise defaults to openai-codex/gpt-5.6-sol. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
+      'Start a background agent with its own conversation. Allowed models: openai-codex/gpt-5.5, openai-codex/gpt-5.6-sol, openai-codex/gpt-6.1-sol. Inherits an allowed parent model; otherwise defaults to openai-codex/gpt-5.6-sol. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
     promptSnippet:
       'Start a background agent with its own conversation and return its ID immediately.',
     parameters: spawnSchema,

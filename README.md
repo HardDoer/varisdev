@@ -68,7 +68,7 @@ VarisDev blocks native compaction in parent sessions, including automatic thresh
 
 ## Agent orchestration
 
-VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Allowed models are `openai-codex/gpt-5.5`, `openai-codex/gpt-5.6-sol`, and `openai-codex/gpt-6-sol`. An allowed parent model is inherited; otherwise the default is `openai-codex/gpt-5.6-sol`. Workers use the parent’s credential registry and inherit its thinking level, with `xhigh` as the maximum. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent, and `agent_new_session` to continue work in a fresh conversation.
+VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Allowed models are `openai-codex/gpt-5.5`, `openai-codex/gpt-5.6-sol`, and `openai-codex/gpt-6.1-sol`. An allowed parent model is inherited; otherwise the default is `openai-codex/gpt-5.6-sol`. Workers use the parent’s credential registry and inherit its thinking level, with `xhigh` as the maximum. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent, and `agent_new_session` to continue work in a fresh conversation.
 
 | Tool | Purpose |
 | --- | --- |
