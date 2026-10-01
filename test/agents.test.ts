@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setImmediate as nextTick} from 'node:timers/promises';
 import {test} from 'node:test';
+import {Check} from 'typebox/value';
 import type {
   AgentSession,
   AgentSessionEvent,
@@ -878,7 +879,7 @@ void test('session workers cancel again if a prompt starts after cancellation du
   assert.equal(fake.listeners.size, 0);
 });
 
-void test('agent tools select supported models and effort without adding parent prompts', async t => {
+void test('agent tools select registered models and effort without adding parent prompts', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
@@ -914,12 +915,16 @@ void test('agent tools select supported models and effort without adding parent 
     optionsSeen.push(options);
     return controlled.worker;
   });
-  const supportedModels = ['gpt-5.5', 'gpt-5.6-sol', 'gpt-6.1-sol'].map(id => ({
-    provider: 'openai-codex',
-    id,
-  }));
-  const cheapModel = supportedModels[1];
-  let parentModel = {provider: 'openai-codex', id: 'gpt-6-astra'};
+  const registeredModels = [
+    ...['gpt-5.5', 'gpt-5.6-sol', 'gpt-6.1-sol', 'gpt-6-astra'].map(id => ({
+      provider: 'openai-codex',
+      id,
+    })),
+    {provider: 'anthropic', id: 'claude-sonnet-4-5'},
+    {provider: 'custom', id: 'organization/model'},
+  ];
+  const fallbackModel = registeredModels[1];
+  let parentModel: (typeof registeredModels)[number] | undefined;
   let modelsAvailable = true;
   const ctx = {
     cwd: process.cwd(),
@@ -932,7 +937,7 @@ void test('agent tools select supported models and effort without adding parent 
     modelRegistry: {
       find: (provider: string, id: string) =>
         modelsAvailable
-          ? supportedModels.find(
+          ? registeredModels.find(
               model => model.provider === provider && model.id === id,
             )
           : undefined,
@@ -968,7 +973,7 @@ void test('agent tools select supported models and effort without adding parent 
       cwd: ctx.cwd,
       name: 'Review',
       instructions: undefined,
-      model: cheapModel,
+      model: fallbackModel,
       modelRegistry: ctx.modelRegistry,
       thinkingLevel: 'high',
       parentSessionId: 'parent-session',
@@ -1043,20 +1048,21 @@ void test('agent tools select supported models and effort without adding parent 
     assert.deepEqual(listed.agents, []);
     assert.ok(Object.values(listed.summary).every(count => count === 0));
     const spawnDescription = tools.get('agent_spawn')!.description;
-    for (const model of supportedModels) {
-      assert.match(
-        spawnDescription,
-        new RegExp(`${model.provider}/${model.id.replace('.', '\\.')}`),
+    assert.match(spawnDescription, /any model from the parent model registry/);
+    assert.match(spawnDescription, /Maximum thinkingLevel: xhigh/);
+    for (const model of ['', 'gpt-5.6-sol', '/model', 'provider/']) {
+      await assert.rejects(
+        execute('agent_spawn', {name: 'bad model', task: 'test', model}),
+        /model must use provider\/model format/i,
       );
     }
-    assert.match(spawnDescription, /Maximum thinkingLevel: xhigh/);
     for (const model of [
-      'openai-codex/gpt-6-astra',
+      'openai-codex/missing-model',
       'unknown-provider/gpt-5.6-sol',
     ]) {
       await assert.rejects(
-        execute('agent_spawn', {name: 'bad model', task: 'test', model}),
-        /model must be one of.*gpt-5\.5.*gpt-5\.6-sol.*gpt-6\.1-sol/i,
+        execute('agent_spawn', {name: 'missing model', task: 'test', model}),
+        /model is unavailable/i,
       );
     }
     await assert.rejects(
@@ -1090,7 +1096,7 @@ void test('agent tools select supported models and effort without adding parent 
     });
     const routineId = (routine.details as {agents: AgentRecord[]}).agents[0].id;
     await until(() => controlled.runs.length === 3);
-    assert.equal(optionsSeen.at(-1)!.model, cheapModel);
+    assert.equal(optionsSeen.at(-1)!.model, fallbackModel);
     assert.equal(optionsSeen.at(-1)!.thinkingLevel, 'xhigh');
     controlled.runs[2].finish('Checks passed');
     const cleaned = await execute('agent_wait', {ids: [routineId]});
@@ -1098,22 +1104,29 @@ void test('agent tools select supported models and effort without adding parent 
     assert.equal(controlled.disposed, 2);
     assert.equal(notifications.length, 0);
 
-    for (const model of [supportedModels[0], supportedModels[2]]) {
-      parentModel = model;
+    for (const model of registeredModels) {
       const fullName = `${model.provider}/${model.id}`;
-      const beforeRuns = controlled.runs.length;
-      const allowed = await execute('agent_spawn', {
-        name: model.id,
-        task: 'Verify supported parent model inheritance.',
-        autoCleanup: true,
-      });
-      const allowedId = (allowed.details as {agents: AgentRecord[]}).agents[0]
-        .id;
-      await until(() => controlled.runs.length === beforeRuns + 1);
-      assert.equal(optionsSeen.at(-1)!.model, model);
-      controlled.runs.at(-1)!.finish(fullName);
-      const result = await execute('agent_wait', {ids: [allowedId]});
-      assert.match(JSON.stringify(result.content), new RegExp(model.id));
+      for (const inherit of [false, true]) {
+        parentModel = inherit ? model : fallbackModel;
+        // Inherited models are already resolved by the parent session.
+        modelsAvailable = !inherit;
+        const beforeRuns = controlled.runs.length;
+        const params = {
+          name: model.id,
+          task: 'Verify model selection and inheritance.',
+          ...(inherit ? {} : {model: fullName}),
+          autoCleanup: true,
+        };
+        assert.ok(Check(tools.get('agent_spawn')!.parameters, params));
+        const spawned = await execute('agent_spawn', params);
+        const record = (spawned.details as {agents: AgentRecord[]}).agents[0];
+        assert.equal(record.model, fullName);
+        await until(() => controlled.runs.length === beforeRuns + 1);
+        assert.equal(optionsSeen.at(-1)!.model, model);
+        controlled.runs.at(-1)!.finish(fullName);
+        const result = await execute('agent_wait', {ids: [record.id]});
+        assert.match(JSON.stringify(result.content), new RegExp(model.id));
+      }
     }
     assert.equal(notifications.length, 0);
   } finally {

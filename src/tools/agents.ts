@@ -23,11 +23,6 @@ import {
 
 export type {AgentHandover, AgentSessionControl} from '../agents/team.ts';
 
-const allowedModels = [
-  'openai-codex/gpt-5.5',
-  'openai-codex/gpt-5.6-sol',
-  'openai-codex/gpt-6.1-sol',
-] as const;
 const allowedEfforts = [
   'off',
   'minimal',
@@ -80,13 +75,11 @@ const spawnSchema = Type.Object({
     }),
   ),
   model: Type.Optional(
-    Type.Union(
-      allowedModels.map(model => Type.Literal(model)),
-      {
-        description:
-          'Allowed Codex model. Inherits an allowed parent model; otherwise defaults to openai-codex/gpt-5.6-sol.',
-      },
-    ),
+    Type.String({
+      pattern: '^[^/]+/.+$',
+      description:
+        'Model in provider/model format from the parent model registry. Defaults to the parent model, or openai-codex/gpt-5.6-sol when no parent model is set.',
+    }),
   ),
   thinkingLevel: Type.Optional(
     Type.Union(
@@ -517,7 +510,7 @@ export function registerAgentTools(
     name: 'agent_spawn',
     label: 'Spawn agent',
     description:
-      'Start a background agent with its own conversation. Allowed models: openai-codex/gpt-5.5, openai-codex/gpt-5.6-sol, openai-codex/gpt-6.1-sol. Inherits an allowed parent model; otherwise defaults to openai-codex/gpt-5.6-sol. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
+      'Start a background agent with its own conversation. Accepts any model from the parent model registry in provider/model format. Defaults to the parent model, or openai-codex/gpt-5.6-sol when no parent model is set. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
     promptSnippet:
       'Start a background agent with its own conversation and return its ID immediately.',
     parameters: spawnSchema,
@@ -529,21 +522,16 @@ export function registerAgentTools(
         throw new Error(`Agent cwd is not a directory: ${cwd}`);
       const inheritedModel =
         ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
-      const selectedModel =
-        params.model ??
-        (allowedModels.some(model => model === inheritedModel)
-          ? inheritedModel!
-          : defaultModel);
-      if (!allowedModels.some(model => model === selectedModel))
-        throw new Error(
-          `Agent model must be one of: ${allowedModels.join(', ')}.`,
-        );
+      const selectedModel = params.model ?? inheritedModel ?? defaultModel;
+      const separator = selectedModel.indexOf('/');
+      if (separator <= 0 || separator === selectedModel.length - 1)
+        throw new Error('Agent model must use provider/model format.');
       const model =
         selectedModel === inheritedModel
           ? ctx.model
           : ctx.modelRegistry.find(
-              'openai-codex',
-              selectedModel.slice('openai-codex/'.length),
+              selectedModel.slice(0, separator),
+              selectedModel.slice(separator + 1),
             );
       if (!model || `${model.provider}/${model.id}` !== selectedModel)
         throw new Error(`Agent model is unavailable: ${selectedModel}.`);
