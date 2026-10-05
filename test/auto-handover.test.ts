@@ -695,7 +695,7 @@ void test('summary activity and elapsed time replace Processing and clear on com
   assert.deepEqual(f.scheduled, ['Completed summary']);
   assert.equal(f.workingMessages.at(-1), '');
   const updates = f.workingMessages.length;
-  t.mock.timers.tick(5 * 60 * 1000);
+  t.mock.timers.tick(20 * 60 * 1000);
   assert.equal(f.workingMessages.length, updates);
   assert.deepEqual(f.notices, []);
 });
@@ -737,7 +737,7 @@ for (const phase of ['initializing', 'running']) {
         t.mock.timers.enable({apis: ['setTimeout', 'setInterval']});
         const turn = f.turn();
         await entered.promise;
-        if (interruption === 'timeout') t.mock.timers.tick(5 * 60 * 1000);
+        if (interruption === 'timeout') t.mock.timers.tick(20 * 60 * 1000);
         else f.abort.abort();
         // Neither initialization nor the provider has returned yet.
         await turn;
@@ -745,7 +745,7 @@ for (const phase of ['initializing', 'running']) {
         assert.equal(f.workingMessages.at(-1), '');
         assert.equal(disposed, phase === 'running' ? 1 : 0);
         if (interruption === 'timeout')
-          assert.match(f.notices.at(-1)!, /exceeded 5 minutes.*\/handover/);
+          assert.match(f.notices.at(-1)!, /exceeded 20 minutes.*\/handover/);
         else assert.deepEqual(f.notices, []);
         const updates = f.workingMessages.length;
         release.resolve();

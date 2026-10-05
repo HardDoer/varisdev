@@ -35,7 +35,7 @@ const entryType = 'varisdev_handover';
 const requestType = 'varisdev_handover_request';
 const draftType = 'varisdev_handover_draft';
 const threshold = 90;
-const summaryTimeoutMs = 5 * 60 * 1000;
+const summaryTimeoutMs = 20 * 60 * 1000;
 
 /** Release the parent even if initialization or the provider ignores abort. */
 async function withAbort<T>(
@@ -72,7 +72,7 @@ function startSummarizer(ctx: ExtensionContext): Summarizer {
   const deadline = setTimeout(() => {
     controller.abort(
       new Error(
-        'Summary preparation exceeded 5 minutes. Use /handover to retry.',
+        'Summary preparation exceeded 20 minutes. Use /handover to retry.',
       ),
     );
   }, summaryTimeoutMs);
