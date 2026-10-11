@@ -10,7 +10,7 @@ import {
 import {glob, mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {isAbsolute, join, relative, resolve} from 'node:path';
-import sharp from 'sharp';
+import {getSharp} from '../sharp.ts';
 import {Type} from 'typebox';
 
 const DEFAULT_MAX_FILES = 100;
@@ -386,6 +386,7 @@ async function queryImageFile(
       limitInputPixels: MAX_INPUT_PIXELS,
       sequentialRead: true,
     };
+    const sharp = getSharp();
     const metadata = await sharp(input, sharpOptions).metadata();
     const decoded = await sharp(input, sharpOptions)
       .rotate()

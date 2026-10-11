@@ -9,7 +9,7 @@ import {
 } from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import sharp from 'sharp';
+import {getSharp} from '../sharp.ts';
 import {readPreviewImage} from './files.ts';
 import {SIXEL_CELL, SixelFrame, type SixelOutput} from './sixel.ts';
 
@@ -142,6 +142,7 @@ export class ImagePreviewComponent implements Component {
     columns: number,
   ): Promise<{lines: string[]; frame?: SixelFrame; image?: Image}> {
     const bytes = await readPreviewImage(this.path);
+    const sharp = getSharp();
     const pipeline = () =>
       sharp(bytes, {limitInputPixels: 40_000_000}).rotate();
     if (protocol === 'kitty' || protocol === 'iterm2') {

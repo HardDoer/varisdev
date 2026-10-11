@@ -442,9 +442,11 @@ npm run fix
 ## Local test
 
 ```bash
-npm install
+npm ci --include=optional
 pi -e ./extensions/varisdev.ts
 ```
+
+Sharp is loaded through Node only when an image is inspected or rendered. A missing image dependency reports an error in that image operation instead of preventing the entire plugin from starting.
 
 ## Install from this repo
 
