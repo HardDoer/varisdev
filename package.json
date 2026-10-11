@@ -19,7 +19,8 @@
   "dependencies": {
     "json5": "^2.2.3",
     "openai": "^6.0.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "sixel": "0.16.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1",

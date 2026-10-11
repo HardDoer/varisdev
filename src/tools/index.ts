@@ -4,6 +4,7 @@ import {registerDownloadTool} from './download.ts';
 import {registerElevenLabsTool} from './elevenlabs.ts';
 import {registerGameMakerQueryTool} from './gamemaker-query.ts';
 import {registerImageQueryTool} from './image-query.ts';
+import {registerImagePreviewTool} from './image-preview.ts';
 import {registerJsonQueryTool} from './json-query.ts';
 import {registerOpenAIImageTool} from './openai-image.ts';
 
@@ -14,6 +15,7 @@ export function registerProjectTools(pi: ExtensionAPI): void {
   registerElevenLabsTool(pi);
   registerGameMakerQueryTool(pi);
   registerImageQueryTool(pi);
+  registerImagePreviewTool(pi);
   registerJsonQueryTool(pi);
   registerOpenAIImageTool(pi);
 }

@@ -46,6 +46,7 @@ function createExtension(t: TestContext, folder: string) {
     registerTool() {},
     registerCommand() {},
     registerEntryRenderer() {},
+    registerMarkdownTransformer() {},
   } as unknown as ExtensionAPI;
   registerVarisdev(pi);
 

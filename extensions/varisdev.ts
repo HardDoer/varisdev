@@ -9,6 +9,7 @@ import {registerAutoHandover} from '../src/auto-handover.ts';
 import {registerHandoverSettingsCommands} from '../src/handover-settings.ts';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerCommitCommand} from '../src/commit.ts';
+import {registerImagePreviews} from '../src/image-previews.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
 import {registerSessionHandover} from '../src/session-handover.ts';
@@ -200,6 +201,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  registerImagePreviews(pi);
   registerProjectTools(pi);
   const agents = registerAgentTools(pi);
   registerCommitCommand(pi);

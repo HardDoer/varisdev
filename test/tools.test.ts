@@ -115,6 +115,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     on() {},
     registerCommand() {},
     registerEntryRenderer() {},
+    registerMarkdownTransformer() {},
   } as unknown as ExtensionAPI;
 
   registerVarisdev(pi);
@@ -125,6 +126,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'elevenlabs',
     'gamemaker_query',
     'image_query',
+    'image_preview',
     'json_query',
     'openai_image',
     'agent_spawn',
