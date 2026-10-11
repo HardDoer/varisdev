@@ -10,7 +10,7 @@ import {
 import {glob, mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {isAbsolute, join, relative, resolve} from 'node:path';
-import {getSharp} from '../sharp.ts';
+import {processImage} from '../sharp.ts';
 import {Type} from 'typebox';
 
 const DEFAULT_MAX_FILES = 100;
@@ -377,23 +377,12 @@ async function queryImageFile(
       );
     }
 
-    // Read through Node first so AbortSignal can cancel file I/O. Sharp then decodes
-    // from the bounded in-memory buffer without retaining a file descriptor.
     const input = await readFile(file.absolutePath, {signal});
-    throwIfAborted(signal);
-    const sharpOptions = {
-      failOn: 'error' as const,
-      limitInputPixels: MAX_INPUT_PIXELS,
-      sequentialRead: true,
-    };
-    const sharp = getSharp();
-    const metadata = await sharp(input, sharpOptions).metadata();
-    const decoded = await sharp(input, sharpOptions)
-      .rotate()
-      .toColourspace('srgb')
-      .ensureAlpha()
-      .raw()
-      .toBuffer({resolveWithObject: true});
+    const decoded = await processImage(
+      {input, output: 'raw', limitInputPixels: MAX_INPUT_PIXELS},
+      signal,
+    );
+    const {metadata} = decoded;
     throwIfAborted(signal);
 
     const pixels = inspectPixels(

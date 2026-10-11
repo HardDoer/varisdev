@@ -11,8 +11,14 @@
     "skipLibCheck": true,
     "composite": false,
     "noEmit": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "allowJs": true
   },
-  "include": ["extensions/**/*.ts", "src/**/*.ts", "test/**/*.ts"],
+  "include": [
+    "extensions/**/*.ts",
+    "src/**/*.ts",
+    "src/**/*.mjs",
+    "test/**/*.ts"
+  ],
   "exclude": ["build", "node_modules"]
 }

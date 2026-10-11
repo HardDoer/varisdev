@@ -1,5 +1,5 @@
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
-import {getSharp} from '../sharp.ts';
+import {processImage} from '../sharp.ts';
 import {Type} from 'typebox';
 import {readPreviewImage, resolveImagePath} from '../image-preview/files.ts';
 
@@ -29,10 +29,10 @@ export function registerImagePreviewTool(pi: ExtensionAPI): void {
       const path = resolveImagePath(params.path, ctx.cwd);
       if (!path) throw new Error('Unsupported local image path.');
       const bytes = await readPreviewImage(path);
-      const sharp = getSharp();
-      const metadata = await sharp(bytes, {
-        limitInputPixels: 40_000_000,
-      }).metadata();
+      const {metadata} = await processImage(
+        {input: bytes, output: 'metadata', limitInputPixels: 40_000_000},
+        signal,
+      );
       signal?.throwIfAborted();
       return {
         content: [

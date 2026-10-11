@@ -9,7 +9,7 @@ import {
 } from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {getSharp} from '../sharp.ts';
+import {processImage} from '../sharp.ts';
 import {readPreviewImage} from './files.ts';
 import {SIXEL_CELL, SixelFrame, type SixelOutput} from './sixel.ts';
 
@@ -45,6 +45,7 @@ export class ImagePreviewComponent implements Component {
   private error?: string;
   private disposed = false;
   private revision = 0;
+  private loading?: AbortController;
 
   readonly path: string;
   private readonly theme: Theme;
@@ -73,6 +74,7 @@ export class ImagePreviewComponent implements Component {
   dispose(): void {
     this.disposed = true;
     this.revision++;
+    this.loading?.abort();
   }
 
   handleMouse(event: TuiMouseEvent) {
@@ -91,7 +93,9 @@ export class ImagePreviewComponent implements Component {
     if (this.key !== key && this.pending !== key && !this.disposed) {
       this.pending = key;
       const revision = ++this.revision;
-      void this.load(protocol, columns)
+      this.loading?.abort();
+      this.loading = new AbortController();
+      void this.load(protocol, columns, this.loading.signal)
         .then(result => {
           if (this.disposed || revision !== this.revision) return;
           this.frame = result.frame;
@@ -112,6 +116,7 @@ export class ImagePreviewComponent implements Component {
         .finally(() => {
           if (this.disposed || revision !== this.revision) return;
           this.pending = '';
+          this.loading = undefined;
           if (this.runtime.active) this.runtime.invalidate();
         });
     }
@@ -140,16 +145,19 @@ export class ImagePreviewComponent implements Component {
   private async load(
     protocol: string,
     columns: number,
+    signal: AbortSignal,
   ): Promise<{lines: string[]; frame?: SixelFrame; image?: Image}> {
-    const bytes = await readPreviewImage(this.path);
-    const sharp = getSharp();
-    const pipeline = () =>
-      sharp(bytes, {limitInputPixels: 40_000_000}).rotate();
+    const input = await readPreviewImage(this.path);
     if (protocol === 'kitty' || protocol === 'iterm2') {
-      const png = await pipeline()
-        .resize(1200, 1200, {fit: 'inside', withoutEnlargement: true})
-        .png()
-        .toBuffer();
+      const {data: png} = await processImage(
+        {
+          input,
+          output: 'png',
+          limitInputPixels: 40_000_000,
+          resize: {width: 1200, height: 1200},
+        },
+        signal,
+      );
       return {
         lines: [],
         image: new Image(
@@ -166,14 +174,18 @@ export class ImagePreviewComponent implements Component {
     }
     const cellWidth = protocol === 'sixel' ? SIXEL_CELL.width : 1;
     const cellHeight = protocol === 'sixel' ? SIXEL_CELL.height : 2;
-    const {data, info} = await pipeline()
-      .resize(columns * cellWidth, this.maxRows * cellHeight, {
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({resolveWithObject: true});
+    const {data, info} = await processImage(
+      {
+        input,
+        output: 'raw',
+        limitInputPixels: 40_000_000,
+        resize: {
+          width: columns * cellWidth,
+          height: this.maxRows * cellHeight,
+        },
+      },
+      signal,
+    );
     const imageColumns = Math.ceil(info.width / cellWidth);
     const imageRows = Math.ceil(info.height / cellHeight);
     const width = imageColumns * cellWidth;
