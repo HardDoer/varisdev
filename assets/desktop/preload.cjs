@@ -1,6 +1,6 @@
 'use strict';
 
-const {contextBridge, ipcRenderer} = require('electron');
+const {contextBridge, ipcRenderer, webFrame} = require('electron');
 
 async function invoke(channel, ...args) {
   const result = await ipcRenderer.invoke(channel, ...args);
@@ -15,6 +15,12 @@ async function invoke(channel, ...args) {
 }
 
 contextBridge.exposeInMainWorld('pidev', {
+  getZoom: () => webFrame.getZoomFactor(),
+  setZoom: factor => {
+    if (!Number.isFinite(factor) || factor < 0.25 || factor > 5)
+      throw new TypeError('Zoom must be between 25% and 500%.');
+    webFrame.setZoomFactor(factor);
+  },
   getState: () => invoke('pidev:get-state'),
   onSnapshot(callback) {
     if (typeof callback !== 'function') {

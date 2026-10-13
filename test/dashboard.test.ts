@@ -116,8 +116,17 @@ void test('dashboard keeps parallel parents isolated, forwards prompts immediate
   t.after(() => hub.close());
   let notifications = 0;
   const unsubscribe = hub.subscribe(() => notifications++);
-  const one = await hub.createSession({cwd: folders[0], prompt: 'Task 0'});
-  const two = await hub.createSession({cwd: folders[1], prompt: 'Task 1'});
+  const one = await hub.createSession({cwd: folders[0]});
+  const two = await hub.createSession({cwd: folders[1]});
+  assert.ok(parents.every(parent => parent.runs.length === 0));
+  assert.ok(
+    hub
+      .snapshot()
+      .sessions.filter(item => item.session.owned)
+      .every(item => item.session.status === 'idle'),
+  );
+  await hub.promptSession(one.id, {prompt: 'Task 0'});
+  await hub.promptSession(two.id, {prompt: 'Task 1'});
   await until(() => parents.every(parent => parent.runs.length === 1));
   assert.equal(hub.snapshot().sessions.length, 3);
   assert.deepEqual(
@@ -145,19 +154,13 @@ void test('dashboard keeps parallel parents isolated, forwards prompts immediate
     /terminal/,
   );
   await assert.rejects(hub.promptSession('missing', {prompt: 'No'}), /Unknown/);
-  await assert.rejects(hub.createSession({cwd: '.', prompt: 'No'}), /absolute/);
-  await assert.rejects(
-    hub.createSession({cwd: directory, prompt: ' '}),
-    /Prompt/,
-  );
+  await assert.rejects(hub.createSession({cwd: '.'}), /absolute/);
+  await assert.rejects(hub.createSession({cwd: ' '}), /Folder/);
   await hub.abortSession(two.id);
   unsubscribe();
   await hub.close();
   assert.ok(parents.every(parent => parent.closed));
-  await assert.rejects(
-    hub.createSession({cwd: directory, prompt: 'No'}),
-    /closed/,
-  );
+  await assert.rejects(hub.createSession({cwd: directory}), /closed/);
 });
 
 void test('standalone factory accepts terminal observations without giving them desktop controls', async t => {
@@ -170,7 +173,8 @@ void test('standalone factory accepts terminal observations without giving them 
   t.after(() => hub.close());
   assert.equal(hub.snapshot().sessions.length, 0);
   assert.equal(hub.snapshot().selectedSessionId, undefined);
-  await hub.createSession({cwd: process.cwd(), prompt: 'Work here'});
+  await hub.createSession({cwd: process.cwd()});
+  await hub.promptSession('desktop', {prompt: 'Work here'});
   await until(() => parent.runs.length === 1);
   const terminal = state('terminal').snapshot();
   terminal.session.status = 'running';
@@ -223,7 +227,8 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
   await hub.abortSession('attached');
   assert.deepEqual(actions, ['prompt:attached:Follow up', 'abort:attached']);
   await assert.rejects(hub.promptSession('attached', {prompt: ' '}), /Prompt/);
-  await hub.createSession({cwd: process.cwd(), prompt: 'Owned work'});
+  await hub.createSession({cwd: process.cwd()});
+  await hub.promptSession('owned', {prompt: 'Owned work'});
   await until(() => owned.runs.length === 1);
   assert.equal(hub.snapshot().sessions[1].session.controllable, true);
   hub.closeExternal();
@@ -252,7 +257,6 @@ void test('closing during parent initialization disposes it before any prompt ru
   t.after(() => hub.close());
   const starting = hub.createSession({
     cwd: process.cwd(),
-    prompt: 'Must not run',
   });
   // Register rejection before the initializer is released.
   const rejected = assert.rejects(starting, /closed/);
@@ -375,7 +379,8 @@ void test('native feature controls preserve catalog isolation and reject changes
   };
   const hub = new DashboardHub(undefined, async () => current.parent);
   t.after(() => hub.close());
-  await hub.createSession({cwd: process.cwd(), prompt: 'Initial work'});
+  await hub.createSession({cwd: process.cwd()});
+  await hub.promptSession('features', {prompt: 'Initial work'});
   await until(() => current.runs.length === 1);
   const snapshot = await hub.sessionFeatures('features');
   snapshot.commands[0].name = 'Mutation';
@@ -432,7 +437,8 @@ void test('native extension dialogs appear in hub snapshots and receive validate
     current.parent.ui!.dispose();
     await hub.close();
   });
-  await hub.createSession({cwd: process.cwd(), prompt: 'Wait for input'});
+  await hub.createSession({cwd: process.cwd()});
+  await hub.promptSession('dialogs', {prompt: 'Wait for input'});
   await until(() => current.runs.length === 1);
   const response = current.parent.ui.context.select('Choose one', [
     'One',
@@ -484,7 +490,8 @@ void test('native reload reconnects hub observation when the SDK replaces its da
   const current = controlledParent('reloaded', process.cwd());
   const hub = new DashboardHub(undefined, async () => current.parent);
   t.after(() => hub.close());
-  await hub.createSession({cwd: process.cwd(), prompt: 'Initial'});
+  await hub.createSession({cwd: process.cwd()});
+  await hub.promptSession('reloaded', {prompt: 'Initial'});
   await until(() => current.runs.length === 1);
   current.runs[0].resolve();
   await until(() => hub.snapshot().sessions[0].session.status === 'idle');

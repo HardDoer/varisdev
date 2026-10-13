@@ -11,7 +11,7 @@
   --amber: #ffcb7a;
   --red: #ff9397;
   font:
-    14px/1.5 -apple-system,
+    16px/1.5 -apple-system,
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
@@ -85,7 +85,7 @@ h3 {
   margin: 0;
 }
 h1 {
-  font-size: 29px;
+  font-size: 1.8125rem;
   letter-spacing: -0.8px;
   font-weight: 650;
 }
@@ -93,13 +93,13 @@ h1 span {
   color: var(--mint);
 }
 h2 {
-  font-size: 20px;
+  font-size: 1.25rem;
   line-height: 1.25;
   letter-spacing: -0.4px;
   font-weight: 650;
 }
 h3 {
-  font-size: 13px;
+  font-size: 0.9375rem;
   font-weight: 650;
 }
 pre {
@@ -113,10 +113,10 @@ pre {
 }
 .muted {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .eyebrow {
-  font-size: 10px;
+  font-size: 0.75rem;
   letter-spacing: 1.8px;
   color: var(--muted);
   font-weight: 650;
@@ -145,7 +145,19 @@ pre {
   display: flex;
   align-items: center;
   justify-content: end;
+  flex-wrap: wrap;
   gap: 12px;
+}
+.zoom-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.zoom-control select {
+  min-height: 34px;
+  font-size: 0.875rem;
 }
 .primary-button {
   background: var(--mint);
@@ -161,18 +173,18 @@ pre {
 .quiet-button {
   padding: 8px 12px;
   background: transparent;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .danger-button {
   padding: 8px 11px;
   background: #38232d;
   color: var(--red);
   border-color: #74434b;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .connection {
   color: var(--mint);
-  font-size: 11px;
+  font-size: 0.75rem;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -223,12 +235,12 @@ main > .welcome {
   margin-bottom: 3px;
 }
 .overview h1 {
-  font-size: 23px;
+  font-size: 1.4375rem;
   line-height: 1.2;
 }
 .overview-counts {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .parent-grid {
   display: grid;
@@ -259,7 +271,7 @@ main > .welcome {
   margin-bottom: 4px;
 }
 .parent-card-name {
-  font-size: 13px;
+  font-size: 0.9375rem;
   font-weight: 650;
   flex: 1;
   min-width: 0;
@@ -285,7 +297,7 @@ main > .welcome {
 .parent-card .project-path {
   display: block;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.75rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -293,7 +305,7 @@ main > .welcome {
 }
 .parent-card-activity {
   display: block;
-  font-size: 12px;
+  font-size: 0.875rem;
   line-height: 1.5;
   white-space: nowrap;
   overflow: hidden;
@@ -307,7 +319,7 @@ main > .welcome {
   margin-top: 6px;
   border-top: 1px solid #36505b66;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .parent-card-footer strong {
   color: var(--text);
@@ -382,7 +394,7 @@ main > .welcome {
   color: var(--muted);
   border: 1px solid #516571;
   background: #a0b5c310;
-  font-size: 12px;
+  font-size: 0.875rem;
   font-weight: 600;
   line-height: 1.6;
   padding: 3px 8px;
@@ -435,22 +447,46 @@ main > .welcome {
 }
 .factory-heading {
   padding: 15px 20px 12px;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
+  display: grid;
+  gap: 12px;
+}
+.factory-heading > div {
+  min-width: 0;
 }
 .factory-heading h2 {
   margin: 3px 0 4px;
-  font-size: 23px;
+  font-size: 1.4375rem;
 }
 .factory-heading .mono {
   overflow-wrap: anywhere;
 }
 .factory-state {
   display: flex;
-  flex-direction: column;
-  align-items: end;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 9px;
+  min-width: 0;
+}
+.model-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin-left: auto;
+}
+#factory-model {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.effort-badge {
+  padding: 4px 8px;
+  border: 1px solid var(--mint);
+  border-radius: 6px;
+  color: var(--mint);
+  font-size: 0.75rem;
+  font-weight: 650;
+  white-space: nowrap;
 }
 .factory-metrics {
   display: flex;
@@ -460,11 +496,11 @@ main > .welcome {
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .factory-metrics strong {
   color: var(--text);
-  font-size: 15px;
+  font-size: 1rem;
   margin-right: 3px;
 }
 .context-meter {
@@ -503,7 +539,7 @@ main > .welcome {
   border-bottom: 1px solid var(--line);
   color: var(--text);
   background: var(--panel);
-  font-size: 13px;
+  font-size: 0.9375rem;
   font-weight: 600;
 }
 .scene-legend span {
@@ -536,7 +572,7 @@ main > .welcome {
   border-radius: 8px;
   background: var(--panel-raised);
   text-align: left;
-  font-size: 12px;
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 .scene-label.selected {
@@ -546,7 +582,7 @@ main > .welcome {
 .scene-label-name {
   display: block;
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.9375rem;
   font-weight: 650;
   overflow-wrap: anywhere;
 }
@@ -577,7 +613,7 @@ main > .welcome {
   min-width: 0;
 }
 .master-summary p {
-  font-size: 12px;
+  font-size: 0.875rem;
   margin-top: 2px;
   overflow-wrap: anywhere;
 }
@@ -592,10 +628,10 @@ main > .welcome {
   margin-bottom: 12px;
 }
 .compact h2 {
-  font-size: 16px;
+  font-size: 1rem;
 }
 .count-tag {
-  font-size: 11px;
+  font-size: 0.75rem;
   border: 1px solid var(--line);
   color: var(--muted);
   padding: 2px 7px;
@@ -631,7 +667,7 @@ main > .welcome {
 }
 .worker-card-task {
   display: block;
-  font-size: 12px;
+  font-size: 0.875rem;
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
@@ -641,7 +677,7 @@ main > .welcome {
   margin-top: 9px;
   border-top: 1px solid #36505b88;
   color: var(--mint);
-  font-size: 11px;
+  font-size: 0.75rem;
   overflow-wrap: anywhere;
 }
 .worker-card-meta {
@@ -650,13 +686,13 @@ main > .welcome {
   justify-content: space-between;
   gap: 5px 10px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.75rem;
   padding-top: 10px;
 }
 .empty-state {
   color: var(--muted);
   padding: 18px 0;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .history-section {
   padding: 18px 20px;
@@ -666,7 +702,7 @@ main > .welcome {
 }
 .history-search input {
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .history-list {
   display: grid;
@@ -692,19 +728,19 @@ main > .welcome {
   min-width: 0;
 }
 .history-row-name {
-  font-size: 12px;
+  font-size: 0.875rem;
   font-weight: 650;
   display: block;
   overflow-wrap: anywhere;
 }
 .history-row-task {
-  font-size: 10px;
+  font-size: 0.75rem;
   display: block;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 .history-row .status-badge {
-  font-size: 8px;
+  font-size: 0.75rem;
   padding: 2px 5px;
 }
 .inspector {
@@ -726,7 +762,7 @@ main > .welcome {
   min-width: 0;
 }
 .inspector-heading > p:last-child {
-  font-size: 12px;
+  font-size: 0.875rem;
   color: #bed3de;
   overflow-wrap: anywhere;
 }
@@ -744,7 +780,7 @@ main > .welcome {
   background: transparent;
   color: var(--muted);
   padding: 13px 10px;
-  font-size: 11px;
+  font-size: 0.75rem;
   border-bottom: 2px solid transparent;
 }
 .inspector-tabs button[aria-selected='true'] {
@@ -754,7 +790,7 @@ main > .welcome {
 .inspector-tabs span {
   color: var(--muted);
   margin-left: 4px;
-  font-size: 9px;
+  font-size: 0.75rem;
 }
 .inspector-body {
   padding: clamp(18px, 1.2vw, 28px);
@@ -768,7 +804,7 @@ main > .welcome {
   display: grid;
   grid-template-columns: 78px minmax(0, 1fr);
   gap: 8px 10px;
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .unit-facts dt {
   color: var(--muted);
@@ -787,7 +823,7 @@ main > .welcome {
 }
 .prose {
   font:
-    12px/1.65 -apple-system,
+    0.875rem/1.65 -apple-system,
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
@@ -797,7 +833,7 @@ main > .welcome {
 }
 .path-facts {
   font-family: 'SFMono-Regular', Consolas, monospace;
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .feed-toolbar {
   display: flex;
@@ -806,7 +842,7 @@ main > .welcome {
   margin-bottom: 14px;
 }
 .feed-toolbar label {
-  font-size: 11px;
+  font-size: 0.75rem;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -822,16 +858,17 @@ main > .welcome {
 }
 .feed-event {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-left: 3px solid var(--action-color, var(--line));
+  border-radius: 6px;
   background: var(--panel-raised);
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   overflow: hidden;
 }
 .feed-event.error {
   border-left: 4px solid var(--red);
 }
 .feed-event summary {
-  padding: 12px;
+  padding: 7px 9px;
   cursor: pointer;
 }
 .feed-event summary:hover {
@@ -844,52 +881,63 @@ main > .welcome {
   display: inline-flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 6px 12px;
+  gap: 4px 9px;
   width: calc(100% - 22px);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--muted);
-  margin-bottom: 6px;
+  margin-bottom: 3px;
+}
+.feed-event-meta > span {
+  color: var(--action-color, var(--muted));
+  font-weight: 650;
 }
 .feed-event-message {
   display: block;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 0.75rem;
+  line-height: 1.45;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 .feed-details {
   margin: 0;
-  padding: 0 14px 14px;
+  padding: 6px 9px;
   border-top: 1px solid var(--line);
   background: var(--input);
 }
 .feed-detail {
-  padding-top: 12px;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+  padding: 3px 0;
 }
 .feed-detail dt {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.6875rem;
   font-weight: 600;
 }
 .feed-detail dd {
-  margin: 5px 0 0;
+  margin: 0;
+  min-width: 0;
 }
 .feed-detail-text {
-  max-height: 360px;
+  max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font:
-    12px/1.65 'SFMono-Regular',
+    0.6875rem/1.5 'SFMono-Regular',
     Consolas,
     monospace;
+}
+.feed-detail .diff {
+  font-size: 0.6875rem;
 }
 .feed-detail.error {
   color: var(--red);
 }
 .changes-note {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.75rem;
   margin-bottom: 15px;
 }
 .change-entry {
@@ -902,7 +950,7 @@ main > .welcome {
 .change-entry summary {
   padding: 11px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .change-path {
   font-family: 'SFMono-Regular', Consolas, monospace;
@@ -910,17 +958,17 @@ main > .welcome {
 }
 .change-meta {
   display: block;
-  font-size: 9px;
+  font-size: 0.75rem;
   margin: 5px 0 0 13px;
   color: var(--muted);
 }
 .change-summary {
   padding: 0 12px 10px;
-  font-size: 11px;
+  font-size: 0.75rem;
   overflow-wrap: anywhere;
 }
 .diff {
-  font-size: 10px;
+  font-size: 0.75rem;
   line-height: 1.65;
   background: #07111a;
   padding: 12px;
@@ -948,12 +996,12 @@ main > .welcome {
   background: #14252c;
 }
 .parent-controls label {
-  font-size: 12px;
+  font-size: 0.875rem;
   display: block;
   margin-bottom: 7px;
 }
 .parent-controls textarea {
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .parent-controls form > div {
   display: flex;
@@ -963,14 +1011,14 @@ main > .welcome {
 }
 .parent-controls .muted {
   flex: 1;
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .parent-controls .primary-button {
   padding: 8px 13px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .attached-note {
-  font-size: 11px;
+  font-size: 0.75rem;
   color: var(--muted);
   padding: 15px 20px;
   background: #14252c;
@@ -988,14 +1036,14 @@ main > .welcome {
   margin-bottom: 9px;
 }
 .workspace-section h3 {
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .workspace-section .quiet-button {
   padding: 6px 8px;
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .workspace-section .muted {
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 #workspace-result {
   margin-top: 12px;
@@ -1007,7 +1055,7 @@ main > .welcome {
   padding: 0;
   margin: 10px 0;
   font:
-    10px/1.7 'SFMono-Regular',
+    0.75rem/1.7 'SFMono-Regular',
     Consolas,
     monospace;
   overflow-wrap: anywhere;
@@ -1035,18 +1083,13 @@ main > .welcome {
   max-width: 450px;
 }
 .welcome h2 {
-  font-size: 36px;
+  font-size: 2.25rem;
   margin: 10px 0 20px;
   line-height: 1.2;
 }
 .welcome p:not(.eyebrow) {
   color: var(--muted);
   margin-bottom: 22px;
-}
-.welcome #launch-path {
-  margin-top: 18px;
-  font-size: 10px;
-  overflow-wrap: anywhere;
 }
 .welcome-machine {
   position: relative;
@@ -1124,12 +1167,12 @@ main > .welcome {
   padding: 0 10px;
   overflow-wrap: anywhere;
   text-align: center;
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .fallback-station p {
   padding: 6px 10px;
   overflow-wrap: anywhere;
-  font-size: 10px;
+  font-size: 0.75rem;
   text-align: center;
 }
 .fallback-station .muted {
@@ -1167,11 +1210,11 @@ main > .welcome {
 }
 .compact-scene .fallback-station strong {
   padding: 0 8px;
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .compact-scene .fallback-station p {
   padding: 3px 8px;
-  font-size: 9px;
+  font-size: 0.75rem;
 }
 @keyframes drone-pulse {
   50% {
@@ -1215,35 +1258,19 @@ dialog::backdrop {
   margin-bottom: 25px;
 }
 .dialog-heading h2 {
-  font-size: 26px;
+  font-size: 1.625rem;
   margin-top: 5px;
-}
-#create-form > label {
-  display: block;
-  font-size: 12px;
-  margin: 17px 0 7px;
-}
-.folder-input {
-  display: flex;
-  gap: 8px;
-}
-.folder-input input {
-  min-width: 0;
-  font-size: 12px;
-}
-.folder-input button {
-  flex: 0 0 auto;
 }
 .dialog-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: end;
   gap: 12px;
   margin-top: 25px;
 }
 .form-error {
   color: var(--red);
-  font-size: 12px;
+  font-size: 0.875rem;
   margin-top: 15px;
   white-space: pre-wrap;
 }
@@ -1257,9 +1284,10 @@ dialog::backdrop {
   scroll-padding-bottom: 12px;
 }
 .conversation-message {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
   padding: 16px;
   border: 1px solid var(--line);
+  border-left: 4px solid var(--action-color, var(--line));
   border-radius: 8px;
   background: var(--panel-raised);
 }
@@ -1268,26 +1296,66 @@ dialog::backdrop {
   border-color: var(--cyan);
   background: var(--input, var(--panel));
 }
+.conversation-message[data-action='assistant'] {
+  background: var(--panel);
+}
+.conversation-text {
+  font-size: 1rem;
+  line-height: 1.7;
+}
+[data-action='user'],
+[data-action='read'],
+[data-action='web'] {
+  --action-color: var(--cyan);
+}
+[data-action='assistant'],
+[data-action='agent'] {
+  --action-color: var(--mint);
+}
+[data-action='edit'] {
+  --action-color: var(--amber);
+}
+[data-action='command'] {
+  --action-color: var(--violet);
+}
+[data-action='media'] {
+  --action-color: var(--rose);
+}
+[data-action='tool'],
+[data-action='session'] {
+  --action-color: var(--muted);
+}
+[data-action='error'] {
+  --action-color: var(--red);
+}
+.action-label {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--action-color, var(--muted));
+  font-size: 0.75rem;
+  font-weight: 650;
+}
 .conversation-message-header {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 5px 9px;
   margin-bottom: 9px;
-  font-size: 11px;
+  font-size: 0.9375rem;
   color: var(--text);
 }
 .conversation-message-header time {
   margin-left: auto;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .conversation-message.user .conversation-message-header strong {
   color: var(--cyan);
 }
 .conversation-streaming {
   color: var(--mint);
-  font-size: 9px;
+  font-size: 0.75rem;
 }
 .conversation-notice,
 .conversation-preview {
@@ -1297,29 +1365,19 @@ dialog::backdrop {
 .conversation-preview {
   margin-top: 10px;
   margin-bottom: 0;
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .conversation-error {
   color: var(--red);
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 0.75rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .conversation-tool {
   padding: 0;
-  margin-left: 12px;
-  border-left: 4px solid var(--line);
+  margin-left: 0;
   background: var(--input, var(--panel));
-}
-.conversation-tool[data-status='running'] {
-  border-color: var(--mint);
-}
-.conversation-tool[data-status='completed'] {
-  border-left-color: var(--cyan);
-}
-.conversation-tool[data-status='cancelled'] {
-  border-left-color: var(--amber);
 }
 .conversation-tool[data-status='failed'] {
   border-color: var(--red);
@@ -1327,7 +1385,11 @@ dialog::backdrop {
 .conversation-tool summary {
   cursor: pointer;
   padding: 12px 14px;
-  background: var(--panel-raised);
+  background: color-mix(
+    in srgb,
+    var(--action-color, var(--muted)) 8%,
+    var(--panel)
+  );
 }
 .conversation-tool summary .conversation-message-header {
   display: inline-flex;
@@ -1337,12 +1399,11 @@ dialog::backdrop {
 }
 .tool-input-preview {
   display: block;
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .tool-body {
   padding: 0 14px 14px;
@@ -1350,7 +1411,7 @@ dialog::backdrop {
 }
 .tool-body h3 {
   margin: 14px 0 7px;
-  font-size: 12px;
+  font-size: 0.875rem;
   color: var(--muted);
   font-weight: 600;
 }
@@ -1363,14 +1424,14 @@ dialog::backdrop {
   border-radius: 6px;
   background: var(--bg);
   font:
-    12px/1.65 'SFMono-Regular',
+    0.875rem/1.65 'SFMono-Regular',
     Consolas,
     monospace;
   scrollbar-gutter: stable;
 }
 .tool-status {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 .tool-status.completed {
@@ -1391,7 +1452,7 @@ dialog::backdrop {
   align-items: center;
   gap: 9px;
   padding: 10px 2px;
-  font-size: 12px;
+  font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
 .activity-dot {
@@ -1422,7 +1483,7 @@ dialog::backdrop {
   margin: 0 0 5px;
 }
 .inspector-heading h2 {
-  font-size: 18px;
+  font-size: 1.125rem;
 }
 .inspector > .inspector-body {
   flex: 1 1 0;
@@ -1433,6 +1494,37 @@ dialog::backdrop {
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
+.queued-messages {
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--input);
+  max-height: min(22vh, max(70px, calc(var(--inspector-space, 720px) - 480px)));
+  overflow: auto;
+}
+.queued-messages h3 {
+  color: var(--amber);
+  font-size: 0.875rem;
+}
+.queued-messages ol {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.queued-messages li {
+  border-left: 3px solid var(--amber);
+  padding: 4px 10px;
+  margin-top: 6px;
+}
+.queue-kind {
+  color: var(--amber);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.queued-messages pre {
+  font: inherit;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+}
 .parent-controls {
   border: 0;
   padding: 16px 22px 18px;
@@ -1442,6 +1534,7 @@ dialog::backdrop {
 }
 .composer-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: start;
   justify-content: space-between;
   gap: 10px;
@@ -1452,7 +1545,7 @@ dialog::backdrop {
 }
 .composer-heading label {
   color: var(--text);
-  font-size: 12px;
+  font-size: 0.875rem;
   margin: 0;
   flex: 1;
   min-width: 0;
@@ -1460,7 +1553,7 @@ dialog::backdrop {
 }
 .composer-heading .quiet-button {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 0.75rem;
   padding: 5px 8px;
 }
 .mission-editor textarea {
@@ -1514,33 +1607,16 @@ dialog::backdrop {
     46vh,
     max(220px, calc(var(--inspector-space, 720px) - 430px))
   );
-  font-size: 14px;
-}
-.editor-shortcuts {
-  margin-top: 7px;
-  color: var(--muted);
-  font-size: 10px;
+  font-size: 1rem;
 }
 .parent-controls .composer-actions {
+  justify-content: end;
   align-items: center;
   gap: 8px;
-}
-.composer-actions .editor-shortcuts {
-  flex: 1;
-  margin: 0;
 }
 #prompt-recipient {
   font-weight: 650;
   color: var(--mint);
-}
-#create-mission-editor {
-  margin-top: 18px;
-}
-#create-prompt {
-  min-height: 192px;
-}
-.expanded-only {
-  display: none;
 }
 .mission-editor.editor-expanded {
   position: fixed;
@@ -1572,18 +1648,18 @@ dialog::backdrop {
   flex: 1;
   min-height: 0;
   display: flex;
+  align-items: stretch;
+}
+.editor-expanded .composer-resize-handle {
+  display: none;
 }
 .mission-editor.editor-expanded textarea {
   flex: 1;
   min-height: 180px;
   height: auto !important;
   max-height: none;
-  font-size: 16px;
-}
-.editor-expanded .expanded-only {
-  display: block;
-  align-self: end;
-  margin-top: 12px;
+  resize: none;
+  font-size: 1rem;
 }
 .parent-card.attention,
 .parent-card.attention.selected {
@@ -1665,7 +1741,7 @@ dialog::backdrop {
     padding: 35px;
   }
   .welcome h2 {
-    font-size: 28px;
+    font-size: 1.75rem;
   }
 }
 @media (max-width: 600px) {
@@ -1682,7 +1758,7 @@ dialog::backdrop {
   .app-controls .primary-button {
     flex: 1 1 auto;
     padding: 8px;
-    font-size: 11px;
+    font-size: 0.75rem;
   }
   .app-controls .connection {
     flex: 1 0 100%;
@@ -1696,17 +1772,12 @@ dialog::backdrop {
   .factory-heading {
     padding: 17px;
   }
-  .factory-state .muted {
-    max-width: 130px;
-    text-align: right;
-    overflow-wrap: anywhere;
-  }
   .master-summary {
     padding: 15px;
     gap: 8px;
   }
   .master-summary .quiet-button {
-    font-size: 10px;
+    font-size: 0.75rem;
   }
   .welcome {
     flex-direction: column;
@@ -1748,7 +1819,7 @@ dialog::backdrop {
 }
 #open-session-settings {
   padding: 4px 8px;
-  font-size: 10px;
+  font-size: 0.75rem;
   white-space: nowrap;
 }
 #composer-slot {
@@ -1785,10 +1856,10 @@ dialog::backdrop {
 }
 .command-suggestion strong {
   min-width: 120px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .command-suggestion span {
-  font-size: 11px;
+  font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1824,22 +1895,22 @@ dialog::backdrop {
 }
 .command-choice-title strong {
   color: var(--mint);
-  font-size: 13px;
+  font-size: 1rem;
 }
 .command-description,
 .command-path {
   display: block;
-  font-size: 11px;
+  font-size: 1rem;
   margin-top: 4px;
   overflow-wrap: anywhere;
 }
 .command-path {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.85rem;
 }
 .resource-details {
   margin-top: 16px;
-  font-size: 12px;
+  font-size: 1rem;
 }
 .resource-details summary {
   cursor: pointer;
@@ -1854,7 +1925,7 @@ dialog::backdrop {
   gap: 3px;
   padding: 9px 0;
   border-bottom: 1px solid var(--line);
-  font-size: 11px;
+  font-size: 0.9rem;
 }
 .resource-tool span {
   color: var(--muted);
@@ -1862,7 +1933,7 @@ dialog::backdrop {
 #session-settings-dialog label {
   display: block;
   margin: 14px 0 6px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 #session-settings-dialog select,
 #extension-dialog-select {
@@ -1894,7 +1965,7 @@ dialog::backdrop {
   border: 1px solid var(--line);
   border-radius: 8px;
   margin-bottom: 10px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .extension-notification p {
   flex: 1;
@@ -1910,7 +1981,7 @@ dialog::backdrop {
 }
 .extension-statuses {
   margin-bottom: 12px;
-  font-size: 12px;
+  font-size: 0.875rem;
   white-space: pre-wrap;
 }
 #extension-dialog-message {
@@ -1930,11 +2001,11 @@ dialog::backdrop {
   margin-bottom: 9px;
 }
 .usage-section .muted {
-  font-size: 11px;
+  font-size: 0.75rem;
   margin-top: 8px;
 }
 .usage-value {
-  font-size: 16px;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
 .token-meter {
@@ -1958,12 +2029,12 @@ dialog::backdrop {
   gap: 6px 10px;
   align-items: baseline;
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: 0.75rem;
   color: var(--muted);
 }
 .usage-totals strong {
   color: var(--text);
-  font-size: 22px;
+  font-size: 1.375rem;
   font-variant-numeric: tabular-nums;
 }
 .usage-breakdown {
@@ -1994,11 +2065,11 @@ dialog::backdrop {
 }
 .usage-metrics dt {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .usage-metrics dd {
   margin: 3px 0 0;
-  font-size: 16px;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
 .usage-metrics div:nth-child(1) dd {
@@ -2017,7 +2088,7 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: 0.875rem;
   margin-top: 16px;
 }
 .token-budget-label input {
@@ -2026,7 +2097,7 @@ dialog::backdrop {
 }
 .token-explanation {
   padding-left: 18px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .token-explanation li {
   margin: 8px 0;
@@ -2038,7 +2109,7 @@ dialog::backdrop {
 .usage-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .usage-table th {
   color: var(--muted);
@@ -2069,7 +2140,7 @@ dialog::backdrop {
 }
 .usage-call-link {
   text-align: left;
-  font-size: 11px;
+  font-size: 0.75rem;
   padding: 0;
   border: 0;
   background: transparent;
@@ -2109,7 +2180,7 @@ select:focus-visible {
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 .usage-unit-label select {
   flex: 1;
@@ -2128,7 +2199,7 @@ select:focus-visible {
 #inspector-activity {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: 0.75rem;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -2140,7 +2211,7 @@ select:focus-visible {
   gap: 7px;
   white-space: nowrap;
   color: var(--mint);
-  font-size: 10px;
+  font-size: 0.75rem;
 }
 .processing-state > i {
   width: 11px;
@@ -2176,7 +2247,7 @@ select:focus-visible {
   animation: processing-float 2.2s ease-in-out infinite;
 }
 .processing-bubble strong {
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 .processing-dots {
   display: flex;
@@ -2208,7 +2279,7 @@ select:focus-visible {
   text-align: center;
   color: #171717;
   background: #ffd169;
-  font-size: 27px;
+  font-size: 1.6875rem;
   line-height: 1;
   font-weight: 900;
   font-style: italic;

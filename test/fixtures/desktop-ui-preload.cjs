@@ -1,7 +1,9 @@
 /* global window */
-const {contextBridge, ipcRenderer} = require('electron');
+const {contextBridge, ipcRenderer, webFrame} = require('electron');
 
 contextBridge.exposeInMainWorld('pidev', {
+  getZoom: () => webFrame.getZoomFactor(),
+  setZoom: factor => webFrame.setZoomFactor(factor),
   getState: () => ipcRenderer.invoke('fixture:state'),
   onSnapshot: callback => {
     const listener = (_event, snapshot) => callback(snapshot);
@@ -21,10 +23,8 @@ contextBridge.exposeInMainWorld('pidev', {
   reloadSession: sessionId => ipcRenderer.invoke('fixture:reload', sessionId),
   respondToDialog: (sessionId, dialogId, value) =>
     ipcRenderer.invoke('fixture:dialog', sessionId, dialogId, value),
-  chooseFolder: async () => null,
-  createSession: async () => {
-    throw new Error('Creating sessions is outside this UI fixture');
-  },
+  chooseFolder: () => ipcRenderer.invoke('fixture:choose-folder'),
+  createSession: input => ipcRenderer.invoke('fixture:create-session', input),
 });
 
 window.addEventListener('error', event => {

@@ -14,6 +14,7 @@ export interface DashboardSession {
   name: string;
   cwd: string;
   model?: string;
+  thinkingLevel?: string;
   sessionFile?: string;
   status: 'idle' | 'running' | 'compacting' | 'closed';
   activity: string;
@@ -69,6 +70,7 @@ export interface DashboardSnapshot {
   changes: UnitChange[];
   conversation: ConversationMessage[];
   conversationTruncated: boolean;
+  queue?: {steering: string[]; followUp: string[]};
   usage: ModelUsage;
 }
 
@@ -134,6 +136,7 @@ export class DashboardState {
   private readonly changes: UnitChange[] = [];
   private conversation: ConversationMessage[] = [];
   private conversationTruncated = false;
+  private queue: DashboardSnapshot['queue'];
   private readonly usage = new ModelUsageTracker();
   private previousAgents = new Map<string, DashboardAgent>();
   private seenMessages = new Set<string>();
@@ -352,6 +355,14 @@ export class DashboardState {
     this.changed();
   }
 
+  updateQueue(steering: readonly string[], followUp: readonly string[]): void {
+    this.queue = {
+      steering: steering.map(text => preview(text)),
+      followUp: followUp.map(text => preview(text)),
+    };
+    this.changed();
+  }
+
   recordUsage(call: ModelUsageCall, sequence: number): void {
     if (this.usage.record(call, sequence)) this.changed();
   }
@@ -394,6 +405,12 @@ export class DashboardState {
       changes: this.changes.map(change => ({...change})),
       conversation: this.conversation.map(message => ({...message})),
       conversationTruncated: this.conversationTruncated,
+      queue: this.queue
+        ? {
+            steering: [...this.queue.steering],
+            followUp: [...this.queue.followUp],
+          }
+        : undefined,
       usage: this.usage.snapshot(),
     };
   }

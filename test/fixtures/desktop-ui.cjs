@@ -1,5 +1,5 @@
 /* global process, __dirname, document, requestAnimationFrame, setTimeout,
-   NodeFilter, Node, Event, innerWidth, innerHeight, getComputedStyle */
+   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -14,6 +14,7 @@ let calls = [];
 let rendererErrors = [];
 let resources;
 let editorSubmission;
+let chosenFolder;
 
 function features() {
   return {
@@ -55,6 +56,8 @@ function features() {
 app.setPath('userData', join(directory, 'profile'));
 app.setPath('sessionData', join(directory, 'session'));
 app.commandLine.appendSwitch('disable-background-timer-throttling');
+// Keep animation frames running across reloads when another window covers the fixture.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
 function session(id, name) {
   return {
@@ -62,6 +65,8 @@ function session(id, name) {
       id,
       name,
       cwd: directory,
+      model: 'fixture/small',
+      thinkingLevel: 'medium',
       status: 'running',
       activity: 'Running bash: checking the project',
       startedAt: at,
@@ -74,6 +79,7 @@ function session(id, name) {
     events: [],
     changes: [],
     conversationTruncated: false,
+    queue: {steering: [], followUp: []},
     conversation: [
       {id: `${id}-user`, role: 'user', text: 'Inspect the project', at},
       {
@@ -109,6 +115,7 @@ function reset() {
   calls = [];
   rendererErrors = [];
   editorSubmission = undefined;
+  chosenFolder = undefined;
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
@@ -120,11 +127,37 @@ ipcMain.on('fixture:error', (_event, error) => rendererErrors.push(error));
 for (const method of ['prompt', 'abort', 'workspace']) {
   ipcMain.handle(`fixture:${method}`, (_event, sessionId, request) => {
     calls.push({method, sessionId, request});
+    const target = hub.sessions.find(item => item.session.id === sessionId);
+    if (method === 'prompt' && target.session.status === 'running') {
+      target.queue.steering.push(request.prompt);
+      window.webContents.send('fixture:snapshot', hub);
+    }
+    if (method === 'abort') {
+      target.queue = {steering: [], followUp: []};
+      window.webContents.send('fixture:snapshot', hub);
+    }
     return method === 'workspace'
       ? {cwd: directory, files: [], diff: '', truncated: false}
       : undefined;
   });
 }
+
+ipcMain.handle('fixture:choose-folder', () => {
+  calls.push({method: 'chooseFolder'});
+  return chosenFolder;
+});
+ipcMain.handle('fixture:create-session', (_event, input) => {
+  calls.push({method: 'createSession', input});
+  const parent = session('folder-parent', 'Selected folder');
+  parent.session.cwd = input.cwd;
+  parent.session.status = 'idle';
+  parent.session.activity = 'Ready';
+  parent.conversation = [];
+  hub.sessions.push(parent);
+  resources.set(parent.session.id, features());
+  window.webContents.send('fixture:snapshot', hub);
+  return {id: parent.session.id};
+});
 
 ipcMain.handle('fixture:features', (_event, sessionId) => {
   assert.ok(resources.has(sessionId), `Unknown feature session ${sessionId}`);
@@ -135,6 +168,10 @@ ipcMain.handle('fixture:configure', (_event, sessionId, request) => {
   const resource = resources.get(sessionId);
   resource.model = {provider: request.provider, id: request.modelId};
   resource.thinkingLevel = request.thinkingLevel;
+  const target = hub.sessions.find(item => item.session.id === sessionId);
+  target.session.model = `${request.provider}/${request.modelId}`;
+  target.session.thinkingLevel = request.thinkingLevel;
+  window.webContents.send('fixture:snapshot', hub);
 });
 for (const method of ['compact', 'reload']) {
   ipcMain.handle(`fixture:${method}`, (_event, sessionId, instructions) => {
@@ -213,6 +250,20 @@ async function until(callback, message) {
   throw new Error(message);
 }
 
+async function reloadPage() {
+  await new Promise(resolve => {
+    window.webContents.once('did-finish-load', resolve);
+    window.webContents.reload();
+  });
+  await until(
+    () =>
+      document.getElementById('connection')?.textContent ===
+      'Desktop connected',
+    'Reloaded dashboard did not connect',
+  );
+  await settle();
+}
+
 async function publish() {
   window.webContents.send('fixture:snapshot', hub);
   await settle();
@@ -220,6 +271,10 @@ async function publish() {
 
 async function run(name, callback, width = 1600, height = 1000) {
   try {
+    if (window.webContents.getURL().startsWith('file:'))
+      await evaluate(() => window.localStorage.clear());
+    if (Math.abs(window.webContents.getZoomFactor() - 1) > 0.001)
+      window.webContents.setZoomFactor(1);
     reset();
     window.setContentSize(width, height);
     await window.loadFile(
@@ -243,6 +298,7 @@ async function run(name, callback, width = 1600, height = 1000) {
     if (process.env.DESKTOP_UI_SCREENSHOT_DIR && name.startsWith('composer'))
       await screenshot(`layout-${width}x${height}`);
     report.cases.push({name});
+    writeFileSync(reportPath, JSON.stringify(report, null, 2));
   } catch (error) {
     if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
       await screenshot(`failure-${report.cases.length + 1}`);
@@ -255,6 +311,8 @@ async function run(name, callback, width = 1600, height = 1000) {
 }
 
 async function screenshot(name) {
+  await settle();
+  await new Promise(resolve => setTimeout(resolve, 60));
   const output = resolve(process.env.DESKTOP_UI_SCREENSHOT_DIR);
   mkdirSync(output, {recursive: true});
   const image = await window.webContents.capturePage();
@@ -1207,6 +1265,29 @@ async function main() {
   await run(
     'model and thinking settings apply the selected provider and values',
     async () => {
+      assert.deepEqual(
+        await evaluate(() => {
+          const model = document.getElementById('factory-model');
+          const effort = document.getElementById('factory-effort');
+          const modelBounds = model.getBoundingClientRect();
+          const effortBounds = effort.getBoundingClientRect();
+          return {
+            model: model.textContent,
+            effort: effort.textContent,
+            visible: effortBounds.width > 0 && effortBounds.height > 0,
+            beside:
+              effortBounds.left >= modelBounds.right &&
+              effortBounds.top < modelBounds.bottom &&
+              effortBounds.bottom > modelBounds.top,
+          };
+        }),
+        {
+          model: 'fixture/small',
+          effort: 'Effort: medium',
+          visible: true,
+          beside: true,
+        },
+      );
       hub.sessions[0].session.status = 'idle';
       await publish();
       await evaluate(() =>
@@ -1251,6 +1332,13 @@ async function main() {
           thinking: document.getElementById('session-thinking').value,
         })),
         {model: 'fixture-other/large', thinking: 'high'},
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          model: document.getElementById('factory-model').textContent,
+          effort: document.getElementById('factory-effort').textContent,
+        })),
+        {model: 'fixture-other/large', effort: 'Effort: high'},
       );
       hub.sessions[0].session.status = 'running';
       await publish();
@@ -1957,6 +2045,374 @@ async function main() {
           selection: window.getSelection().toString(),
         })),
         {row: true, text: true, selection: 'Selectable'},
+      );
+    },
+  );
+  await run(
+    'actions remain expanded and distinct through streaming, parent switches and reload',
+    async () => {
+      hub.sessions[0].conversation = [
+        'read',
+        'edit',
+        'bash',
+        'agent_spawn',
+      ].map((toolName, index) => ({
+        id: `action-${index}`,
+        role: 'tool',
+        toolName,
+        at,
+        input: 'src/example.ts',
+        text: 'Output remains visible',
+        status: 'completed',
+      }));
+      hub.sessions[0].events = [
+        {
+          id: 'event',
+          at,
+          sourceId: 'parent',
+          sourceName: 'Alpha',
+          kind: 'tool',
+          message: 'Read src/example.ts',
+          details: {Tool: 'read', Output: 'File contents'},
+        },
+      ];
+      await publish();
+      const initial = await evaluate(() =>
+        [...document.querySelectorAll('#conversation > li')].map(row => ({
+          open: row.querySelector('details').open,
+          label: row.querySelector('.action-label').textContent,
+          accent: getComputedStyle(row).borderLeftColor,
+        })),
+      );
+      assert.ok(initial.every(row => row.open));
+      assert.equal(new Set(initial.map(row => row.accent)).size, 4);
+      assert.deepEqual(
+        initial.map(row => row.label),
+        ['Read file', 'File change', 'Command', 'Agent'],
+      );
+      await evaluate(() =>
+        document.querySelector('#conversation summary').click(),
+      );
+      await settle();
+      hub.sessions[0].conversation[1].text += '\nMore output';
+      await publish();
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta'))
+          .click(),
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Alpha'))
+          .click(),
+      );
+      await reloadPage();
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#conversation details')].map(
+            details => details.open,
+          ),
+        ),
+        [false, true, true, true],
+      );
+      await evaluate(() => document.getElementById('tab-feed').click());
+      assert.deepEqual(
+        await evaluate(() => {
+          const event = document.querySelector('#live-feed .feed-event');
+          return {
+            open: event.querySelector('details').open,
+            compact:
+              parseFloat(
+                getComputedStyle(event.querySelector('.feed-event-message'))
+                  .fontSize,
+              ) <= 12,
+            output: event.textContent.includes('File contents'),
+          };
+        }),
+        {open: true, compact: true, output: true},
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('compact-live-feed');
+      await evaluate(() => document.getElementById('tab-conversation').click());
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('conversation-actions');
+    },
+  );
+
+  await run(
+    'theme selector is visible and applies and remembers every palette',
+    async () => {
+      const themes = await evaluate(() =>
+        [...document.getElementById('factory-theme').options].map(
+          option => option.value,
+        ),
+      );
+      assert.equal(themes.length, 6);
+      const backgrounds = new Set();
+      for (const id of themes) {
+        const result = await evaluate(id => {
+          const select = document.getElementById('factory-theme');
+          select.value = id;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+          return {
+            selected: document.documentElement.dataset.theme,
+            visible:
+              select.getBoundingClientRect().height > 0 &&
+              select.getBoundingClientRect().bottom <= innerHeight,
+            background: getComputedStyle(document.querySelector('.panel'))
+              .backgroundColor,
+            stored: window.localStorage.getItem('varisdev.factory.theme'),
+          };
+        }, id);
+        assert.equal(result.selected, id);
+        assert.equal(result.stored, id);
+        assert.equal(result.visible, true);
+        backgrounds.add(result.background);
+      }
+      assert.equal(backgrounds.size, 6);
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('factory-theme').value),
+        'high-contrast',
+      );
+      await evaluate(() => {
+        const select = document.getElementById('factory-theme');
+        select.value = 'solarized-light';
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('light-theme');
+    },
+  );
+
+  await run(
+    'native zoom scales commands and the expanded editor and survives reload',
+    async () => {
+      await evaluate(() => {
+        const zoom = document.getElementById('app-zoom');
+        zoom.value = '1.5';
+        zoom.dispatchEvent(new Event('change', {bubbles: true}));
+      });
+      await settle();
+      assert.equal(window.webContents.getZoomFactor(), 1.5);
+      const mainFont = await evaluate(() =>
+        parseFloat(
+          getComputedStyle(document.getElementById('parent-prompt')).fontSize,
+        ),
+      );
+      assert.ok(mainFont >= 16);
+      await evaluate(() => document.getElementById('open-commands').click());
+      await until(
+        () => !!document.querySelector('.command-description'),
+        'Commands did not load',
+      );
+      assert.equal(
+        await evaluate(() =>
+          parseFloat(
+            getComputedStyle(document.querySelector('.command-description'))
+              .fontSize,
+          ),
+        ),
+        mainFont,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('commands-zoomed');
+      await evaluate(() => {
+        document.getElementById('close-commands').click();
+        document.getElementById('expand-parent-editor').click();
+      });
+      const expanded = await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        const bounds = editor.getBoundingClientRect();
+        return {
+          font: parseFloat(getComputedStyle(editor).fontSize),
+          fills: bounds.height > innerHeight * 0.5,
+          fits:
+            bounds.top >= 0 &&
+            bounds.bottom <= innerHeight &&
+            bounds.right <= innerWidth,
+          open: document
+            .getElementById('parent-controls')
+            .matches(':popover-open'),
+          hints: /Enter sends|Shift\+Enter adds a line/.test(
+            document.body.textContent,
+          ),
+        };
+      });
+      assert.deepEqual(expanded, {
+        font: mainFont,
+        fills: true,
+        fits: true,
+        open: true,
+        hints: false,
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('editor-zoomed');
+      await evaluate(() => document.getElementById('open-commands').click());
+      assert.equal(
+        await evaluate(() => {
+          const dialog = document.getElementById('commands-dialog');
+          return (
+            dialog.matches(':modal') &&
+            !dialog.inert &&
+            document.activeElement === document.getElementById('command-search')
+          );
+        }),
+        true,
+      );
+      await evaluate(() => {
+        document.getElementById('close-commands').click();
+        document.getElementById('expand-parent-editor').click();
+      });
+      await reloadPage();
+      assert.equal(window.webContents.getZoomFactor(), 1.5);
+      // The View menu changes native page zoom, which the setting must also save.
+      window.webContents.setZoomFactor(1.25);
+      await until(
+        () =>
+          Math.abs(
+            Number(window.localStorage.getItem('varisdev.factory.zoom')) - 1.25,
+          ) < 0.001,
+        'Native zoom was not persisted',
+      );
+      await reloadPage();
+      assert.ok(Math.abs(window.webContents.getZoomFactor() - 1.25) < 0.001);
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('workspace-zoomed');
+    },
+  );
+
+  await run(
+    'queued steering stays visible until delivery or Stop and belongs to its parent',
+    async () => {
+      for (let index = 0; index < 2; index++) {
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          editor.value = 'Please inspect the tests first.';
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+          document.getElementById('prompt-form').requestSubmit();
+        });
+        await until(
+          () =>
+            !document.getElementById('send-prompt').disabled &&
+            document.getElementById('parent-prompt').value === '',
+          'Submission did not finish',
+        );
+      }
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#queued-message-list pre')].map(
+            item => item.textContent,
+          ),
+        ),
+        ['Please inspect the tests first.', 'Please inspect the tests first.'],
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('queued-messages').hidden),
+        false,
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('queued-messages').hidden),
+        true,
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Alpha'))
+          .click(),
+      );
+      await reloadPage();
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#queued-message-list li').length,
+        ),
+        2,
+      );
+      hub.sessions[0].queue.steering.shift();
+      hub.sessions[0].conversation.push({
+        id: 'delivered',
+        role: 'user',
+        text: 'Please inspect the tests first.',
+        at,
+      });
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#queued-message-list li').length,
+        ),
+        1,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('queued-steering');
+      hub.sessions[0].queue.steering = Array(6).fill('Queued instruction');
+      await publish();
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      assert.equal(
+        await evaluate(() => {
+          const send = document
+            .getElementById('send-prompt')
+            .getBoundingClientRect();
+          const queue = document.getElementById('queued-messages');
+          return (
+            send.bottom <= innerHeight &&
+            queue.scrollHeight > queue.clientHeight
+          );
+        }),
+        true,
+        'Large queues must scroll without hiding Send at 150% zoom',
+      );
+      await evaluate(() => document.getElementById('abort-parent').click());
+      await until(
+        () => document.getElementById('queued-messages').hidden,
+        'Stop did not clear pending steering',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            [...document.querySelectorAll('#conversation .user')].filter(item =>
+              item.textContent.includes('Please inspect the tests first.'),
+            ).length,
+        ),
+        1,
+      );
+    },
+  );
+
+  await run(
+    'Open folder uses the native picker and creates an idle conversation without a prompt',
+    async () => {
+      await evaluate(() => document.getElementById('new-session').click());
+      await until(
+        () => !document.getElementById('new-session').disabled,
+        'Cancelled picker remained busy',
+      );
+      assert.deepEqual(calls, [{method: 'chooseFolder'}]);
+      chosenFolder = directory;
+      await evaluate(() => document.getElementById('new-session').click());
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        'Opened folder was not selected',
+      );
+      assert.deepEqual(calls.slice(1), [
+        {method: 'chooseFolder'},
+        {method: 'createSession', input: {cwd: directory}},
+      ]);
+      assert.deepEqual(
+        await evaluate(() => ({
+          editor: document.getElementById('parent-prompt').value,
+          messages: document.querySelectorAll('#conversation > li').length,
+          dialog: !!document.getElementById('create-dialog'),
+          focused:
+            document.activeElement === document.getElementById('parent-prompt'),
+        })),
+        {editor: '', messages: 0, dialog: false, focused: true},
       );
     },
   );

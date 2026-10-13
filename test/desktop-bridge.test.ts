@@ -409,6 +409,13 @@ void test('the explicit factory command attaches the existing conversation, cont
   await first.show();
   assert.equal(launches, 1);
   assert.equal(desktop.current?.snapshot().session.id, 'first');
+  assert.equal(desktop.current?.snapshot().session.thinkingLevel, 'off');
+  first.pi.setThinkingLevel('high');
+  await first.emit('thinking_level_select', {
+    level: 'high',
+    previousLevel: 'off',
+  });
+  assert.equal(desktop.current?.snapshot().session.thinkingLevel, 'high');
   const old = desktop.callbacks;
   await old.prompt('Continue through the GUI');
   assert.deepEqual(first.messages, [
@@ -434,6 +441,7 @@ void test('the explicit factory command attaches the existing conversation, cont
   await second.emit('session_start');
   assert.equal(launches, 1);
   assert.equal(desktop.current?.snapshot().session.id, 'second');
+  assert.equal(desktop.current?.snapshot().session.thinkingLevel, 'off');
   await desktop.callbacks.prompt('New conversation');
   assert.equal(second.messages.length, 1);
   assert.equal(first.messages.length, 1);

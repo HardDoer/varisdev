@@ -318,6 +318,7 @@ void test(
   {timeout: 15000},
   async t => {
     const {parent, requests, cwd} = await fixture(t);
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'low');
     await parent.prompt('/skill:project-skill extra skill arguments');
     const skillRequest = JSON.stringify(requests.at(-1)?.messages);
     assert.ok(skillRequest.includes('PROJECT SKILL BODY marker.'));
@@ -340,6 +341,7 @@ void test(
       id: 'second-model',
     });
     assert.equal((await parent.features()).thinkingLevel, 'high');
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
     assert.equal(parent.state.snapshot().session.name, 'Renamed fixture');
     const report = parent.state
       .snapshot()
@@ -356,6 +358,7 @@ void test(
       id: 'configured-model',
     });
     assert.deepEqual((await parent.features()).thinkingLevels, ['off']);
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'off');
     await assert.rejects(
       parent.configure({thinkingLevel: 'high'}),
       /Thinking level/,

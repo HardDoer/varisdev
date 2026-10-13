@@ -48,6 +48,7 @@ function observer() {
   } as unknown as ExtensionContext;
   observeDashboardSession(
     {
+      getThinkingLevel: () => 'off',
       on(name: string, handler: Handler) {
         handlers.set(name, [...(handlers.get(name) ?? []), handler]);
       },

@@ -131,7 +131,7 @@ function renderCatalog() {
   const resource = features();
   const matches = commands($('command-search').value);
   $('commands-status').textContent = resource
-    ? `${matches.length} skills, templates and commands · select one to add it to your prompt`
+    ? `${matches.length} commands`
     : 'Loading resources…';
   $('command-catalog').replaceChildren(
     ...matches.map(command => {
@@ -420,7 +420,13 @@ export function initSessionFeatures(options) {
       .catch(cause => error($('prompt-error'), cause));
   });
   $('open-commands').addEventListener('click', () => {
-    if (!$('commands-dialog').open) $('commands-dialog').show();
+    const dialog = $('commands-dialog');
+    if (!dialog.open) {
+      if ($('parent-controls').matches(':popover-open')) {
+        dialog.inert = false;
+        dialog.showModal();
+      } else dialog.show();
+    }
     $('command-search').value = '';
     renderCatalog();
     void load(true);

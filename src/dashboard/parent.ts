@@ -172,7 +172,9 @@ export async function createDashboardParent(
     });
     refreshAutocomplete();
   };
-  const unsubscribeCustomMessages = session.subscribe(event => {
+  const unsubscribeSessionEvents = session.subscribe(event => {
+    if (event.type === 'queue_update')
+      state?.updateQueue(event.steering, event.followUp);
     if (
       event.type === 'message_end' &&
       event.message.role === 'custom' &&
@@ -211,8 +213,12 @@ export async function createDashboardParent(
     refreshAutocomplete();
     if (!state || !context || !control)
       throw new Error('Parent session observation did not start.');
+    state.updateQueue(
+      session.getSteeringMessages(),
+      session.getFollowUpMessages(),
+    );
   } catch (error) {
-    unsubscribeCustomMessages();
+    unsubscribeSessionEvents();
     ui.dispose();
     session.dispose();
     throw error;
@@ -304,6 +310,7 @@ export async function createDashboardParent(
       model: session.model
         ? `${session.model.provider}/${session.model.id}`
         : undefined,
+      thinkingLevel: session.thinkingLevel,
     });
   };
   const localCommand = async (name: string, args: string) => {
@@ -468,7 +475,7 @@ export async function createDashboardParent(
             reason: 'quit',
           });
         } finally {
-          unsubscribeCustomMessages();
+          unsubscribeSessionEvents();
           ui.dispose();
           session.dispose();
         }

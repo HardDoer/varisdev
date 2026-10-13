@@ -269,7 +269,6 @@ export class DashboardHub {
   async createSession(input: unknown): Promise<{id: string}> {
     this.ensureOpen();
     const values = fields(input);
-    const prompt = text(values.prompt, 'Prompt', 64000);
     const path = text(values.cwd, 'Folder', 4096);
     if (!isAbsolute(path))
       throw new DashboardInputError('Choose an absolute folder path.');
@@ -315,8 +314,7 @@ export class DashboardHub {
           'The dashboard closed while starting the session.',
         );
       }
-      const entry = this.add(parent.state, parent);
-      void this.submit(entry, prompt);
+      this.add(parent.state, parent);
       return {id: parent.state.snapshot().session.id};
     } finally {
       this.creating.delete(creation);

@@ -38,6 +38,8 @@ export const THEMES = Object.freeze([
       cyan: '#75d9ff',
       amber: '#ffcb7a',
       red: '#ff9397',
+      violet: '#d1b7ff',
+      rose: '#ffb4da',
       focus: '#74f3c0',
       'accent-text': '#09281f',
       hover: '#203442',
@@ -78,6 +80,8 @@ export const THEMES = Object.freeze([
       cyan: '#a0d4e2',
       amber: '#ebcb8b',
       red: '#ffc0c5',
+      violet: '#d1b7ff',
+      rose: '#ffb4da',
       focus: '#88c0d0',
       'accent-text': '#242b35',
       hover: '#454f61',
@@ -118,6 +122,8 @@ export const THEMES = Object.freeze([
       cyan: '#8be9fd',
       amber: '#f1fa8c',
       red: '#ff9aab',
+      violet: '#d1b7ff',
+      rose: '#ffb4da',
       focus: '#bd93f9',
       'accent-text': '#20212b',
       hover: '#404252',
@@ -158,6 +164,8 @@ export const THEMES = Object.freeze([
       cyan: '#89dceb',
       amber: '#f9e2af',
       red: '#f38ba8',
+      violet: '#d1b7ff',
+      rose: '#ffb4da',
       focus: '#b4befe',
       'accent-text': '#1e1e2e',
       hover: '#38394f',
@@ -198,6 +206,8 @@ export const THEMES = Object.freeze([
       cyan: '#006b85',
       amber: '#895900',
       red: '#b53027',
+      violet: '#6741a5',
+      rose: '#9b2865',
       focus: '#005f89',
       'accent-text': '#fffdf4',
       hover: '#e7dfc9',
@@ -238,6 +248,8 @@ export const THEMES = Object.freeze([
       cyan: '#00ffff',
       amber: '#ffe3a6',
       red: '#ffb3b3',
+      violet: '#d1b7ff',
+      rose: '#ffb4da',
       focus: '#ffffff',
       'accent-text': '#000000',
       hover: '#252525',
@@ -268,7 +280,7 @@ const STORAGE_KEY = 'varisdev.factory.theme';
 
 /** Insert the native theme control and apply the saved palette immediately. */
 export function initThemes(onChange = () => {}) {
-  const actions = document.querySelector('.header-actions');
+  const actions = document.querySelector('.app-controls');
   const label = document.createElement('label');
   label.className = 'theme-control';
   const caption = document.createElement('span');

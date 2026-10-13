@@ -342,6 +342,7 @@ void test(
     const reloadedSession = SessionManager.open(completed.session.sessionFile!);
     observeDashboardSession(
       {
+        getThinkingLevel: () => 'high',
         on(name: string, handler: typeof startObserver) {
           if (name === 'session_start') startObserver = handler;
         },
@@ -521,6 +522,17 @@ void test(
     await parent.prompt(
       'steering-parent: change approach before the task finishes.',
     );
+    assert.deepEqual(parent.state.snapshot().queue, {
+      steering: ['steering-parent: change approach before the task finishes.'],
+      followUp: [],
+    });
+    assert.deepEqual(other.state.snapshot().queue, {
+      steering: [],
+      followUp: [],
+    });
+    const queueCopy = parent.state.snapshot().queue!;
+    queueCopy.steering.length = 0;
+    assert.equal(parent.state.snapshot().queue!.steering.length, 1);
     reply(steeringResponse!, {
       name: 'write',
       arguments: {
@@ -529,6 +541,10 @@ void test(
       },
     });
     await steeredRun;
+    assert.deepEqual(parent.state.snapshot().queue, {
+      steering: [],
+      followUp: [],
+    });
     assert.equal(
       parent.state.snapshot().session.response,
       'Steered during the unfinished task.',
@@ -540,6 +556,27 @@ void test(
     assert.match(
       JSON.stringify(requests.at(-1)!.body.messages),
       /steering-parent: change approach/,
+    );
+
+    steeringResponse = undefined;
+    const cancelledSteerRun = parent.prompt('steer-held-parent: cancellation');
+    await waitFor(() => !!steeringResponse, 'parent waits before cancellation');
+    await parent.prompt('Do not deliver this queued steering message.');
+    assert.equal(parent.state.snapshot().queue!.steering.length, 1);
+    await parent.abort();
+    await cancelledSteerRun;
+    assert.deepEqual(parent.state.snapshot().queue, {
+      steering: [],
+      followUp: [],
+    });
+    assert.ok(
+      !parent.state
+        .snapshot()
+        .conversation.some(
+          message =>
+            message.role === 'user' &&
+            message.text === 'Do not deliver this queued steering message.',
+        ),
     );
 
     await parent.prompt(

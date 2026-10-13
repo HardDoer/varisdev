@@ -18,6 +18,7 @@ import {DashboardHub} from '../dashboard/hub.ts';
 import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
+import {DesktopPreferences} from './preferences.ts';
 import type {
   SessionFeatures,
   SessionConfiguration,
@@ -32,6 +33,7 @@ mkdirSync(join(profile, 'temp'), {recursive: true});
 app.setPath('userData', profile);
 app.setPath('sessionData', profile);
 app.setPath('temp', join(profile, 'temp'));
+const preferences = new DesktopPreferences(profile);
 
 const pageUrl = new URL(
   '../../../../assets/dashboard/index.html',
@@ -143,7 +145,14 @@ function handle(
 
 function installHandlers(): void {
   handle('pidev:get-state', () => hub.snapshot());
-  handle('pidev:create-session', input => hub.createSession(input));
+  handle('pidev:create-session', async input => {
+    const result = await hub.createSession(input);
+    const cwd = hub
+      .snapshot()
+      .sessions.find(item => item.session.id === result.id)!.session.cwd;
+    preferences.rememberFolder(cwd);
+    return result;
+  });
   handle('pidev:prompt-session', (sessionId, input) =>
     hub.promptSession(id(sessionId), input),
   );
@@ -165,9 +174,9 @@ function installHandlers(): void {
   handle('pidev:choose-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: 'Choose a project folder',
-      defaultPath: launchCwd,
+      defaultPath: preferences.folder(launchCwd),
       properties: ['openDirectory', 'createDirectory'],
-      buttonLabel: 'Choose folder',
+      buttonLabel: 'Open folder',
     });
     return result.canceled ? undefined : result.filePaths[0];
   });
@@ -381,6 +390,7 @@ void app
           settings.getImageAutoResize(),
         );
         hub.adoptSession(parent, prompts);
+        preferences.rememberFolder(startup.cwd);
       } catch (error) {
         await parent.close();
         throw error;

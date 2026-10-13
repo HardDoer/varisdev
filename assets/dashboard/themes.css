@@ -13,6 +13,8 @@
   --cyan: #75d9ff;
   --amber: #ffcb7a;
   --red: #ff9397;
+  --violet: #d1b7ff;
+  --rose: #ffb4da;
   --focus: #74f3c0;
   --accent-text: #09281f;
   --hover: #203442;
@@ -36,6 +38,8 @@
   --cyan: #a0d4e2;
   --amber: #ebcb8b;
   --red: #ffc0c5;
+  --violet: #d1b7ff;
+  --rose: #ffb4da;
   --focus: #88c0d0;
   --accent-text: #242b35;
   --hover: #454f61;
@@ -59,6 +63,8 @@
   --cyan: #8be9fd;
   --amber: #f1fa8c;
   --red: #ff9aab;
+  --violet: #d1b7ff;
+  --rose: #ffb4da;
   --focus: #bd93f9;
   --accent-text: #20212b;
   --hover: #404252;
@@ -82,6 +88,8 @@
   --cyan: #89dceb;
   --amber: #f9e2af;
   --red: #f38ba8;
+  --violet: #d1b7ff;
+  --rose: #ffb4da;
   --focus: #b4befe;
   --accent-text: #1e1e2e;
   --hover: #38394f;
@@ -105,6 +113,8 @@
   --cyan: #006b85;
   --amber: #895900;
   --red: #b53027;
+  --violet: #6741a5;
+  --rose: #9b2865;
   --focus: #005f89;
   --accent-text: #fffdf4;
   --hover: #e7dfc9;
@@ -128,6 +138,8 @@
   --cyan: #00ffff;
   --amber: #ffe3a6;
   --red: #ffb3b3;
+  --violet: #d1b7ff;
+  --rose: #ffb4da;
   --focus: #ffffff;
   --accent-text: #000000;
   --hover: #252525;
@@ -219,13 +231,13 @@ a:focus-visible {
   align-items: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.75rem;
 }
 
 .theme-control select {
   max-width: 170px;
   min-height: 34px;
-  font-size: 12px;
+  font-size: 0.875rem;
 }
 
 .topbar {
@@ -284,8 +296,7 @@ a:focus-visible {
 }
 
 .parent-card-footer,
-.worker-card-activity,
-.feed-event {
+.worker-card-activity {
   border-color: var(--line);
 }
 
@@ -495,7 +506,7 @@ dialog::backdrop {
     flex-wrap: wrap;
     gap: 12px;
   }
-  .header-actions {
+  .app-controls {
     flex-wrap: wrap;
   }
 }
@@ -503,10 +514,10 @@ dialog::backdrop {
 @media (max-width: 600px) {
   .theme-control {
     gap: 5px;
-    font-size: 10px;
+    font-size: 0.75rem;
   }
   .theme-control select {
     max-width: 140px;
-    font-size: 11px;
+    font-size: 0.75rem;
   }
 }

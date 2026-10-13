@@ -1,6 +1,7 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createFactoryScene} from './factory-scene.js';
 import {initThemes} from './themes.js';
+import {initZoom} from './zoom.js';
 import {initUsage, renderUsage} from './usage.js';
 import {
   initSessionFeatures,
@@ -40,8 +41,22 @@ const labelNodes = new Map();
 const feedNodes = new Map();
 const changeNodes = new Map();
 const conversationNodes = new Map();
-const toolDisclosures = new Map();
-const feedDisclosures = new Map();
+const queueNodes = new Map();
+const disclosures = new Map();
+const disclosureStorage = 'varisdev.factory.disclosures';
+try {
+  const saved = JSON.parse(localStorage.getItem(disclosureStorage) || '[]');
+  if (Array.isArray(saved))
+    for (const entry of saved.slice(-2000))
+      if (
+        Array.isArray(entry) &&
+        typeof entry[0] === 'string' &&
+        typeof entry[1] === 'boolean'
+      )
+        disclosures.set(entry[0], entry[1]);
+} catch {
+  // Actions start expanded when no saved preference is available.
+}
 const conversationPositions = new Map();
 const promptDrafts = new Map();
 const workspaceCache = new Map();
@@ -62,7 +77,6 @@ let conversationKey = '';
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
-let createRevision = 0;
 let expandedEditor = null;
 let pendingDraftPosition = null;
 const composingEditors = new Set();
@@ -283,15 +297,9 @@ function expandEditor(element, textarea, button) {
   element.setAttribute('popover', 'manual');
   element.setAttribute('role', 'dialog');
   element.setAttribute('aria-modal', 'true');
-  element.setAttribute(
-    'aria-labelledby',
-    textarea.id === 'parent-prompt'
-      ? 'parent-editor-label'
-      : 'create-editor-label',
-  );
+  element.setAttribute('aria-labelledby', 'parent-editor-label');
   button.setAttribute('aria-expanded', 'true');
   text(button, 'Close editor');
-  $('expanded-editor-error').hidden = true;
   element.showPopover();
   textarea.focus({preventScroll: true});
   restorePosition(textarea, position);
@@ -358,14 +366,6 @@ function initTextareaResize(handle, textarea) {
           (event.key === 'ArrowUp' || event.key === 'PageUp' ? -step : step),
       );
   });
-}
-function editorFailure(error, textarea, target) {
-  showError(error, target);
-  if (
-    expandedEditor?.textarea === textarea &&
-    !expandedEditor.element.contains(target)
-  )
-    showError(error, $('expanded-editor-error'));
 }
 function submitFromEditor(event, form) {
   if (
@@ -675,6 +675,8 @@ function renderFactory() {
   text($('factory-title'), session.name);
   text($('factory-path'), session.cwd);
   text($('factory-model'), session.model);
+  text($('factory-effort'), `Effort: ${session.thinkingLevel ?? ''}`);
+  $('factory-effort').hidden = !session.thinkingLevel;
   parentBadge($('parent-status'), session);
   for (const [key, value] of Object.entries(tally)) {
     const item = $(
@@ -779,7 +781,6 @@ function renderWorkers() {
   );
   text($('active-count'), active.length);
   text($('history-count'), history.length);
-  $('no-workers').hidden = active.length > 0;
   $('no-history').hidden = filtered.length > 0;
   text(
     $('no-history'),
@@ -913,10 +914,7 @@ function renderFeed(data) {
       const element = node('li', 'feed-event');
       const details = node('details');
       const disclosureKey = `${key}:${event.id}`;
-      details.open = feedDisclosures.get(disclosureKey) ?? false;
-      details.addEventListener('toggle', () => {
-        feedDisclosures.set(disclosureKey, details.open);
-      });
+      preserveDisclosure(details, `feed:${disclosureKey}`);
       const summary = node('summary');
       const meta = node('span', 'feed-event-meta');
       const kind = node('span');
@@ -931,7 +929,25 @@ function renderFeed(data) {
     },
     (entry, event) => {
       entry.element.classList.toggle('error', event.kind === 'error');
-      text(entry.kind, event.sourceName);
+      const [kind, label] =
+        event.kind === 'tool'
+          ? toolAction(
+              event.details?.Tool ||
+                data.conversation?.find(
+                  item => item.id === event.conversationId,
+                )?.toolName,
+            )
+          : [
+              event.kind,
+              {
+                session: 'Session',
+                agent: 'Agent',
+                message: 'Message',
+                error: 'Error',
+              }[event.kind] || 'Activity',
+            ];
+      entry.element.dataset.action = kind === 'message' ? 'user' : kind;
+      text(entry.kind, `${label} · ${event.sourceName}`);
       text(entry.at, date(event.at));
       entry.at.dateTime = event.at;
       text(entry.message, event.message);
@@ -965,8 +981,9 @@ function renderChanges(data) {
     changeNodes,
     changes,
     item => item.id,
-    () => {
+    change => {
       const element = node('details', 'change-entry');
+      preserveDisclosure(element, `change:${key}:${change.id}`);
       const summary = node('summary');
       const path = node('span', 'change-path');
       const meta = node('span', 'change-meta');
@@ -1019,6 +1036,32 @@ function updateStreamText(textNode, value, selection) {
   }
   return true;
 }
+function preserveDisclosure(details, key) {
+  details.open = disclosures.get(key) ?? true;
+  details.addEventListener('toggle', () => {
+    if (!details.isConnected || disclosures.get(key) === details.open) return;
+    disclosures.delete(key);
+    disclosures.set(key, details.open);
+    if (disclosures.size > 2000)
+      disclosures.delete(disclosures.keys().next().value);
+    try {
+      localStorage.setItem(disclosureStorage, JSON.stringify([...disclosures]));
+    } catch {
+      // Preserve the choice in memory if storage is unavailable.
+    }
+  });
+}
+function toolAction(name = '') {
+  if (name === 'bash') return ['command', 'Command'];
+  if (['write', 'edit'].includes(name)) return ['edit', 'File change'];
+  if (name === 'read') return ['read', 'Read file'];
+  if (name.startsWith('agent_')) return ['agent', 'Agent'];
+  if (['browse', 'download'].includes(name)) return ['web', 'Web'];
+  if (['openai_image', 'elevenlabs', 'image_preview'].includes(name))
+    return ['media', 'Media'];
+  if (name.endsWith('_query')) return ['read', 'Inspect data'];
+  return ['tool', 'Tool'];
+}
 function conversationEntry(message) {
   const tool = message.role === 'tool';
   const element = node(
@@ -1027,6 +1070,11 @@ function conversationEntry(message) {
   );
   const header = node('div', 'conversation-message-header');
   const role = node('strong');
+  if (tool) {
+    const [kind, label] = toolAction(message.toolName);
+    element.dataset.action = kind;
+    header.append(node('span', 'action-label', label));
+  } else element.dataset.action = message.role;
   const time = node('time');
   const streaming = node(
     'span',
@@ -1048,10 +1096,7 @@ function conversationEntry(message) {
   if (tool) {
     const details = node('details');
     const key = `${state.sessionId}:${message.id}`;
-    details.open = toolDisclosures.get(key) ?? true;
-    details.addEventListener('toggle', () => {
-      toolDisclosures.set(key, details.open);
-    });
+    preserveDisclosure(details, `tool:${key}`);
     const summary = node('summary');
     inputPreview = node('code', 'tool-input-preview');
     summary.append(header, inputPreview);
@@ -1214,6 +1259,40 @@ function renderConversation(data) {
     if (saved) body.scrollTop = saved.top;
   }
 }
+function renderQueue(data) {
+  const messages = [
+    ...(data.queue?.steering || []).map((text, index) => ({
+      index,
+      kind: 'Steering',
+      text,
+    })),
+    ...(data.queue?.followUp || []).map((text, index) => ({
+      index,
+      kind: 'Follow-up',
+      text,
+    })),
+  ];
+  $('queued-messages').hidden = messages.length === 0;
+  text($('queued-messages-title'), `Queued messages · ${messages.length}`);
+  // Retain rows while snapshots arrive so queued text remains selectable.
+  reconcile(
+    $('queued-message-list'),
+    queueNodes,
+    messages,
+    item => `${data.session.id}:${item.kind}:${item.index}:${item.text}`,
+    () => {
+      const element = node('li');
+      const kind = node('span', 'queue-kind');
+      const content = node('pre');
+      element.append(kind, content);
+      return {element, kind, content};
+    },
+    (entry, message) => {
+      text(entry.kind, message.kind);
+      text(entry.content, message.text);
+    },
+  );
+}
 function renderInspector() {
   const data = snapshot();
   const unit = selectedUnit();
@@ -1235,6 +1314,7 @@ function renderInspector() {
       parent && parentHasError(unit) ? 'Error' : statusName(unit.status),
     ],
     ['Model', unit.model],
+    ...(parent ? [['Effort', unit.thinkingLevel]] : []),
     ['Elapsed', duration(unit)],
     ['Started', date(unit.startedAt)],
     ['Created', date(parent ? unit.startedAt : unit.createdAt)],
@@ -1279,6 +1359,7 @@ function renderInspector() {
   renderFeed(data);
   renderChanges(data);
   renderConversation(data);
+  renderQueue(data);
   renderUsage(data);
   renderSessionFeatures(data);
   if (
@@ -1303,7 +1384,6 @@ function renderInspector() {
     restorePosition($('parent-prompt'), pendingDraftPosition.position);
     pendingDraftPosition = null;
   }
-  text($('parent-editor-shortcuts'), 'Enter sends · Shift+Enter adds a line');
   $('abort-parent').disabled =
     !canControl(data.session) ||
     !parentHasWork(data) ||
@@ -1375,10 +1455,6 @@ function render() {
   const hasSession = Boolean(snapshot());
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
-  text(
-    $('launch-path'),
-    state.hub.launchCwd ? `Launch folder: ${state.hub.launchCwd}` : '',
-  );
   renderOverview();
   if (hasSession) {
     renderFactory();
@@ -1390,24 +1466,6 @@ function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
   state.hub = hub;
-  const toolKeys = new Set(
-    hub.sessions.flatMap(data =>
-      (data.conversation || []).map(
-        message => `${data.session.id}:${message.id}`,
-      ),
-    ),
-  );
-  const eventKeys = new Set(
-    hub.sessions.flatMap(data =>
-      data.events.map(
-        event => `${data.session.id}:${event.sourceId}:${event.id}`,
-      ),
-    ),
-  );
-  for (const key of toolDisclosures.keys())
-    if (!toolKeys.has(key)) toolDisclosures.delete(key);
-  for (const key of feedDisclosures.keys())
-    if (!eventKeys.has(key)) feedDisclosures.delete(key);
   const next =
     state.desiredSessionId &&
     hub.sessions.some(item => item.session.id === state.desiredSessionId)
@@ -1444,63 +1502,28 @@ function applyMotion() {
     : 'Toggle factory animation';
   setSceneMotion(enabled && !pausedActivity.has(state.sessionId));
 }
-function openCreate() {
-  if (!$('create-cwd').value) $('create-cwd').value = state.hub.launchCwd || '';
-  $('create-error').hidden = true;
-  $('create-dialog').showModal();
-  $('create-prompt').focus();
-}
-async function createParent(event) {
-  event.preventDefault();
+async function openFolder() {
   if (creating || !api) return;
-  const textarea = $('create-prompt');
-  const rawPrompt = textarea.value;
-  const revision = createRevision;
-  const cwd = $('create-cwd').value.trim();
-  const prompt = rawPrompt.trim();
-  const rawName = $('create-name').value;
-  const name = rawName.trim();
-  if (!cwd || !prompt) {
-    editorFailure(
-      'Choose a folder and enter a mission.',
-      textarea,
-      $('create-error'),
-    );
-    return;
-  }
   creating = true;
-  $('create-error').hidden = true;
-  $('expanded-editor-error').hidden = true;
-  for (const id of ['create-submit', 'create-expanded-submit']) {
-    $(id).disabled = true;
-    text($(id), 'Launching…');
-  }
+  $('app-error').hidden = true;
+  for (const id of ['new-session', 'welcome-create']) $(id).disabled = true;
   try {
-    const result = await api.createSession({
-      cwd,
-      prompt,
-      ...(name ? {name} : {}),
-    });
+    const cwd = await api.chooseFolder();
+    if (!cwd) return;
+    text($('new-session'), 'Opening…');
+    const result = await api.createSession({cwd});
     state.desiredSessionId = result.id;
     if (state.hub.sessions.some(item => item.session.id === result.id)) {
       selectSession(result.id);
       state.desiredSessionId = null;
     } else receive(await api.getState());
-    if (createRevision === revision && textarea.value === rawPrompt) {
-      if (expandedEditor?.textarea === textarea) collapseEditor(false);
-      textarea.value = '';
-      createRevision++;
-      $('create-dialog').close();
-    }
-    if ($('create-name').value === rawName) $('create-name').value = '';
+    $('parent-prompt').focus();
   } catch (error) {
-    editorFailure(error, textarea, $('create-error'));
+    showError(error);
   } finally {
     creating = false;
-    for (const id of ['create-submit', 'create-expanded-submit']) {
-      $(id).disabled = false;
-      text($(id), 'Launch parent ↗');
-    }
+    for (const id of ['new-session', 'welcome-create']) $(id).disabled = false;
+    text($('new-session'), 'Open folder');
   }
 }
 async function sendPrompt(event) {
@@ -1524,15 +1547,13 @@ async function sendPrompt(event) {
   sending.add(id);
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
-  $('expanded-editor-error').hidden = true;
   renderInspector();
   try {
     await api.promptSession(id, {prompt});
     pausedActivity.delete(id);
     clearSubmittedDraft(id, submitted);
   } catch (error) {
-    if (id === state.sessionId)
-      editorFailure(error, textarea, $('prompt-error'));
+    if (id === state.sessionId) showError(error, $('prompt-error'));
     else showError(error);
   } finally {
     sending.delete(id);
@@ -1587,22 +1608,8 @@ async function loadWorkspace() {
   }
 }
 
-$('new-session').addEventListener('click', openCreate);
-$('welcome-create').addEventListener('click', openCreate);
-$('close-create').addEventListener('click', () => $('create-dialog').close());
-$('create-form').addEventListener('submit', createParent);
-$('choose-folder').addEventListener('click', async () => {
-  if (!api) return;
-  $('choose-folder').disabled = true;
-  try {
-    const folder = await api.chooseFolder();
-    if (folder) $('create-cwd').value = folder;
-  } catch (error) {
-    showError(error, $('create-error'));
-  } finally {
-    $('choose-folder').disabled = false;
-  }
-});
+$('new-session').addEventListener('click', openFolder);
+$('welcome-create').addEventListener('click', openFolder);
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', sendPrompt);
 initTextareaResize($('parent-prompt-resize'), $('parent-prompt'));
@@ -1611,13 +1618,7 @@ for (const event of ['input', 'select', 'keyup', 'pointerup', 'scroll', 'blur'])
 document.addEventListener('selectionchange', () => {
   if (document.activeElement === $('parent-prompt')) saveDraft();
 });
-$('create-prompt').addEventListener('input', () => {
-  createRevision++;
-});
-for (const [id, formId] of [
-  ['parent-prompt', 'prompt-form'],
-  ['create-prompt', 'create-form'],
-]) {
+for (const [id, formId] of [['parent-prompt', 'prompt-form']]) {
   const textarea = $(id);
   textarea.addEventListener('keydown', event =>
     submitFromEditor(event, $(formId)),
@@ -1634,13 +1635,6 @@ $('expand-parent-editor').addEventListener('click', () =>
     $('parent-controls'),
     $('parent-prompt'),
     $('expand-parent-editor'),
-  ),
-);
-$('expand-create-editor').addEventListener('click', () =>
-  expandEditor(
-    $('create-mission-editor'),
-    $('create-prompt'),
-    $('expand-create-editor'),
   ),
 );
 document.addEventListener('keydown', event => {
@@ -1660,12 +1654,6 @@ document.addEventListener('keydown', event => {
   } else if (expandedEditor) {
     event.preventDefault();
     event.stopPropagation();
-    collapseEditor();
-  }
-});
-$('create-dialog').addEventListener('cancel', event => {
-  if (expandedEditor) {
-    event.preventDefault();
     collapseEditor();
   }
 });
@@ -1728,6 +1716,7 @@ try {
   scene = null;
 }
 const cleanupThemes = initThemes(palette => scene?.setPalette(palette));
+const cleanupZoom = initZoom(api);
 $('fallback').hidden = Boolean(scene);
 $('factory-canvas').hidden = !scene;
 $('scene-labels').hidden = !scene;
@@ -1766,6 +1755,7 @@ window.addEventListener('unload', () => {
   window.removeEventListener('resize', resizeFactory);
   window.removeEventListener('scroll', sizeInspector);
   cleanupThemes();
+  cleanupZoom();
   scene?.dispose();
 });
 if (api) {

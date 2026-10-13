@@ -248,6 +248,7 @@ export function observeDashboardSession(
       cwd: ctx.cwd,
       sessionFile: ctx.sessionManager.getSessionFile(),
       model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+      thinkingLevel: pi.getThinkingLevel(),
       context: usage
         ? {
             tokens: usage.tokens,
@@ -698,6 +699,9 @@ export function observeDashboardSession(
       ...metadata(ctx),
       model: `${event.model.provider}/${event.model.id}`,
     });
+  });
+  pi.on('thinking_level_select', event => {
+    state?.updateSession({thinkingLevel: event.level});
   });
   pi.on('session_info_changed', (_event, ctx) => {
     state?.updateSession(metadata(ctx));

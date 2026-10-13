@@ -47,6 +47,7 @@ function createExtension(t: TestContext, folder: string) {
     },
   );
   const pi = {
+    getThinkingLevel: () => 'off',
     on(event: string, handler: EventHandler) {
       const list = handlers.get(event) ?? [];
       list.push(handler);

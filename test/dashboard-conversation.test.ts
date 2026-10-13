@@ -31,6 +31,7 @@ function observer(existingState?: DashboardState) {
   let branch: SessionEntry[] = [];
   let current!: DashboardState;
   const pi = {
+    getThinkingLevel: () => 'off',
     on(name: string, handler: Handler) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },

@@ -62,6 +62,8 @@ for (const theme of THEMES) {
       'cyan',
       'amber',
       'red',
+      'violet',
+      'rose',
     ]) {
       for (const background of surfaces) {
         const ratio = contrast(colors[foreground], colors[background]);
