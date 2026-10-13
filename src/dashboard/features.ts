@@ -1,33 +1,16 @@
+import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
 import type {
   AgentSession,
   CreateAgentSessionOptions,
   ResourceLoader,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
-import {findPackageJSON} from 'node:module';
-import {pathToFileURL} from 'node:url';
 
-// Resolve through the SDK to share its model capability rules and dependency.
-const sdkModels = (await import(
-  new URL(
-    './dist/models.js',
-    pathToFileURL(
-      findPackageJSON(
-        '@earendil-works/pi-ai',
-        import.meta.resolve('@earendil-works/pi-coding-agent'),
-      )!,
-    ),
-  ).href
-)) as {
-  getSupportedThinkingLevels(
-    model: NonNullable<CreateAgentSessionOptions['model']>,
-  ): string[];
-};
-
+// Use the public entry so Pi can supply its API through the extension loader.
 export function supportedThinkingLevels(
   model: NonNullable<CreateAgentSessionOptions['model']>,
 ): string[] {
-  return sdkModels.getSupportedThinkingLevels(model);
+  return getSupportedThinkingLevels(model);
 }
 
 export interface SessionFeatures {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
+import {cp, mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {createInterface} from 'node:readline';
 import {test} from 'node:test';
@@ -16,14 +16,33 @@ const cli =
       import.meta.resolve('@earendil-works/pi-coding-agent'),
     ),
   );
-const extension = resolve('extensions/varisdev.ts');
+const {peerDependencies} = JSON.parse(
+  await readFile(resolve('package.json'), 'utf8'),
+) as {peerDependencies: Record<string, string>};
 
 for (const missingSharp of [false, true]) {
   void test(
-    `bundled Pi starts VarisDev${missingSharp ? ' without a working Sharp installation' : ''}`,
+    `bundled Pi starts VarisDev without local Pi packages${missingSharp ? ' or Sharp' : ''}`,
     {timeout: 30_000},
     async t => {
       const directory = await mkdtemp(join(process.cwd(), '.startup-test-'));
+      await Promise.all(
+        ['src', 'extensions'].map(name =>
+          cp(resolve(name), join(directory, name), {recursive: true}),
+        ),
+      );
+      await writeFile(join(directory, 'package.json'), '{"type":"module"}');
+      // Shadow the checkout's development peers with unavailable entries. Pi's
+      // virtual modules must supply these APIs without any filesystem lookup.
+      for (const name of Object.keys(peerDependencies)) {
+        const peerDir = join(directory, 'node_modules', name);
+        await mkdir(peerDir, {recursive: true});
+        await writeFile(
+          join(peerDir, 'package.json'),
+          JSON.stringify({name, exports: './unavailable.js'}),
+        );
+      }
+      const extension = join(directory, 'extensions', 'varisdev.ts');
       const agentDir = join(directory, 'agent');
       const tempDir = join(directory, 'tmp');
       await mkdir(agentDir);
