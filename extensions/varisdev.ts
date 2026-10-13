@@ -8,6 +8,7 @@ import {basename} from 'node:path';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerCommitCommand} from '../src/commit.ts';
 import {registerImagePreviews} from '../src/image-previews.ts';
+import {registerFactory} from '../src/dashboard/index.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
 
@@ -200,7 +201,8 @@ export default function (pi: ExtensionAPI) {
 
   registerImagePreviews(pi);
   registerProjectTools(pi);
-  registerAgentTools(pi);
+  const agents = registerAgentTools(pi);
+  registerFactory(pi, agents);
   registerCommitCommand(pi);
   registerCompletionAlert(pi);
   pi.on('session_start', async (_event, ctx) => {

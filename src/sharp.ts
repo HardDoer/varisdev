@@ -39,6 +39,11 @@ export function processImage(
         serialization: 'advanced',
         stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         windowsHide: true,
+        // Electron's executable also runs the desktop session runtime. Its
+        // image worker must start in Node mode, without creating a window.
+        env: process.versions.electron
+          ? {...process.env, ELECTRON_RUN_AS_NODE: '1'}
+          : process.env,
       },
     );
     let response: ImageResponse | undefined;

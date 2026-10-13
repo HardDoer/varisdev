@@ -3,7 +3,13 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import {AgentOrchestrator, isAgentFinished} from './orchestrator.ts';
+import {
+  AgentOrchestrator,
+  isAgentFinished,
+  type AgentRecord,
+} from './orchestrator.ts';
+
+import type {UnitChange} from '../dashboard/changes.ts';
 
 export interface AgentMessage {
   from: {id: string; name: string};
@@ -13,6 +19,13 @@ export interface AgentMessage {
 export interface ParentMessage extends AgentMessage {
   id: string;
   createdAt: string;
+}
+
+export interface AgentSessionSnapshot {
+  sessionId: string;
+  agents: AgentRecord[];
+  messages: ParentMessage[];
+  changes: UnitChange[];
 }
 
 const maxParentMessages = 100;
@@ -25,14 +38,21 @@ function copyMessage(message: ParentMessage): ParentMessage {
 class AgentTeam {
   private readonly manager = new AgentOrchestrator();
   private readonly messages: ParentMessage[] = [];
+  private readonly changes: UnitChange[] = [];
   private context: ExtensionContext;
   private closed = false;
   readonly sessionId: string;
+  private readonly unsubscribe: () => void;
+  private readonly changed: () => void;
 
-  constructor(ctx: ExtensionContext) {
+  constructor(ctx: ExtensionContext, changed: () => void) {
     this.context = ctx;
+    this.changed = changed;
     this.sessionId = ctx.sessionManager.getSessionId();
-    this.manager.subscribe(() => this.updateStatus());
+    this.unsubscribe = this.manager.subscribe(() => {
+      this.updateStatus();
+      this.changed();
+    });
     this.updateStatus();
   }
 
@@ -85,6 +105,7 @@ class AgentTeam {
     };
     this.messages.push(stored);
     if (this.messages.length > maxParentMessages) this.messages.shift();
+    this.changed();
     return copyMessage(stored);
   }
 
@@ -119,9 +140,27 @@ class AgentTeam {
     };
   }
 
+  storeChange(change: UnitChange): void {
+    if (this.closed) return;
+    this.changes.push({...change});
+    if (this.changes.length > 100) this.changes.shift();
+    this.changed();
+  }
+
+  snapshot(): AgentSessionSnapshot {
+    return {
+      sessionId: this.sessionId,
+      agents: this.manager.list(),
+      messages: this.messages.map(copyMessage),
+      changes: this.changes.map(change => ({...change})),
+    };
+  }
+
   close(): Promise<void> {
     this.closed = true;
+    this.unsubscribe();
     this.messages.length = 0;
+    this.changes.length = 0;
     this.setStatus();
     return this.manager.close();
   }
@@ -131,6 +170,7 @@ class AgentTeam {
 export class AgentSessionController {
   private team?: AgentTeam;
   private shuttingDown = false;
+  private readonly listeners = new Set<() => void>();
 
   constructor(pi: ExtensionAPI) {
     pi.on('session_start', () => {
@@ -144,15 +184,40 @@ export class AgentSessionController {
       this.shuttingDown = true;
       const team = this.team;
       this.team = undefined;
-      await team?.close();
+      const closing = team?.close();
+      this.changed();
+      await closing;
     });
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Reading state never creates a team. Messages are in arrival order. */
+  snapshot(): AgentSessionSnapshot | undefined {
+    return this.team?.snapshot();
+  }
+
+  private changed(): void {
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.error('Agent observer failed:', error);
+      }
+    }
   }
 
   attach(ctx: ExtensionContext): void {
     if (this.shuttingDown)
       throw new Error('The parent session is shutting down.');
     if (this.team) this.team.updateContext(ctx);
-    else this.team = new AgentTeam(ctx);
+    else {
+      this.team = new AgentTeam(ctx, () => this.changed());
+      this.changed();
+    }
   }
 
   getTeam(ctx: ExtensionContext): AgentTeam {

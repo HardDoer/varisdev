@@ -14,6 +14,7 @@ import {
   type AgentMessageSender,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
+import {observeFileChanges} from '../dashboard/changes.ts';
 import {
   AgentSessionController,
   type AgentMessage,
@@ -436,7 +437,7 @@ function registerAgentSendTool(
 export function registerAgentTools(
   pi: ExtensionAPI,
   createWorker = createSessionWorker,
-): void {
+): AgentSessionController {
   const control = new AgentSessionController(pi);
   const getManager = (ctx: ExtensionContext) =>
     control.getTeam(ctx).getManager();
@@ -500,6 +501,13 @@ export function registerAgentTools(
             parentSessionId: team.sessionId,
             id,
             agentToolsExtension(workerPi) {
+              observeFileChanges(workerPi, change =>
+                team.storeChange({
+                  ...change,
+                  unitId: id,
+                  unitName: params.name,
+                }),
+              );
               const getWorkerManager = () => team.getManager();
               registerAgentListTool(workerPi, getWorkerManager, id);
               registerAgentSendTool(workerPi, getWorkerManager, {
@@ -647,4 +655,5 @@ export function registerAgentTools(
       ctx.ui.notify(lines.join('\n'), 'info');
     },
   });
+  return control;
 }

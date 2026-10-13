@@ -22,7 +22,16 @@ function createExtension(t: TestContext, folder: string) {
       cwd: `/projects/${folder}`,
       mode: 'rpc',
       hasUI: true,
-      sessionManager: {getSessionId: () => sessionId, getBranch: () => []},
+      sessionManager: {
+        getSessionId: () => sessionId,
+        getBranch: () => [],
+        getSessionName: () => undefined,
+        getSessionFile: () => undefined,
+        getHeader: () => undefined,
+      },
+      getContextUsage: () => undefined,
+      isIdle: () => true,
+      thinkingLevel: 'off',
       ui: {
         setTitle(title: string) {
           assert.ok(active, 'stale extension UI');

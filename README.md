@@ -16,7 +16,39 @@ Varisware VarisDev package.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, waiting, and cancellation.
 - `src/commit.ts` — adds `/commit [instructions]` to delegate committing and pushing to Codex GPT-5.5 with xhigh effort and automatic worker cleanup.
+- `src/desktop/`, `src/dashboard/`, and `assets/dashboard/` — a desktop factory with 3D master robots, worker drones, task effects, changes, and multiple parent sessions.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
+
+## Desktop factory app
+
+Launch the desktop app from this repository:
+
+```sh
+npm install
+npm run desktop
+```
+
+The app opens its own native window with a folder picker. Use **New session** to choose a project and give its master robot a prompt. It uses your existing Pi model settings and credentials.
+
+Pidev opens the desktop app automatically on interactive startup. After updating the extension, use `/reload` to activate it. `/factory` focuses or reopens the window. Local process messaging connects the original pidev session, including prompting, stopping work, and live conversation history.
+
+Each parent conversation has a factory and a master robot. Background agents appear as drones at workstations. Working drones stay visible automatically; labels show their task and current action. Dispatch beams and sparks follow actual starts and completions. The session overview shows the other parent robots and their activity, so work in another folder stays visible too.
+
+Select a robot or drone to inspect its task, model, folder, elapsed time, queued instructions, response, errors, and saved result paths. The activity feed follows session events, tools, worker messages, and status changes. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL.
+
+The prompt field supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions.
+
+Choose a ready-made palette from **Theme**: Factory, Nord, Dracula, Catppuccin Mocha, Solarized Light, or High Contrast. The choice applies to the interface and the 3D factory and is saved locally. Text contrast, visible keyboard focus, and named status labels keep the interface readable. The app uses an original robot crow icon.
+
+**Changes** shows successful `edit` and `write` operations attributed to the robot or drone that made them, with file paths and bounded diffs. Tracking begins when the extension loads. The dashboard retains the latest 100 change records and 160 activity events per parent. **Workspace diff** reads current Git changes, including staged, unstaged, and untracked files. This folder view can include earlier changes and shell commands from any unit sharing that folder. It refreshes on request. File changes tracked through the tools also work outside Git repositories.
+
+Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, send follow-up prompts, and stop their work from the app. Follow-ups wait for the parent's current prompt to finish. Stopping a parent clears its queued prompts and cancels its workers. The original connected pidev session is also controlled from the GUI.
+
+Opening the app creates no sessions or workers. New sessions start only when you submit their form. Worker drones represent pidev's existing delegation behavior; visual effects never trigger work.
+
+Electron runs the desktop window and the session runtime; graphics are loaded from local files. Closing the app stops the connected pidev run and its workers, and closes parents created in the app. Reloading extensions or switching the connected pidev session reuses the window and keeps the app's independent sessions running. Quitting the hosting pidev process closes its connected window. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
+
+`npm run desktop:build` compiles the desktop entry point. This repository currently runs the app from source.
 
 ## Conversation compaction
 

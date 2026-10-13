@@ -14,18 +14,21 @@
     "lint": "gts lint",
     "fix": "gts fix",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-concurrency=1 test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "desktop:build": "tsc --project tsconfig.desktop.json",
+    "desktop": "npm run desktop:build && electron build/desktop/src/desktop/main.js"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@types/node": "^24.13.2",
+    "electron": "^44.7.0",
+    "typebox": "^1.3.2",
+    "typescript": "^5.9.3",
     "json5": "^2.2.3",
     "openai": "^6.0.0",
     "sharp": "^0.35.3",
     "sixel": "0.16.0"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.85.1",
-    "@earendil-works/pi-tui": ">=0.85.1",
-    "typebox": "*"
   },
   "pi": {
     "extensions": [
@@ -36,9 +39,7 @@
     ]
   },
   "devDependencies": {
-    "@types/node": "^24.13.2",
-    "gts": "^7.0.0",
-    "typescript": "^5.9.3"
+    "gts": "^7.0.0"
   },
   "overrides": {
     "tmp": "0.2.7"

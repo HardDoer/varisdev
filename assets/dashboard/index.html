@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b121b" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>VarisDev · Factory</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="themes.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#factory-title">Skip to factory</a>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">V</span
+        ><strong>VarisDev</strong
+        ><span class="brand-section">FACTORY CONTROL</span>
+      </div>
+      <div class="header-actions">
+        <span id="connection" class="connection" role="status"
+          >Starting desktop</span
+        ><button
+          id="motion-toggle"
+          class="quiet-button"
+          type="button"
+          aria-pressed="true"
+        >
+          Motion on</button
+        ><button id="new-session" class="primary-button" type="button">
+          ＋ New parent
+        </button>
+      </div>
+    </header>
+    <main>
+      <section class="overview" aria-labelledby="overview-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">OPERATIONS NETWORK</p>
+            <h1 id="overview-title">Your factories<span>.</span></h1>
+          </div>
+          <p id="hub-counts" class="overview-counts">No parents yet</p>
+        </div>
+        <div id="parents" class="parent-grid"></div>
+      </section>
+      <section
+        id="welcome"
+        class="welcome"
+        hidden
+        aria-labelledby="welcome-title"
+      >
+        <div class="welcome-machine" aria-hidden="true">
+          <span class="robot-glyph master"><i></i></span
+          ><span class="orbit orbit-one"></span
+          ><span class="orbit orbit-two"></span>
+        </div>
+        <div>
+          <p class="eyebrow">READY TO BUILD</p>
+          <h2 id="welcome-title">Give your first master robot a mission.</h2>
+          <p>
+            Choose a project folder and a prompt. Each parent gets its own
+            factory, with drones at workstations as it delegates tasks.
+          </p>
+          <button id="welcome-create" class="primary-button" type="button">
+            Create a parent
+          </button>
+          <p id="launch-path" class="muted mono"></p>
+        </div>
+      </section>
+      <div id="factory-workspace" class="factory-workspace" hidden>
+        <div class="factory-column">
+          <section class="factory-panel panel" aria-labelledby="factory-title">
+            <div class="factory-heading">
+              <div>
+                <p class="eyebrow">SELECTED FACTORY</p>
+                <h2 id="factory-title">Factory</h2>
+                <p id="factory-path" class="mono muted"></p>
+              </div>
+              <div class="factory-state">
+                <span id="parent-status" class="status-badge"></span
+                ><span id="factory-model" class="muted"></span>
+              </div>
+            </div>
+            <div class="factory-metrics" aria-label="Factory counts">
+              <span><strong id="metric-running">0</strong> working</span
+              ><span><strong id="metric-queued">0</strong> queued</span
+              ><span><strong id="metric-completed">0</strong> completed</span
+              ><span><strong id="metric-attention">0</strong> failed</span
+              ><span id="context-meter" class="context-meter"></span>
+            </div>
+            <div id="scene" class="scene">
+              <div class="scene-topline">
+                <span><i></i> LIVE FACTORY</span
+                ><span id="scene-caption"
+                  >Master command / drone work bays</span
+                >
+              </div>
+              <canvas
+                id="factory-canvas"
+                aria-label="Three dimensional factory with a master robot and worker drones"
+              ></canvas>
+              <div id="fallback" class="fallback" hidden>
+                <div class="fallback-grid"></div>
+                <div id="fallback-units" class="fallback-units"></div>
+              </div>
+              <div id="scene-labels" class="scene-labels"></div>
+              <div class="scene-bottomline">
+                <span id="visual-mode">WEBGL · 3D</span
+                ><span>SELECT A ROBOT TO INSPECT</span
+                ><span class="scene-legend"
+                  ><i class="mint"></i> WORKING <i class="amber"></i> QUEUED
+                  <i class="cyan"></i> COMPLETE</span
+                >
+              </div>
+            </div>
+            <div class="master-summary">
+              <span class="robot-glyph" aria-hidden="true"><i></i></span>
+              <div>
+                <span class="eyebrow">MASTER ACTIVITY</span>
+                <p id="master-activity"></p>
+              </div>
+              <button id="inspect-parent" class="quiet-button" type="button">
+                Inspect master ↗
+              </button>
+            </div>
+          </section>
+          <section class="workers-section" aria-labelledby="workers-title">
+            <div class="section-heading compact">
+              <h2 id="workers-title">
+                On the floor <span id="active-count" class="count-tag">0</span>
+              </h2>
+              <span class="muted">Every active drone, automatically</span>
+            </div>
+            <div id="active-workers" class="worker-grid"></div>
+            <p id="no-workers" class="empty-state">
+              No active drones. The master can work independently or dispatch a
+              team.
+            </p>
+          </section>
+          <section
+            class="history-section panel"
+            aria-labelledby="history-title"
+          >
+            <div class="section-heading compact">
+              <h2 id="history-title">
+                Drone history
+                <span id="history-count" class="count-tag">0</span>
+              </h2>
+              <label class="history-search"
+                ><span class="sr-only">Search drone history</span
+                ><input
+                  id="history-search"
+                  type="search"
+                  placeholder="Search history"
+              /></label>
+            </div>
+            <div id="history-workers" class="history-list"></div>
+            <p id="no-history" class="empty-state">
+              Completed drones appear here.
+            </p>
+          </section>
+        </div>
+        <aside
+          id="inspector"
+          class="inspector panel"
+          aria-labelledby="inspector-title"
+        >
+          <div id="composer-slot">
+            <section
+              id="parent-controls"
+              class="parent-controls mission-editor"
+              hidden
+            >
+              <form id="prompt-form">
+                <div class="composer-heading">
+                  <label id="parent-editor-label" for="parent-prompt"
+                    >Mission for <strong id="prompt-recipient"></strong
+                  ></label>
+                  <button
+                    id="expand-parent-editor"
+                    class="quiet-button"
+                    type="button"
+                    aria-expanded="false"
+                  >
+                    Expand editor
+                  </button>
+                </div>
+                <textarea
+                  id="parent-prompt"
+                  rows="6"
+                  placeholder="Describe the next task…"
+                  aria-describedby="parent-editor-shortcuts"
+                  required
+                ></textarea>
+                <p id="parent-editor-shortcuts" class="editor-shortcuts">
+                  Enter sends · Shift+Enter adds a line
+                </p>
+                <p id="prompt-error" class="form-error" role="alert" hidden></p>
+                <div class="composer-actions">
+                  <span id="prompt-hint" class="muted"></span>
+                  <button id="abort-parent" class="danger-button" type="button">
+                    Stop parent
+                  </button>
+                  <button id="send-prompt" class="primary-button" type="submit">
+                    Send
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+          <div class="inspector-heading">
+            <p id="inspector-role" class="eyebrow">MASTER ROBOT</p>
+            <div>
+              <h2 id="inspector-title">Inspector</h2>
+              <span id="inspector-status" class="status-badge"></span>
+            </div>
+            <p id="inspector-activity"></p>
+          </div>
+          <div
+            class="inspector-tabs"
+            role="tablist"
+            aria-label="Inspector views"
+          >
+            <button
+              id="tab-conversation"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="panel-conversation"
+            >
+              Conversation
+            </button>
+            <button
+              id="tab-details"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              tabindex="-1"
+              aria-controls="panel-details"
+            >
+              Details</button
+            ><button
+              id="tab-feed"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-feed"
+              tabindex="-1"
+            >
+              Live feed <span id="feed-count">0</span></button
+            ><button
+              id="tab-changes"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-changes"
+              tabindex="-1"
+            >
+              Changes <span id="changes-count">0</span>
+            </button>
+          </div>
+          <div
+            id="panel-conversation"
+            class="inspector-body conversation-body"
+            role="tabpanel"
+            aria-labelledby="tab-conversation"
+          >
+            <div class="feed-toolbar">
+              <span id="conversation-recipient" class="muted"></span
+              ><label
+                ><input id="follow-conversation" type="checkbox" checked />
+                Follow</label
+              >
+            </div>
+            <p
+              id="conversation-truncated"
+              class="conversation-notice muted"
+              hidden
+            >
+              Recent conversation; full history in the session file.
+            </p>
+            <p
+              id="conversation-session-file"
+              class="conversation-notice mono muted"
+              hidden
+            ></p>
+            <ol id="conversation" class="conversation"></ol>
+            <p id="conversation-empty" class="empty-state">
+              No conversation messages recorded yet.
+            </p>
+          </div>
+          <div
+            id="panel-details"
+            class="inspector-body"
+            role="tabpanel"
+            aria-labelledby="tab-details"
+            hidden
+          >
+            <dl id="unit-facts" class="unit-facts"></dl>
+            <section class="detail-section">
+              <h3>Task / prompt</h3>
+              <pre id="unit-task" class="prose"></pre>
+            </section>
+            <section id="result-section" class="detail-section" hidden>
+              <h3>Result</h3>
+              <p id="result-truncated" class="muted" hidden>
+                Result preview is truncated. See the result file below.
+              </p>
+              <pre id="unit-result" class="prose"></pre>
+            </section>
+            <section
+              id="error-section"
+              class="detail-section error-section"
+              hidden
+            >
+              <h3>Error</h3>
+              <pre id="unit-error" class="prose"></pre>
+            </section>
+            <section class="detail-section">
+              <h3>Paths</h3>
+              <dl id="unit-paths" class="unit-facts path-facts"></dl>
+            </section>
+          </div>
+          <div
+            id="panel-feed"
+            class="inspector-body"
+            role="tabpanel"
+            aria-labelledby="tab-feed"
+            hidden
+          >
+            <div class="feed-toolbar">
+              <span class="muted">Events for the selected robot</span
+              ><label
+                ><input id="follow-feed" type="checkbox" checked />
+                Follow</label
+              >
+            </div>
+            <ol id="live-feed" class="live-feed"></ol>
+            <p id="feed-empty" class="empty-state">
+              Activity appears here as this robot works.
+            </p>
+          </div>
+          <div
+            id="panel-changes"
+            class="inspector-body"
+            role="tabpanel"
+            aria-labelledby="tab-changes"
+            hidden
+          >
+            <p class="changes-note">
+              Exact edit and write diffs recorded for this robot, including
+              files outside Git.
+            </p>
+            <div id="unit-changes" class="unit-changes"></div>
+            <p id="changes-empty" class="empty-state">
+              No recorded file changes for this robot.
+            </p>
+          </div>
+          <p id="attached-note" class="attached-note" hidden>Connected pidev</p>
+          <section class="workspace-section">
+            <div>
+              <h3>Shared project workspace</h3>
+              <button id="load-workspace" class="quiet-button" type="button">
+                View folder diff
+              </button>
+            </div>
+            <p class="muted">
+              Folder wide Git changes, including existing and shell changes.
+              These are separate from this robot’s recorded edits.
+            </p>
+            <div id="workspace-result" hidden>
+              <p id="workspace-summary" class="mono muted"></p>
+              <ul id="workspace-files" class="workspace-files"></ul>
+              <pre id="workspace-diff" class="diff"></pre>
+              <p id="workspace-truncated" class="muted" hidden>
+                Workspace output is truncated.
+              </p>
+            </div>
+          </section>
+        </aside>
+      </div>
+      <p id="app-error" class="app-error" role="alert" hidden></p>
+    </main>
+    <dialog id="create-dialog" aria-labelledby="create-title">
+      <form id="create-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">NEW FACTORY</p>
+            <h2 id="create-title">Create a parent</h2>
+          </div>
+          <button
+            id="close-create"
+            class="quiet-button"
+            type="button"
+            aria-label="Close create parent"
+          >
+            ✕
+          </button>
+        </div>
+        <label for="create-cwd">Project folder</label>
+        <div class="folder-input">
+          <input
+            id="create-cwd"
+            class="mono"
+            type="text"
+            required
+            placeholder="Choose a project folder"
+          /><button id="choose-folder" class="quiet-button" type="button">
+            Browse…
+          </button>
+        </div>
+        <label for="create-name"
+          >Parent name <span class="muted">optional</span></label
+        ><input
+          id="create-name"
+          type="text"
+          placeholder="A name for this master robot"
+          maxlength="160"
+        />
+        <section id="create-mission-editor" class="mission-editor">
+          <div class="composer-heading">
+            <label id="create-editor-label" for="create-prompt">Mission</label>
+            <button
+              id="expand-create-editor"
+              class="quiet-button"
+              type="button"
+              aria-expanded="false"
+            >
+              Expand editor
+            </button>
+          </div>
+          <textarea
+            id="create-prompt"
+            rows="8"
+            form="create-form"
+            required
+            aria-describedby="create-editor-shortcuts"
+            placeholder="What should this parent build or investigate?"
+          ></textarea>
+          <p id="create-editor-shortcuts" class="editor-shortcuts">
+            Enter sends · Shift+Enter adds a line
+          </p>
+          <p
+            id="expanded-editor-error"
+            class="form-error"
+            role="alert"
+            hidden
+          ></p>
+          <button
+            id="create-expanded-submit"
+            class="primary-button expanded-only"
+            type="submit"
+            form="create-form"
+          >
+            Launch parent ↗
+          </button>
+        </section>
+        <p id="create-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <span class="muted">Runs in its own project folder.</span
+          ><button id="create-submit" class="primary-button" type="submit">
+            Launch parent ↗
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

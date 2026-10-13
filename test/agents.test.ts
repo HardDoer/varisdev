@@ -913,6 +913,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   registerAgentTools(pi, async options => {
     const workerTools = new Map<string, ToolDefinition>();
     await options.agentToolsExtension({
+      on() {},
       registerTool(tool: ToolDefinition) {
         workerTools.set(tool.name, tool);
       },
@@ -1218,7 +1219,7 @@ function agentParent(
     },
     sessionManager: {getSessionId: () => sessionId},
   } as unknown as ExtensionContext;
-  registerAgentTools(pi, createWorker);
+  const control = registerAgentTools(pi, createWorker);
   async function emit(event: string, reason?: string) {
     if (event === 'agent_start') idle = false;
     if (event === 'agent_settled') idle = true;
@@ -1236,6 +1237,7 @@ function agentParent(
   return {
     pi,
     ctx,
+    control,
     execute,
     notifications,
     statuses,
@@ -1262,6 +1264,7 @@ function teamWorkers() {
   const create: typeof createSessionWorker = async options => {
     const tools = new Map<string, ToolDefinition>();
     await options.agentToolsExtension({
+      on() {},
       registerTool(tool: ToolDefinition) {
         tools.set(tool.name, tool);
       },
@@ -1433,4 +1436,69 @@ void test('cleaned agents release the session capacity for later commands', asyn
   }
   assert.equal(disposed, 65);
   assert.equal(manager.list().length, 65);
+});
+
+void test('controller observes activity and inbox with copied state and resets without stale workers', async t => {
+  const workers = teamWorkers();
+  const parent = agentParent('observed-parent', workers.create);
+  t.after(() => parent.shutdown());
+  const observed: ReturnType<typeof parent.control.snapshot>[] = [];
+  const unsubscribe = parent.control.subscribe(() => {
+    observed.push(parent.control.snapshot());
+  });
+  assert.equal(parent.control.snapshot(), undefined);
+  assert.equal(observed.length, 0);
+
+  const id = await parent.spawn('Reporter');
+  await until(() => workers.byId.get(id)?.controlled.runs.length === 1);
+  const reporter = workers.byId.get(id)!;
+  assert.ok(observed.some(state => state?.agents[0]?.id === id));
+  assert.ok(
+    observed.some(state => state?.agents[0]?.activity === 'Using read'),
+  );
+  await reporter.execute('agent_send', {id: 'parent', message: 'Findings'});
+  const state = observed.at(-1)!;
+  assert.equal(state.sessionId, 'observed-parent');
+  assert.equal(state.messages[0].message, 'Findings');
+  state.agents[0].name = 'Changed';
+  state.messages[0].from.name = 'Changed';
+  state.messages[0].message = 'Changed';
+  state.agents.length = 0;
+  state.messages.push({...state.messages[0]});
+  const fresh = parent.control.snapshot()!;
+  assert.equal(fresh.agents[0].name, 'Reporter');
+  assert.equal(fresh.messages[0].from.name, 'Reporter');
+  assert.equal(fresh.messages[0].message, 'Findings');
+  assert.equal(fresh.messages.length, 1);
+
+  reporter.controlled.runs[0].finish('Done');
+  await until(
+    () => parent.control.snapshot()?.agents[0].status === 'completed',
+  );
+  await parent.shutdown('new');
+  assert.equal(observed.at(-1), undefined);
+  assert.equal(parent.control.snapshot(), undefined);
+  assert.equal(reporter.controlled.disposed, 1);
+  await assert.rejects(parent.spawn('During shutdown'), /shutting down/);
+  await parent.emit('session_start');
+  assert.equal(parent.control.snapshot(), undefined);
+  const nextId = await parent.spawn('Next');
+  await until(() => workers.byId.get(nextId)?.controlled.runs.length === 1);
+  assert.deepEqual(
+    parent.control.snapshot()!.agents.map(agent => agent.id),
+    [nextId],
+  );
+  assert.deepEqual(parent.control.snapshot()!.messages, []);
+  const count = observed.length;
+  await assert.rejects(
+    reporter.execute('agent_send', {id: 'parent', message: 'Stale'}),
+    /closed/,
+  );
+  assert.equal(observed.length, count);
+  unsubscribe();
+  await workers.byId
+    .get(nextId)!
+    .execute('agent_send', {id: 'parent', message: 'Fresh'});
+  assert.equal(observed.length, count);
+  assert.equal(parent.control.snapshot()!.messages[0].message, 'Fresh');
 });
