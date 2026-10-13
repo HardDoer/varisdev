@@ -14,6 +14,12 @@ import {join} from 'node:path';
 import {registerProjectTools} from '../tools/index.ts';
 import type {AgentWorker} from './orchestrator.ts';
 import {createWorkerModelRuntime} from './model-runtime.ts';
+import {
+  modelUsage,
+  compactionUsage,
+  ModelUsageTracker,
+  type ModelUsageCall,
+} from '../usage.ts';
 
 interface WorkerOptions {
   id: string;
@@ -32,10 +38,45 @@ export function sessionWorker(
   session: AgentSession,
   resultFile: string,
 ): AgentWorker {
+  const usage = new ModelUsageTracker();
+  function restoreUsage(): void {
+    const branch = session.sessionManager.getBranch?.();
+    if (!branch) return;
+    function* calls(): Generator<{call: ModelUsageCall; sequence: number}> {
+      let sequence = 0;
+      let summarySequence = 0;
+      let summaryModel: string | undefined;
+      for (const entry of branch!) {
+        if (entry.type === 'model_change')
+          summaryModel = `${entry.provider}/${entry.modelId}`;
+        if (entry.type === 'compaction') {
+          summarySequence++;
+          const call = compactionUsage(entry, summaryModel);
+          if (call) yield {call, sequence: summarySequence};
+          continue;
+        }
+        if (entry.type !== 'message') continue;
+        const message = entry.message;
+        if (message.role !== 'user' && message.role !== 'assistant') continue;
+        sequence++;
+        if (message.role !== 'assistant') continue;
+        const call = modelUsage(message, {
+          id: `message-assistant-${message.timestamp}-${sequence}`,
+          at: new Date(message.timestamp).toISOString(),
+        });
+        if (call) yield {call, sequence};
+      }
+    }
+    usage.replace(calls());
+  }
+  restoreUsage();
   return {
     sessionFile: session.sessionManager.getSessionFile(),
     resultFile,
-    async run(message, signal, onActivity) {
+    get usage() {
+      return usage.snapshot();
+    },
+    async run(message, signal, onActivity, onUsage) {
       signal.throwIfAborted();
       let aborting: Promise<void> | undefined;
       const abort = () => {
@@ -44,6 +85,37 @@ export function sessionWorker(
         aborting = session.abort().catch(() => {});
       };
       const unsubscribe = session.subscribe(event => {
+        if (
+          event.type === 'message_end' &&
+          event.message.role === 'assistant'
+        ) {
+          let sequence = 0;
+          let found = false;
+          for (const entry of session.sessionManager.getBranch?.() ?? []) {
+            if (entry.type !== 'message') continue;
+            if (
+              entry.message.role !== 'user' &&
+              entry.message.role !== 'assistant'
+            )
+              continue;
+            sequence++;
+            if (entry.message === event.message) {
+              found = true;
+              break;
+            }
+          }
+          // SDK listeners run before this assistant message is appended to history.
+          if (!found) sequence++;
+          const call = modelUsage(event.message, {
+            id: `message-assistant-${event.message.timestamp}-${sequence}`,
+            at: new Date(event.message.timestamp).toISOString(),
+          });
+          if (call && usage.record(call, sequence)) onUsage?.(usage.snapshot());
+        }
+        if (event.type === 'compaction_end' && event.result && !event.aborted) {
+          restoreUsage();
+          onUsage?.(usage.snapshot());
+        }
         // Abort again if cancellation happened during prompt preflight.
         if (signal.aborted) {
           if (event.type === 'agent_start') abort();
@@ -88,8 +160,13 @@ export function sessionWorker(
         return output;
       } finally {
         signal.removeEventListener('abort', abort);
-        unsubscribe();
-        await aborting;
+        try {
+          await aborting;
+          restoreUsage();
+          onUsage?.(usage.snapshot());
+        } finally {
+          unsubscribe();
+        }
       }
     },
     dispose() {

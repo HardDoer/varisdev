@@ -4,6 +4,15 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 import type {DashboardState} from '../dashboard/state.ts';
+import {
+  sessionConfiguration,
+  compactionInstructions,
+  type QueuedPrompt,
+} from '../dashboard/hub.ts';
+import type {
+  SessionFeatures,
+  SessionConfiguration,
+} from '../dashboard/features.ts';
 import {requestId} from './ipc.ts';
 
 const execute = promisify(execFile);
@@ -11,9 +20,14 @@ const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
 export interface FactoryControl {
-  readonly pendingPrompts?: number;
+  readonly queuedPrompts: QueuedPrompt[];
+  removeQueuedPrompt(promptId: string): void | Promise<void>;
   prompt(text: string): void | Promise<void>;
   abort(): void | Promise<void>;
+  features(): Promise<SessionFeatures>;
+  configure(input: SessionConfiguration): Promise<void>;
+  compact(instructions?: string): Promise<void>;
+  reload(): Promise<void>;
 }
 
 export interface FactoryWindow {
@@ -51,7 +65,7 @@ export function createFactoryBridge(
         type: 'snapshot',
         snapshot: attachment.state.snapshot(),
         controllable: true,
-        pendingPrompts: attachment.control.pendingPrompts ?? 0,
+        queuedPrompts: structuredClone(attachment.control.queuedPrompts),
       },
       () => {
         sending = false;
@@ -91,15 +105,16 @@ export function createFactoryBridge(
       id?: unknown;
       sessionId?: unknown;
       action?: unknown;
-      prompt?: unknown;
+      input?: unknown;
     };
     if (request.type !== 'request' || !requestId(request.id)) return;
     const id = request.id;
-    const reply = (ok: boolean, error?: string) =>
+    const reply = (ok: boolean, error?: string, value?: unknown) =>
       send({
         type: 'reply',
         id,
         ok,
+        ...(value === undefined ? {} : {value: structuredClone(value)}),
         ...(error ? {error: error.slice(0, 2000)} : {}),
       });
     if (requests.has(id)) return;
@@ -117,17 +132,41 @@ export function createFactoryBridge(
       reply(false, 'This Pi session is no longer attached to the factory.');
       return;
     }
-    if (request.action !== 'prompt' && request.action !== 'abort') {
+    if (
+      request.action !== 'prompt' &&
+      request.action !== 'abort' &&
+      request.action !== 'removeQueuedPrompt' &&
+      request.action !== 'features' &&
+      request.action !== 'configure' &&
+      request.action !== 'compact' &&
+      request.action !== 'reload'
+    ) {
       reply(false, 'Unknown factory request.');
       return;
     }
     if (
       request.action === 'prompt' &&
-      (typeof request.prompt !== 'string' ||
-        !request.prompt.trim() ||
-        request.prompt.length > 64000)
+      (typeof request.input !== 'string' ||
+        !request.input.trim() ||
+        request.input.length > 64000)
     ) {
       reply(false, 'Prompt must contain 1 to 64000 characters.');
+      return;
+    }
+    if (request.action === 'removeQueuedPrompt' && !requestId(request.input)) {
+      reply(false, 'Choose a valid queued prompt.');
+      return;
+    }
+    try {
+      if (request.action === 'configure')
+        request.input = sessionConfiguration(request.input);
+      if (request.action === 'compact')
+        request.input = compactionInstructions(request.input);
+    } catch (error) {
+      reply(
+        false,
+        error instanceof Error ? error.message : 'Invalid session settings.',
+      );
       return;
     }
     requests.add(id);
@@ -135,12 +174,24 @@ export function createFactoryBridge(
       .then(async () => {
         if (attachment !== current)
           throw new Error('The attached Pi session changed.');
+        let value: unknown;
         if (request.action === 'prompt')
-          await current.control.prompt((request.prompt as string).trim());
+          await current.control.prompt((request.input as string).trim());
+        else if (request.action === 'removeQueuedPrompt')
+          await current.control.removeQueuedPrompt(request.input as string);
+        else if (request.action === 'features')
+          value = await current.control.features();
+        else if (request.action === 'configure')
+          await current.control.configure(
+            request.input as SessionConfiguration,
+          );
+        else if (request.action === 'compact')
+          await current.control.compact(request.input as string | undefined);
+        else if (request.action === 'reload') await current.control.reload();
         else await current.control.abort();
         if (attachment !== current)
           throw new Error('The attached Pi session changed.');
-        reply(true);
+        reply(true, undefined, value);
       })
       .catch(error => {
         reply(
@@ -260,6 +311,10 @@ export class FactoryLauncher {
     this.open = open;
   }
 
+  get isOpen(): boolean {
+    return !!this.starting || !!this.window?.connected;
+  }
+
   async launch(
     state: DashboardState,
     control: FactoryControl,
@@ -302,6 +357,7 @@ const shared = globalThis as typeof globalThis & {
 };
 const launcher = (shared[key] ??= new FactoryLauncher());
 
+export const factoryIsOpen = (): boolean => launcher.isOpen;
 export const launchFactory = (
   state: DashboardState,
   control: FactoryControl,

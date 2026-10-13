@@ -10,10 +10,14 @@ import {
 import {isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {DashboardInputError} from '../dashboard/errors.ts';
-import {DashboardHub} from '../dashboard/hub.ts';
+import {DashboardHub, isQueuedPrompts} from '../dashboard/hub.ts';
 import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
-import {ExternalSessionRequests} from './ipc.ts';
+import {ExternalSessionRequests, requestId} from './ipc.ts';
+import type {
+  SessionFeatures,
+  SessionConfiguration,
+} from '../dashboard/features.ts';
 
 app.setName('VarisDev Factory');
 
@@ -57,6 +61,15 @@ const externalControl = {
   prompt: (sessionId: string, prompt: string) =>
     requests.request('prompt', sessionId, prompt),
   abort: (sessionId: string) => requests.request('abort', sessionId),
+  removeQueuedPrompt: (sessionId: string, promptId: string) =>
+    requests.request('removeQueuedPrompt', sessionId, promptId),
+  features: (sessionId: string) =>
+    requests.request<SessionFeatures>('features', sessionId),
+  configure: (sessionId: string, input: SessionConfiguration) =>
+    requests.request('configure', sessionId, input),
+  compact: (sessionId: string, instructions?: string) =>
+    requests.request('compact', sessionId, instructions),
+  reload: (sessionId: string) => requests.request('reload', sessionId),
 };
 
 function isLocalPage(url: string): boolean {
@@ -115,6 +128,24 @@ function installHandlers(): void {
     hub.promptSession(id(sessionId), input),
   );
   handle('pidev:abort-session', sessionId => hub.abortSession(id(sessionId)));
+  handle('pidev:remove-queued-prompt', (sessionId, promptId) => {
+    if (!requestId(promptId))
+      throw new DashboardInputError('Choose a valid queued prompt.');
+    return hub.removeQueuedPrompt(id(sessionId), promptId);
+  });
+  handle('pidev:respond-to-dialog', (sessionId, dialogId, value) =>
+    hub.respondToDialog(id(sessionId), dialogId, value),
+  );
+  handle('pidev:session-features', sessionId =>
+    hub.sessionFeatures(id(sessionId)),
+  );
+  handle('pidev:configure-session', (sessionId, input) =>
+    hub.configureSession(id(sessionId), input),
+  );
+  handle('pidev:compact-session', (sessionId, instructions) =>
+    hub.compactSession(id(sessionId), instructions),
+  );
+  handle('pidev:reload-session', sessionId => hub.reloadSession(id(sessionId)));
   handle('pidev:workspace', sessionId => hub.workspace(id(sessionId)));
   handle('pidev:choose-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
@@ -242,19 +273,20 @@ process.on('message', (message: unknown) => {
     type?: unknown;
     snapshot?: unknown;
     controllable?: unknown;
-    pendingPrompts?: unknown;
+    queuedPrompts?: unknown;
     sessionId?: unknown;
   };
-  if (payload.type === 'snapshot' && externalSnapshot(payload.snapshot)) {
+  if (
+    payload.type === 'snapshot' &&
+    externalSnapshot(payload.snapshot) &&
+    isQueuedPrompts(payload.queuedPrompts)
+  ) {
     const nextId =
       payload.controllable === true ? payload.snapshot.session.id : undefined;
     if (attachedSessionId !== nextId)
       requests.disconnect('The attached Pi session changed.');
     attachedSessionId = nextId;
-    hub.updateExternal(
-      payload.snapshot,
-      typeof payload.pendingPrompts === 'number' ? payload.pendingPrompts : 0,
-    );
+    hub.updateExternal(payload.snapshot, payload.queuedPrompts);
     hub.setExternalControl(nextId ? externalControl : undefined);
   } else if (
     payload.type === 'detach' &&
@@ -318,5 +350,9 @@ void app
   })
   .catch(error => {
     console.error('Could not start VarisDev Factory:', error);
+    dialog.showErrorBox(
+      'VarisDev could not start',
+      error instanceof Error ? error.message : String(error),
+    );
     app.quit();
   });

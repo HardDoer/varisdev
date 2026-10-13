@@ -4,8 +4,15 @@ export interface FactoryRequest {
   type: 'request';
   id: string;
   sessionId: string;
-  action: 'prompt' | 'abort';
-  prompt?: string;
+  action:
+    | 'prompt'
+    | 'abort'
+    | 'removeQueuedPrompt'
+    | 'features'
+    | 'configure'
+    | 'compact'
+    | 'reload';
+  input?: unknown;
 }
 
 export function requestId(value: unknown): value is string {
@@ -17,7 +24,7 @@ export class ExternalSessionRequests {
   private readonly pending = new Map<
     string,
     {
-      resolve: () => void;
+      resolve: (value: unknown) => void;
       reject: (error: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -37,11 +44,11 @@ export class ExternalSessionRequests {
     this.timeoutMs = timeoutMs;
   }
 
-  request(
+  request<T = void>(
     action: FactoryRequest['action'],
     sessionId: string,
-    prompt?: string,
-  ): Promise<void> {
+    input?: unknown,
+  ): Promise<T> {
     if (!this.connected())
       return Promise.reject(new Error('The attached Pi session disconnected.'));
     if (this.pending.size >= 32)
@@ -49,7 +56,7 @@ export class ExternalSessionRequests {
         new Error('The attached Pi session already has 32 pending requests.'),
       );
     const id = randomUUID();
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(
@@ -58,13 +65,17 @@ export class ExternalSessionRequests {
           ),
         );
       }, this.timeoutMs);
-      this.pending.set(id, {resolve, reject, timer});
+      this.pending.set(id, {
+        resolve: value => resolve(value as T),
+        reject,
+        timer,
+      });
       void this.send({
         type: 'request',
         id,
         sessionId,
         action,
-        ...(prompt === undefined ? {} : {prompt}),
+        ...(input === undefined ? {} : {input}),
       }).catch(error => {
         const pending = this.pending.get(id);
         if (!pending) return;
@@ -86,6 +97,7 @@ export class ExternalSessionRequests {
       id?: unknown;
       ok?: unknown;
       error?: unknown;
+      value?: unknown;
     };
     if (
       reply.type !== 'reply' ||
@@ -97,7 +109,7 @@ export class ExternalSessionRequests {
     if (!pending) return true;
     clearTimeout(pending.timer);
     this.pending.delete(reply.id);
-    if (reply.ok) pending.resolve();
+    if (reply.ok) pending.resolve(reply.value);
     else
       pending.reject(
         new Error(

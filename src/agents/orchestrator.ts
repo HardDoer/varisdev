@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {copyModelUsage, type ModelUsage} from '../usage.ts';
 
 export type AgentStatus =
   'queued' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
@@ -24,15 +25,18 @@ export interface AgentRecord extends AgentSpec {
   error?: string;
   sessionFile?: string;
   resultFile?: string;
+  usage?: ModelUsage;
 }
 
 export interface AgentWorker {
   sessionFile?: string;
   resultFile?: string;
+  readonly usage?: ModelUsage;
   run(
     message: string,
     signal: AbortSignal,
     onActivity: (activity: string) => void,
+    onUsage?: (usage: ModelUsage) => void,
   ): Promise<string>;
   dispose(): void;
 }
@@ -80,6 +84,13 @@ interface Job {
 
 export function isAgentFinished(status: AgentStatus): boolean {
   return ['completed', 'failed', 'cancelled'].includes(status);
+}
+
+function copyRecord(record: AgentRecord): AgentRecord {
+  return {
+    ...record,
+    usage: record.usage ? copyModelUsage(record.usage) : undefined,
+  };
 }
 
 function formatDuration(ms: number): string {
@@ -132,11 +143,11 @@ export class AgentOrchestrator {
   }
 
   get(id: string): AgentRecord {
-    return {...this.job(id).record};
+    return copyRecord(this.job(id).record);
   }
 
   list(): AgentRecord[] {
-    return [...this.jobs.values()].map(job => ({...job.record}));
+    return [...this.jobs.values()].map(job => copyRecord(job.record));
   }
 
   spawn(
@@ -362,7 +373,13 @@ export class AgentOrchestrator {
     }
   }
 
+  private captureUsage(job: Job): void {
+    const usage = job.worker?.usage;
+    if (usage) job.record.usage = copyModelUsage(usage);
+  }
+
   private dispose(job: Job): void {
+    this.captureUsage(job);
     const worker = job.worker;
     job.worker = undefined;
     job.createWorker = undefined;
@@ -434,6 +451,7 @@ export class AgentOrchestrator {
           job.worker = await job.createWorker!(job.record.id);
           job.record.sessionFile = job.worker.sessionFile;
           job.record.resultFile = job.worker.resultFile;
+          this.captureUsage(job);
         }
         signal.throwIfAborted();
         // Queue edits can remove all work while the worker is starting.
@@ -449,11 +467,20 @@ export class AgentOrchestrator {
         job.record.activity = 'Working';
         this.changed();
         signal.throwIfAborted();
-        const output = await job.worker.run(message, signal, activity => {
-          if (signal.aborted) return;
-          job.record.activity = activity;
-          this.changed();
-        });
+        const output = await job.worker.run(
+          message,
+          signal,
+          activity => {
+            if (signal.aborted) return;
+            job.record.activity = activity;
+            this.changed();
+          },
+          usage => {
+            // Cancellation does not erase tokens the provider has already reported.
+            job.record.usage = copyModelUsage(usage);
+            this.changed();
+          },
+        );
         signal.throwIfAborted();
         job.record.output =
           output.length > 12000
@@ -476,6 +503,7 @@ export class AgentOrchestrator {
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
+      this.captureUsage(job);
       if (job.record.autoCleanup || job.record.status !== 'completed') {
         this.dispose(job);
       }

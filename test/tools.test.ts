@@ -116,6 +116,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     registerCommand() {},
     registerEntryRenderer() {},
     registerMarkdownTransformer() {},
+    events: {on: () => () => {}},
   } as unknown as ExtensionAPI;
 
   registerVarisdev(pi);

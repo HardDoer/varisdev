@@ -2,6 +2,12 @@ import type {AgentRecord} from '../agents/orchestrator.ts';
 import {isAgentFinished} from '../agents/orchestrator.ts';
 import type {ParentMessage} from '../agents/team.ts';
 import type {UnitChange} from './changes.ts';
+import {
+  copyModelUsage,
+  ModelUsageTracker,
+  type ModelUsage,
+  type ModelUsageCall,
+} from '../usage.ts';
 
 export interface DashboardSession {
   id: string;
@@ -35,12 +41,17 @@ export interface DashboardAgent extends AgentRecord {
 
 export interface ConversationMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool';
   text: string;
   at: string;
   streaming?: boolean;
   truncated?: boolean;
   error?: string;
+  toolName?: string;
+  toolCallId?: string;
+  input?: string;
+  status?: 'running' | 'completed' | 'failed' | 'cancelled';
+  finishedAt?: string;
 }
 
 export interface DashboardSnapshot {
@@ -51,6 +62,7 @@ export interface DashboardSnapshot {
   changes: UnitChange[];
   conversation: ConversationMessage[];
   conversationTruncated: boolean;
+  usage: ModelUsage;
 }
 
 const textLimit = 16000;
@@ -66,6 +78,7 @@ function preview(text: string, limit = textLimit): string {
 function projectAgent(agent: AgentRecord): DashboardAgent {
   return {
     ...agent,
+    usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
     task: preview(agent.task),
     activity: preview(agent.activity, 2000),
     output: agent.output === undefined ? undefined : preview(agent.output),
@@ -77,7 +90,35 @@ function projectAgent(agent: AgentRecord): DashboardAgent {
   };
 }
 
-/** A bounded view of the live session; never reads transcripts or credentials. */
+function projectMessage(message: ConversationMessage): ConversationMessage {
+  return {
+    ...message,
+    text: preview(message.text),
+    input:
+      message.input === undefined ? undefined : preview(message.input, 8000),
+    error:
+      message.error === undefined ? undefined : preview(message.error, 4000),
+    toolName:
+      message.toolName === undefined
+        ? undefined
+        : preview(message.toolName, 200),
+    truncated:
+      !!message.truncated ||
+      message.text.length > textLimit ||
+      (message.input?.length ?? 0) > 8000 ||
+      (message.error?.length ?? 0) > 4000,
+  };
+}
+
+function messageSize(message: ConversationMessage): number {
+  return (
+    message.text.length +
+    (message.input?.length ?? 0) +
+    (message.error?.length ?? 0)
+  );
+}
+
+/** A bounded view of the live session and public conversation text. */
 export class DashboardState {
   private session: DashboardSession;
   private agents: DashboardAgent[] = [];
@@ -86,13 +127,17 @@ export class DashboardState {
   private readonly changes: UnitChange[] = [];
   private conversation: ConversationMessage[] = [];
   private conversationTruncated = false;
+  private readonly usage = new ModelUsageTracker();
   private previousAgents = new Map<string, DashboardAgent>();
   private seenMessages = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private sequence = 0;
 
   constructor(session: DashboardSession) {
-    this.session = {...session};
+    this.session = {
+      ...session,
+      context: session.context ? {...session.context} : undefined,
+    };
   }
 
   subscribe(listener: () => void): () => void {
@@ -136,6 +181,8 @@ export class DashboardState {
     this.session = {
       ...this.session,
       ...patch,
+      ...(patch.context ? {context: {...patch.context}} : {}),
+      ...(patch.error !== undefined ? {error: preview(patch.error, 4000)} : {}),
       ...(patch.prompt !== undefined ? {prompt: preview(patch.prompt)} : {}),
       ...(patch.response !== undefined
         ? {response: preview(patch.response)}
@@ -206,36 +253,67 @@ export class DashboardState {
 
   private trimConversation(): void {
     let size = this.conversation.reduce(
-      (total, message) => total + message.text.length,
+      (total, message) => total + messageSize(message),
       0,
     );
     while (this.conversation.length > 100 || size > 160000) {
-      size -= this.conversation.shift()!.text.length;
+      size -= messageSize(this.conversation.shift()!);
       this.conversationTruncated = true;
     }
   }
 
-  replaceConversation(messages: ConversationMessage[]): void {
-    this.conversation = messages.map(message => ({
-      ...message,
-      text: preview(message.text),
-      truncated: message.text.length > textLimit,
-    }));
+  replaceConversation(messages: Iterable<ConversationMessage>): void {
+    this.conversation = [];
     this.conversationTruncated = false;
-    this.trimConversation();
+    for (const message of messages) {
+      const index = this.conversation.findIndex(item => item.id === message.id);
+      const previous = this.conversation[index];
+      const entry = projectMessage({
+        ...previous,
+        ...message,
+        at: previous?.at ?? message.at,
+      });
+      if (index < 0) this.conversation.push(entry);
+      else this.conversation[index] = entry;
+      this.trimConversation();
+    }
     this.changed();
   }
 
   updateConversation(message: ConversationMessage): void {
-    const entry = {
-      ...message,
-      text: preview(message.text),
-      truncated: message.text.length > textLimit,
-    };
+    const entry = projectMessage(message);
     const index = this.conversation.findIndex(item => item.id === entry.id);
     if (index < 0) this.conversation.push(entry);
     else this.conversation[index] = entry;
     this.trimConversation();
+    this.changed();
+  }
+
+  conversationMessage(id: string): ConversationMessage | undefined {
+    const message = this.conversation.find(item => item.id === id);
+    return message ? {...message} : undefined;
+  }
+
+  settleConversation(): void {
+    const now = new Date().toISOString();
+    for (const message of this.conversation) {
+      if (message.streaming) message.streaming = false;
+      if (message.role === 'tool' && message.status === 'running') {
+        message.status = 'cancelled';
+        message.finishedAt = now;
+      }
+    }
+    this.changed();
+  }
+
+  recordUsage(call: ModelUsageCall, sequence: number): void {
+    if (this.usage.record(call, sequence)) this.changed();
+  }
+
+  replaceUsage(
+    calls: Iterable<{call: ModelUsageCall; sequence: number}>,
+  ): void {
+    this.usage.replace(calls);
     this.changed();
   }
 
@@ -257,12 +335,16 @@ export class DashboardState {
         ...this.session,
         context: this.session.context ? {...this.session.context} : undefined,
       },
-      agents: this.agents.map(agent => ({...agent})),
+      agents: this.agents.map(agent => ({
+        ...agent,
+        usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
+      })),
       totalAgents: this.totalAgents,
       events: this.events.map(event => ({...event})),
       changes: this.changes.map(change => ({...change})),
       conversation: this.conversation.map(message => ({...message})),
       conversationTruncated: this.conversationTruncated,
+      usage: this.usage.snapshot(),
     };
   }
 }

@@ -34,7 +34,7 @@ function getTerminalTitle(ctx?: ExtensionContext): string {
 
 function applyTerminalTitle(ctx?: ExtensionContext): void {
   const terminalTitle = getTerminalTitle(ctx);
-  process.title = terminalTitle;
+  if (ctx?.mode === 'tui') process.title = terminalTitle;
 
   if (ctx?.hasUI) {
     ctx.ui.setTitle(terminalTitle);
@@ -202,6 +202,14 @@ export default function (pi: ExtensionAPI) {
   registerImagePreviews(pi);
   registerProjectTools(pi);
   const agents = registerAgentTools(pi);
+  // The desktop observer shares this controller when this extension is loaded.
+  // Resource loaders execute configured extensions before their inline factories.
+  const releaseController = pi.events.on(
+    'varisdev:dashboard-controller',
+    request => {
+      (request as {control?: typeof agents}).control = agents;
+    },
+  );
   registerFactory(pi, agents);
   registerCommitCommand(pi);
   registerCompletionAlert(pi);
@@ -218,6 +226,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on('session_shutdown', async () => {
+    releaseController();
     stopKeepingTerminalTitle();
   });
 

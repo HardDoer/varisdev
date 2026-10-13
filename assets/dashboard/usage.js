@@ -1,0 +1,189 @@
+/* global document, localStorage */
+const $ = id => document.getElementById(id);
+const number = value => new Intl.NumberFormat().format(value || 0);
+const cost = value => `$${(value || 0).toFixed(4)}`;
+let current;
+let reveal;
+const targets = new Map();
+const selectedUnits = new Map();
+let latest;
+
+function setText(id, value) {
+  const element = $(id);
+  if (element.textContent !== value) element.textContent = value;
+}
+function meter(id, used, limit) {
+  const element = $(id);
+  const percent =
+    limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0;
+  element.style.setProperty('--used', `${percent}%`);
+  element.setAttribute('aria-valuenow', String(used || 0));
+  element.setAttribute('aria-valuemax', String(limit || 1));
+  element.classList.toggle('over-budget', limit > 0 && used > limit);
+}
+function budget() {
+  if (!current) return;
+  const target = targets.get(current.session.id) || 0;
+  $('token-budget-meter').hidden = !target;
+  $('token-budget-description').hidden = !target;
+  meter('token-budget-meter', current.usage?.totalTokens || 0, target);
+  setText(
+    'token-budget-description',
+    `${number(current.usage?.totalTokens)} of ${number(target)} tokens · visual target only`,
+  );
+}
+export function initUsage(onReveal) {
+  reveal = onReveal;
+  $('usage-unit').addEventListener('change', () => {
+    if (!latest) return;
+    selectedUnits.set(latest.session.id, $('usage-unit').value);
+    renderUsage(latest);
+  });
+  $('token-budget').addEventListener('input', () => {
+    if (!current) return;
+    const value = Number($('token-budget').value);
+    const target = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    targets.set(current.session.id, target);
+    try {
+      localStorage.setItem(
+        `varisdev-token-target:${current.session.id}`,
+        String(target),
+      );
+    } catch {
+      // Targets remain available for this window when storage is unavailable.
+    }
+    budget();
+  });
+}
+export function renderUsage(snapshot) {
+  latest = snapshot;
+  const units = [
+    {id: 'parent', name: `${snapshot.session.name} · parent`},
+    ...snapshot.agents.map(agent => ({
+      id: agent.id,
+      name: `${agent.name} · worker`,
+    })),
+  ];
+  const selector = $('usage-unit');
+  const unitsSignature = JSON.stringify(units);
+  if (selector.dataset.signature !== unitsSignature) {
+    selector.dataset.signature = unitsSignature;
+    selector.replaceChildren(
+      ...units.map(unit => {
+        const option = document.createElement('option');
+        option.value = unit.id;
+        option.textContent = unit.name;
+        return option;
+      }),
+    );
+  }
+  const worker = snapshot.agents.find(
+    agent => agent.id === selectedUnits.get(snapshot.session.id),
+  );
+  selector.value = worker?.id || 'parent';
+  const data = worker
+    ? {
+        session: {id: `${snapshot.session.id}/${worker.id}`, name: worker.name},
+        usage: worker.usage,
+      }
+    : snapshot;
+  $('usage-context-section').hidden = !!worker;
+  const changedSession = current?.session.id !== data.session.id;
+  current = data;
+  if (changedSession) {
+    let target = targets.get(data.session.id);
+    if (target === undefined) {
+      try {
+        target =
+          Number(
+            localStorage.getItem(`varisdev-token-target:${data.session.id}`),
+          ) || 0;
+      } catch {
+        target = 0;
+      }
+      targets.set(data.session.id, target);
+    }
+    $('token-budget').value = target > 0 ? String(target) : '';
+  }
+  const usage = data.usage || {};
+  const context = data.session.context;
+  setText('usage-recipient', `Model usage for ${data.session.name}`);
+  setText(
+    'usage-context',
+    typeof context?.tokens !== 'number'
+      ? 'Available after the next response'
+      : `${number(context.tokens)} / ${number(context.window)} tokens`,
+  );
+  meter('context-budget-meter', context?.tokens, context?.window);
+  $('context-budget-meter').hidden = typeof context?.tokens !== 'number';
+  setText('usage-input', number(usage.input));
+  setText('usage-output', number(usage.output));
+  setText('usage-cache-read', number(usage.cacheRead));
+  setText('usage-cache-write', number(usage.cacheWrite));
+  setText('usage-total', number(usage.totalTokens));
+  setText('usage-cost', cost(usage.cost));
+  const total =
+    (usage.input || 0) +
+    (usage.output || 0) +
+    (usage.cacheRead || 0) +
+    (usage.cacheWrite || 0);
+  for (const [id, key] of [
+    ['input', 'input'],
+    ['output', 'output'],
+    ['cache-read', 'cacheRead'],
+    ['cache-write', 'cacheWrite'],
+  ]) {
+    $(`usage-bar-${id}`).style.width =
+      `${total ? ((usage[key] || 0) / total) * 100 : 0}%`;
+  }
+  $('usage-breakdown').setAttribute(
+    'aria-label',
+    `Input ${number(usage.input)}, output ${number(usage.output)}, cache read ${number(usage.cacheRead)}, cache write ${number(usage.cacheWrite)} tokens`,
+  );
+  const calls = usage.calls || [];
+  const tbody = $('usage-calls');
+  const signature = JSON.stringify(calls);
+  if (tbody.dataset.signature !== signature || changedSession) {
+    tbody.dataset.signature = signature;
+    tbody.replaceChildren(
+      ...calls.toReversed().map(call => {
+        const row = document.createElement('tr');
+        const description = document.createElement('td');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'usage-call-link';
+        button.textContent =
+          call.kind === 'compaction'
+            ? 'Compaction summary'
+            : call.toolNames?.length
+              ? `Requested ${call.toolNames.join(', ')}`
+              : 'Assistant response';
+        button.disabled = !!worker || call.kind === 'compaction';
+        button.title = worker
+          ? 'Worker call details are saved in its session file.'
+          : 'Show this model call in Conversation';
+        button.addEventListener('click', () => reveal(call));
+        const detail = document.createElement('small');
+        detail.textContent = `${new Date(call.at).toLocaleTimeString()} · ${call.model}${call.stopReason === 'error' ? ' · Error' : call.stopReason === 'aborted' ? ' · Stopped' : ''}`;
+        description.append(button, detail);
+        row.append(description);
+        for (const value of [
+          number(call.input),
+          number(call.output),
+          number(call.cacheRead),
+          number(call.cacheWrite),
+          cost(call.cost),
+        ]) {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          row.append(cell);
+        }
+        return row;
+      }),
+    );
+  }
+  $('usage-empty').hidden = calls.length > 0;
+  $('usage-table').hidden = calls.length === 0;
+  $('usage-truncated').hidden = !usage.truncated;
+  budget();
+}

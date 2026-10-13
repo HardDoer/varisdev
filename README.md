@@ -21,34 +21,63 @@ Varisware VarisDev package.
 
 ## Desktop factory app
 
-Launch the desktop app from this repository:
+On macOS, install the app once from this repository:
 
 ```sh
 npm install
+npm run desktop:install
 npm run desktop
 ```
 
-The app opens its own native window with a folder picker. Use **New session** to choose a project and give its master robot a prompt. It uses your existing Pi model settings and credentials.
+Then open **VarisDev** from `~/Applications/VarisDev.app` in Finder, Spotlight, or the Dock. This opens the GUI directly with no terminal window. You can close the terminal used for installation. `npm run desktop` and `npm run desktop:open` compile the current desktop code, open the installed app, and return after launch. Reopening the app focuses its existing window and sessions.
 
-Pidev opens the desktop app automatically on interactive startup. After updating the extension, use `/reload` to activate it. `/factory` focuses or reopens the window. Local process messaging connects the original pidev session, including prompting, stopping work, and live conversation history.
+Use **New parent** to choose a project and give its master robot a prompt. Electron owns the Pi SDK sessions, model API calls, coding tools, and worker teams. It reads your existing Pi credentials, model settings, project context, and session storage from the usual Pi directories (normally `~/.pi/agent`). There is no terminal session hosting the app.
+
+The `pi` command starts Pi's terminal interface. Use the VarisDev app for the graphical interface. `/factory` inside Pi opens an optional companion window for an existing terminal conversation; that conversation continues to belong to its terminal process. Terminal startup does not open the GUI automatically. The companion reconnects when the terminal extension reloads.
 
 Each parent conversation has a factory and a master robot. Background agents appear as drones at workstations. Working drones stay visible automatically; labels show their task and current action. Dispatch beams and sparks follow actual starts and completions. The session overview shows the other parent robots and their activity, so work in another folder stays visible too.
 
 Select a robot or drone to inspect its task, model, folder, elapsed time, queued instructions, response, errors, and saved result paths. The activity feed follows session events, tools, worker messages, and status changes. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL.
 
-The prompt field supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions.
+The conversation shows user prompts, streaming replies, and live tool calls with their inputs, progress, results, and errors. Tool history remains visible after the call finishes. The top bar stays visible while the factory column and conversation scroll independently.
+
+**Skills & commands** lists the current project's skills, prompt templates, extension commands, and available tools. Search the list or type `/` in the composer for suggestions; Enter or Tab inserts a command, then add any arguments and send it. Skills and templates use Pi's normal expansion. Configured project and user extensions load in the desktop runtime.
+
+**Model & settings** selects the model and thinking level, compacts the conversation, and reloads skills, templates, and extensions while the session is idle. Extension selections, confirmations, inputs, and editors appear as dialogs in the app. Extension notifications remain in Conversation until dismissed. Custom terminal dialogs render inside the GUI and receive keyboard input there. Extensions that supply an editor or autocomplete provider expose an **Extension editor** button. It opens their editor with your draft and returns submitted text to the composer.
+
+**Tokens** shows context occupancy separately from cumulative recorded model usage: input, output, cache reads, cache writes, and estimated cost by response. Set an optional token target to visualize progress; it does not stop a run. Model usage comes from saved assistant usage records and configured model rates. Tool execution and UI actions add no model tokens themselves; tool results can consume input tokens on later calls. Individual files, skills, and tool results do not have exact token counts in provider reports. Choose the parent or an individual worker in the usage selector. Each has separate totals that remain available after its run finishes. Recorded compaction summaries also count; one summary row can combine several model calls. Failed compaction attempts do not expose usage. Image and audio services have separate billing.
+
+The composer stays at the bottom of the conversation. It supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions. **Up next** shows waiting prompts in order; remove an individual prompt before it starts. **Esc** or **Stop** cancels the active parent's work and clears its queue without clearing your draft. Dialogs handle Esc within their own interaction. Thinking, writing, and tool execution have distinct activity indicators; stopping pauses the scene immediately and shows a brief comic brake effect. Reduced motion disables these animations.
 
 Choose a ready-made palette from **Theme**: Factory, Nord, Dracula, Catppuccin Mocha, Solarized Light, or High Contrast. The choice applies to the interface and the 3D factory and is saved locally. Text contrast, visible keyboard focus, and named status labels keep the interface readable. The app uses an original robot crow icon.
 
 **Changes** shows successful `edit` and `write` operations attributed to the robot or drone that made them, with file paths and bounded diffs. Tracking begins when the extension loads. The dashboard retains the latest 100 change records and 160 activity events per parent. **Workspace diff** reads current Git changes, including staged, unstaged, and untracked files. This folder view can include earlier changes and shell commands from any unit sharing that folder. It refreshes on request. File changes tracked through the tools also work outside Git repositories.
 
-Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, send follow-up prompts, and stop their work from the app. Follow-ups wait for the parent's current prompt to finish. Stopping a parent clears its queued prompts and cancels its workers. The original connected pidev session is also controlled from the GUI.
+Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, send follow-up prompts, and stop their work from the app. Follow-ups wait for the parent's current prompt to finish. Stopping a parent clears its queued prompts and cancels its workers. When opened with `/factory`, the connected terminal conversation can also be controlled from the GUI.
 
 Opening the app creates no sessions or workers. New sessions start only when you submit their form. Worker drones represent pidev's existing delegation behavior; visual effects never trigger work.
 
-Electron runs the desktop window and the session runtime; graphics are loaded from local files. Closing the app stops the connected pidev run and its workers, and closes parents created in the app. Reloading extensions or switching the connected pidev session reuses the window and keeps the app's independent sessions running. Quitting the hosting pidev process closes its connected window. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
+Electron runs the desktop window and the session runtime; graphics are loaded from local files. Closing the app stops its parents and workers. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
 
-`npm run desktop:build` compiles the desktop entry point. This repository currently runs the app from source.
+### App updates and environment
+
+The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
+
+After backend changes, quit VarisDev and run `npm run desktop` to compile and reopen it. Finder launches use the most recent build; run `npm run desktop:build` before opening from Finder after source changes. GUI assets are read directly from the checkout on launch or **View → Reload**. Reloading the window keeps its running sessions; backend changes require restarting the app.
+
+After launcher changes, Electron updates, or moving the checkout, quit VarisDev and run `npm run desktop:install` again. The installer refuses to replace a running app. Removing `~/Applications/VarisDev.app` uninstalls the launcher; saved Pi sessions remain in their usual location.
+
+The installer saves your current executable search path so tools such as Node and Git remain available when opened from Finder. It also preserves `PI_CODING_AGENT_DIR` if set during installation. Shell startup files are not loaded. For additional environment settings such as `OPENAI_API_KEY` or `ELEVENLABS_API_KEY`, create `~/Library/Application Support/VarisDev/environment.json` containing a JSON object of string values, then restart the app. For example:
+
+```json
+{
+  "ELEVENLABS_API_KEY": "your-api-key"
+}
+```
+
+Pi's saved model login credentials are read directly from its normal auth storage. Environment settings in this file override the launch environment.
+
+`npm run desktop:build` compiles the desktop entry point. `npm run desktop:dev` builds and runs the GUI in the foreground with startup output in your terminal, including on Windows and Linux.
 
 ## Conversation compaction
 

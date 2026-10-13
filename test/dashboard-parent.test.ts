@@ -11,9 +11,20 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
-import {ModelRegistry, ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {
+  ModelRegistry,
+  ModelRuntime,
+  SessionManager,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from '@earendil-works/pi-coding-agent';
+import type {AgentSessionController} from '../src/agents/team.ts';
+import {observeDashboardSession} from '../src/dashboard/observe.ts';
+import type {DashboardState} from '../src/dashboard/state.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 import type {DashboardParent} from '../src/dashboard/hub.ts';
+
+const directDelivery = {isQueued: () => true, submitted: () => {}};
 
 interface ProviderRequest {
   model: string;
@@ -57,6 +68,12 @@ function reply(
       created: 1,
       model: 'dashboard-model',
       choices: [{index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop'}],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        prompt_tokens_details: {cached_tokens: 25, cache_write_tokens: 5},
+      },
     })}\n\ndata: [DONE]\n\n`,
   );
 }
@@ -251,6 +268,7 @@ void test(
     t.after(unsubscribe);
     await parent.prompt(
       'Write a parent file, delegate the worker file, and collect the result.',
+      directDelivery,
     );
     await waitFor(
       () => parent!.state.snapshot().session.status === 'idle',
@@ -262,17 +280,112 @@ void test(
       'Parent completed the delegated task.',
     );
     assert.deepEqual(
-      completed.conversation.map(message => [message.role, message.text]),
+      completed.conversation.map(message => [message.role, message.toolName]),
       [
-        [
-          'user',
-          'Write a parent file, delegate the worker file, and collect the result.',
-        ],
-        ['assistant', 'Parent completed the delegated task.'],
+        ['user', undefined],
+        ['tool', 'write'],
+        ['tool', 'agent_spawn'],
+        ['tool', 'agent_wait'],
+        ['assistant', undefined],
       ],
     );
+    const tools = completed.conversation.filter(
+      message => message.role === 'tool',
+    );
+    assert.ok(
+      tools.every(
+        message => message.status === 'completed' && message.finishedAt,
+      ),
+    );
+    assert.equal(tools[0].input?.split('\n')[0], 'parent.txt');
+    assert.match(tools[0].text, /Successfully wrote/);
+    assert.match(tools[1].input ?? '', /Writer worker/);
+    assert.match(tools[2].text, /Completed worker result/);
+    assert.equal(new Set(tools.map(message => message.toolCallId)).size, 3);
+    assert.equal(
+      completed.conversation[0].text,
+      'Write a parent file, delegate the worker file, and collect the result.',
+    );
+    assert.equal(
+      completed.conversation.at(-1)?.text,
+      'Parent completed the delegated task.',
+    );
     assert.ok(completed.conversation.every(message => !message.streaming));
+    assert.equal(completed.usage.calls.length, 4);
+    assert.deepEqual(
+      [
+        completed.usage.input,
+        completed.usage.output,
+        completed.usage.cacheRead,
+        completed.usage.cacheWrite,
+        completed.usage.totalTokens,
+        completed.usage.cost,
+      ],
+      [280, 80, 100, 20, 480, 0],
+      'SDK provider usage includes the four parent calls and excludes worker calls',
+    );
+    assert.deepEqual(
+      completed.usage.calls.map(call => call.toolNames),
+      [['write'], ['agent_spawn'], ['agent_wait'], []],
+    );
     assert.ok(completed.session.sessionFile);
+    let restoredState: DashboardState | undefined;
+    let startObserver:
+      ((event: never, ctx: ExtensionContext) => unknown) | undefined;
+    const reloadedSession = SessionManager.open(completed.session.sessionFile!);
+    observeDashboardSession(
+      {
+        on(name: string, handler: typeof startObserver) {
+          if (name === 'session_start') startObserver = handler;
+        },
+      } as unknown as ExtensionAPI,
+      {
+        snapshot: () => undefined,
+        subscribe: () => () => {},
+      } as unknown as AgentSessionController,
+      state => {
+        restoredState = state;
+      },
+    );
+    await startObserver!(
+      {type: 'session_start'} as never,
+      {
+        cwd,
+        sessionManager: reloadedSession,
+        isIdle: () => true,
+        getContextUsage: () => undefined,
+      } as unknown as ExtensionContext,
+    );
+    assert.deepEqual(
+      restoredState!
+        .snapshot()
+        .conversation.map(message => [
+          message.id,
+          message.role,
+          message.toolName,
+          message.toolCallId,
+          message.input,
+          message.text,
+          message.at,
+          message.status,
+        ]),
+      completed.conversation.map(message => [
+        message.id,
+        message.role,
+        message.toolName,
+        message.toolCallId,
+        message.input,
+        message.text,
+        message.at,
+        message.status,
+      ]),
+      'reopening the persisted SDK branch restores the live conversation',
+    );
+    assert.deepEqual(
+      restoredState!.snapshot().usage,
+      completed.usage,
+      'reopening SDK history restores provider counts and call IDs',
+    );
     assert.ok(activities.includes('Using write'));
     assert.equal(
       await readFile(join(cwd, 'parent.txt'), 'utf8'),
@@ -285,6 +398,12 @@ void test(
     assert.equal(completed.agents.length, 1);
     assert.equal(completed.agents[0].status, 'completed');
     assert.equal(completed.agents[0].output, 'Completed worker result.');
+    assert.equal(completed.agents[0].usage?.totalTokens, 240);
+    assert.deepEqual(
+      completed.agents[0].usage?.calls.map(call => call.toolNames),
+      [['write'], []],
+      'real delegated provider usage reaches the dashboard separately from parent usage',
+    );
     assert.equal(completed.changes.length, 2);
     const parentChange = completed.changes.find(
       change => change.unitId === 'parent',
@@ -345,7 +464,10 @@ void test(
     );
 
     await runtime.setRuntimeApiKey(providerId, 'rotated-runtime-key');
-    await parent.prompt('follow-up-parent: summarize the prior result.');
+    await parent.prompt(
+      'follow-up-parent: summarize the prior result.',
+      directDelivery,
+    );
     const followup = requests.at(-1)!;
     assert.match(
       JSON.stringify(followup.body.messages),
@@ -366,7 +488,10 @@ void test(
     parents.push(other);
     assert.notEqual(other.state.snapshot().session.id, initial.session.id);
     assert.equal(other.state.snapshot().session.cwd, otherCwd);
-    await other.prompt('independent-parent: introduce this project.');
+    await other.prompt(
+      'independent-parent: introduce this project.',
+      directDelivery,
+    );
     const independent = requests.at(-1)!;
     const independentHistory = JSON.stringify(independent.body.messages);
     assert.match(independentHistory, /Independent project context marker/);
@@ -387,6 +512,7 @@ void test(
 
     await parent.prompt(
       'start-held-worker: leave a worker running in the background.',
+      directDelivery,
     );
     await waitFor(
       () => heldResponse !== undefined,
@@ -407,17 +533,21 @@ void test(
       'closing the parent cancels its active worker request',
     );
     assert.equal(parent.state.snapshot().session.status, 'closed');
-    await assert.rejects(parent.prompt('must not run'), /closed/);
+    await assert.rejects(
+      parent.prompt('must not run', directDelivery),
+      /closed/,
+    );
     await other.prompt(
       'independent-parent: still available after sibling shutdown.',
+      directDelivery,
     );
     assert.equal(other.state.snapshot().session.status, 'idle');
     await other.close();
     assert.equal(other.state.snapshot().session.status, 'closed');
 
-    for (const action of ['abort', 'close'] as const) {
+    for (const action of ['abort', 'close', 'remove'] as const) {
       await t.test(
-        `${action} waits for credential preflight and prevents the cancelled run`,
+        `${action} during credential preflight prevents prompt handoff`,
         async cancellation => {
           const cancelled = await createDashboardParent(
             {cwd: otherCwd, name: `Cancelled during ${action}`},
@@ -456,27 +586,47 @@ void test(
             },
           );
           const requestCount = requests.length;
+          let queued = true;
+          let handoffs = 0;
+          const delivery = {
+            isQueued: () => queued,
+            submitted() {
+              queued = false;
+              handoffs++;
+            },
+          };
           const prompting = cancelled.prompt(
             'Write files after resolving credentials.',
+            delivery,
           );
           await waitFor(
             () => checkingCredentials,
             'SDK prompt waits for credentials',
           );
           let stopped = false;
-          const stopping = cancelled[action]().then(() => {
-            stopped = true;
-          });
+          const stopping =
+            action === 'remove'
+              ? ((queued = false), Promise.resolve())
+              : cancelled[action]().then(() => {
+                  stopped = true;
+                });
           await delay(10);
-          assert.equal(
-            stopped,
-            false,
-            `${action} keeps the live session until preflight settles`,
-          );
+          if (action !== 'remove')
+            assert.equal(
+              stopped,
+              false,
+              `${action} keeps the live session until preflight settles`,
+            );
           assert.notEqual(cancelled.state.snapshot().session.status, 'closed');
           releaseCredentials();
           await Promise.all([prompting, stopping]);
           const cancelledSnapshot = cancelled.state.snapshot();
+          assert.equal(
+            handoffs,
+            0,
+            'cancelled or removed prompt never hands off to the SDK run',
+          );
+          assert.deepEqual(cancelledSnapshot.conversation, []);
           assert.equal(
             requests.length,
             requestCount,
@@ -492,9 +642,10 @@ void test(
             cancelledSnapshot.session.status,
             action === 'close' ? 'closed' : 'idle',
           );
-          if (action === 'abort') {
+          if (action !== 'close') {
             await cancelled.prompt(
               'independent-parent: continue after the cancelled preflight.',
+              directDelivery,
             );
             assert.equal(requests.length, requestCount + 1);
             assert.equal(
@@ -504,7 +655,7 @@ void test(
             await cancelled.close();
           } else {
             await assert.rejects(
-              cancelled.prompt('must stay closed'),
+              cancelled.prompt('must stay closed', directDelivery),
               /closed/,
             );
           }
@@ -567,6 +718,7 @@ void test(
     const standaloneStart = requests.length;
     await standalone.prompt(
       'Write files with the configured standalone model.',
+      directDelivery,
     );
     const standaloneRequests = requests.slice(standaloneStart);
     assert.ok(standaloneRequests.some(captured => captured.worker));

@@ -1,11 +1,16 @@
-/* global document, window, localStorage, setInterval, clearInterval */
+/* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createFactoryScene} from './factory-scene.js';
 import {initThemes} from './themes.js';
+import {initUsage, renderUsage} from './usage.js';
+import {
+  initSessionFeatures,
+  renderSessionFeatures,
+} from './session-features.js';
 
 const $ = id => document.getElementById(id);
 const LIVE = new Set(['queued', 'running', 'cancelling']);
 const WORKING = new Set(['running', 'cancelling']);
-const TABS = ['conversation', 'details', 'feed', 'changes'];
+const TABS = ['conversation', 'details', 'feed', 'changes', 'tokens'];
 const STATUS = {
   idle: 'Ready',
   running: 'Working',
@@ -36,12 +41,17 @@ const feedNodes = new Map();
 const changeNodes = new Map();
 const conversationNodes = new Map();
 const conversationPositions = new Map();
+const queueNodes = new Map();
+const removingPrompts = new Set();
 const promptDrafts = new Map();
 const workspaceCache = new Map();
 const workspacePending = new Set();
 const sending = new Set();
 const stopping = new Set();
+const pausedActivity = new Set();
+let stopEffectTimer;
 let scene;
+let sceneMotion;
 let unsubscribe;
 let clock;
 let inspectorKey = '';
@@ -49,7 +59,7 @@ let feedKey = '';
 let lastFeedId;
 let changeKey = '';
 let conversationKey = '';
-let conversationSignature = '';
+let queueKey = '';
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
@@ -282,7 +292,7 @@ function expandEditor(element, textarea, button) {
       : 'create-editor-label',
   );
   button.setAttribute('aria-expanded', 'true');
-  text(button, 'Close editor · Esc');
+  text(button, 'Close editor');
   $('expanded-editor-error').hidden = true;
   element.showPopover();
   textarea.focus({preventScroll: true});
@@ -401,13 +411,19 @@ function renderOverview() {
       );
       text(entry.name, session.name);
       parentBadge(entry.status, session);
-      entry.element.classList.toggle('attention', parentHasError(session));
+      const needsInput = !!data.ui?.dialogs?.length;
+      entry.element.classList.toggle(
+        'attention',
+        parentHasError(session) || needsInput,
+      );
       text(entry.path, session.cwd);
       text(
         entry.activity,
-        parentHasError(session)
-          ? session.error
-          : session.activity || 'Standing by for a mission',
+        needsInput
+          ? `Needs input: ${data.ui.dialogs[0].title}`
+          : parentHasError(session)
+            ? session.error
+            : session.activity || 'Standing by for a mission',
       );
       entry.footer.replaceChildren(
         node('span', '', `${tally.working} working · ${tally.queued} queued`),
@@ -582,8 +598,12 @@ function renderFallback(data) {
 function sizeInspector() {
   if (!snapshot() || $('factory-workspace').hidden) return;
   const element = $('inspector');
-  const top = Math.max(18, element.getBoundingClientRect().top);
-  const available = Math.max(300, window.innerHeight - top - 18);
+  const available = Math.max(
+    300,
+    window.innerWidth > 950
+      ? $('factory-workspace').clientHeight
+      : window.innerHeight * 0.8,
+  );
   element.style.maxHeight = `${Math.round(available)}px`;
   element.style.setProperty('--inspector-space', `${Math.round(available)}px`);
 }
@@ -600,6 +620,53 @@ function resizeFactory() {
   sizeScene();
   sizeInspector();
   if (scene) layoutLabels(lastLayout);
+}
+function setSceneMotion(enabled) {
+  if (!scene || sceneMotion === enabled) return;
+  sceneMotion = enabled;
+  scene.setMotion(enabled);
+}
+function activityPhase(data) {
+  if (stopping.has(data.session.id) || pausedActivity.has(data.session.id))
+    return 'Stopping';
+  if (data.ui?.dialogs?.length) return 'Needs input';
+  if (data.session.status === 'compacting') return 'Compacting';
+  if (data.session.status !== 'running')
+    return data.agents.some(agent => WORKING.has(agent.status))
+      ? 'Workers running'
+      : '';
+  if (/thinking/i.test(data.session.activity)) return 'Thinking';
+  if (/using|tool/i.test(data.session.activity)) return 'Running tools';
+  if (/responding|writing/i.test(data.session.activity)) return 'Writing';
+  return 'Working';
+}
+function renderProcessing(data) {
+  if (!parentHasWork(data)) pausedActivity.delete(data.session.id);
+  const phase = activityPhase(data);
+  const processing = !!phase && !['Stopping', 'Needs input'].includes(phase);
+  $('scene').classList.toggle('is-processing', processing);
+  $('scene').classList.toggle('is-stopping', phase === 'Stopping');
+  $('processing-bubble').hidden = !processing;
+  $('processing-bubble').dataset.phase = phase;
+  text($('processing-bubble-text'), phase);
+  $('processing-state').hidden = !phase;
+  $('processing-state').classList.toggle('paused', !processing);
+  text($('processing-state-text'), phase);
+  setSceneMotion(
+    state.motion && !motionPreference.matches && phase !== 'Stopping',
+  );
+}
+function stopEffect() {
+  clearTimeout(stopEffectTimer);
+  const burst = $('stop-burst');
+  burst.hidden = false;
+  burst.classList.remove('braking');
+  // Restart the small effect when another run is stopped later.
+  void burst.offsetWidth;
+  burst.classList.add('braking');
+  stopEffectTimer = setTimeout(() => {
+    burst.hidden = true;
+  }, 1100);
 }
 function renderFactory() {
   const data = snapshot();
@@ -630,6 +697,7 @@ function renderFactory() {
     `${tally.working} working drones · ${tally.queued} queued`,
   );
   sizeScene();
+  renderProcessing(data);
   if (scene) {
     scene.update({...data, agents: sceneAgents(data)}, state.unitId);
     layoutLabels(lastLayout);
@@ -855,6 +923,90 @@ function saveConversationPosition() {
     follow: $('follow-conversation').checked,
   });
 }
+// Keep existing text nodes so selection and open tool details survive snapshots.
+function updateStreamText(textNode, value, selection) {
+  const next = String(value || '');
+  const previous = textNode.data;
+  if (next === previous) return false;
+  if (next.startsWith(previous)) {
+    textNode.appendData(next.slice(previous.length));
+  } else {
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const startsHere = range?.startContainer === textNode;
+    const endsHere = range?.endContainer === textNode;
+    const start = range?.startOffset;
+    const end = range?.endOffset;
+    textNode.replaceData(0, previous.length, next);
+    if (startsHere) range.setStart(textNode, Math.min(start, next.length));
+    if (endsHere) range.setEnd(textNode, Math.min(end, next.length));
+  }
+  return true;
+}
+function conversationEntry(message) {
+  const tool = message.role === 'tool';
+  const element = node(
+    'li',
+    `conversation-message${tool ? ' conversation-tool' : ''}`,
+  );
+  const header = node('div', 'conversation-message-header');
+  const role = node('strong');
+  const time = node('time');
+  const streaming = node(
+    'span',
+    tool ? 'tool-status' : 'conversation-streaming',
+  );
+  header.append(role, time, streaming);
+  const content = node('pre', tool ? 'tool-output' : 'prose conversation-text');
+  const textNode = document.createTextNode('');
+  content.append(textNode);
+  const truncated = node(
+    'p',
+    'muted conversation-preview',
+    'Preview truncated; full text is in the session file.',
+  );
+  const error = node('p', 'conversation-error');
+  let inputNode;
+  let inputPreview;
+  let outputLabel;
+  if (tool) {
+    const details = node('details');
+    details.open = true;
+    const summary = node('summary');
+    inputPreview = node('code', 'tool-input-preview');
+    summary.append(header, inputPreview);
+    const body = node('div', 'tool-body');
+    const input = node('pre', 'tool-input');
+    inputNode = document.createTextNode('');
+    input.append(inputNode);
+    outputLabel = node('h3', '', 'Output');
+    body.append(
+      node('h3', '', 'Input'),
+      input,
+      outputLabel,
+      content,
+      truncated,
+      error,
+    );
+    details.append(summary, body);
+    element.append(details);
+  } else {
+    element.append(header, content, truncated, error);
+  }
+  return {
+    element,
+    role,
+    time,
+    streaming,
+    content,
+    textNode,
+    inputNode,
+    inputPreview,
+    outputLabel,
+    truncated,
+    error,
+    status: undefined,
+  };
+}
 function renderConversation(data) {
   const body = $('panel-conversation');
   const sessionChanged = conversationKey !== state.sessionId;
@@ -862,7 +1014,6 @@ function renderConversation(data) {
     conversationNodes.clear();
     $('conversation').replaceChildren();
     conversationKey = state.sessionId;
-    conversationSignature = '';
     const saved = conversationPositions.get(state.sessionId);
     $('follow-conversation').checked = saved?.follow ?? true;
     body.scrollTop = saved?.top || 0;
@@ -875,6 +1026,7 @@ function renderConversation(data) {
     !selection.isCollapsed &&
     $('conversation').contains(selection.anchorNode);
   const messages = data.conversation || [];
+  let changed = sessionChanged || messages.length !== conversationNodes.size;
   text($('conversation-recipient'), `Conversation with ${data.session.name}`);
   $('conversation-truncated').hidden = !data.conversationTruncated;
   $('conversation-session-file').hidden =
@@ -885,71 +1037,160 @@ function renderConversation(data) {
     conversationNodes,
     messages,
     item => item.id,
-    () => {
-      const element = node('li', 'conversation-message');
-      const header = node('div', 'conversation-message-header');
-      const role = node('strong');
-      const time = node('time');
-      const streaming = node('span', 'conversation-streaming', 'Streaming');
-      header.append(role, time, streaming);
-      const content = node('pre', 'prose conversation-text');
-      const textNode = document.createTextNode('');
-      content.append(textNode);
-      const truncated = node(
-        'p',
-        'muted conversation-preview',
-        'Message preview truncated; full text is in the session file.',
-      );
-      const error = node('p', 'conversation-error');
-      element.append(header, content, truncated, error);
-      return {element, role, time, streaming, textNode, truncated, error};
-    },
+    conversationEntry,
     (entry, message) => {
+      const tool = message.role === 'tool';
       entry.element.classList.toggle('user', message.role === 'user');
-      text(entry.role, message.role === 'user' ? 'User' : 'Assistant');
-      text(entry.time, date(message.at));
+      text(
+        entry.role,
+        tool ? message.toolName : message.role === 'user' ? 'You' : 'Assistant',
+      );
+      text(
+        entry.time,
+        tool
+          ? duration({startedAt: message.at, finishedAt: message.finishedAt})
+          : date(message.at),
+      );
       entry.time.dateTime = message.at;
-      entry.streaming.hidden = !message.streaming;
-      const next = String(message.text || '');
-      const previous = entry.textNode.data;
-      // Appending stream text keeps native selection endpoints in existing text.
-      if (next.startsWith(previous)) {
-        if (next.length > previous.length)
-          entry.textNode.appendData(next.slice(previous.length));
-      } else if (next !== previous) {
-        const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-        const startsHere = range?.startContainer === entry.textNode;
-        const endsHere = range?.endContainer === entry.textNode;
-        const start = range?.startOffset;
-        const end = range?.endOffset;
-        entry.textNode.replaceData(0, previous.length, next);
-        if (startsHere)
-          range.setStart(entry.textNode, Math.min(start, next.length));
-        if (endsHere) range.setEnd(entry.textNode, Math.min(end, next.length));
+      entry.time.title = date(message.at);
+      if (tool) {
+        const status = message.status || 'completed';
+        entry.element.dataset.status = status;
+        entry.streaming.className = `tool-status ${status}`;
+        text(
+          entry.streaming,
+          status === 'running' ? 'Running' : statusName(status),
+        );
+        changed = changed || status !== entry.status;
+        entry.status = status;
+        entry.streaming.hidden = false;
+        text(
+          entry.inputPreview,
+          (message.input || '').split('\n')[0] || 'No input',
+        );
+        changed =
+          updateStreamText(entry.inputNode, message.input, selection) ||
+          changed;
+        text(
+          entry.outputLabel,
+          message.text
+            ? 'Output'
+            : status === 'running'
+              ? 'Waiting for output…'
+              : 'No text output',
+        );
+      } else {
+        entry.streaming.hidden = !message.streaming;
+        text(entry.streaming, 'Streaming');
       }
+      const outputNearBottom =
+        entry.content.scrollHeight -
+          entry.content.scrollTop -
+          entry.content.clientHeight <
+        40;
+      const outputChanged = updateStreamText(
+        entry.textNode,
+        message.text,
+        selection,
+      );
+      changed = outputChanged || changed;
+      if (tool && outputChanged && outputNearBottom && !selectedText)
+        entry.content.scrollTop = entry.content.scrollHeight;
       entry.truncated.hidden = !message.truncated;
-      entry.error.hidden = !message.error;
+      entry.error.hidden =
+        !message.error || (tool && message.error === message.text);
       text(entry.error, message.error);
     },
   );
-  $('conversation-empty').hidden = messages.length > 0;
-  const latest = messages.at(-1);
-  const signature = latest
-    ? `${latest.id}:${latest.text.length}:${latest.streaming}`
-    : '';
+  const active = ['running', 'compacting'].includes(data.session.status);
+  const phase = activityPhase(data);
+  const activity = $('conversation-activity');
+  const activityText = $('conversation-activity-text');
+  changed =
+    changed ||
+    activity.hidden === active ||
+    activityText.textContent !== data.session.activity;
+  activity.hidden = !active;
+  activity.classList.toggle(
+    'paused',
+    phase === 'Stopping' || phase === 'Needs input',
+  );
+  text(
+    activityText,
+    phase === 'Stopping' ? 'Stopping…' : data.session.activity || 'Working',
+  );
+  $('conversation-empty').hidden = messages.length > 0 || active;
   if (
     state.tab === 'conversation' &&
     $('follow-conversation').checked &&
     !selectedText &&
-    nearBottom &&
-    signature !== conversationSignature
+    (nearBottom || sessionChanged) &&
+    changed
   )
     body.scrollTop = body.scrollHeight;
   if (sessionChanged) {
     const saved = conversationPositions.get(state.sessionId);
     if (saved) body.scrollTop = saved.top;
   }
-  conversationSignature = signature;
+}
+function renderPromptQueue(data) {
+  if (queueKey !== state.sessionId) {
+    queueNodes.clear();
+    $('prompt-queue').replaceChildren();
+    $('queue-error').hidden = true;
+    queueKey = state.sessionId;
+  }
+  const prompts = data.session.queuedPrompts || [];
+  $('queued-prompts').hidden = prompts.length === 0;
+  text($('queue-count'), prompts.length);
+  reconcile(
+    $('prompt-queue'),
+    queueNodes,
+    prompts,
+    item => item.id,
+    prompt => {
+      const element = node('li', 'queued-prompt');
+      const position = node('span', 'queue-position');
+      const content = node('pre', 'queued-prompt-text');
+      const remove = node('button', 'quiet-button', 'Remove');
+      remove.type = 'button';
+      const sessionId = state.sessionId;
+      remove.addEventListener('click', () =>
+        removeQueuedPrompt(sessionId, prompt.id),
+      );
+      element.append(position, content, remove);
+      return {element, position, content, remove};
+    },
+    (entry, prompt) => {
+      const position = prompts.indexOf(prompt) + 1;
+      text(entry.position, position);
+      text(entry.content, prompt.text);
+      const removing = removingPrompts.has(prompt.id);
+      text(entry.remove, removing ? 'Removing…' : 'Remove');
+      entry.remove.disabled = removing || !canControl(data.session);
+      entry.remove.setAttribute(
+        'aria-label',
+        `Remove queued prompt ${position}`,
+      );
+    },
+  );
+}
+async function removeQueuedPrompt(sessionId, promptId) {
+  if (!api || removingPrompts.has(promptId)) return;
+  removingPrompts.add(promptId);
+  $('queue-error').hidden = true;
+  renderInspector();
+  try {
+    await api.removeQueuedPrompt(sessionId, promptId);
+  } catch (error) {
+    showError(
+      error,
+      state.sessionId === sessionId ? $('queue-error') : $('app-error'),
+    );
+  } finally {
+    removingPrompts.delete(promptId);
+    renderInspector();
+  }
 }
 function renderInspector() {
   const data = snapshot();
@@ -958,11 +1199,10 @@ function renderInspector() {
   const parent = state.unitId === 'parent';
   const key = `${state.sessionId}:${state.unitId}`;
   if (inspectorKey !== key) {
-    for (const tab of ['details', 'feed', 'changes'])
+    for (const tab of ['details', 'feed', 'changes', 'tokens'])
       $(`panel-${tab}`).scrollTop = 0;
     inspectorKey = key;
   }
-  text($('inspector-role'), parent ? 'MASTER ROBOT / PARENT' : 'WORKER DRONE');
   text($('inspector-title'), unit.name);
   if (parent) parentBadge($('inspector-status'), unit);
   else badge($('inspector-status'), unit.status);
@@ -1022,7 +1262,10 @@ function renderInspector() {
   ]);
   renderFeed(data);
   renderChanges(data);
+  renderPromptQueue(data);
   renderConversation(data);
+  renderUsage(data);
+  renderSessionFeatures(data);
   if (
     !canControl(data.session) &&
     expandedEditor?.textarea === $('parent-prompt')
@@ -1046,29 +1289,29 @@ function renderInspector() {
     pendingDraftPosition = null;
   }
   const running = ['running', 'compacting'].includes(data.session.status);
+  text(
+    $('parent-editor-shortcuts'),
+    `${running ? 'Enter queues' : 'Enter sends'} · Shift+Enter adds a line`,
+  );
   $('abort-parent').disabled =
     !canControl(data.session) ||
     !parentHasWork(data) ||
     stopping.has(state.sessionId);
   text(
     $('abort-parent'),
-    stopping.has(state.sessionId) ? 'Stopping…' : 'Stop parent',
+    stopping.has(state.sessionId) ? 'Stopping…' : 'Stop · Esc',
   );
   $('send-prompt').disabled =
-    sending.has(state.sessionId) || data.session.status === 'closed';
+    sending.has(state.sessionId) ||
+    stopping.has(state.sessionId) ||
+    data.session.status === 'closed';
   text(
     $('send-prompt'),
-    sending.has(state.sessionId) ? 'Sending…' : running ? 'Queue' : 'Send',
-  );
-  text(
-    $('prompt-hint'),
-    data.session.status === 'closed'
-      ? 'Parent closed'
-      : data.session.pendingPrompts
-        ? `${data.session.pendingPrompts} queued prompts`
-        : running
-          ? 'Sent as a follow-up'
-          : 'Ready for a mission',
+    sending.has(state.sessionId)
+      ? 'Sending…'
+      : running
+        ? 'Add to queue'
+        : 'Send',
   );
   renderWorkspace();
   sizeInspector();
@@ -1118,6 +1361,8 @@ function setTab(tab) {
     $(`tab-${name}`).tabIndex = selected ? 0 : -1;
     $(`panel-${name}`).hidden = !selected;
   }
+  if (tab === 'conversation' && $('follow-conversation').checked)
+    $('panel-conversation').scrollTop = $('panel-conversation').scrollHeight;
   if (tab === 'feed' && $('follow-feed').checked)
     $('panel-feed').scrollTop = $('panel-feed').scrollHeight;
 }
@@ -1175,7 +1420,7 @@ function applyMotion() {
   $('motion-toggle').title = motionPreference.matches
     ? 'Reduced motion is enabled in system settings'
     : 'Toggle factory animation';
-  scene?.setMotion(enabled);
+  setSceneMotion(enabled && !pausedActivity.has(state.sessionId));
 }
 function openCreate() {
   if (!$('create-cwd').value) $('create-cwd').value = state.hub.launchCwd || '';
@@ -1248,6 +1493,7 @@ async function sendPrompt(event) {
     !canControl(session) ||
     session.status === 'closed' ||
     sending.has(id) ||
+    stopping.has(id) ||
     !prompt
   )
     return;
@@ -1260,6 +1506,7 @@ async function sendPrompt(event) {
   renderInspector();
   try {
     await api.promptSession(id, {prompt});
+    pausedActivity.delete(id);
     clearSubmittedDraft(id, submitted);
   } catch (error) {
     if (id === state.sessionId)
@@ -1283,14 +1530,19 @@ async function abortParent() {
   )
     return;
   stopping.add(id);
+  pausedActivity.add(id);
   $('app-error').hidden = true;
+  stopEffect();
+  renderFactory();
   renderInspector();
   try {
     await api.abortSession(id);
   } catch (error) {
+    pausedActivity.delete(id);
     showError(error);
   } finally {
     stopping.delete(id);
+    renderFactory();
     renderInspector();
   }
 }
@@ -1369,7 +1621,20 @@ $('expand-create-editor').addEventListener('click', () =>
   ),
 );
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && expandedEditor) {
+  if (
+    event.key !== 'Escape' ||
+    event.defaultPrevented ||
+    event.isComposing ||
+    composingEditors.has(event.target) ||
+    event.repeat
+  )
+    return;
+  if (document.querySelector('dialog[open]')) return;
+  const data = snapshot();
+  if (data && canControl(data.session) && parentHasWork(data)) {
+    event.preventDefault();
+    void abortParent();
+  } else if (expandedEditor) {
     event.preventDefault();
     event.stopPropagation();
     collapseEditor();
@@ -1447,11 +1712,36 @@ text(
   scene ? 'WEBGL · 3D' : 'GRAPHICAL VIEW · WEBGL UNAVAILABLE',
 );
 applyMotion();
+initSessionFeatures({api, selected: snapshot, draftChanged: saveDraft});
+initUsage(call => {
+  const data = snapshot();
+  const message =
+    data?.conversation.find(item => item.id === call.id) ||
+    data?.conversation.find(
+      item => item.at === call.at && item.role !== 'user',
+    );
+  const entry = message && conversationNodes.get(message.id);
+  if (!entry) {
+    showError(
+      'This call is outside the recent conversation preview. Its token counts remain in this view.',
+    );
+    return;
+  }
+  setTab('conversation');
+  $('follow-conversation').checked = false;
+  const body = $('panel-conversation');
+  body.scrollTop +=
+    entry.element.getBoundingClientRect().top -
+    body.getBoundingClientRect().top -
+    12;
+  saveConversationPosition();
+});
 render();
 window.addEventListener('unload', () => {
   state.disposed = true;
   unsubscribe?.();
   clearInterval(clock);
+  clearTimeout(stopEffectTimer);
   motionPreference.removeEventListener('change', applyMotion);
   window.removeEventListener('resize', resizeFactory);
   window.removeEventListener('scroll', sizeInspector);
@@ -1472,6 +1762,11 @@ if (api) {
     for (const [id, entry] of workerNodes) {
       const agent = snapshot()?.agents.find(item => item.id === id);
       if (agent) text(entry.time, duration(agent));
+    }
+    for (const message of snapshot()?.conversation || []) {
+      if (message.role !== 'tool' || message.status !== 'running') continue;
+      const entry = conversationNodes.get(message.id);
+      if (entry) text(entry.time, duration({startedAt: message.at}));
     }
     const unit = selectedUnit();
     if (unit) {

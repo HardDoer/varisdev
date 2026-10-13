@@ -27,6 +27,15 @@ contextBridge.exposeInMainWorld('pidev', {
   createSession: input => invoke('pidev:create-session', input),
   promptSession: (id, input) => invoke('pidev:prompt-session', id, input),
   abortSession: id => invoke('pidev:abort-session', id),
+  removeQueuedPrompt: (sessionId, promptId) =>
+    invoke('pidev:remove-queued-prompt', sessionId, promptId),
+  respondToDialog: (sessionId, dialogId, value) =>
+    invoke('pidev:respond-to-dialog', sessionId, dialogId, value),
+  sessionFeatures: id => invoke('pidev:session-features', id),
+  configureSession: (id, input) => invoke('pidev:configure-session', id, input),
+  compactSession: (id, instructions) =>
+    invoke('pidev:compact-session', id, instructions),
+  reloadSession: id => invoke('pidev:reload-session', id),
   workspace: id => invoke('pidev:workspace', id),
   chooseFolder: () => invoke('pidev:choose-folder'),
 });

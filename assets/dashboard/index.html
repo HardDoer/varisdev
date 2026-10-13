@@ -11,6 +11,11 @@
     <title>VarisDev · Factory</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="themes.css" />
+    <link
+      rel="stylesheet"
+      href="../../node_modules/@xterm/xterm/css/xterm.css"
+    />
+    <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script type="module" src="app.js"></script>
   </head>
   <body>
@@ -18,8 +23,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">V</span
-        ><strong>VarisDev</strong
-        ><span class="brand-section">FACTORY CONTROL</span>
+        ><strong>VarisDev</strong>
       </div>
       <div class="header-actions">
         <span id="connection" class="connection" role="status"
@@ -37,16 +41,6 @@
       </div>
     </header>
     <main>
-      <section class="overview" aria-labelledby="overview-title">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">OPERATIONS NETWORK</p>
-            <h1 id="overview-title">Your factories<span>.</span></h1>
-          </div>
-          <p id="hub-counts" class="overview-counts">No parents yet</p>
-        </div>
-        <div id="parents" class="parent-grid"></div>
-      </section>
       <section
         id="welcome"
         class="welcome"
@@ -73,6 +67,16 @@
       </section>
       <div id="factory-workspace" class="factory-workspace" hidden>
         <div class="factory-column">
+          <section class="overview" aria-labelledby="overview-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">OPERATIONS NETWORK</p>
+                <h1 id="overview-title">Your factories<span>.</span></h1>
+              </div>
+              <p id="hub-counts" class="overview-counts">No parents yet</p>
+            </div>
+            <div id="parents" class="parent-grid"></div>
+          </section>
           <section class="factory-panel panel" aria-labelledby="factory-title">
             <div class="factory-heading">
               <div>
@@ -98,6 +102,24 @@
                 ><span id="scene-caption"
                   >Master command / drone work bays</span
                 >
+              </div>
+              <div
+                id="processing-bubble"
+                class="processing-bubble"
+                hidden
+                aria-hidden="true"
+              >
+                <span class="processing-dots"><i></i><i></i><i></i></span
+                ><strong id="processing-bubble-text">Thinking</strong>
+              </div>
+              <div
+                id="stop-burst"
+                class="stop-burst"
+                hidden
+                role="status"
+                aria-label="Stopping work"
+              >
+                SKRRRT!
               </div>
               <canvas
                 id="factory-canvas"
@@ -169,56 +191,28 @@
           class="inspector panel"
           aria-labelledby="inspector-title"
         >
-          <div id="composer-slot">
-            <section
-              id="parent-controls"
-              class="parent-controls mission-editor"
-              hidden
-            >
-              <form id="prompt-form">
-                <div class="composer-heading">
-                  <label id="parent-editor-label" for="parent-prompt"
-                    >Mission for <strong id="prompt-recipient"></strong
-                  ></label>
-                  <button
-                    id="expand-parent-editor"
-                    class="quiet-button"
-                    type="button"
-                    aria-expanded="false"
-                  >
-                    Expand editor
-                  </button>
-                </div>
-                <textarea
-                  id="parent-prompt"
-                  rows="6"
-                  placeholder="Describe the next task…"
-                  aria-describedby="parent-editor-shortcuts"
-                  required
-                ></textarea>
-                <p id="parent-editor-shortcuts" class="editor-shortcuts">
-                  Enter sends · Shift+Enter adds a line
-                </p>
-                <p id="prompt-error" class="form-error" role="alert" hidden></p>
-                <div class="composer-actions">
-                  <span id="prompt-hint" class="muted"></span>
-                  <button id="abort-parent" class="danger-button" type="button">
-                    Stop parent
-                  </button>
-                  <button id="send-prompt" class="primary-button" type="submit">
-                    Send
-                  </button>
-                </div>
-              </form>
-            </section>
-          </div>
           <div class="inspector-heading">
-            <p id="inspector-role" class="eyebrow">MASTER ROBOT</p>
             <div>
               <h2 id="inspector-title">Inspector</h2>
+              <button
+                id="open-session-settings"
+                class="quiet-button"
+                type="button"
+              >
+                Model &amp; settings
+              </button>
               <span id="inspector-status" class="status-badge"></span>
             </div>
-            <p id="inspector-activity"></p>
+            <div class="inspector-activity-row">
+              <p id="inspector-activity"></p>
+              <span
+                id="processing-state"
+                class="processing-state"
+                role="status"
+                hidden
+                ><i></i><span id="processing-state-text"></span
+              ></span>
+            </div>
           </div>
           <div
             class="inspector-tabs"
@@ -262,6 +256,16 @@
             >
               Changes <span id="changes-count">0</span>
             </button>
+            <button
+              id="tab-tokens"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-tokens"
+              tabindex="-1"
+            >
+              Tokens
+            </button>
           </div>
           <div
             id="panel-conversation"
@@ -290,8 +294,22 @@
             ></p>
             <ol id="conversation" class="conversation"></ol>
             <p id="conversation-empty" class="empty-state">
-              No conversation messages recorded yet.
+              Messages and tool activity appear here as work happens.
             </p>
+            <div
+              id="extension-notifications"
+              class="extension-notifications"
+              hidden
+            ></div>
+            <div
+              id="conversation-activity"
+              class="conversation-activity"
+              role="status"
+              hidden
+            >
+              <span class="activity-dot" aria-hidden="true"></span>
+              <span id="conversation-activity-text"></span>
+            </div>
           </div>
           <div
             id="panel-details"
@@ -300,6 +318,11 @@
             aria-labelledby="tab-details"
             hidden
           >
+            <div
+              id="extension-statuses"
+              class="extension-statuses"
+              hidden
+            ></div>
             <dl id="unit-facts" class="unit-facts"></dl>
             <section class="detail-section">
               <h3>Task / prompt</h3>
@@ -359,32 +382,370 @@
             <p id="changes-empty" class="empty-state">
               No recorded file changes for this robot.
             </p>
+            <section class="workspace-section">
+              <div>
+                <h3>Shared project workspace</h3>
+                <button id="load-workspace" class="quiet-button" type="button">
+                  View folder diff
+                </button>
+              </div>
+              <p class="muted">
+                Folder wide Git changes, including existing and shell changes.
+                These are separate from this robot’s recorded edits.
+              </p>
+              <div id="workspace-result" hidden>
+                <p id="workspace-summary" class="mono muted"></p>
+                <ul id="workspace-files" class="workspace-files"></ul>
+                <pre id="workspace-diff" class="diff"></pre>
+                <p id="workspace-truncated" class="muted" hidden>
+                  Workspace output is truncated.
+                </p>
+              </div>
+            </section>
+          </div>
+          <div
+            id="panel-tokens"
+            class="inspector-body tokens-body"
+            role="tabpanel"
+            aria-labelledby="tab-tokens"
+            hidden
+          >
+            <label class="usage-unit-label" for="usage-unit"
+              >Usage for
+              <select id="usage-unit"></select
+            ></label>
+            <p id="usage-recipient" class="muted"></p>
+            <section class="usage-section usage-summary">
+              <h3 class="sr-only">Recorded model usage</h3>
+              <div class="usage-totals">
+                <strong id="usage-total">0</strong><span>tokens</span
+                ><strong id="usage-cost">$0.0000</strong
+                ><span>estimated model cost</span>
+              </div>
+              <div id="usage-breakdown" class="usage-breakdown" role="img">
+                <i id="usage-bar-input"></i><i id="usage-bar-output"></i
+                ><i id="usage-bar-cache-read"></i
+                ><i id="usage-bar-cache-write"></i>
+              </div>
+              <dl class="usage-metrics">
+                <div>
+                  <dt>Input</dt>
+                  <dd id="usage-input">0</dd>
+                </div>
+                <div>
+                  <dt>Output</dt>
+                  <dd id="usage-output">0</dd>
+                </div>
+                <div>
+                  <dt>Cache read</dt>
+                  <dd id="usage-cache-read">0</dd>
+                </div>
+                <div>
+                  <dt>Cache write</dt>
+                  <dd id="usage-cache-write">0</dd>
+                </div>
+              </dl>
+              <label class="token-budget-label" for="token-budget"
+                >Token target
+                <input
+                  id="token-budget"
+                  type="number"
+                  min="1"
+                  step="1000"
+                  placeholder="Optional"
+              /></label>
+              <div
+                id="token-budget-meter"
+                class="token-meter"
+                role="meter"
+                aria-label="Session token target"
+                aria-valuemin="0"
+                hidden
+              >
+                <i></i>
+              </div>
+              <p id="token-budget-description" class="muted" hidden></p>
+            </section>
+            <section id="usage-context-section" class="usage-section">
+              <h3>Current context</h3>
+              <p id="usage-context" class="usage-value"></p>
+              <div
+                id="context-budget-meter"
+                class="token-meter"
+                role="meter"
+                aria-label="Context window usage"
+                aria-valuemin="0"
+              >
+                <i></i>
+              </div>
+              <p class="muted">
+                Estimated space currently used in the model’s context window.
+              </p>
+            </section>
+            <section class="usage-section">
+              <h3>Responses &amp; summaries</h3>
+              <p class="muted">
+                Tool names identify requests in that response. Compaction rows
+                contain recorded summary usage and can combine several calls.
+                Failed compaction attempts do not report their usage.
+              </p>
+              <p id="usage-empty" class="empty-state">
+                Usage appears after the first model response.
+              </p>
+              <div id="usage-table" class="usage-table-scroll" hidden>
+                <table class="usage-table">
+                  <thead>
+                    <tr>
+                      <th>Call</th>
+                      <th>Input</th>
+                      <th>Output</th>
+                      <th>Cache read</th>
+                      <th>Cache write</th>
+                      <th>Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usage-calls"></tbody>
+                </table>
+              </div>
+              <p id="usage-truncated" class="muted" hidden>
+                Showing recent calls; totals include earlier calls.
+              </p>
+            </section>
+            <section class="usage-section">
+              <h3>What uses tokens?</h3>
+              <ul class="token-explanation">
+                <li>
+                  <strong>Input:</strong> messages, instructions, tool
+                  definitions, skill content, and tool results sent to the
+                  model.
+                </li>
+                <li>
+                  <strong>Output:</strong> assistant text and tool arguments,
+                  plus reasoning when the provider includes it in usage.
+                </li>
+                <li>
+                  <strong>Cache:</strong> reused or stored input reported by the
+                  provider. It still occupies context.
+                </li>
+                <li>
+                  <strong>No model call:</strong> scrolling, queueing, selecting
+                  a skill, and local tool execution. Tool results can use input
+                  tokens on the next call.
+                </li>
+              </ul>
+              <p class="muted">
+                Counts use recorded model usage. Providers do not report exact
+                tokens for each file, skill, or tool result. Cost uses
+                configured model rates; image and audio service billing is
+                separate. Select a worker above to see its usage.
+              </p>
+            </section>
           </div>
           <p id="attached-note" class="attached-note" hidden>Connected pidev</p>
-          <section class="workspace-section">
-            <div>
-              <h3>Shared project workspace</h3>
-              <button id="load-workspace" class="quiet-button" type="button">
-                View folder diff
-              </button>
-            </div>
-            <p class="muted">
-              Folder wide Git changes, including existing and shell changes.
-              These are separate from this robot’s recorded edits.
-            </p>
-            <div id="workspace-result" hidden>
-              <p id="workspace-summary" class="mono muted"></p>
-              <ul id="workspace-files" class="workspace-files"></ul>
-              <pre id="workspace-diff" class="diff"></pre>
-              <p id="workspace-truncated" class="muted" hidden>
-                Workspace output is truncated.
-              </p>
-            </div>
-          </section>
+          <div id="composer-slot">
+            <div
+              id="command-suggestions"
+              class="command-suggestions"
+              role="listbox"
+              aria-label="Commands"
+              hidden
+            ></div>
+            <section
+              id="queued-prompts"
+              class="queued-prompts"
+              aria-labelledby="queue-title"
+              hidden
+            >
+              <div class="queue-heading">
+                <h3 id="queue-title">
+                  Up next <span id="queue-count" class="count-tag">0</span>
+                </h3>
+                <span class="muted">Sent in order after this task</span>
+              </div>
+              <ol id="prompt-queue" class="prompt-queue"></ol>
+              <p id="queue-error" class="form-error" role="alert" hidden></p>
+            </section>
+            <section
+              id="parent-controls"
+              class="parent-controls mission-editor"
+              hidden
+            >
+              <form id="prompt-form">
+                <div class="composer-heading">
+                  <label id="parent-editor-label" for="parent-prompt"
+                    >Message <strong id="prompt-recipient"></strong
+                  ></label>
+                  <button id="open-commands" class="quiet-button" type="button">
+                    Skills &amp; commands
+                  </button>
+                  <button
+                    id="extension-editor"
+                    class="quiet-button"
+                    type="button"
+                    hidden
+                  >
+                    Extension editor
+                  </button>
+                  <button
+                    id="expand-parent-editor"
+                    class="quiet-button"
+                    type="button"
+                    aria-expanded="false"
+                  >
+                    Expand editor
+                  </button>
+                </div>
+                <textarea
+                  id="parent-prompt"
+                  rows="3"
+                  placeholder="Describe the next task…"
+                  aria-describedby="parent-editor-shortcuts"
+                  required
+                ></textarea>
+                <p id="prompt-error" class="form-error" role="alert" hidden></p>
+                <div class="composer-actions">
+                  <span id="parent-editor-shortcuts" class="editor-shortcuts">
+                    Enter sends · Shift+Enter adds a line
+                  </span>
+                  <button id="abort-parent" class="danger-button" type="button">
+                    Stop <kbd>Esc</kbd>
+                  </button>
+                  <button id="send-prompt" class="primary-button" type="submit">
+                    Send
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
         </aside>
       </div>
       <p id="app-error" class="app-error" role="alert" hidden></p>
     </main>
+    <dialog id="commands-dialog" aria-labelledby="commands-title">
+      <div class="dialog-heading">
+        <h2 id="commands-title">Skills &amp; commands</h2>
+        <button
+          id="close-commands"
+          class="quiet-button"
+          type="button"
+          aria-label="Close skills and commands"
+        >
+          ✕
+        </button>
+      </div>
+      <label for="command-search" class="sr-only"
+        >Search skills, templates and commands</label
+      >
+      <input
+        id="command-search"
+        type="search"
+        placeholder="Search skills, templates and commands…"
+      />
+      <p id="commands-status" class="muted"></p>
+      <div id="command-catalog" class="command-catalog"></div>
+      <details class="resource-details">
+        <summary>Available tools</summary>
+        <div id="available-tools"></div>
+      </details>
+      <div id="resource-diagnostics" class="form-error" hidden></div>
+    </dialog>
+    <dialog
+      id="session-settings-dialog"
+      aria-labelledby="session-settings-title"
+    >
+      <div class="dialog-heading">
+        <h2 id="session-settings-title">Model &amp; session</h2>
+        <button
+          id="close-session-settings"
+          class="quiet-button"
+          type="button"
+          aria-label="Close model and session settings"
+        >
+          ✕
+        </button>
+      </div>
+      <form id="session-settings-form">
+        <label for="session-model">Model</label
+        ><select id="session-model"></select>
+        <label for="session-thinking">Thinking level</label
+        ><select id="session-thinking"></select>
+        <p id="session-settings-note" class="muted"></p>
+        <button
+          id="apply-session-settings"
+          class="primary-button"
+          type="submit"
+        >
+          Apply
+        </button>
+      </form>
+      <section class="session-maintenance">
+        <label for="compact-instructions"
+          >Compaction instructions <span class="muted">optional</span></label
+        >
+        <input
+          id="compact-instructions"
+          type="text"
+          placeholder="What should the summary retain?"
+        />
+        <div>
+          <button id="compact-session" class="quiet-button" type="button">
+            Compact conversation</button
+          ><button id="reload-session" class="quiet-button" type="button">
+            Reload skills &amp; extensions
+          </button>
+        </div>
+      </section>
+      <p id="session-settings-error" class="form-error" role="alert" hidden></p>
+    </dialog>
+    <dialog id="extension-dialog" aria-labelledby="extension-dialog-title">
+      <form id="extension-dialog-form">
+        <div class="dialog-heading">
+          <h2 id="extension-dialog-title"></h2>
+          <span id="extension-dialog-session" class="muted"></span>
+        </div>
+        <p id="extension-dialog-message"></p>
+        <label
+          id="extension-dialog-label"
+          class="sr-only"
+          for="extension-dialog-input"
+          >Response</label
+        >
+        <input id="extension-dialog-input" type="text" hidden />
+        <textarea id="extension-dialog-editor" rows="8" hidden></textarea>
+        <select
+          id="extension-dialog-select"
+          size="6"
+          hidden
+          aria-label="Choose an option"
+        ></select>
+        <div
+          id="extension-dialog-terminal"
+          hidden
+          aria-label="Extension interface"
+        ></div>
+        <p
+          id="extension-dialog-error"
+          class="form-error"
+          role="alert"
+          hidden
+        ></p>
+        <div class="dialog-footer">
+          <button
+            id="cancel-extension-dialog"
+            class="quiet-button"
+            type="button"
+          >
+            Cancel</button
+          ><button
+            id="submit-extension-dialog"
+            class="primary-button"
+            type="submit"
+          >
+            Continue
+          </button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="create-dialog" aria-labelledby="create-title">
       <form id="create-form">
         <div class="dialog-heading">
