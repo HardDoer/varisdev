@@ -16,12 +16,9 @@ import {
 import {createSessionWorker} from '../agents/session.ts';
 import {
   AgentSessionController,
-  type AgentSessionControl,
   type AgentMessage,
   type ParentMessage,
 } from '../agents/team.ts';
-
-export type {AgentHandover, AgentSessionControl} from '../agents/team.ts';
 
 const allowedEfforts = [
   'off',
@@ -95,7 +92,7 @@ const spawnSchema = Type.Object({
       minimum: 1000,
       maximum: 3600000,
       description:
-        'Optional execution timeout. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work or an agent starts a fresh session.',
+        'Optional execution timeout. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work.',
     }),
   ),
   autoCleanup: Type.Optional(
@@ -204,8 +201,6 @@ function toolResult(
     finishedAt: record.finishedAt,
     sessionFile: record.sessionFile,
     resultFile: record.resultFile,
-    sessionCount: record.sessionCount,
-    previousSessionFile: record.previousSessionFile,
     error: record.error?.slice(0, 2000),
     ...(includeOutput && record.output !== undefined
       ? {
@@ -289,7 +284,7 @@ function registerAgentMessageTools(
     name: 'agent_messages',
     label: 'Inspect agent messages',
     description:
-      'Inspect an agent’s queued instructions with IDs, sender, timestamps, reference, and 500-character previews. Defaults to pending messages in delivery order; history contains delivered, removed, superseded, and discarded entries. Pass messageId to retrieve one full message and its current state. Session handovers are reported separately by pendingHandover.',
+      'Inspect an agent’s queued instructions with IDs, sender, timestamps, reference, and 500-character previews. Defaults to pending messages in delivery order; history contains delivered, removed, superseded, and discarded entries. Pass messageId to retrieve one full message and its current state.',
     parameters: Type.Object({
       id: idSchema,
       messageId: Type.Optional(
@@ -438,70 +433,10 @@ function registerAgentSendTool(
   });
 }
 
-function registerAgentNewSessionTool(
-  pi: ExtensionAPI,
-  getManager: GetManager,
-  selfId?: string,
-): void {
-  const handoverSchema = Type.String({
-    minLength: 1,
-    maxLength: 64000,
-    description:
-      'Self-contained handover: the task, user instructions, progress, decisions, relevant files, checks, and next steps. This becomes the first prompt in the new conversation.',
-  });
-  const definition = {
-    name: 'agent_new_session',
-    label: 'Start fresh agent session',
-    description: selfId
-      ? 'Start a fresh conversation for yourself and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. Your agent ID and pending messages are retained; the old transcript is saved. If an execution timeout is configured, it resets after the current tools stop.'
-      : 'Start a fresh conversation for a background agent and continue automatically from a handover. Use for requested session changes or ongoing workflows with automatic handovers. Complete ordinary tasks in the current session. The agent keeps its ID and pending messages; the old transcript is saved. If an execution timeout is configured, it resets after the current tools stop.',
-    promptGuidelines: [
-      'Use agent_new_session when the user requests a fresh session or has enabled an ongoing workflow with automatic handovers. Complete ordinary tasks in the current session.',
-      'Include the task, user instructions, progress, decisions, relevant files, checks, and concrete next steps in the handover. The new conversation starts from the handover and project instructions.',
-      ...(selfId
-        ? [
-            'Make this your last tool call in the current conversation. Work resumes automatically in the new conversation.',
-          ]
-        : []),
-    ],
-    executionMode: 'sequential' as const,
-  };
-  const request = (
-    id: string,
-    handover: string,
-    signal: AbortSignal | undefined,
-    ctx: ExtensionContext,
-  ) => {
-    signal?.throwIfAborted();
-    const current = getManager(ctx);
-    if (selfId && current.get(selfId).status !== 'running') {
-      throw new Error('Only running agents can restart their own session.');
-    }
-    return toolResult([current.newSession(id, handover)], false);
-  };
-  if (selfId) {
-    pi.registerTool({
-      ...definition,
-      parameters: Type.Object({handover: handoverSchema}),
-      async execute(_id, params, signal, _onUpdate, ctx) {
-        return request(selfId, params.handover, signal, ctx);
-      },
-    });
-  } else {
-    pi.registerTool({
-      ...definition,
-      parameters: Type.Object({id: idSchema, handover: handoverSchema}),
-      async execute(_id, params, signal, _onUpdate, ctx) {
-        return request(params.id, params.handover, signal, ctx);
-      },
-    });
-  }
-}
-
 export function registerAgentTools(
   pi: ExtensionAPI,
   createWorker = createSessionWorker,
-): AgentSessionControl {
+): void {
   const control = new AgentSessionController(pi);
   const getManager = (ctx: ExtensionContext) =>
     control.getTeam(ctx).getManager();
@@ -559,12 +494,11 @@ export function registerAgentTools(
           timeoutMs: params.timeoutMs,
           autoCleanup: params.autoCleanup,
         },
-        (id, previousSessionFile) =>
+        id =>
           createWorker({
             ...workerOptions,
             parentSessionId: team.sessionId,
             id,
-            previousSessionFile,
             agentToolsExtension(workerPi) {
               const getWorkerManager = () => team.getManager();
               registerAgentListTool(workerPi, getWorkerManager, id);
@@ -573,7 +507,6 @@ export function registerAgentTools(
                 sendToParent: message => team.storeMessage(message),
               });
               registerAgentMessageTools(workerPi, getWorkerManager, id);
-              registerAgentNewSessionTool(workerPi, getWorkerManager, id);
             },
           }),
         {kind: 'parent', id: ctx.sessionManager.getSessionId()},
@@ -587,7 +520,7 @@ export function registerAgentTools(
     name: 'agent_inbox',
     label: 'Read worker messages to parent',
     description:
-      'Read messages workers explicitly sent to the parent. Messages are stored without adding prompts or triggering turns. Lists the latest 100 retained messages, newest first, with sender, timestamp, and 500-character previews. Pass messageId for full text. Reading does not remove messages; the inbox follows parent handovers.',
+      'Read messages workers explicitly sent to the parent. Messages are stored without adding prompts or triggering turns. Lists the latest 100 retained messages, newest first, with sender, timestamp, and 500-character previews. Pass messageId for full text. Reading does not remove messages.',
     parameters: Type.Object({
       messageId: Type.Optional(
         Type.String({
@@ -631,7 +564,6 @@ export function registerAgentTools(
   });
   registerAgentSendTool(pi, getManager);
   registerAgentMessageTools(pi, getManager);
-  registerAgentNewSessionTool(pi, getManager);
   pi.registerTool({
     name: 'agent_wait',
     label: 'Wait for agents',
@@ -715,5 +647,4 @@ export function registerAgentTools(
       ctx.ui.notify(lines.join('\n'), 'info');
     },
   });
-  return control;
 }

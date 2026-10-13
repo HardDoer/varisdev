@@ -18,7 +18,6 @@ import {createWorkerModelRuntime} from './model-runtime.ts';
 interface WorkerOptions {
   id: string;
   parentSessionId: string;
-  previousSessionFile?: string;
   cwd: string;
   name: string;
   instructions?: string;
@@ -125,15 +124,11 @@ export async function createSessionWorker(
       'Your conversation contains the delegated task and follow-up messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
       'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to store a message for the parent to read with agent_inbox. This does not notify or wake the parent. Put your final result in your final answer; avoid duplicating it through agent_send. Your name and ID are attached automatically. Peer messages queue after the current task; completed agents resume their conversation to handle them.',
       'Use agent_messages to inspect pending instructions or retrieve a message by ID. Use agent_send with supersedes to consolidate obsolete pending instructions, or agent_message_remove to remove them. These edits report current message states and never undo work already delivered.',
-      'Use agent_new_session for a requested session change or an ongoing workflow with automatic handovers. Complete ordinary tasks in the current session. Include the task, user instructions for continuing through handovers, progress, and next steps in the handover; make this your last tool call in the old conversation. You retain your agent ID and pending messages, and work continues automatically in a fresh conversation.',
       ...(options.instructions ? [options.instructions] : []),
     ],
   });
   await loader.reload();
   const sessionManager = SessionManager.create(options.cwd, directory);
-  if (options.previousSessionFile) {
-    sessionManager.newSession({parentSession: options.previousSessionFile});
-  }
   const modelRuntime = await createWorkerModelRuntime(
     options.modelRegistry,
     options.model,

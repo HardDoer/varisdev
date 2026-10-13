@@ -9,7 +9,7 @@ import {
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {test, type TestContext} from 'node:test';
+import {test} from 'node:test';
 import {
   ModelRegistry,
   ModelRuntime,
@@ -36,6 +36,7 @@ type ShutdownHandler = (
 function reply(
   response: ServerResponse,
   output: string | {name: string; arguments: Record<string, unknown>},
+  contextTokens?: number,
 ) {
   const toolCall = typeof output !== 'string';
   const delta = toolCall
@@ -64,6 +65,15 @@ function reply(
       choices: [
         {index: 0, delta, finish_reason: toolCall ? 'tool_calls' : 'stop'},
       ],
+      ...(contextTokens === undefined
+        ? {}
+        : {
+            usage: {
+              prompt_tokens: contextTokens,
+              completion_tokens: 10,
+              total_tokens: contextTokens + 10,
+            },
+          }),
     })}\n\ndata: [DONE]\n\n`,
   );
 }
@@ -77,7 +87,7 @@ function lastToolResult<T>(request: ProviderRequest): T {
 }
 
 void test(
-  'Pi workers load project tools and instructions, execute tools, and persist follow-up conversations',
+  'Pi workers load project tools, persist follow-up conversations, and compact through the SDK',
   {timeout: 15000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-sdk-'));
@@ -103,7 +113,10 @@ void test(
           response,
           requests.length === 1
             ? {name: 'read', arguments: {path: 'context.txt'}}
-            : `Final answer ${requests.length}`,
+            : requests.length === 5
+              ? 'Compacted fixture context.'
+              : `Final answer ${requests.length}`,
+          requests.length === 4 ? 120000 : undefined,
         );
       } catch (error) {
         response.writeHead(500);
@@ -124,6 +137,11 @@ void test(
       await rm(directory, {recursive: true, force: true});
     });
     await mkdir(cwd, {recursive: true});
+    await mkdir(agentDir, {recursive: true});
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({compaction: {keepRecentTokens: 32}}),
+    );
     await writeFile(
       join(cwd, 'AGENTS.md'),
       'Project instruction marker: report every finding.',
@@ -250,6 +268,37 @@ void test(
     const transcript = await readFile(worker.sessionFile!, 'utf8');
     assert.match(transcript, /Fixture contents from the worker directory/);
     assert.match(transcript, /Summarize your previous answer/);
+
+    assert.equal(
+      await worker.run(
+        'Continue with the next finding.',
+        AbortSignal.timeout(5000),
+        item => activity.push(item),
+      ),
+      'Final answer 4',
+    );
+    assert.ok(activity.includes('Compacting conversation'));
+    const compacted = (await readFile(worker.sessionFile!, 'utf8'))
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+    const compactions = compacted.filter(entry => entry.type === 'compaction');
+    assert.equal(compactions.length, 1);
+    assert.match(compactions[0].summary, /Compacted fixture context/);
+    assert.equal(
+      await worker.run(
+        'Summarize the latest finding.',
+        AbortSignal.timeout(5000),
+        () => {},
+      ),
+      'Final answer 6',
+    );
+    assert.match(
+      JSON.stringify(requests[5].messages),
+      /Compacted fixture context/,
+    );
+    assert.match(JSON.stringify(requests[5].messages), /Final answer 4/);
+    assert.equal(await readFile(worker.resultFile!, 'utf8'), 'Final answer 6');
   },
 );
 
@@ -497,7 +546,6 @@ void test(
               'agent_list',
               'agent_message_remove',
               'agent_messages',
-              'agent_new_session',
               'agent_send',
             ],
           );
@@ -783,412 +831,5 @@ void test(
     assert.match(transcript, /Receiver handled the queued finding/);
     assert.match(transcript, /Received the queued peer finding/);
     assert.match(transcript, /Receiver handled the second finding/);
-  },
-);
-
-async function localParent(
-  t: TestContext,
-  respond: (
-    request: ProviderRequest,
-    step: number,
-  ) => Promise<Parameters<typeof reply>[1]>,
-) {
-  const directory = await mkdtemp(join(tmpdir(), 'varisdev-handover-sdk-'));
-  const cwd = join(directory, 'project');
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = join(directory, 'config');
-  const registry = new ModelRegistry(
-    await ModelRuntime.create({
-      authPath: join(directory, 'config', 'auth.json'),
-      modelsPath: null,
-      refreshOnCreate: false,
-    }),
-  );
-  const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, ShutdownHandler>();
-  const parentMessages: Array<Parameters<ExtensionAPI['sendMessage']>> = [];
-  registerAgentTools({
-    registerTool(tool: ToolDefinition) {
-      tools.set(tool.name, tool);
-    },
-    registerCommand() {},
-    on(event: string, handler: ShutdownHandler) {
-      events.set(event, handler);
-    },
-    getThinkingLevel: () => 'off',
-    sendMessage(...args: Parameters<ExtensionAPI['sendMessage']>) {
-      parentMessages.push(args);
-    },
-  } as unknown as ExtensionAPI);
-  const providerErrors: unknown[] = [];
-  let step = 0;
-  const server = createServer(async (request, response) => {
-    try {
-      let body = '';
-      for await (const chunk of request) body += chunk;
-      reply(response, await respond(JSON.parse(body), ++step));
-    } catch (error) {
-      providerErrors.push(error);
-      reply(response, `Provider fixture failed: ${String(error)}`);
-    }
-  });
-  t.after(async () => {
-    await events.get('session_shutdown')?.({
-      type: 'session_shutdown',
-      reason: 'quit',
-    });
-    registry.unregisterProvider('openai-codex');
-    await new Promise<void>((resolve, reject) =>
-      server.close(error => (error ? reject(error) : resolve())),
-    );
-    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    await rm(directory, {recursive: true, force: true});
-  });
-  await mkdir(cwd, {recursive: true});
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  registry.registerProvider('openai-codex', {
-    api: 'openai-completions',
-    baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
-    apiKey: 'local-test-key',
-    models: [
-      {
-        id: 'gpt-5.6-sol',
-        name: 'Codex GPT-5.6 Sol',
-        reasoning: false,
-        input: ['text'],
-        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-        contextWindow: 128000,
-        maxTokens: 1000,
-      },
-    ],
-  });
-  const ctx = {
-    cwd,
-    hasUI: false,
-    model: registry.find('openai-codex', 'gpt-5.6-sol')!,
-    modelRegistry: registry,
-    isIdle: () => true,
-    sessionManager: {getSessionId: () => 'handover-parent'},
-  } as unknown as ExtensionContext;
-  const execute = (name: string, params: Record<string, unknown>) =>
-    tools.get(name)!.execute('parent-call', params, undefined, undefined, ctx);
-  return {
-    cwd,
-    execute,
-    parentMessages,
-    async wait(id: string) {
-      const result = await execute('agent_wait', {ids: [id], timeoutMs: 10000});
-      assert.deepEqual(providerErrors, []);
-      const agent = (result.details as {agents: AgentRecord[]}).agents[0];
-      assert.equal(agent.status, 'completed', JSON.stringify(agent));
-      return agent;
-    },
-  };
-}
-
-void test(
-  'SDK workers retain results and queued follow-ups across fresh sessions without completion notifications',
-  {timeout: 20000},
-  async t => {
-    const originalTask =
-      'ORIGINAL TASK MARKER: use automatic handovers for this workflow.';
-    const originalContext = 'ORIGINAL TOOL CONTEXT MARKER';
-    const firstHandover =
-      'FIRST HANDOVER: checkpoint alpha; read context.txt and continue automatically.';
-    const secondHandover =
-      'SECOND HANDOVER: checkpoint beta; finish the workflow.';
-    const queuedFollowup =
-      'QUEUED FOLLOWUP: continue with another fresh handover.';
-    const latestFollowup =
-      'LATEST FOLLOWUP: summarize the completed checkpoint.';
-    const sessions: AgentRecord[] = [];
-    const parent = await localParent(t, async (input, step) => {
-      const conversation = input.messages.filter(
-        message => !['system', 'developer'].includes(message.role),
-      );
-      const text = JSON.stringify(input.messages);
-      if ([1, 4, 9].includes(step)) {
-        assert.equal(
-          conversation.length,
-          1,
-          'A fresh session starts with only the handover or initial task',
-        );
-        assert.equal(conversation[0].role, 'user');
-        assert.match(text, /Project handover instruction marker/);
-        assert.match(text, /Persistent worker instruction marker/);
-        assert.deepEqual(
-          input.tools
-            .map(tool => tool.function.name)
-            .filter(name => name.startsWith('agent_'))
-            .sort(),
-          [
-            'agent_list',
-            'agent_message_remove',
-            'agent_messages',
-            'agent_new_session',
-            'agent_send',
-          ],
-        );
-        assert.ok(input.tools.some(tool => tool.function.name === 'read'));
-        if (step !== 1) {
-          assert.doesNotMatch(
-            text,
-            /ORIGINAL TASK MARKER|ORIGINAL TOOL CONTEXT MARKER/,
-          );
-          assert.ok(
-            JSON.stringify(conversation[0].content).includes(
-              step === 4 ? firstHandover : secondHandover,
-            ),
-          );
-        }
-        if (step === 9) {
-          assert.doesNotMatch(
-            text,
-            /FIRST HANDOVER|QUEUED FOLLOWUP|Fresh project tool contents/,
-          );
-        }
-      }
-      if ([3, 6, 10].includes(step)) {
-        const listed = lastToolResult<{
-          selfId: string;
-          agents: Array<{id: string}>;
-        }>(input);
-        assert.equal(listed.selfId, id);
-        assert.deepEqual(
-          listed.agents.map(agent => agent.id),
-          [id],
-        );
-        const status = await parent.execute('agent_status', {id});
-        sessions.push((status.details as {agents: AgentRecord[]}).agents[0]);
-      }
-      switch (step) {
-        case 1:
-          assert.ok(text.includes(originalTask));
-          return {name: 'read', arguments: {path: 'original.txt'}};
-        case 2:
-          assert.ok(text.includes(originalContext));
-          return {name: 'agent_list', arguments: {view: 'all'}};
-        case 3:
-          // Queue work while the old SDK run is still active, before it requests a new session.
-          await parent.execute('agent_send', {id, message: queuedFollowup});
-          return {
-            name: 'agent_new_session',
-            arguments: {handover: firstHandover},
-          };
-        case 4:
-          return {name: 'read', arguments: {path: 'context.txt'}};
-        case 5:
-          assert.match(text, /Fresh project tool contents/);
-          return {name: 'agent_list', arguments: {view: 'all'}};
-        case 6:
-          return {
-            name: 'agent_send',
-            arguments: {id: 'parent', message: 'First fresh session ready.'},
-          };
-        case 7: {
-          const result = lastToolResult<{
-            recipient: 'parent';
-            stored: true;
-            messageId: string;
-          }>(input);
-          assert.equal(result.recipient, 'parent');
-          assert.equal(result.stored, true);
-          assert.ok(result.messageId);
-          return 'First handover result.';
-        }
-        case 8:
-          assert.ok(
-            JSON.stringify(conversation.at(-1)?.content).includes(
-              queuedFollowup,
-            ),
-          );
-          assert.ok(text.includes(firstHandover));
-          assert.match(text, /First handover result/);
-          return {
-            name: 'agent_new_session',
-            arguments: {handover: secondHandover},
-          };
-        case 9:
-          return {name: 'agent_list', arguments: {view: 'all'}};
-        case 10:
-          return {
-            name: 'agent_send',
-            arguments: {id: 'parent', message: 'Second fresh session ready.'},
-          };
-        case 11: {
-          const result = lastToolResult<{
-            recipient: 'parent';
-            stored: true;
-            messageId: string;
-          }>(input);
-          assert.equal(result.recipient, 'parent');
-          assert.equal(result.stored, true);
-          assert.ok(result.messageId);
-          return 'Second handover result.';
-        }
-        case 12:
-          assert.equal(
-            conversation.filter(message => message.role === 'user').length,
-            2,
-          );
-          assert.ok(
-            JSON.stringify(conversation.at(-1)?.content).includes(
-              latestFollowup,
-            ),
-          );
-          assert.ok(text.includes(secondHandover));
-          assert.match(text, /Second handover result/);
-          assert.doesNotMatch(
-            text,
-            /ORIGINAL TASK MARKER|FIRST HANDOVER|QUEUED FOLLOWUP/,
-          );
-          return 'Latest followup result.';
-        default:
-          assert.fail(`Unexpected provider request ${step}`);
-      }
-    });
-    await writeFile(
-      join(parent.cwd, 'AGENTS.md'),
-      'Project handover instruction marker: report progress.',
-    );
-    await writeFile(join(parent.cwd, 'original.txt'), originalContext);
-    await writeFile(
-      join(parent.cwd, 'context.txt'),
-      'Fresh project tool contents',
-    );
-    const spawned = await parent.execute('agent_spawn', {
-      name: 'Ongoing worker',
-      task: originalTask,
-      instructions:
-        'Persistent worker instruction marker: follow the project instructions.',
-      timeoutMs: 10000,
-    });
-    const {id} = (spawned.details as {agents: AgentRecord[]}).agents[0];
-    const completed = await parent.wait(id);
-    assert.equal(completed.output, 'Second handover result.');
-    const status = await parent.execute('agent_status', {id});
-    assert.deepEqual(
-      (status.details as {agents: AgentRecord[]}).agents,
-      [completed],
-      'Status must retain the result returned by wait after worker handovers',
-    );
-    assert.deepEqual(
-      sessions.map(agent => agent.sessionCount),
-      [1, 2, 3],
-    );
-    const paths = sessions.map(agent => agent.sessionFile!);
-    assert.equal(new Set(paths).size, 3);
-    assert.equal(completed.sessionFile, paths[2]);
-    assert.equal(completed.previousSessionFile, paths[1]);
-    assert.equal(sessions[1].previousSessionFile, paths[0]);
-    const transcripts = await Promise.all(
-      paths.map(path => readFile(path, 'utf8')),
-    );
-    const headers = transcripts.map(
-      text =>
-        JSON.parse(text.split('\n')[0]) as {
-          id: string;
-          type: string;
-          parentSession?: string;
-        },
-    );
-    assert.equal(new Set(headers.map(header => header.id)).size, 3);
-    assert.ok(headers.every(header => header.type === 'session'));
-    assert.equal(headers[1].parentSession, paths[0]);
-    assert.equal(headers[2].parentSession, paths[1]);
-    assert.ok(transcripts[0].includes(originalTask));
-    assert.ok(transcripts[0].includes(originalContext));
-    assert.match(transcripts[0], /agent_new_session/);
-    assert.ok(transcripts[1].includes(firstHandover));
-    assert.ok(transcripts[1].includes(queuedFollowup));
-    assert.match(transcripts[1], /agent_new_session/);
-    assert.ok(transcripts[2].includes(secondHandover));
-    assert.doesNotMatch(
-      transcripts[2],
-      /ORIGINAL TOOL CONTEXT MARKER|FIRST HANDOVER|QUEUED FOLLOWUP/,
-    );
-    assert.deepEqual(
-      parent.parentMessages,
-      [],
-      'Worker messages and completions must not reach the parent session',
-    );
-    const inbox = (await parent.execute('agent_inbox', {})).details as {
-      total: number;
-      offset: number;
-      nextOffset?: number;
-      messages: Array<{
-        id: string;
-        from: {id: string; name: string};
-        createdAt: string;
-        length: number;
-        preview: string;
-      }>;
-    };
-    assert.equal(inbox.total, 2);
-    assert.equal(inbox.offset, 0);
-    assert.equal(inbox.nextOffset, undefined);
-    assert.deepEqual(
-      inbox.messages.map(message => ({
-        from: message.from,
-        length: message.length,
-        preview: message.preview,
-      })),
-      ['Second fresh session ready.', 'First fresh session ready.'].map(
-        message => ({
-          from: {id, name: 'Ongoing worker'},
-          length: message.length,
-          preview: message,
-        }),
-      ),
-      'Worker handovers retain parent messages in newest-first order',
-    );
-    const oldest = inbox.messages[1];
-    const full = (await parent.execute('agent_inbox', {messageId: oldest.id}))
-      .details as {
-      message: {
-        id: string;
-        from: {id: string; name: string};
-        createdAt: string;
-        message: string;
-      };
-    };
-    assert.deepEqual(full.message, {
-      id: oldest.id,
-      from: oldest.from,
-      createdAt: oldest.createdAt,
-      message: 'First fresh session ready.',
-    });
-    assert.deepEqual(
-      (await parent.execute('agent_inbox', {})).details,
-      inbox,
-      'Inbox reads must not consume messages',
-    );
-    await parent.execute('agent_send', {id, message: latestFollowup});
-    const followedUp = await parent.wait(id);
-    assert.equal(followedUp.sessionFile, paths[2]);
-    assert.equal(followedUp.sessionCount, 3);
-    assert.equal(followedUp.output, 'Latest followup result.');
-    const latestStatus = await parent.execute('agent_status', {id});
-    assert.deepEqual((latestStatus.details as {agents: AgentRecord[]}).agents, [
-      followedUp,
-    ]);
-    assert.deepEqual(parent.parentMessages, []);
-    assert.deepEqual((await parent.execute('agent_inbox', {})).details, inbox);
-    assert.equal(
-      await readFile(followedUp.resultFile!, 'utf8'),
-      'Latest followup result.',
-    );
-    assert.deepEqual(
-      await Promise.all(paths.slice(0, 2).map(path => readFile(path, 'utf8'))),
-      transcripts.slice(0, 2),
-    );
-    const latestTranscript = await readFile(paths[2], 'utf8');
-    assert.match(latestTranscript, /Second handover result/);
-    assert.ok(latestTranscript.includes(latestFollowup));
-    assert.match(latestTranscript, /Latest followup result/);
   },
 );

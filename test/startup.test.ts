@@ -111,8 +111,17 @@ registerHooks({
       const result = await response;
       assert.equal(result.success, true);
       const commands = result.data.commands.map(command => command.name);
-      for (const name of ['varisdev', 'images', 'agents', 'handover']) {
+      for (const name of ['varisdev', 'images', 'agents', 'commit']) {
         assert.ok(commands.includes(name), `Missing /${name}: ${stderr}`);
+      }
+      for (const name of [
+        'handover',
+        'auto-handover',
+        'auto-session-refresh',
+        'varisdev-handover-switch',
+        'varisdev-handover-resume',
+      ]) {
+        assert.ok(!commands.includes(name), `Unexpected /${name}`);
       }
       assert.equal(stderr, '');
     },

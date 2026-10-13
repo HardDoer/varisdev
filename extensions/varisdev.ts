@@ -5,14 +5,11 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {truncateToWidth, visibleWidth} from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
-import {registerAutoHandover} from '../src/auto-handover.ts';
-import {registerHandoverSettingsCommands} from '../src/handover-settings.ts';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerCommitCommand} from '../src/commit.ts';
 import {registerImagePreviews} from '../src/image-previews.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
-import {registerSessionHandover} from '../src/session-handover.ts';
 
 const THEME_NAME = 'varisware';
 const TITLE = 'VarisDev';
@@ -203,11 +200,8 @@ export default function (pi: ExtensionAPI) {
 
   registerImagePreviews(pi);
   registerProjectTools(pi);
-  const agents = registerAgentTools(pi);
+  registerAgentTools(pi);
   registerCommitCommand(pi);
-  const sessions = registerSessionHandover(pi, agents);
-  registerHandoverSettingsCommands(pi);
-  registerAutoHandover(pi, sessions);
   registerCompletionAlert(pi);
   pi.on('session_start', async (_event, ctx) => {
     applyBranding(ctx);
