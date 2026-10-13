@@ -2,6 +2,7 @@ node_modules/
 build/
 .pi/npm/
 .pi/git/
+.pi/desktop/
 *.tgz
 .DS_Store
 generated-images

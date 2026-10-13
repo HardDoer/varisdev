@@ -306,6 +306,9 @@ async function main() {
       backgroundThrottling: false,
     },
   });
+  // Windows pauses animation frames for a hidden window even with background
+  // throttling disabled. Display the fixture without taking keyboard focus.
+  window.showInactive();
   window.webContents.on('console-message', details => {
     if (details.level === 'error') rendererErrors.push(details.message);
   });

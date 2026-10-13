@@ -9,6 +9,7 @@ import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerCommitCommand} from '../src/commit.ts';
 import {registerImagePreviews} from '../src/image-previews.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
+import {registerDesktopStartup} from '../src/desktop/startup.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
 
@@ -229,6 +230,8 @@ export default function (pi: ExtensionAPI) {
     releaseController();
     stopKeepingTerminalTitle();
   });
+
+  registerDesktopStartup(pi);
 
   pi.registerCommand('varisdev', {
     description: 'Reapply VarisDev branding and the Varisware theme.',

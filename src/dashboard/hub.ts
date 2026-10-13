@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import type {ImageContent} from '@earendil-works/pi-ai';
 import {realpath, stat} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
@@ -54,7 +55,11 @@ export interface PromptDelivery {
 export interface DashboardParent {
   state: DashboardState;
   ui?: DesktopExtensionUI;
-  prompt(text: string, delivery: PromptDelivery): Promise<void>;
+  prompt(
+    text: string,
+    delivery: PromptDelivery,
+    images?: ImageContent[],
+  ): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
   features(): Promise<SessionFeatures>;
@@ -80,7 +85,7 @@ export interface ExternalSessionControl {
 interface Headquarters {
   state: DashboardState;
   parent?: DashboardParent;
-  pending: QueuedPrompt[];
+  pending: Array<QueuedPrompt & {images?: ImageContent[]}>;
   running?: Promise<void>;
   stopping: boolean;
   maintaining: boolean;
@@ -276,12 +281,31 @@ export class DashboardHub {
               controllable:
                 !!entry.parent && snapshot.session.status !== 'closed',
               pendingPrompts: entry.pending.length,
-              queuedPrompts: structuredClone(entry.pending),
+              queuedPrompts: entry.pending.map(({id, text, queuedAt}) => ({
+                id,
+                text,
+                queuedAt,
+              })),
             },
           };
         }),
       ],
     };
+  }
+
+  /** Adopt the idle CLI session as a native desktop parent. */
+  adoptSession(
+    parent: DashboardParent,
+    prompts: Array<{text: string; images?: ImageContent[]}> = [],
+  ): void {
+    this.ensureOpen();
+    const id = parent.state.snapshot().session.id;
+    if (this.sessions.has(id))
+      throw new DashboardInputError('This session is already open.');
+    const entry = this.add(parent.state, parent);
+    for (const prompt of prompts)
+      this.enqueue(entry, prompt.text, prompt.images);
+    this.changed();
   }
 
   async workspace(id: string): Promise<WorkspaceDiff> {
@@ -504,8 +528,15 @@ export class DashboardHub {
     this.changed();
   }
 
-  private enqueue(entry: Headquarters, prompt: string): void {
-    entry.pending.push(queuedPrompt(prompt));
+  private enqueue(
+    entry: Headquarters,
+    prompt: string,
+    images?: ImageContent[],
+  ): void {
+    entry.pending.push({
+      ...queuedPrompt(prompt),
+      ...(images?.length ? {images} : {}),
+    });
     entry.state.record('message', `Prompt queued: ${prompt}`);
     // Reserve the runner before calling prompt: SDK preflight is asynchronous.
     if (!entry.running) {
@@ -523,26 +554,30 @@ export class DashboardHub {
               error: undefined,
             });
             try {
-              await entry.parent!.prompt(next.text, {
-                isQueued,
-                submitted: () => {
-                  if (!isQueued())
-                    throw new Error('This prompt is no longer queued.');
-                  submitted = true;
-                  entry.pending.splice(
-                    entry.pending.findIndex(prompt => prompt.id === next.id),
-                    1,
-                  );
-                  entry.state.updateSession({
-                    status: 'running',
-                    activity: 'Starting task',
-                    prompt: next.text,
-                    response: '',
-                    error: undefined,
-                  });
-                  this.changed();
+              await entry.parent!.prompt(
+                next.text,
+                {
+                  isQueued,
+                  submitted: () => {
+                    if (!isQueued())
+                      throw new Error('This prompt is no longer queued.');
+                    submitted = true;
+                    entry.pending.splice(
+                      entry.pending.findIndex(prompt => prompt.id === next.id),
+                      1,
+                    );
+                    entry.state.updateSession({
+                      status: 'running',
+                      activity: 'Starting task',
+                      prompt: next.text,
+                      response: '',
+                      error: undefined,
+                    });
+                    this.changed();
+                  },
                 },
-              });
+                next.images,
+              );
             } catch (error) {
               // Removal or Stop invalidates a prompt still in SDK preflight.
               if (!submitted && !isQueued()) continue;

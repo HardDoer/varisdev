@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
 import type {
   ExtensionUIContext,
   ExtensionUIDialogOptions,
@@ -46,7 +47,7 @@ type AutocompleteProvider = Parameters<AutocompleteFactory>[0];
 
 const sdkEntry = import.meta.resolve('@earendil-works/pi-coding-agent');
 const tui = (await import(
-  createRequire(sdkEntry).resolve('@earendil-works/pi-tui')
+  pathToFileURL(createRequire(sdkEntry).resolve('@earendil-works/pi-tui')).href
 )) as {
   TuiAltScreen: new (
     terminal: VirtualTerminal,

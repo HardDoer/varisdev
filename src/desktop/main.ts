@@ -7,7 +7,11 @@ import {
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron';
-import {isAbsolute} from 'node:path';
+import {isAbsolute, join} from 'node:path';
+import {mkdirSync} from 'node:fs';
+import {SettingsManager} from '@earendil-works/pi-coding-agent';
+import type {DesktopStartup} from './startup.ts';
+import {desktopInitialPrompts} from '../dashboard/startup.ts';
 import {fileURLToPath} from 'node:url';
 import {DashboardInputError} from '../dashboard/errors.ts';
 import {DashboardHub, isQueuedPrompts} from '../dashboard/hub.ts';
@@ -20,6 +24,14 @@ import type {
 } from '../dashboard/features.ts';
 
 app.setName('VarisDev Factory');
+// Keep this checkout's Electron data alongside the application.
+const profile =
+  process.env.PIDEV_DESKTOP_DATA_DIR ??
+  fileURLToPath(new URL('../../../../.pi/desktop/', import.meta.url));
+mkdirSync(join(profile, 'temp'), {recursive: true});
+app.setPath('userData', profile);
+app.setPath('sessionData', profile);
+app.setPath('temp', join(profile, 'temp'));
 
 const pageUrl = new URL(
   '../../../../assets/dashboard/index.html',
@@ -36,6 +48,13 @@ const cwdArgument = process.argv
   ?.slice('--pidev-cwd='.length);
 const launchCwd =
   cwdArgument && isAbsolute(cwdArgument) ? cwdArgument : process.cwd();
+const replacingTerminal = process.argv.includes('--pidev-startup');
+let receiveStartup: ((startup: DesktopStartup) => void) | undefined;
+const startupRequest = replacingTerminal
+  ? new Promise<DesktopStartup>(resolve => {
+      receiveStartup = resolve;
+    })
+  : undefined;
 const hub = new DashboardHub(
   undefined,
   request => createDashboardParent(request),
@@ -269,6 +288,16 @@ process.on('message', (message: unknown) => {
   // Shutdown can be waiting for the attached session's abort reply.
   if (requests.reply(message)) return;
   if (shuttingDown || !message || typeof message !== 'object') return;
+  if (
+    'type' in message &&
+    message.type === 'startup' &&
+    'startup' in message &&
+    receiveStartup
+  ) {
+    receiveStartup(message.startup as DesktopStartup);
+    receiveStartup = undefined;
+    return;
+  }
   const payload = message as {
     type?: unknown;
     snapshot?: unknown;
@@ -346,10 +375,38 @@ void app
     installHandlers();
     installMenu();
     await createWindow();
-    if (process.connected) process.send?.({type: 'ready'});
+    if (startupRequest) {
+      process.send?.({type: 'startup-request'});
+      const startup = await startupRequest;
+      const parent = await createDashboardParent(
+        {cwd: startup.cwd},
+        undefined,
+        startup,
+      );
+      try {
+        const settings = SettingsManager.create(startup.cwd, startup.agentDir);
+        const prompts = await desktopInitialPrompts(
+          startup.argv,
+          settings.getImageAutoResize(),
+        );
+        hub.adoptSession(parent, prompts);
+      } catch (error) {
+        await parent.close();
+        throw error;
+      }
+      process.send?.({type: 'startup-ready'});
+    } else if (process.connected) process.send?.({type: 'ready'});
   })
   .catch(error => {
     console.error('Could not start VarisDev Factory:', error);
+    if (replacingTerminal && process.connected) {
+      process.send?.({
+        type: 'startup-error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      app.quit();
+      return;
+    }
     dialog.showErrorBox(
       'VarisDev could not start',
       error instanceof Error ? error.message : String(error),

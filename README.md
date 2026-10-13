@@ -21,7 +21,13 @@ Varisware VarisDev package.
 
 ## Desktop factory app
 
-On macOS, install the app once from this repository:
+With this extension installed, start `pi` normally. VarisDev opens automatically, takes over the current conversation, and closes Pi's terminal interface. The desktop owns the conversation and workers, so you can close the launching terminal. The selected project, session history, model, thinking level, active tools, CLI resource options, and initial prompts carry over. Print, JSON, and RPC runs stay headless.
+
+The GUI starts with your current conversation selected and ready to use. **New parent** adds another project or conversation.
+
+This repository's `.pi/settings.json` loads the extension from the checkout and disables the installed Git copy here, so running `pi` in this folder uses your current changes.
+
+On macOS, you can also install an app launcher from this repository:
 
 ```sh
 npm install
@@ -33,7 +39,7 @@ Then open **VarisDev** from `~/Applications/VarisDev.app` in Finder, Spotlight, 
 
 Use **New parent** to choose a project and give its master robot a prompt. Electron owns the Pi SDK sessions, model API calls, coding tools, and worker teams. It reads your existing Pi credentials, model settings, project context, and session storage from the usual Pi directories (normally `~/.pi/agent`). There is no terminal session hosting the app.
 
-The `pi` command starts Pi's terminal interface. Use the VarisDev app for the graphical interface. `/factory` inside Pi opens an optional companion window for an existing terminal conversation; that conversation continues to belong to its terminal process. Terminal startup does not open the GUI automatically. The companion reconnects when the terminal extension reloads.
+If the desktop cannot start, Pi reports the error and keeps its terminal interface available. `/factory` can still open a companion window for that terminal session. Normal interactive startup uses the desktop's own session runtime.
 
 Each parent conversation has a factory and a master robot. Background agents appear as drones at workstations. Working drones stay visible automatically; labels show their task and current action. Dispatch beams and sparks follow actual starts and completions. The session overview shows the other parent robots and their activity, so work in another folder stays visible too.
 
@@ -55,9 +61,9 @@ Choose a ready-made palette from **Theme**: Factory, Nord, Dracula, Catppuccin M
 
 Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, send follow-up prompts, and stop their work from the app. Follow-ups wait for the parent's current prompt to finish. Stopping a parent clears its queued prompts and cancels its workers. When opened with `/factory`, the connected terminal conversation can also be controlled from the GUI.
 
-Opening the app creates no sessions or workers. New sessions start only when you submit their form. Worker drones represent pidev's existing delegation behavior; visual effects never trigger work.
+Starting `pi` opens its conversation in the app; any initial CLI prompts run there. Opening the app directly starts with an empty overview. Worker drones represent pidev's existing delegation behavior; visual effects never trigger work.
 
-Electron runs the desktop window and the session runtime; graphics are loaded from local files. Closing the app stops its parents and workers. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
+Electron runs the desktop window and the session runtime; graphics are loaded from local files. Its profile, theme preferences, and cache live in `.pi/desktop/` in this checkout. Closing the app stops its parents and workers. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
 
 ### App updates and environment
 

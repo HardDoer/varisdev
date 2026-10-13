@@ -3,6 +3,8 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   ModelRuntime,
+  ModelRegistry,
+  parseArgs,
   SessionManager,
   SettingsManager,
   type CreateAgentSessionOptions,
@@ -27,6 +29,8 @@ import {
 import {DesktopExtensionUI} from './extension-ui.ts';
 import {observeDashboardSession} from './observe.ts';
 import type {DashboardState} from './state.ts';
+import type {DesktopStartup} from '../desktop/startup.ts';
+import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -46,9 +50,13 @@ export interface DesktopDashboardParent extends DashboardParent {
 export async function createDashboardParent(
   request: ParentRequest,
   inherited?: ParentModel,
+  startup?: DesktopStartup,
 ): Promise<DesktopDashboardParent> {
-  const agentDir = getAgentDir();
-  const sessionManager = SessionManager.create(request.cwd);
+  const agentDir = startup?.agentDir ?? getAgentDir();
+  const args = startup ? parseArgs(startup.argv) : undefined;
+  const sessionManager = startup
+    ? await restoreDesktopSession(startup)
+    : SessionManager.create(request.cwd);
   const directory = join(
     agentDir,
     'varisdev',
@@ -69,6 +77,7 @@ export async function createDashboardParent(
     state?.record('error', message);
   };
   const loader = new DefaultResourceLoader({
+    ...(args ? desktopResourceOptions(args) : {}),
     cwd: request.cwd,
     agentDir,
     settingsManager,
@@ -95,13 +104,16 @@ export async function createDashboardParent(
     ],
   });
   await loader.reload();
-  const modelRuntime = inherited
-    ? await ModelRuntime.create({
-        authPath: join(agentDir, 'auth.json'),
-        modelsPath: join(agentDir, 'models.json'),
-        refreshOnCreate: false,
-      })
-    : undefined;
+  for (const [name, value] of args?.unknownFlags ?? [])
+    loader.getExtensions().runtime.flagValues.set(name, value);
+  const modelRuntime =
+    inherited || startup
+      ? await ModelRuntime.create({
+          authPath: join(agentDir, 'auth.json'),
+          modelsPath: join(agentDir, 'models.json'),
+          refreshOnCreate: !inherited,
+        })
+      : undefined;
   if (inherited && modelRuntime) {
     const delegated = await createWorkerModelRuntime(
       inherited.modelRegistry,
@@ -112,12 +124,35 @@ export async function createDashboardParent(
       delegated.getProvider(inherited.model.provider)!,
     );
   }
+  if (startup && modelRuntime) {
+    const runtime = loader.getExtensions().runtime;
+    for (const {name, config} of runtime.pendingProviderRegistrations)
+      modelRuntime.registerProvider(name, config);
+    runtime.pendingProviderRegistrations = [];
+    for (const {provider} of runtime.pendingNativeProviderRegistrations)
+      modelRuntime.registerNativeProvider(provider);
+    runtime.pendingNativeProviderRegistrations = [];
+  }
+  const startupModel =
+    startup?.model && modelRuntime
+      ? new ModelRegistry(modelRuntime).find(
+          startup.model.provider,
+          startup.model.id,
+        )
+      : undefined;
+  if (startup?.model && !startupModel)
+    throw new Error(
+      `Could not restore model ${startup.model.provider}/${startup.model.id}.`,
+    );
+  if (args?.apiKey && startupModel)
+    await modelRuntime!.setRuntimeApiKey(startupModel.provider, args.apiKey);
   const {session} = await createAgentSession({
     cwd: request.cwd,
     agentDir,
-    model: inherited?.model,
+    model: inherited?.model ?? startupModel,
     modelRuntime,
-    thinkingLevel: inherited?.thinkingLevel,
+    thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
+    tools: startup?.tools,
     settingsManager,
     resourceLoader: loader,
     sessionManager,
@@ -342,7 +377,7 @@ export async function createDashboardParent(
     configure: options => idleAction(() => configure(options)),
     compact: instructions => idleAction(() => session.compact(instructions)),
     reload: () => idleAction(reload),
-    async prompt(text, delivery) {
+    async prompt(text, delivery, images) {
       requireIdle();
       const running = {
         cancelled: false,
@@ -390,6 +425,7 @@ export async function createDashboardParent(
               extension ? `/${name}${args ? ` ${args}` : ''}` : text,
               {
                 expandPromptTemplates: true,
+                images,
                 preflightResult: accepted => {
                   if (!accepted || submitted) return;
                   if (running.cancelled || !delivery.isQueued())

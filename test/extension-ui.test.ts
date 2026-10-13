@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 
@@ -289,9 +290,11 @@ void test('real Pi input components honor each session keybindings and bracketed
     ReturnType<Parameters<DesktopExtensionUI['context']['custom']>[0]>
   >;
   const {Input} = (await import(
-    createRequire(
-      import.meta.resolve('@earendil-works/pi-coding-agent'),
-    ).resolve('@earendil-works/pi-tui')
+    pathToFileURL(
+      createRequire(
+        import.meta.resolve('@earendil-works/pi-coding-agent'),
+      ).resolve('@earendil-works/pi-tui'),
+    ).href
   )) as {
     Input: new () => Component & {onSubmit?: (value: string) => void};
   };
@@ -512,9 +515,11 @@ void test('extension reload resets registrations and dialogs while preserving th
     Parameters<DesktopExtensionUI['context']['setEditorComponent']>[0]
   >;
   const {Editor} = (await import(
-    createRequire(
-      import.meta.resolve('@earendil-works/pi-coding-agent'),
-    ).resolve('@earendil-works/pi-tui')
+    pathToFileURL(
+      createRequire(
+        import.meta.resolve('@earendil-works/pi-coding-agent'),
+      ).resolve('@earendil-works/pi-tui'),
+    ).href
   )) as {
     Editor: new (
       screen: Parameters<Factory>[0],
