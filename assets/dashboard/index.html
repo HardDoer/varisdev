@@ -8,7 +8,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
-    <title>VarisDev · Factory</title>
+    <title>VarisDev</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="themes.css" />
     <link
@@ -20,12 +20,8 @@
   </head>
   <body>
     <a class="skip-link" href="#factory-title">Skip to factory</a>
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">V</span
-        ><strong>VarisDev</strong>
-      </div>
-      <div class="header-actions">
+    <main>
+      <div class="app-controls" aria-label="Application controls">
         <span id="connection" class="connection" role="status"
           >Starting desktop</span
         ><button
@@ -39,8 +35,6 @@
           ＋ New parent
         </button>
       </div>
-    </header>
-    <main>
       <section
         id="welcome"
         class="welcome"
@@ -53,7 +47,6 @@
           ><span class="orbit orbit-two"></span>
         </div>
         <div>
-          <p class="eyebrow">READY TO BUILD</p>
           <h2 id="welcome-title">Give your first master robot a mission.</h2>
           <p>
             Choose a project folder and a prompt. Each parent gets its own
@@ -70,7 +63,6 @@
           <section class="overview" aria-labelledby="overview-title">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">OPERATIONS NETWORK</p>
                 <h1 id="overview-title">Your factories<span>.</span></h1>
               </div>
               <p id="hub-counts" class="overview-counts">No parents yet</p>
@@ -80,7 +72,6 @@
           <section class="factory-panel panel" aria-labelledby="factory-title">
             <div class="factory-heading">
               <div>
-                <p class="eyebrow">SELECTED FACTORY</p>
                 <h2 id="factory-title">Factory</h2>
                 <p id="factory-path" class="mono muted"></p>
               </div>
@@ -97,12 +88,6 @@
               ><span id="context-meter" class="context-meter"></span>
             </div>
             <div id="scene" class="scene">
-              <div class="scene-topline">
-                <span><i></i> LIVE FACTORY</span
-                ><span id="scene-caption"
-                  >Master command / drone work bays</span
-                >
-              </div>
               <div
                 id="processing-bubble"
                 class="processing-bubble"
@@ -119,30 +104,30 @@
                 role="status"
                 aria-label="Stopping work"
               >
-                SKRRRT!
+                Stopping
               </div>
               <canvas
                 id="factory-canvas"
-                aria-label="Three dimensional factory with a master robot and worker drones"
+                aria-label="Factory view with a parent and workers"
               ></canvas>
               <div id="fallback" class="fallback" hidden>
                 <div class="fallback-grid"></div>
                 <div id="fallback-units" class="fallback-units"></div>
               </div>
-              <div id="scene-labels" class="scene-labels"></div>
-              <div class="scene-bottomline">
-                <span id="visual-mode">WEBGL · 3D</span
-                ><span>SELECT A ROBOT TO INSPECT</span
-                ><span class="scene-legend"
-                  ><i class="mint"></i> WORKING <i class="amber"></i> QUEUED
-                  <i class="cyan"></i> COMPLETE</span
-                >
-              </div>
             </div>
+            <div class="scene-legend" aria-label="Worker status colors">
+              <span><i class="mint" aria-hidden="true"></i>Working</span>
+              <span><i class="amber" aria-hidden="true"></i>Queued</span>
+              <span><i class="cyan" aria-hidden="true"></i>Completed</span>
+            </div>
+            <div
+              id="scene-labels"
+              class="scene-labels"
+              aria-label="Robots"
+            ></div>
             <div class="master-summary">
               <span class="robot-glyph" aria-hidden="true"><i></i></span>
               <div>
-                <span class="eyebrow">MASTER ACTIVITY</span>
                 <p id="master-activity"></p>
               </div>
               <button id="inspect-parent" class="quiet-button" type="button">
@@ -155,7 +140,6 @@
               <h2 id="workers-title">
                 On the floor <span id="active-count" class="count-tag">0</span>
               </h2>
-              <span class="muted">Every active drone, automatically</span>
             </div>
             <div id="active-workers" class="worker-grid"></div>
             <p id="no-workers" class="empty-state">
@@ -356,7 +340,7 @@
             hidden
           >
             <div class="feed-toolbar">
-              <span class="muted">Events for the selected robot</span
+              <span class="muted">Select an event to see details</span
               ><label
                 ><input id="follow-feed" type="checkbox" checked />
                 Follow</label
@@ -528,9 +512,9 @@
                   provider. It still occupies context.
                 </li>
                 <li>
-                  <strong>No model call:</strong> scrolling, queueing, selecting
-                  a skill, and local tool execution. Tool results can use input
-                  tokens on the next call.
+                  <strong>No model call:</strong> scrolling, selecting a skill,
+                  and local tool execution. Tool results can use input tokens on
+                  the next call.
                 </li>
               </ul>
               <p class="muted">
@@ -550,21 +534,6 @@
               aria-label="Commands"
               hidden
             ></div>
-            <section
-              id="queued-prompts"
-              class="queued-prompts"
-              aria-labelledby="queue-title"
-              hidden
-            >
-              <div class="queue-heading">
-                <h3 id="queue-title">
-                  Up next <span id="queue-count" class="count-tag">0</span>
-                </h3>
-                <span class="muted">Sent in order after this task</span>
-              </div>
-              <ol id="prompt-queue" class="prompt-queue"></ol>
-              <p id="queue-error" class="form-error" role="alert" hidden></p>
-            </section>
             <section
               id="parent-controls"
               class="parent-controls mission-editor"
@@ -595,13 +564,23 @@
                     Expand editor
                   </button>
                 </div>
-                <textarea
-                  id="parent-prompt"
-                  rows="3"
-                  placeholder="Describe the next task…"
-                  aria-describedby="parent-editor-shortcuts"
-                  required
-                ></textarea>
+                <div class="composer-resize-frame">
+                  <textarea
+                    id="parent-prompt"
+                    rows="4"
+                    placeholder="Describe the next task…"
+                    aria-describedby="parent-editor-shortcuts"
+                    required
+                  ></textarea>
+                  <span
+                    id="parent-prompt-resize"
+                    class="composer-resize-handle"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize message field"
+                    tabindex="0"
+                  ></span>
+                </div>
                 <p id="prompt-error" class="form-error" role="alert" hidden></p>
                 <div class="composer-actions">
                   <span id="parent-editor-shortcuts" class="editor-shortcuts">
@@ -643,7 +622,7 @@
       />
       <p id="commands-status" class="muted"></p>
       <div id="command-catalog" class="command-catalog"></div>
-      <details class="resource-details">
+      <details class="resource-details" open>
         <summary>Available tools</summary>
         <div id="available-tools"></div>
       </details>
@@ -750,7 +729,6 @@
       <form id="create-form">
         <div class="dialog-heading">
           <div>
-            <p class="eyebrow">NEW FACTORY</p>
             <h2 id="create-title">Create a parent</h2>
           </div>
           <button

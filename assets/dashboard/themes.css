@@ -232,11 +232,6 @@ a:focus-visible {
   background: var(--bg);
 }
 
-.brand-mark {
-  border-color: var(--mint);
-  box-shadow: 0 0 24px color-mix(in srgb, var(--mint) 8%, transparent);
-}
-
 .primary-button,
 .primary-button:hover:enabled,
 .skip-link {
@@ -360,15 +355,6 @@ a:focus-visible {
   background: linear-gradient(transparent, var(--panel));
 }
 
-.scene-topline,
-.scene-bottomline {
-  color: var(--muted);
-  /* Solid backing keeps these small labels readable over the WebGL geometry. */
-  background: var(--scene);
-  border-radius: 4px;
-  padding: 3px 5px;
-}
-
 .scene-label,
 .scene-label.parent-label {
   background: var(--panel);
@@ -391,10 +377,6 @@ a:focus-visible {
 
 .scene-label-activity {
   color: var(--mint);
-}
-
-.label-stem {
-  background: var(--mint);
 }
 
 .master-summary,

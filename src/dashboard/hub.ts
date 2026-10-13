@@ -1,4 +1,3 @@
-import {randomUUID} from 'node:crypto';
 import type {ImageContent} from '@earendil-works/pi-ai';
 import {realpath, stat} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
@@ -9,57 +8,15 @@ import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
 import type {SessionFeatures, SessionConfiguration} from './features.ts';
 import type {DesktopExtensionUI, DesktopUIState} from './extension-ui.ts';
 
-export interface QueuedPrompt {
-  id: string;
-  text: string;
-  queuedAt: string;
-}
-
-export function isQueuedPrompts(value: unknown): value is QueuedPrompt[] {
-  if (!Array.isArray(value) || value.length > 32) return false;
-  const ids = new Set<string>();
-  return value.every(item => {
-    if (
-      !item ||
-      typeof item !== 'object' ||
-      typeof item.id !== 'string' ||
-      !/^[A-Za-z0-9_-]{1,96}$/.test(item.id) ||
-      ids.has(item.id) ||
-      typeof item.text !== 'string' ||
-      !item.text.trim() ||
-      item.text.length > 64000 ||
-      typeof item.queuedAt !== 'string' ||
-      item.queuedAt.length > 40 ||
-      !Number.isFinite(Date.parse(item.queuedAt))
-    )
-      return false;
-    ids.add(item.id);
-    return true;
-  });
-}
-
-export function queuedPrompt(text: string): QueuedPrompt {
-  return {id: randomUUID(), text, queuedAt: new Date().toISOString()};
-}
-
 export interface ParentRequest {
   cwd: string;
   name?: string;
 }
 
-export interface PromptDelivery {
-  isQueued(): boolean;
-  submitted(): void;
-}
-
 export interface DashboardParent {
   state: DashboardState;
   ui?: DesktopExtensionUI;
-  prompt(
-    text: string,
-    delivery: PromptDelivery,
-    images?: ImageContent[],
-  ): Promise<void>;
+  prompt(text: string, images?: ImageContent[]): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
   features(): Promise<SessionFeatures>;
@@ -75,7 +32,6 @@ export type ParentFactory = (
 export interface ExternalSessionControl {
   prompt(id: string, prompt: string): Promise<void>;
   abort(id: string): Promise<void>;
-  removeQueuedPrompt(id: string, promptId: string): Promise<void>;
   features(id: string): Promise<SessionFeatures>;
   configure(id: string, input: SessionConfiguration): Promise<void>;
   compact(id: string, instructions?: string): Promise<void>;
@@ -85,8 +41,7 @@ export interface ExternalSessionControl {
 interface Headquarters {
   state: DashboardState;
   parent?: DashboardParent;
-  pending: Array<QueuedPrompt & {images?: ImageContent[]}>;
-  running?: Promise<void>;
+  running: Set<Promise<void>>;
   stopping: boolean;
   maintaining: boolean;
   unsubscribe: () => void;
@@ -101,8 +56,6 @@ export interface DashboardHubSnapshot {
       session: DashboardSnapshot['session'] & {
         owned: boolean;
         controllable: boolean;
-        pendingPrompts: number;
-        queuedPrompts: QueuedPrompt[];
       };
     }
   >;
@@ -157,7 +110,6 @@ export class DashboardHub {
   private readonly selectedSessionId?: string;
   private external?: DashboardSnapshot;
   private externalControl?: ExternalSessionControl;
-  private externalQueuedPrompts: QueuedPrompt[] = [];
   private readonly launchCwd: string;
   private readonly factory: ParentFactory;
   private closed = false;
@@ -175,19 +127,9 @@ export class DashboardHub {
     if (initial) this.add(initial);
   }
 
-  updateExternal(
-    snapshot: DashboardSnapshot,
-    queuedPrompts: QueuedPrompt[] = [],
-  ): void {
+  updateExternal(snapshot: DashboardSnapshot): void {
     if (this.closed) return;
-    if (!isQueuedPrompts(queuedPrompts))
-      throw new DashboardInputError('Invalid queued prompts.');
     this.external = structuredClone(snapshot);
-    this.externalQueuedPrompts = queuedPrompts.map(({id, text, queuedAt}) => ({
-      id,
-      text,
-      queuedAt,
-    }));
     this.changed();
   }
 
@@ -199,7 +141,6 @@ export class DashboardHub {
 
   closeExternal(): void {
     this.externalControl = undefined;
-    this.externalQueuedPrompts = [];
     if (!this.external) return;
     this.external.session.status = 'closed';
     this.external.session.activity = 'Terminal disconnected';
@@ -210,7 +151,7 @@ export class DashboardHub {
     const entry: Headquarters = {
       state,
       parent,
-      pending: [],
+      running: new Set(),
       stopping: false,
       maintaining: false,
       unsubscribe: state.subscribe(() => this.changed()),
@@ -262,8 +203,6 @@ export class DashboardHub {
                   controllable:
                     !!this.externalControl &&
                     this.external.session.status !== 'closed',
-                  pendingPrompts: this.externalQueuedPrompts.length,
-                  queuedPrompts: structuredClone(this.externalQueuedPrompts),
                 },
               },
             ]
@@ -280,12 +219,6 @@ export class DashboardHub {
               owned: !!entry.parent,
               controllable:
                 !!entry.parent && snapshot.session.status !== 'closed',
-              pendingPrompts: entry.pending.length,
-              queuedPrompts: entry.pending.map(({id, text, queuedAt}) => ({
-                id,
-                text,
-                queuedAt,
-              })),
             },
           };
         }),
@@ -303,8 +236,20 @@ export class DashboardHub {
     if (this.sessions.has(id))
       throw new DashboardInputError('This session is already open.');
     const entry = this.add(parent.state, parent);
-    for (const prompt of prompts)
-      this.enqueue(entry, prompt.text, prompt.images);
+    // CLI arguments are an invocation script, executed in Pi's original order.
+    // Interactive messages still go straight to native steering while it runs.
+    const startup = Promise.resolve()
+      .then(async () => {
+        for (const prompt of prompts) {
+          if (this.closed || entry.stopping) break;
+          await this.submit(entry, prompt.text, prompt.images);
+        }
+      })
+      .finally(() => {
+        entry.running.delete(startup);
+        this.changed();
+      });
+    entry.running.add(startup);
     this.changed();
   }
 
@@ -371,7 +316,7 @@ export class DashboardHub {
         );
       }
       const entry = this.add(parent.state, parent);
-      this.enqueue(entry, prompt);
+      void this.submit(entry, prompt);
       return {id: parent.state.snapshot().session.id};
     } finally {
       this.creating.delete(creation);
@@ -461,13 +406,10 @@ export class DashboardHub {
     const entry = this.owned(id);
     if (
       entry.maintaining ||
-      entry.running ||
-      entry.pending.length ||
+      entry.running.size ||
       entry.state.snapshot().session.status !== 'idle'
     )
-      throw new DashboardInputError(
-        'Wait until this session is idle and its queue is empty.',
-      );
+      throw new DashboardInputError('Wait until this session is idle.');
     entry.maintaining = true;
     try {
       await action(entry.parent);
@@ -507,104 +449,34 @@ export class DashboardHub {
       throw new DashboardInputError(
         'This session is updating. Try again when it is idle.',
       );
-    if (entry.pending.length >= 32)
-      throw new DashboardInputError(
-        'This session already has 32 queued prompts.',
-      );
-    this.enqueue(entry, prompt);
+    void this.submit(entry, prompt);
   }
 
-  async removeQueuedPrompt(id: string, promptId: string): Promise<void> {
-    if (typeof promptId !== 'string' || !/^[A-Za-z0-9_-]{1,96}$/.test(promptId))
-      throw new DashboardInputError('Choose a valid queued prompt.');
-    const attached = this.attached(id);
-    if (attached) return attached.removeQueuedPrompt(id, promptId);
-    const entry = this.owned(id);
-    const index = entry.pending.findIndex(prompt => prompt.id === promptId);
-    if (index < 0)
-      throw new DashboardInputError('This prompt is no longer queued.');
-    entry.pending.splice(index, 1);
-    entry.state.record('session', 'Queued prompt removed');
-    this.changed();
-  }
-
-  private enqueue(
+  private submit(
     entry: Headquarters,
     prompt: string,
     images?: ImageContent[],
-  ): void {
-    entry.pending.push({
-      ...queuedPrompt(prompt),
-      ...(images?.length ? {images} : {}),
-    });
-    entry.state.record('message', `Prompt queued: ${prompt}`);
-    // Reserve the runner before calling prompt: SDK preflight is asynchronous.
-    if (!entry.running) {
-      entry.running = Promise.resolve().then(async () => {
-        try {
-          while (!this.closed && !entry.stopping && entry.pending.length) {
-            const next = entry.pending[0];
-            let submitted = false;
-            const isQueued = () =>
-              !this.closed &&
-              !entry.stopping &&
-              entry.pending.some(prompt => prompt.id === next.id);
-            entry.state.updateSession({
-              activity: 'Preparing task',
-              error: undefined,
-            });
-            try {
-              await entry.parent!.prompt(
-                next.text,
-                {
-                  isQueued,
-                  submitted: () => {
-                    if (!isQueued())
-                      throw new Error('This prompt is no longer queued.');
-                    submitted = true;
-                    entry.pending.splice(
-                      entry.pending.findIndex(prompt => prompt.id === next.id),
-                      1,
-                    );
-                    entry.state.updateSession({
-                      status: 'running',
-                      activity: 'Starting task',
-                      prompt: next.text,
-                      response: '',
-                      error: undefined,
-                    });
-                    this.changed();
-                  },
-                },
-                next.images,
-              );
-            } catch (error) {
-              // Removal or Stop invalidates a prompt still in SDK preflight.
-              if (!submitted && !isQueued()) continue;
-              if (!submitted)
-                entry.pending.splice(
-                  entry.pending.findIndex(prompt => prompt.id === next.id),
-                  1,
-                );
-              const message =
-                error instanceof Error ? error.message : String(error);
-              entry.state.updateSession({
-                status: 'idle',
-                activity: `Error: ${message.slice(0, 1000)}`,
-                error: message.slice(0, 4000),
-              });
-              entry.state.record('error', message);
-            } finally {
-              this.refresh(entry);
-            }
-          }
-        } finally {
-          entry.running = undefined;
-          this.changed();
-        }
+  ): Promise<void> {
+    entry.state.record('message', prompt);
+    const operation = entry
+      .parent!.prompt(prompt, images)
+      .catch(error => {
+        if (this.closed || entry.stopping) return;
+        const message = error instanceof Error ? error.message : String(error);
+        entry.state.updateSession({
+          activity: 'Error: ' + message.slice(0, 1000),
+          error: message.slice(0, 4000),
+        });
+        entry.state.record('error', message);
+      })
+      .finally(() => {
+        entry.running.delete(operation);
+        this.refresh(entry);
+        this.changed();
       });
-    }
+    entry.running.add(operation);
     this.changed();
+    return operation;
   }
 
   async abortSession(id: string): Promise<void> {
@@ -612,13 +484,12 @@ export class DashboardHub {
     if (attached) return attached.abort(id);
     const entry = this.owned(id);
     entry.stopping = true;
-    entry.pending.length = 0;
     entry.state.updateSession({activity: 'Stopping'});
     try {
       await entry.parent.abort();
-      await entry.running;
+      await Promise.allSettled(entry.running);
       entry.state.updateSession({status: 'idle', activity: 'Stopped'});
-      entry.state.record('session', 'Parent stopped; queued prompts cleared');
+      entry.state.record('session', 'Parent stopped');
     } finally {
       entry.stopping = false;
       this.changed();
@@ -631,7 +502,6 @@ export class DashboardHub {
     this.externalControl = undefined;
     for (const entry of this.sessions.values()) {
       entry.stopping = true;
-      entry.pending.length = 0;
       entry.unsubscribe();
     }
     this.listeners.clear();
@@ -639,7 +509,7 @@ export class DashboardHub {
       await Promise.allSettled(
         [...this.sessions.values()].map(async entry => {
           await entry.parent?.close();
-          await entry.running;
+          await Promise.allSettled(entry.running);
         }),
       );
       // A concurrently created parent is disposed by createSession before it can run.

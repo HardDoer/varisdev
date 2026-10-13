@@ -326,11 +326,8 @@ void test(
     const status = () => tool<{agents: AgentRecord[]}>('agent_status', {id});
     const before = await status();
     assert.equal(before.agents[0].status, 'running');
-    assert.equal(before.agents[0].pendingMessages, 1);
     assert.equal(await readFile(initial.resultFile, 'utf8'), initial.output);
-    const queue = await tool('agent_messages', {id});
     const inbox = await tool('agent_inbox', {});
-    assert.match(JSON.stringify(queue), /QUEUED WORKER TASK/);
     assert.match(JSON.stringify(inbox), /Worker evidence ready/);
 
     await session.prompt(ORIGINAL);
@@ -338,7 +335,6 @@ void test(
     await session.compact();
     assert.equal(summaries.length, 1);
     assert.deepEqual(await status(), before);
-    assert.deepEqual(await tool('agent_messages', {id}), queue);
     assert.deepEqual(await tool('agent_inbox', {}), inbox);
     assert.equal(await readFile(initial.resultFile, 'utf8'), initial.output);
 
@@ -346,7 +342,6 @@ void test(
     const finished = (await wait()).agents[0];
     assert.equal(finished.id, id);
     assert.equal(finished.status, 'completed');
-    assert.equal(finished.pendingMessages, 0);
     assert.equal(finished.output, 'QUEUED WORKER RESULT');
     assert.equal(finished.sessionFile, initial.sessionFile);
     assert.equal(finished.resultFile, initial.resultFile);

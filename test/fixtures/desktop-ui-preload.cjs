@@ -8,8 +8,6 @@ contextBridge.exposeInMainWorld('pidev', {
     ipcRenderer.on('fixture:snapshot', listener);
     return () => ipcRenderer.removeListener('fixture:snapshot', listener);
   },
-  removeQueuedPrompt: (sessionId, promptId) =>
-    ipcRenderer.invoke('fixture:remove', sessionId, promptId),
   promptSession: (sessionId, request) =>
     ipcRenderer.invoke('fixture:prompt', sessionId, request),
   abortSession: sessionId => ipcRenderer.invoke('fixture:abort', sessionId),

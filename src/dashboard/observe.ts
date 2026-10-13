@@ -598,7 +598,7 @@ export function observeDashboardSession(
       streaming: true,
     });
     state?.updateSession({activity: activity('Working')});
-    state?.record('tool', `Using ${event.toolName}`);
+    state?.recordTool(toolId(event.toolCallId), `Using ${event.toolName}`);
   });
   pi.on('tool_execution_update', event => {
     const previous = state?.conversationMessage(toolId(event.toolCallId));
@@ -626,9 +626,10 @@ export function observeDashboardSession(
     );
     state?.updateSession({activity: activity('Working')});
     if (!previous?.status || previous.status === 'running')
-      state?.record(
-        event.isError ? 'error' : 'tool',
+      state?.recordTool(
+        toolId(event.toolCallId),
         `${event.toolName} ${event.isError ? 'failed' : 'finished'}`,
+        event.isError,
       );
   });
   pi.on('agent_settled', (_event, ctx) => {

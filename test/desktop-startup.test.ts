@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -14,6 +13,8 @@ import {
 import {registerDesktopStartup} from '../src/desktop/startup.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+// Point this at a fresh production install to exercise Git package deployment.
+const packageRoot = resolve(process.env.PI_TEST_PACKAGE_DIR ?? root);
 
 void test('desktop startup exits only after transfer succeeds, skips headless sessions and retains the terminal after failure', async () => {
   const handlers = new Map<
@@ -73,7 +74,7 @@ void test('desktop startup exits only after transfer succeeds, skips headless se
 });
 
 void test(
-  'real Pi startup transfers its resumed session and CLI prompts to Electron, then exits while the GUI remains alive',
+  'bundled Pi startup from another project transfers its resumed session and CLI prompts to Electron, then exits while the GUI remains alive',
   {
     timeout: 120_000,
     skip:
@@ -84,7 +85,9 @@ void test(
         : false,
   },
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'desktop-startup-'));
+    const tempRoot = join(root, '.pi/tmp');
+    await mkdir(tempRoot, {recursive: true});
+    const directory = await mkdtemp(join(tempRoot, 'desktop-startup-'));
     const cwd = join(directory, 'project');
     const agentDir = join(directory, 'agent');
     const report = join(directory, 'report.json');
@@ -163,7 +166,7 @@ void test(
       `
 import {existsSync, writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
-const require = createRequire(${JSON.stringify(join(root, 'package.json'))});
+const require = createRequire(${JSON.stringify(join(packageRoot, 'package.json'))});
 export default function(pi) {
   const commands = [];
   let timer;
@@ -196,6 +199,9 @@ export default function(pi) {
       PI_CODING_AGENT_DIR: agentDir,
       PI_OFFLINE: '1',
       PIDEV_DESKTOP_DATA_DIR: join(directory, 'profile'),
+      TMP: directory,
+      TEMP: directory,
+      JITI_FS_CACHE: 'false',
     };
     delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(
@@ -212,7 +218,7 @@ export default function(pi) {
         '--extension',
         extension,
         '--extension',
-        join(root, 'extensions/varisdev.ts'),
+        join(packageRoot, 'extensions/varisdev.ts'),
         '/startup-probe first',
         '/startup-probe second',
       ],

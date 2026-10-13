@@ -39,6 +39,7 @@ export function sessionWorker(
   resultFile: string,
 ): AgentWorker {
   const usage = new ModelUsageTracker();
+  let finishing = false;
   function restoreUsage(): void {
     const branch = session.sessionManager.getBranch?.();
     if (!branch) return;
@@ -76,10 +77,17 @@ export function sessionWorker(
     get usage() {
       return usage.snapshot();
     },
+    async steer(message, starting) {
+      if (finishing && !starting) return false;
+      await session.steer(message);
+      return true;
+    },
     async run(message, signal, onActivity, onUsage) {
       signal.throwIfAborted();
+      finishing = false;
       let aborting: Promise<void> | undefined;
       const abort = () => {
+        session.clearQueue();
         session.abortCompaction();
         session.abortBash();
         aborting = session.abort().catch(() => {});
@@ -124,10 +132,13 @@ export function sessionWorker(
         if (event.type === 'tool_execution_start') {
           onActivity(`Using ${event.toolName}`);
         } else if (
-          event.type === 'message_start' &&
+          (event.type === 'message_start' || event.type === 'message_update') &&
           event.message.role === 'assistant'
         ) {
-          onActivity('Responding');
+          const writing = event.message.content.some(
+            part => part.type === 'text' && part.text,
+          );
+          onActivity(writing ? 'Responding' : 'Thinking');
         } else if (event.type === 'auto_retry_start') {
           onActivity(`Retrying (attempt ${event.attempt})`);
         } else if (event.type === 'compaction_start') {
@@ -137,6 +148,7 @@ export function sessionWorker(
       signal.addEventListener('abort', abort, {once: true});
       try {
         await session.prompt(message, {expandPromptTemplates: false});
+        finishing = true;
         signal.throwIfAborted();
         const lastAssistant = session.messages.findLast(
           item => item.role === 'assistant',
@@ -159,6 +171,7 @@ export function sessionWorker(
         await writeFile(resultFile, output, 'utf8');
         return output;
       } finally {
+        finishing = true;
         signal.removeEventListener('abort', abort);
         try {
           await aborting;
@@ -198,9 +211,8 @@ export async function createSessionWorker(
     extensionFactories: [registerProjectTools, options.agentToolsExtension],
     appendSystemPrompt: [
       `You are the delegated agent ${JSON.stringify(options.name)}. Your agent ID is ${options.id}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
-      'Your conversation contains the delegated task and follow-up messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
-      'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to store a message for the parent to read with agent_inbox. This does not notify or wake the parent. Put your final result in your final answer; avoid duplicating it through agent_send. Your name and ID are attached automatically. Peer messages queue after the current task; completed agents resume their conversation to handle them.',
-      'Use agent_messages to inspect pending instructions or retrieve a message by ID. Use agent_send with supersedes to consolidate obsolete pending instructions, or agent_message_remove to remove them. These edits report current message states and never undo work already delivered.',
+      'Your conversation contains the delegated task and steering messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
+      'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to store a message for the parent to read with agent_inbox. This does not notify or wake the parent. Put your final result in your final answer; avoid duplicating it through agent_send. Your name and ID are attached automatically. Peer messages steer active work at the next turn boundary; completed agents resume their conversation to handle them.',
       ...(options.instructions ? [options.instructions] : []),
     ],
   });

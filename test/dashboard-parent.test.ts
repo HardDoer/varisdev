@@ -24,8 +24,6 @@ import type {DashboardState} from '../src/dashboard/state.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 import type {DashboardParent} from '../src/dashboard/hub.ts';
 
-const directDelivery = {isQueued: () => true, submitted: () => {}};
-
 interface ProviderRequest {
   model: string;
   reasoning_effort?: string;
@@ -109,6 +107,7 @@ void test(
     const requests: CapturedRequest[] = [];
     const serverErrors: unknown[] = [];
     let heldResponse: ServerResponse | undefined;
+    let steeringResponse: ServerResponse | undefined;
     let heldDisconnected = false;
     const server = createServer(async (request, response) => {
       try {
@@ -146,6 +145,14 @@ void test(
                 : 'Completed worker result.',
             );
           }
+        } else if (prompt.includes('steer-held-parent')) {
+          steeringResponse = response;
+        } else if (prompt.includes('steering-parent')) {
+          assert.ok(
+            body.messages.some(message => message.role === 'tool'),
+            'Steering is delivered after the in-flight tool executes',
+          );
+          reply(response, 'Steered during the unfinished task.');
         } else if (prompt.includes('independent-parent')) {
           reply(response, 'Independent parent answer.');
         } else if (prompt.includes('follow-up-parent')) {
@@ -196,6 +203,7 @@ void test(
         await Promise.all(parents.map(parent => parent.close()));
       } finally {
         heldResponse?.destroy();
+        steeringResponse?.destroy();
         registry.unregisterProvider(providerId);
         server.closeAllConnections();
         await new Promise<void>(resolve => server.close(() => resolve()));
@@ -268,7 +276,6 @@ void test(
     t.after(unsubscribe);
     await parent.prompt(
       'Write a parent file, delegate the worker file, and collect the result.',
-      directDelivery,
     );
     await waitFor(
       () => parent!.state.snapshot().session.status === 'idle',
@@ -464,10 +471,7 @@ void test(
     );
 
     await runtime.setRuntimeApiKey(providerId, 'rotated-runtime-key');
-    await parent.prompt(
-      'follow-up-parent: summarize the prior result.',
-      directDelivery,
-    );
+    await parent.prompt('follow-up-parent: summarize the prior result.');
     const followup = requests.at(-1)!;
     assert.match(
       JSON.stringify(followup.body.messages),
@@ -488,10 +492,7 @@ void test(
     parents.push(other);
     assert.notEqual(other.state.snapshot().session.id, initial.session.id);
     assert.equal(other.state.snapshot().session.cwd, otherCwd);
-    await other.prompt(
-      'independent-parent: introduce this project.',
-      directDelivery,
-    );
+    await other.prompt('independent-parent: introduce this project.');
     const independent = requests.at(-1)!;
     const independentHistory = JSON.stringify(independent.body.messages);
     assert.match(independentHistory, /Independent project context marker/);
@@ -510,9 +511,39 @@ void test(
     assert.deepEqual(other.state.snapshot().agents, []);
     assert.deepEqual(other.state.snapshot().changes, []);
 
+    const steeredRun = parent.prompt(
+      'steer-held-parent: begin a task with a tool call.',
+    );
+    await waitFor(
+      () => !!steeringResponse,
+      'parent reaches its first model request',
+    );
+    await parent.prompt(
+      'steering-parent: change approach before the task finishes.',
+    );
+    reply(steeringResponse!, {
+      name: 'write',
+      arguments: {
+        path: 'steering-boundary.txt',
+        content: 'Current turn completed its tool call.',
+      },
+    });
+    await steeredRun;
+    assert.equal(
+      parent.state.snapshot().session.response,
+      'Steered during the unfinished task.',
+    );
+    assert.equal(
+      await readFile(join(cwd, 'steering-boundary.txt'), 'utf8'),
+      'Current turn completed its tool call.',
+    );
+    assert.match(
+      JSON.stringify(requests.at(-1)!.body.messages),
+      /steering-parent: change approach/,
+    );
+
     await parent.prompt(
       'start-held-worker: leave a worker running in the background.',
-      directDelivery,
     );
     await waitFor(
       () => heldResponse !== undefined,
@@ -533,21 +564,17 @@ void test(
       'closing the parent cancels its active worker request',
     );
     assert.equal(parent.state.snapshot().session.status, 'closed');
-    await assert.rejects(
-      parent.prompt('must not run', directDelivery),
-      /closed/,
-    );
+    await assert.rejects(parent.prompt('must not run'), /closed/);
     await other.prompt(
       'independent-parent: still available after sibling shutdown.',
-      directDelivery,
     );
     assert.equal(other.state.snapshot().session.status, 'idle');
     await other.close();
     assert.equal(other.state.snapshot().session.status, 'closed');
 
-    for (const action of ['abort', 'close', 'remove'] as const) {
+    for (const action of ['abort', 'close'] as const) {
       await t.test(
-        `${action} during credential preflight prevents prompt handoff`,
+        `${action} during credential preflight prevents provider requests`,
         async cancellation => {
           const cancelled = await createDashboardParent(
             {cwd: otherCwd, name: `Cancelled during ${action}`},
@@ -586,46 +613,27 @@ void test(
             },
           );
           const requestCount = requests.length;
-          let queued = true;
-          let handoffs = 0;
-          const delivery = {
-            isQueued: () => queued,
-            submitted() {
-              queued = false;
-              handoffs++;
-            },
-          };
           const prompting = cancelled.prompt(
             'Write files after resolving credentials.',
-            delivery,
           );
           await waitFor(
             () => checkingCredentials,
             'SDK prompt waits for credentials',
           );
           let stopped = false;
-          const stopping =
-            action === 'remove'
-              ? ((queued = false), Promise.resolve())
-              : cancelled[action]().then(() => {
-                  stopped = true;
-                });
+          const stopping = cancelled[action]().then(() => {
+            stopped = true;
+          });
           await delay(10);
-          if (action !== 'remove')
-            assert.equal(
-              stopped,
-              false,
-              `${action} keeps the live session until preflight settles`,
-            );
+          assert.equal(
+            stopped,
+            false,
+            `${action} keeps the live session until preflight settles`,
+          );
           assert.notEqual(cancelled.state.snapshot().session.status, 'closed');
           releaseCredentials();
           await Promise.all([prompting, stopping]);
           const cancelledSnapshot = cancelled.state.snapshot();
-          assert.equal(
-            handoffs,
-            0,
-            'cancelled or removed prompt never hands off to the SDK run',
-          );
           assert.deepEqual(cancelledSnapshot.conversation, []);
           assert.equal(
             requests.length,
@@ -645,7 +653,6 @@ void test(
           if (action !== 'close') {
             await cancelled.prompt(
               'independent-parent: continue after the cancelled preflight.',
-              directDelivery,
             );
             assert.equal(requests.length, requestCount + 1);
             assert.equal(
@@ -655,7 +662,7 @@ void test(
             await cancelled.close();
           } else {
             await assert.rejects(
-              cancelled.prompt('must stay closed', directDelivery),
+              cancelled.prompt('must stay closed'),
               /closed/,
             );
           }
@@ -718,7 +725,6 @@ void test(
     const standaloneStart = requests.length;
     await standalone.prompt(
       'Write files with the configured standalone model.',
-      directDelivery,
     );
     const standaloneRequests = requests.slice(standaloneStart);
     assert.ok(standaloneRequests.some(captured => captured.worker));

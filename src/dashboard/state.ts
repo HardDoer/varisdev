@@ -32,6 +32,13 @@ export interface DashboardEvent {
   sourceName: string;
   kind: 'session' | 'agent' | 'tool' | 'message' | 'error';
   message: string;
+  details: Record<string, string>;
+  conversationId?: string;
+}
+
+interface EventContext {
+  fields?: Record<string, string | undefined>;
+  conversationId?: string;
 }
 
 export interface DashboardAgent extends AgentRecord {
@@ -155,7 +162,22 @@ export class DashboardState {
     message: string,
     sourceId = 'parent',
     sourceName = 'Mastermind',
+    context: EventContext = {},
   ): void {
+    const details: Record<string, string> = {};
+    let remaining = 32000;
+    for (const [label, value] of Object.entries({
+      Message: message,
+      Project: this.session.cwd,
+      Model: this.session.model,
+      Status: this.session.status,
+      ...context.fields,
+    })) {
+      if (!value || remaining <= 0) continue;
+      const content = preview(value, Math.min(textLimit, remaining));
+      details[label] = content;
+      remaining -= content.length;
+    }
     this.events.push({
       id: String(++this.sequence),
       at: new Date().toISOString(),
@@ -163,6 +185,8 @@ export class DashboardState {
       sourceName,
       kind,
       message: preview(message, 1000),
+      details,
+      conversationId: context.conversationId,
     });
     if (this.events.length > eventLimit) this.events.shift();
   }
@@ -172,9 +196,24 @@ export class DashboardState {
     message: string,
     sourceId?: string,
     sourceName?: string,
+    context?: EventContext,
   ): void {
-    this.append(kind, message, sourceId, sourceName);
+    this.append(kind, message, sourceId, sourceName, context);
     this.changed();
+  }
+
+  recordTool(id: string, message: string, isError = false): void {
+    const tool = this.conversationMessage(id);
+    this.record(isError ? 'error' : 'tool', message, undefined, undefined, {
+      conversationId: id,
+      fields: {
+        Tool: tool?.toolName,
+        Status: tool?.status,
+        Input: tool?.input,
+        Output: tool?.text,
+        Error: tool?.error,
+      },
+    });
   }
 
   updateSession(patch: Partial<DashboardSession>): void {
@@ -204,6 +243,18 @@ export class DashboardState {
       .slice(0, historyLimit);
     this.agents = [...active, ...history].map(projectAgent);
     for (const agent of this.agents) {
+      const context: EventContext = {
+        fields: {
+          Project: agent.cwd,
+          Model: agent.model,
+          Status: agent.status,
+          Task: agent.task,
+          Output: agent.output,
+          Error: agent.error,
+          'Result file': agent.resultFile,
+          'Session file': agent.sessionFile,
+        },
+      };
       const previous = this.previousAgents.get(agent.id);
       if (!previous || previous.status !== agent.status) {
         const message =
@@ -219,6 +270,7 @@ export class DashboardState {
           message,
           agent.id,
           agent.name,
+          context,
         );
       } else if (previous.activity !== agent.activity) {
         this.append(
@@ -226,13 +278,7 @@ export class DashboardState {
           agent.activity,
           agent.id,
           agent.name,
-        );
-      } else if (previous.pendingMessages !== agent.pendingMessages) {
-        this.append(
-          'message',
-          `${agent.pendingMessages} pending instruction${agent.pendingMessages === 1 ? '' : 's'}`,
-          agent.id,
-          agent.name,
+          context,
         );
       }
     }
@@ -325,6 +371,7 @@ export class DashboardState {
       `${change.summary}: ${change.path}`,
       change.unitId,
       change.unitName,
+      {fields: {File: change.path, Tool: change.tool, Diff: change.diff}},
     );
     this.changed();
   }
@@ -340,7 +387,10 @@ export class DashboardState {
         usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
       })),
       totalAgents: this.totalAgents,
-      events: this.events.map(event => ({...event})),
+      events: this.events.map(event => ({
+        ...event,
+        details: {...event.details},
+      })),
       changes: this.changes.map(change => ({...change})),
       conversation: this.conversation.map(message => ({...message})),
       conversationTruncated: this.conversationTruncated,

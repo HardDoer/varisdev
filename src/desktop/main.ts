@@ -14,17 +14,17 @@ import type {DesktopStartup} from './startup.ts';
 import {desktopInitialPrompts} from '../dashboard/startup.ts';
 import {fileURLToPath} from 'node:url';
 import {DashboardInputError} from '../dashboard/errors.ts';
-import {DashboardHub, isQueuedPrompts} from '../dashboard/hub.ts';
+import {DashboardHub} from '../dashboard/hub.ts';
 import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
-import {ExternalSessionRequests, requestId} from './ipc.ts';
+import {ExternalSessionRequests} from './ipc.ts';
 import type {
   SessionFeatures,
   SessionConfiguration,
 } from '../dashboard/features.ts';
 
-app.setName('VarisDev Factory');
-// Keep this checkout's Electron data alongside the application.
+app.setName('VarisDev');
+// Keep Electron data alongside the installed package.
 const profile =
   process.env.PIDEV_DESKTOP_DATA_DIR ??
   fileURLToPath(new URL('../../../../.pi/desktop/', import.meta.url));
@@ -41,7 +41,10 @@ const preloadPath = fileURLToPath(
   new URL('../../../../assets/desktop/preload.cjs', import.meta.url),
 );
 const iconPath = fileURLToPath(
-  new URL('../../../../assets/desktop/robot-crow.png', import.meta.url),
+  new URL(
+    `../../../../assets/desktop/robot-crow.${process.platform === 'win32' ? 'ico' : 'png'}`,
+    import.meta.url,
+  ),
 );
 const cwdArgument = process.argv
   .find(argument => argument.startsWith('--pidev-cwd='))
@@ -80,8 +83,6 @@ const externalControl = {
   prompt: (sessionId: string, prompt: string) =>
     requests.request('prompt', sessionId, prompt),
   abort: (sessionId: string) => requests.request('abort', sessionId),
-  removeQueuedPrompt: (sessionId: string, promptId: string) =>
-    requests.request('removeQueuedPrompt', sessionId, promptId),
   features: (sessionId: string) =>
     requests.request<SessionFeatures>('features', sessionId),
   configure: (sessionId: string, input: SessionConfiguration) =>
@@ -147,11 +148,6 @@ function installHandlers(): void {
     hub.promptSession(id(sessionId), input),
   );
   handle('pidev:abort-session', sessionId => hub.abortSession(id(sessionId)));
-  handle('pidev:remove-queued-prompt', (sessionId, promptId) => {
-    if (!requestId(promptId))
-      throw new DashboardInputError('Choose a valid queued prompt.');
-    return hub.removeQueuedPrompt(id(sessionId), promptId);
-  });
   handle('pidev:respond-to-dialog', (sessionId, dialogId, value) =>
     hub.respondToDialog(id(sessionId), dialogId, value),
   );
@@ -183,7 +179,7 @@ function installMenu(): void {
   menu.push(
     {
       label: 'File',
-      submenu: [{role: 'quit', label: 'Quit VarisDev Factory'}],
+      submenu: [{role: 'quit', label: 'Quit VarisDev'}],
     },
     {role: 'editMenu'},
     {
@@ -217,7 +213,7 @@ async function createWindow(): Promise<void> {
     minWidth: 1100,
     minHeight: 760,
     backgroundColor: '#10171d',
-    title: 'VarisDev Factory',
+    title: 'VarisDev',
     icon: iconPath,
     show: false,
     webPreferences: {
@@ -302,20 +298,15 @@ process.on('message', (message: unknown) => {
     type?: unknown;
     snapshot?: unknown;
     controllable?: unknown;
-    queuedPrompts?: unknown;
     sessionId?: unknown;
   };
-  if (
-    payload.type === 'snapshot' &&
-    externalSnapshot(payload.snapshot) &&
-    isQueuedPrompts(payload.queuedPrompts)
-  ) {
+  if (payload.type === 'snapshot' && externalSnapshot(payload.snapshot)) {
     const nextId =
       payload.controllable === true ? payload.snapshot.session.id : undefined;
     if (attachedSessionId !== nextId)
       requests.disconnect('The attached Pi session changed.');
     attachedSessionId = nextId;
-    hub.updateExternal(payload.snapshot, payload.queuedPrompts);
+    hub.updateExternal(payload.snapshot);
     hub.setExternalControl(nextId ? externalControl : undefined);
   } else if (
     payload.type === 'detach' &&
@@ -398,7 +389,7 @@ void app
     } else if (process.connected) process.send?.({type: 'ready'});
   })
   .catch(error => {
-    console.error('Could not start VarisDev Factory:', error);
+    console.error('Could not start VarisDev:', error);
     if (replacingTerminal && process.connected) {
       process.send?.({
         type: 'startup-error',

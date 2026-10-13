@@ -21,11 +21,17 @@ Varisware VarisDev package.
 
 ## Desktop factory app
 
-With this extension installed, start `pi` normally. VarisDev opens automatically, takes over the current conversation, and closes Pi's terminal interface. The desktop owns the conversation and workers, so you can close the launching terminal. The selected project, session history, model, thinking level, active tools, CLI resource options, and initial prompts carry over. Print, JSON, and RPC runs stay headless.
+Install the extension from GitHub:
+
+```sh
+pi install git:git@github.com:varisware/pidev-plugins
+```
+
+Then start `pi` normally from any project folder. VarisDev opens automatically, takes over the current conversation, and closes Pi's terminal interface. The desktop owns the conversation and workers, so you can close the launching terminal. The selected project, session history, model, thinking level, active tools, CLI resource options, and initial prompts carry over. Print, JSON, and RPC runs stay headless.
 
 The GUI starts with your current conversation selected and ready to use. **New parent** adds another project or conversation.
 
-This repository's `.pi/settings.json` loads the extension from the checkout and disables the installed Git copy here, so running `pi` in this folder uses your current changes.
+Pi installs the package and its runtime dependencies in its managed Git directory. VarisDev builds and opens Electron from that installation, with your project folder as the working directory. The Pi SDK packages and `typebox` are runtime dependencies because Electron runs the session runtime in its own process. No separate clone or manual npm command is needed.
 
 On macOS, you can also install an app launcher from this repository:
 
@@ -43,9 +49,9 @@ If the desktop cannot start, Pi reports the error and keeps its terminal interfa
 
 Each parent conversation has a factory and a master robot. Background agents appear as drones at workstations. Working drones stay visible automatically; labels show their task and current action. Dispatch beams and sparks follow actual starts and completions. The session overview shows the other parent robots and their activity, so work in another folder stays visible too.
 
-Select a robot or drone to inspect its task, model, folder, elapsed time, queued instructions, response, errors, and saved result paths. The activity feed follows session events, tools, worker messages, and status changes. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL.
+Select a robot or drone to inspect its task, model, folder, elapsed time, response, errors, and saved result paths. The activity feed follows session events, tools, worker messages, and status changes. Click an event to inspect its inputs, output, errors, worker result, or file diff. The parent robot has distinct thinking, writing, and tool use animations and a closer view when working alone. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL.
 
-The conversation shows user prompts, streaming replies, and live tool calls with their inputs, progress, results, and errors. Tool history remains visible after the call finishes. The top bar stays visible while the factory column and conversation scroll independently.
+The conversation shows user prompts, streaming replies, and live tool calls with their inputs, progress, results, and errors. Tool history remains visible after the call finishes. Application controls sit above the workspace. The factory column and conversation scroll independently.
 
 **Skills & commands** lists the current project's skills, prompt templates, extension commands, and available tools. Search the list or type `/` in the composer for suggestions; Enter or Tab inserts a command, then add any arguments and send it. Skills and templates use Pi's normal expansion. Configured project and user extensions load in the desktop runtime.
 
@@ -53,21 +59,23 @@ The conversation shows user prompts, streaming replies, and live tool calls with
 
 **Tokens** shows context occupancy separately from cumulative recorded model usage: input, output, cache reads, cache writes, and estimated cost by response. Set an optional token target to visualize progress; it does not stop a run. Model usage comes from saved assistant usage records and configured model rates. Tool execution and UI actions add no model tokens themselves; tool results can consume input tokens on later calls. Individual files, skills, and tool results do not have exact token counts in provider reports. Choose the parent or an individual worker in the usage selector. Each has separate totals that remain available after its run finishes. Recorded compaction summaries also count; one summary row can combine several model calls. Failed compaction attempts do not expose usage. Image and audio services have separate billing.
 
-The composer stays at the bottom of the conversation. It supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions. **Up next** shows waiting prompts in order; remove an individual prompt before it starts. **Esc** or **Stop** cancels the active parent's work and clears its queue without clearing your draft. Dialogs handle Esc within their own interaction. Thinking, writing, and tool execution have distinct activity indicators; stopping pauses the scene immediately and shows a brief comic brake effect. Reduced motion disables these animations.
+The composer stays at the bottom of the conversation. It supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Drag the prompt field’s resize handle or expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions. Messages sent during active work use Pi’s native steering and are delivered after the current assistant turn’s tool calls, before the next model call. **Esc** or **Stop** cancels the active parent's work and clears pending steering without clearing your draft. Dialogs handle Esc within their own interaction. Thinking, writing, and tool execution have distinct activity indicators; stopping pauses the scene immediately and shows a brief comic brake effect. Reduced motion disables these animations.
 
-Choose a ready-made palette from **Theme**: Factory, Nord, Dracula, Catppuccin Mocha, Solarized Light, or High Contrast. The choice applies to the interface and the 3D factory and is saved locally. Text contrast, visible keyboard focus, and named status labels keep the interface readable. The app uses an original robot crow icon.
+Choose a ready-made palette from **Theme**: Factory, Nord, Dracula, Catppuccin Mocha, Solarized Light, or High Contrast. The choice applies to the interface and the 3D factory and is saved locally. Text contrast, visible keyboard focus, and named status labels keep the interface readable. The app uses a bold robot crow icon with native Windows taskbar sizes. Regenerate its PNG, ICO, and ICNS assets from the SVG with `node scripts/build-icon.mjs`.
 
 **Changes** shows successful `edit` and `write` operations attributed to the robot or drone that made them, with file paths and bounded diffs. Tracking begins when the extension loads. The dashboard retains the latest 100 change records and 160 activity events per parent. **Workspace diff** reads current Git changes, including staged, unstaged, and untracked files. This folder view can include earlier changes and shell commands from any unit sharing that folder. It refreshes on request. File changes tracked through the tools also work outside Git repositories.
 
-Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, send follow-up prompts, and stop their work from the app. Follow-ups wait for the parent's current prompt to finish. Stopping a parent clears its queued prompts and cancels its workers. When opened with `/factory`, the connected terminal conversation can also be controlled from the GUI.
+Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, steer active work, and stop their work from the app. Stopping a parent clears pending steering and cancels its workers. When opened with `/factory`, the connected terminal conversation can also be controlled from the GUI.
 
 Starting `pi` opens its conversation in the app; any initial CLI prompts run there. Opening the app directly starts with an empty overview. Worker drones represent pidev's existing delegation behavior; visual effects never trigger work.
 
-Electron runs the desktop window and the session runtime; graphics are loaded from local files. Its profile, theme preferences, and cache live in `.pi/desktop/` in this checkout. Closing the app stops its parents and workers. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
+Electron runs the desktop window and the session runtime; graphics are loaded from local files. Its profile, theme preferences, and cache live in `.pi/desktop/` inside the installed package. Closing the app stops its parents and workers. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
 
 ### App updates and environment
 
-The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
+For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically.
+
+The optional macOS launcher below is for a development checkout. The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
 
 After backend changes, quit VarisDev and run `npm run desktop` to compile and reopen it. Finder launches use the most recent build; run `npm run desktop:build` before opening from Finder after source changes. GUI assets are read directly from the checkout on launch or **View → Reload**. Reloading the window keeps its running sessions; backend changes require restarting the app.
 
@@ -99,11 +107,9 @@ VarisDev can delegate work to background Pi agents while the parent continues wo
 | `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths. |
 | `agent_inbox` | Read messages workers sent to the parent, newest first, or retrieve full text by message ID. |
-| `agent_send` | Send instructions or replace selected pending messages with `supersedes`. Workers can also message `"parent"`. |
-| `agent_messages` | List message previews or retrieve one full message by ID, including its current delivery state. |
-| `agent_message_remove` | Remove selected pending messages while the active task continues. |
+| `agent_send` | Steer active work or resume a completed agent. Workers can also message `"parent"`. |
 | `agent_wait` | Wait for any or all selected agents and collect their results. |
-| `agent_cancel` | Cancel an agent and discard its pending messages. |
+| `agent_cancel` | Cancel an agent and clear its steering messages. |
 
 The `/commit` shortcut requests Codex GPT-5.5 with xhigh effort.
 
@@ -145,15 +151,15 @@ Workers use `agent_list` to discover peers by name and ID in the same parent ses
 }
 ```
 
-Worker messages automatically identify the sender by name and ID. Messages to peers enter the recipient’s follow-up queue. Messages to the parent are stored in `agent_inbox`; they never add prompts or trigger parent turns. The parent reads the inbox explicitly. Workers put their final result in their final answer, which the parent retrieves through `agent_status` or `agent_wait`. Communication tools are scoped to the parent session. Workers have `agent_list`, `agent_send`, `agent_messages`, and `agent_message_remove`; the parent also manages spawning, status, inbox access, waiting, and cancellation.
+Worker messages automatically identify the sender by name and ID. Messages to peers use Pi’s native steering during active work. Messages to the parent are stored in `agent_inbox`; they never add prompts or trigger parent turns. The parent reads the inbox explicitly. Workers put their final result in their final answer, which the parent retrieves through `agent_status` or `agent_wait`. Communication tools are scoped to the parent session. Workers have `agent_list` and `agent_send`; the parent also manages spawning, status, inbox access, waiting, and cancellation.
 
 `agent_inbox` retains the latest 100 explicit worker messages, newest first. With no arguments it returns up to 10 previews of 500 characters with message IDs, sender names, and timestamps. Use `limit` (up to 20), `offset`, and `nextOffset` to browse, or `{"messageId":"<message ID>"}` to retrieve full text. Reading does not remove messages.
 
-Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Follow-up messages run in order after the current task, retaining the conversation. Failed and cancelled agents require a new spawn.
+Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Messages sent during active work steer the next model turn after the current assistant turn’s tool calls. Completed agents resume with the same conversation. Failed and cancelled agents require a new spawn.
 
-Spawn options include `cwd` (relative to the parent directory), `model` (any registered model in `provider/model` format), `thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`), `instructions`, `timeoutMs`, and `autoCleanup`. Runtime validation checks model availability and enforces the effort cap. Omitted model inherits the parent model or defaults to GPT-5.6-sol when no parent model is set; omitted thinking level inherits the parent's setting. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and pending follow-up messages. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work. Each parent session can hold 64 agents, with up to 32 pending messages per agent. Finished agents with `autoCleanup: true` do not count toward that limit.
+Spawn options include `cwd` (relative to the parent directory), `model` (any registered model in `provider/model` format), `thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`), `instructions`, `timeoutMs`, and `autoCleanup`. Runtime validation checks model availability and enforces the effort cap. Omitted model inherits the parent model or defaults to GPT-5.6-sol when no parent model is set; omitted thinking level inherits the parent's setting. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and work directed by steering messages. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work. Each parent session can hold 64 agents. Finished agents with `autoCleanup: true` do not count toward that limit.
 
-Set `autoCleanup: true` for a task whose worker should be disposed after all queued work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work. The default is `false`, allowing completed agents to resume.
+Set `autoCleanup: true` for a task whose worker should be disposed after its work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work. The default is `false`, allowing completed agents to resume.
 
 Collect results with `agent_status` or `agent_wait`. Completion, failure, and cancellation update the agent's stored status without sending a parent message or triggering a turn. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
@@ -164,7 +170,7 @@ Agents share their selected working directory and can change its files. Assign f
 - `/agents all` shows active agents followed by history.
 - `/agents cancel <id|all>` cancels work manually.
 
-`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity, pending message counts, and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Missing credentials`. Finished agents stay available in history, and completed agents with `autoCleanup: false` return to the active view when sent new work.
+`agent_list` uses the same views and defaults to active agents. Its summary counts every status across the session, including agents outside the selected view. List entries include names, IDs, activity and failure reasons; use `agent_status` for full results and transcript paths. Failures show their cause, such as `Missing credentials`. Finished agents stay available in history, and completed agents with `autoCleanup: false` return to the active view when sent new work.
 
 Transcripts and the latest full result are saved under `~/.pi/agent/varisdev/agents/<parent-session-id>/<agent-id>/` (or the configured Pi agent directory). Tool output is bounded and includes `sessionFile` and `resultFile` paths for inspection with `read`. Quitting, reloading, starting or switching sessions, or forking cancels the current agents and disposes their conversations. Saved files remain available after shutdown.
 
@@ -177,34 +183,13 @@ Use `/commit` to ask the current session to **commit and push** through a **Code
 /commit Only include the browse fix. Use the commit message "Fix browse truncation".
 ```
 
-With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `model: "openai-codex/gpt-5.5"`, `thinkingLevel: "xhigh"`, and `autoCleanup: true`. If the parent is working, the request is queued as a follow-up.
+With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `model: "openai-codex/gpt-5.5"`, `thinkingLevel: "xhigh"`, and `autoCleanup: true`. If the parent is working, the request uses native steering.
 
 The worker follows repository instructions, inspects changes, runs required checks, commits, and pushes. The parent collects its result and reports the outcome. The worker session is automatically disposed when the task finishes, fails, or is cancelled. Saved results and transcript paths can be inspected with `agent_status`; `/agents cancel <id>` cancels active work.
 
-### Inspecting and revising agent queues
-
-`agent_send` returns the new message ID, sender identity, creation time, and current state. Its optional `reference` associates the instruction with a task or artifact, such as an issue ID or file path. Initial task messages also have IDs and sender metadata.
-
-Call `agent_messages` with `{"id":"<agent ID>"}` to inspect pending messages in delivery order. Each entry has a preview of up to 500 characters; `limit` defaults to 10 and is capped at 20. Use `offset` and `nextOffset` for subsequent pages. `view: "history"` shows delivered, removed, superseded, and discarded entries; `view: "all"` includes both pending entries and history. Retrieve the full text and latest state using `{"id":"<agent ID>","messageId":"<message ID>"}`. Message history remains available for the lifetime of the parent session.
-
-Consolidate obsolete pending instructions with `agent_send`:
-
-```json
-{
-  "id": "<agent ID>",
-  "message": "The review findings are resolved. Build the updated project and report the result.",
-  "reference": "build/plan.md",
-  "supersedes": ["<obsolete review message ID>", "<obsolete build message ID>"]
-}
-```
-
-The new message takes the earliest selected position and preserves the order of unrelated instructions. This works even with 32 pending messages. Replaced entries report `superseded` and `replacedBy`. To remove instructions, call `agent_message_remove` with `id` and `messageIds`.
-
-Both edits validate all selected IDs before changing the queue. If any selected entry has left the queue, the response is `not_pending`, includes the current states, and makes no changes. `delivered` means the instruction was handed to the worker and work may have started; edits cannot undo that work. Cancellation and failures mark undelivered instructions `discarded`.
-
 ## Completion sound
 
-In interactive mode, VarisDev tracks terminal focus and raises an alert only when the terminal is unfocused as the `agent_settled` event fires. This waits until automatic retries and queued follow-up work have finished.
+In interactive mode, VarisDev tracks terminal focus and raises an alert only when the terminal is unfocused as the `agent_settled` event fires. This waits until automatic retries and steering have finished.
 
 Focus detection uses the standard terminal focus-reporting protocol and works across supported macOS, Windows, and Linux terminals. When running inside tmux, `set -g focus-events on` may be required. An unfocused completion also requests visual attention: iTerm2 bounces its Dock icon once, Windows flashes the owning terminal or IDE window, and other terminals receive the standard bell/urgency signal. A completed terminal progress indicator remains visible until focus returns.
 

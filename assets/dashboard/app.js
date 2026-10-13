@@ -40,9 +40,9 @@ const labelNodes = new Map();
 const feedNodes = new Map();
 const changeNodes = new Map();
 const conversationNodes = new Map();
+const toolDisclosures = new Map();
+const feedDisclosures = new Map();
 const conversationPositions = new Map();
-const queueNodes = new Map();
-const removingPrompts = new Set();
 const promptDrafts = new Map();
 const workspaceCache = new Map();
 const workspacePending = new Set();
@@ -59,7 +59,6 @@ let feedKey = '';
 let lastFeedId;
 let changeKey = '';
 let conversationKey = '';
-let queueKey = '';
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
@@ -100,8 +99,7 @@ function canControl(session) {
 function parentHasWork(data) {
   return (
     ['running', 'compacting'].includes(data.session.status) ||
-    data.agents.some(agent => LIVE.has(agent.status)) ||
-    data.session.pendingPrompts > 0
+    data.agents.some(agent => LIVE.has(agent.status))
   );
 }
 function parentHasError(session) {
@@ -316,6 +314,51 @@ function collapseEditor(focus = true) {
   if (textarea === $('parent-prompt')) saveDraft();
   sizeInspector();
 }
+function resizeTextarea(textarea, height) {
+  const style = window.getComputedStyle(textarea);
+  const min = Number.parseFloat(style.minHeight) || 0;
+  const max = Number.parseFloat(style.maxHeight) || window.innerHeight;
+  const next = Math.min(Math.max(height, min), max);
+  textarea.style.height = `${Math.round(next)}px`;
+  saveDraft();
+  sizeInspector();
+}
+function initTextareaResize(handle, textarea) {
+  handle.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = textarea.getBoundingClientRect().height;
+    const move = moveEvent => {
+      resizeTextarea(textarea, startHeight + moveEvent.clientY - startY);
+    };
+    const finish = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', finish);
+      handle.removeEventListener('pointercancel', finish);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+  });
+  handle.addEventListener('keydown', event => {
+    if (
+      !['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home'].includes(
+        event.key,
+      )
+    )
+      return;
+    event.preventDefault();
+    const step = event.key.startsWith('Page') ? 48 : 16;
+    if (event.key === 'Home') resizeTextarea(textarea, 0);
+    else
+      resizeTextarea(
+        textarea,
+        textarea.getBoundingClientRect().height +
+          (event.key === 'ArrowUp' || event.key === 'PageUp' ? -step : step),
+      );
+  });
+}
 function editorFailure(error, textarea, target) {
   showError(error, target);
   if (
@@ -461,18 +504,13 @@ function createSceneLabel(id) {
     `scene-label${id === 'parent' ? ' parent-label' : ''}`,
   );
   element.type = 'button';
-  const kind = node('span', 'scene-label-kind');
-  const role = node('span', '', id === 'parent' ? 'MASTER ROBOT' : 'DRONE');
-  const status = node('span');
-  kind.append(role, status);
   const name = node('span', 'scene-label-name');
   const task = node('span', 'scene-label-task');
   const activity = node('span', 'scene-label-activity');
-  const stem = node('span', 'label-stem');
-  element.append(kind, name, task, activity);
+  element.append(name, task, activity);
   element.addEventListener('click', () => selectUnit(id));
-  $('scene-labels').append(stem, element);
-  return {element, name, task, activity, status, stem};
+  $('scene-labels').append(element);
+  return {element, name, task, activity};
 }
 function layoutLabels(layout) {
   lastLayout = layout;
@@ -482,21 +520,9 @@ function layoutLabels(layout) {
   for (const [id, entry] of labelNodes) {
     if (!ids.has(id)) {
       entry.element.remove();
-      entry.stem.remove();
       labelNodes.delete(id);
     }
   }
-  const rect = $('scene').getBoundingClientRect();
-  const canvas = $('factory-canvas').getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
-  const drones = layout
-    .filter(item => item.id !== 'parent' && item.visible)
-    .sort((a, b) => a.y - b.y);
-  const back = drones
-    .slice(0, Math.ceil(drones.length / 2))
-    .sort((a, b) => a.x - b.x);
-  const front = drones.slice(back.length).sort((a, b) => a.x - b.x);
   for (const anchor of layout) {
     const unit =
       anchor.id === 'parent'
@@ -508,57 +534,19 @@ function layoutLabels(layout) {
       entry = createSceneLabel(anchor.id);
       labelNodes.set(anchor.id, entry);
     }
-    entry.element.hidden = !anchor.visible;
-    entry.stem.hidden = !anchor.visible;
-    if (!anchor.visible) continue;
+
     text(entry.name, unit.name);
     text(
       entry.task,
       anchor.id === 'parent' ? unit.prompt || 'Parent session' : unit.task,
     );
     text(entry.activity, unit.activity || statusName(unit.status));
-    text(entry.status, statusName(unit.status));
     entry.element.classList.toggle('selected', state.unitId === anchor.id);
     entry.element.setAttribute(
       'aria-pressed',
       String(state.unitId === anchor.id),
     );
     entry.element.title = `${unit.name}\n${anchor.id === 'parent' ? unit.prompt || '' : unit.task}\n${unit.activity || ''}`;
-    if (entry.sceneWidth !== width) {
-      entry.element.style.width = '';
-      entry.baseWidth = entry.element.offsetWidth;
-      entry.sceneWidth = width;
-    }
-    const parent = anchor.id === 'parent';
-    const rear = back.some(item => item.id === anchor.id);
-    const band = rear ? back : front;
-    const left = rear ? (width > 800 ? 225 : 185) : 18;
-    const w =
-      !parent && band.length
-        ? Math.min(entry.baseWidth, (width - left - 18) / band.length - 8)
-        : entry.baseWidth;
-    if (entry.element.style.width !== `${w}px`)
-      entry.element.style.width = `${w}px`;
-    const h = entry.element.offsetHeight;
-    const index = band.findIndex(item => item.id === anchor.id);
-    const x = parent
-      ? 18
-      : band.length === 1
-        ? Math.max(left, Math.min(width - w - 18, anchor.x * width - w / 2))
-        : left + (index * (width - left - w - 18)) / (band.length - 1);
-    const y = parent || rear ? 46 : height - h - 38;
-    entry.element.style.left = `${Math.round(x)}px`;
-    entry.element.style.top = `${Math.round(y)}px`;
-    const targetX = canvas.left - rect.left + anchor.x * canvas.width;
-    const targetY = canvas.top - rect.top + anchor.y * canvas.height;
-    const startX = x + w / 2;
-    const startY = targetY > y + h / 2 ? y + h : y;
-    const dx = targetX - startX;
-    const dy = targetY - startY;
-    entry.stem.style.left = `${startX}px`;
-    entry.stem.style.top = `${startY}px`;
-    entry.stem.style.height = `${Math.hypot(dx, dy)}px`;
-    entry.stem.style.transform = `rotate(${Math.atan2(-dx, dy)}rad)`;
   }
 }
 function sceneAgents(data) {
@@ -584,8 +572,11 @@ function renderFallback(data) {
       element.type = 'button';
       element.setAttribute('aria-pressed', String(state.unitId === unit.id));
       element.title = `${unit.name}\n${parent ? unit.prompt || 'Master command' : unit.task}\n${unit.activity || statusName(unit.status)}`;
+      const status = node('span');
+      badge(status, unit.status);
       element.append(
         robot(!parent),
+        status,
         node('strong', '', unit.name),
         node('p', '', parent ? unit.prompt || 'Master command' : unit.task),
         node('p', 'muted', unit.activity || statusName(unit.status)),
@@ -611,7 +602,10 @@ function sizeScene() {
   if (!snapshot()) return;
   const element = $('scene');
   const top = element.getBoundingClientRect().top + window.scrollY;
-  const height = Math.max(280, Math.min(430, window.innerHeight - top - 18));
+  const height = Math.max(
+    300,
+    Math.min(720, window.innerHeight - Math.max(top, 0) - 36),
+  );
   const value = `${Math.round(height)}px`;
   if (element.style.height !== value) element.style.height = value;
   element.classList.toggle('compact-scene', height < 360);
@@ -636,7 +630,12 @@ function activityPhase(data) {
       ? 'Workers running'
       : '';
   if (/thinking/i.test(data.session.activity)) return 'Thinking';
-  if (/using|tool/i.test(data.session.activity)) return 'Running tools';
+  if (
+    /using|tool|running (bash|read|write|edit|agent_)/i.test(
+      data.session.activity,
+    )
+  )
+    return 'Running tools';
   if (/responding|writing/i.test(data.session.activity)) return 'Writing';
   return 'Working';
 }
@@ -692,10 +691,6 @@ function renderFactory() {
   );
   $('context-meter').hidden = !context;
   text($('master-activity'), session.activity || 'Standing by for a mission');
-  text(
-    $('scene-caption'),
-    `${tally.working} working drones · ${tally.queued} queued`,
-  );
   sizeScene();
   renderProcessing(data);
   if (scene) {
@@ -715,11 +710,10 @@ function createWorkerCard(agent) {
   const meta = node('span', 'worker-card-meta');
   const model = node('span');
   const time = node('span');
-  const pending = node('span');
-  meta.append(model, time, pending);
+  meta.append(model, time);
   element.append(header, task, activity, meta);
   element.addEventListener('click', () => selectUnit(agent.id));
-  return {element, name, status, task, activity, model, time, pending};
+  return {element, name, status, task, activity, model, time};
 }
 function createHistoryRow(agent) {
   const element = node('button', 'history-row');
@@ -757,7 +751,6 @@ function renderWorkers() {
       text(entry.activity, agent.activity || 'Waiting for activity');
       text(entry.model, agent.model);
       text(entry.time, duration(agent));
-      text(entry.pending, `${agent.pendingMessages} pending`);
     },
   );
   const filtered = history.filter(
@@ -826,6 +819,79 @@ function renderDiff(target, value) {
       }),
   );
 }
+function detailValue(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  return typeof value === 'object' ? JSON.stringify(value, null, 2) : value;
+}
+function findEventTool(event, data) {
+  if (event.conversationId)
+    return data.conversation?.find(item => item.id === event.conversationId);
+  return undefined;
+}
+function renderFeedDetails(entry, event, data) {
+  const tool = findEventTool(event, data);
+  const worker = data.agents.find(item => item.id === event.sourceId);
+  const fields = {
+    ...(worker
+      ? {
+          Worker: worker.name,
+          Task: worker.task,
+          'Current activity': worker.activity,
+          'Latest result': worker.output,
+        }
+      : {}),
+    ...event.details,
+    ...(tool
+      ? {
+          Tool: tool.toolName,
+          Status: statusName(tool.status),
+          Input: tool.input,
+          Output:
+            tool.text ||
+            (tool.status === 'running'
+              ? 'Waiting for output…'
+              : 'No text output'),
+          Error: tool.error,
+          Started: date(tool.at),
+          Finished: tool.finishedAt ? date(tool.finishedAt) : undefined,
+        }
+      : {}),
+  };
+  if (fields.Message === event.message) delete fields.Message;
+  if (fields.Status && STATUS[fields.Status])
+    fields.Status = statusName(fields.Status);
+  const values = Object.entries(fields)
+    .map(([label, value]) => [label, detailValue(value)])
+    .filter(([, value]) => value !== undefined);
+  const selection = window.getSelection();
+  reconcile(
+    entry.content,
+    entry.fields,
+    values,
+    ([label]) => label,
+    ([label]) => {
+      const element = node('div', 'feed-detail');
+      const heading = node('dt', '', label);
+      const value = node('dd');
+      const content = node(
+        'pre',
+        label === 'Diff' ? 'diff' : 'feed-detail-text',
+      );
+      const textNode = document.createTextNode('');
+      if (label !== 'Diff') content.append(textNode);
+      value.append(content);
+      element.append(heading, value);
+      element.classList.toggle('error', label === 'Error');
+      return {element, content, textNode, previous: undefined};
+    },
+    (field, [label, value]) => {
+      if (label === 'Diff') {
+        if (field.previous !== value) renderDiff(field.content, value);
+        field.previous = value;
+      } else updateStreamText(field.textNode, value, selection);
+    },
+  );
+}
 function renderFeed(data) {
   const key = `${state.sessionId}:${state.unitId}`;
   if (feedKey !== key) {
@@ -843,22 +909,33 @@ function renderFeed(data) {
     feedNodes,
     events,
     item => item.id,
-    () => {
+    event => {
       const element = node('li', 'feed-event');
+      const details = node('details');
+      const disclosureKey = `${key}:${event.id}`;
+      details.open = feedDisclosures.get(disclosureKey) ?? false;
+      details.addEventListener('toggle', () => {
+        feedDisclosures.set(disclosureKey, details.open);
+      });
+      const summary = node('summary');
       const meta = node('span', 'feed-event-meta');
       const kind = node('span');
       const at = node('time');
-      const message = node('p');
+      const message = node('span', 'feed-event-message');
+      const content = node('dl', 'feed-details');
       meta.append(kind, at);
-      element.append(meta, message);
-      return {element, kind, at, message};
+      summary.append(meta, message);
+      details.append(summary, content);
+      element.append(details);
+      return {element, kind, at, message, content, fields: new Map()};
     },
     (entry, event) => {
       entry.element.classList.toggle('error', event.kind === 'error');
-      text(entry.kind, `${event.sourceName} · ${event.kind}`);
+      text(entry.kind, event.sourceName);
       text(entry.at, date(event.at));
       entry.at.dateTime = event.at;
       text(entry.message, event.message);
+      renderFeedDetails(entry, event, data);
     },
   );
   const latest = events.at(-1)?.id;
@@ -970,7 +1047,11 @@ function conversationEntry(message) {
   let outputLabel;
   if (tool) {
     const details = node('details');
-    details.open = true;
+    const key = `${state.sessionId}:${message.id}`;
+    details.open = toolDisclosures.get(key) ?? true;
+    details.addEventListener('toggle', () => {
+      toolDisclosures.set(key, details.open);
+    });
     const summary = node('summary');
     inputPreview = node('code', 'tool-input-preview');
     summary.append(header, inputPreview);
@@ -1133,65 +1214,6 @@ function renderConversation(data) {
     if (saved) body.scrollTop = saved.top;
   }
 }
-function renderPromptQueue(data) {
-  if (queueKey !== state.sessionId) {
-    queueNodes.clear();
-    $('prompt-queue').replaceChildren();
-    $('queue-error').hidden = true;
-    queueKey = state.sessionId;
-  }
-  const prompts = data.session.queuedPrompts || [];
-  $('queued-prompts').hidden = prompts.length === 0;
-  text($('queue-count'), prompts.length);
-  reconcile(
-    $('prompt-queue'),
-    queueNodes,
-    prompts,
-    item => item.id,
-    prompt => {
-      const element = node('li', 'queued-prompt');
-      const position = node('span', 'queue-position');
-      const content = node('pre', 'queued-prompt-text');
-      const remove = node('button', 'quiet-button', 'Remove');
-      remove.type = 'button';
-      const sessionId = state.sessionId;
-      remove.addEventListener('click', () =>
-        removeQueuedPrompt(sessionId, prompt.id),
-      );
-      element.append(position, content, remove);
-      return {element, position, content, remove};
-    },
-    (entry, prompt) => {
-      const position = prompts.indexOf(prompt) + 1;
-      text(entry.position, position);
-      text(entry.content, prompt.text);
-      const removing = removingPrompts.has(prompt.id);
-      text(entry.remove, removing ? 'Removing…' : 'Remove');
-      entry.remove.disabled = removing || !canControl(data.session);
-      entry.remove.setAttribute(
-        'aria-label',
-        `Remove queued prompt ${position}`,
-      );
-    },
-  );
-}
-async function removeQueuedPrompt(sessionId, promptId) {
-  if (!api || removingPrompts.has(promptId)) return;
-  removingPrompts.add(promptId);
-  $('queue-error').hidden = true;
-  renderInspector();
-  try {
-    await api.removeQueuedPrompt(sessionId, promptId);
-  } catch (error) {
-    showError(
-      error,
-      state.sessionId === sessionId ? $('queue-error') : $('app-error'),
-    );
-  } finally {
-    removingPrompts.delete(promptId);
-    renderInspector();
-  }
-}
 function renderInspector() {
   const data = snapshot();
   const unit = selectedUnit();
@@ -1219,12 +1241,6 @@ function renderInspector() {
     [
       parent ? 'Updated' : 'Finished',
       date(parent ? unit.updatedAt : unit.finishedAt),
-    ],
-    [
-      'Pending',
-      parent
-        ? `${unit.pendingPrompts} prompts`
-        : `${unit.pendingMessages} messages`,
     ],
     ['ID', unit.id],
     ...(parent
@@ -1262,7 +1278,6 @@ function renderInspector() {
   ]);
   renderFeed(data);
   renderChanges(data);
-  renderPromptQueue(data);
   renderConversation(data);
   renderUsage(data);
   renderSessionFeatures(data);
@@ -1288,11 +1303,7 @@ function renderInspector() {
     restorePosition($('parent-prompt'), pendingDraftPosition.position);
     pendingDraftPosition = null;
   }
-  const running = ['running', 'compacting'].includes(data.session.status);
-  text(
-    $('parent-editor-shortcuts'),
-    `${running ? 'Enter queues' : 'Enter sends'} · Shift+Enter adds a line`,
-  );
+  text($('parent-editor-shortcuts'), 'Enter sends · Shift+Enter adds a line');
   $('abort-parent').disabled =
     !canControl(data.session) ||
     !parentHasWork(data) ||
@@ -1305,14 +1316,7 @@ function renderInspector() {
     sending.has(state.sessionId) ||
     stopping.has(state.sessionId) ||
     data.session.status === 'closed';
-  text(
-    $('send-prompt'),
-    sending.has(state.sessionId)
-      ? 'Sending…'
-      : running
-        ? 'Add to queue'
-        : 'Send',
-  );
+  text($('send-prompt'), sending.has(state.sessionId) ? 'Sending…' : 'Send');
   renderWorkspace();
   sizeInspector();
 }
@@ -1386,6 +1390,24 @@ function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
   state.hub = hub;
+  const toolKeys = new Set(
+    hub.sessions.flatMap(data =>
+      (data.conversation || []).map(
+        message => `${data.session.id}:${message.id}`,
+      ),
+    ),
+  );
+  const eventKeys = new Set(
+    hub.sessions.flatMap(data =>
+      data.events.map(
+        event => `${data.session.id}:${event.sourceId}:${event.id}`,
+      ),
+    ),
+  );
+  for (const key of toolDisclosures.keys())
+    if (!toolKeys.has(key)) toolDisclosures.delete(key);
+  for (const key of feedDisclosures.keys())
+    if (!eventKeys.has(key)) feedDisclosures.delete(key);
   const next =
     state.desiredSessionId &&
     hub.sessions.some(item => item.session.id === state.desiredSessionId)
@@ -1583,6 +1605,7 @@ $('choose-folder').addEventListener('click', async () => {
 });
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', sendPrompt);
+initTextareaResize($('parent-prompt-resize'), $('parent-prompt'));
 for (const event of ['input', 'select', 'keyup', 'pointerup', 'scroll', 'blur'])
   $('parent-prompt').addEventListener(event, saveDraft);
 document.addEventListener('selectionchange', () => {
@@ -1707,10 +1730,7 @@ try {
 const cleanupThemes = initThemes(palette => scene?.setPalette(palette));
 $('fallback').hidden = Boolean(scene);
 $('factory-canvas').hidden = !scene;
-text(
-  $('visual-mode'),
-  scene ? 'WEBGL · 3D' : 'GRAPHICAL VIEW · WEBGL UNAVAILABLE',
-);
+$('scene-labels').hidden = !scene;
 applyMotion();
 initSessionFeatures({api, selected: snapshot, draftChanged: saveDraft});
 initUsage(call => {
@@ -1784,6 +1804,6 @@ if (api) {
   $('new-session').disabled = true;
   $('welcome-create').disabled = true;
   showError(
-    'Open this factory in the VarisDev desktop app. The native desktop API is unavailable.',
+    'Open the VarisDev desktop app. The native desktop API is unavailable.',
   );
 }

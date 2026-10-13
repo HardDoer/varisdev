@@ -1,27 +1,23 @@
-import {execFile, spawn, type ChildProcess} from 'node:child_process';
+import {spawn, type ChildProcess} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {promisify} from 'node:util';
 import type {DashboardState} from '../dashboard/state.ts';
 import {
   sessionConfiguration,
   compactionInstructions,
-  type QueuedPrompt,
 } from '../dashboard/hub.ts';
 import type {
   SessionFeatures,
   SessionConfiguration,
 } from '../dashboard/features.ts';
 import {requestId} from './ipc.ts';
+import {buildDesktop} from './build.ts';
 
-const execute = promisify(execFile);
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
 export interface FactoryControl {
-  readonly queuedPrompts: QueuedPrompt[];
-  removeQueuedPrompt(promptId: string): void | Promise<void>;
   prompt(text: string): void | Promise<void>;
   abort(): void | Promise<void>;
   features(): Promise<SessionFeatures>;
@@ -65,7 +61,6 @@ export function createFactoryBridge(
         type: 'snapshot',
         snapshot: attachment.state.snapshot(),
         controllable: true,
-        queuedPrompts: structuredClone(attachment.control.queuedPrompts),
       },
       () => {
         sending = false;
@@ -135,7 +130,6 @@ export function createFactoryBridge(
     if (
       request.action !== 'prompt' &&
       request.action !== 'abort' &&
-      request.action !== 'removeQueuedPrompt' &&
       request.action !== 'features' &&
       request.action !== 'configure' &&
       request.action !== 'compact' &&
@@ -151,10 +145,6 @@ export function createFactoryBridge(
         request.input.length > 64000)
     ) {
       reply(false, 'Prompt must contain 1 to 64000 characters.');
-      return;
-    }
-    if (request.action === 'removeQueuedPrompt' && !requestId(request.input)) {
-      reply(false, 'Choose a valid queued prompt.');
       return;
     }
     try {
@@ -177,8 +167,6 @@ export function createFactoryBridge(
         let value: unknown;
         if (request.action === 'prompt')
           await current.control.prompt((request.input as string).trim());
-        else if (request.action === 'removeQueuedPrompt')
-          await current.control.removeQueuedPrompt(request.input as string);
         else if (request.action === 'features')
           value = await current.control.features();
         else if (request.action === 'configure')
@@ -235,15 +223,7 @@ export function createFactoryBridge(
 }
 
 async function openFactory(state: DashboardState): Promise<FactoryWindow> {
-  await execute(
-    process.execPath,
-    [
-      require.resolve('typescript/bin/tsc'),
-      '--project',
-      join(root, 'tsconfig.desktop.json'),
-    ],
-    {cwd: root, maxBuffer: 1024 * 1024},
-  );
+  await buildDesktop();
   const env = {...process.env};
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(

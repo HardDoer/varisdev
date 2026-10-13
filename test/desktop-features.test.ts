@@ -208,8 +208,6 @@ export default function(pi) {
   };
 }
 
-const direct = {isQueued: () => true, submitted: () => {}};
-
 void test(
   'desktop catalog loads configured user and project resources and reloads without duplicate VarisDev registrations',
   {timeout: 15000},
@@ -302,11 +300,11 @@ void test(
     );
     assert.deepEqual(reloaded.diagnostics, []);
     await assert.rejects(
-      parent.prompt('/skill:project-skill do work', direct),
+      parent.prompt('/skill:project-skill do work'),
       /disabled in settings/,
     );
     assert.equal(requests.length, 0);
-    await parent.prompt('/project-template after reload', direct);
+    await parent.prompt('/project-template after reload');
     assert.ok(
       stableState
         .snapshot()
@@ -320,22 +318,22 @@ void test(
   {timeout: 15000},
   async t => {
     const {parent, requests, cwd} = await fixture(t);
-    await parent.prompt('/skill:project-skill extra skill arguments', direct);
+    await parent.prompt('/skill:project-skill extra skill arguments');
     const skillRequest = JSON.stringify(requests.at(-1)?.messages);
     assert.ok(skillRequest.includes('PROJECT SKILL BODY marker.'));
     assert.ok(skillRequest.includes('<skill name=\\"project-skill\\"'));
     assert.ok(skillRequest.includes('extra skill arguments'));
-    await parent.prompt('/project-template "first argument" second', direct);
+    await parent.prompt('/project-template "first argument" second');
     assert.ok(
       JSON.stringify(requests.at(-1)?.messages).includes(
         'PROJECT TEMPLATE first argument / first argument second',
       ),
     );
     const before = requests.length;
-    await parent.prompt('/model desktop-fixture/second-model', direct);
-    await parent.prompt('/thinking high', direct);
-    await parent.prompt('/name Renamed fixture', direct);
-    await parent.prompt('/session', direct);
+    await parent.prompt('/model desktop-fixture/second-model');
+    await parent.prompt('/thinking high');
+    await parent.prompt('/name Renamed fixture');
+    await parent.prompt('/session');
     assert.equal(requests.length, before);
     assert.deepEqual((await parent.features()).model, {
       provider: 'desktop-fixture',
@@ -374,7 +372,7 @@ void test(
       parent.configure({provider: 'missing', modelId: 'missing'}),
       /Model is unavailable/,
     );
-    await parent.prompt('/compact Preserve the fixture decision.', direct);
+    await parent.prompt('/compact Preserve the fixture decision.');
     assert.ok(requests.length > before);
     assert.ok(
       requests
@@ -386,7 +384,7 @@ void test(
         ),
     );
     const afterCompaction = requests.length;
-    await parent.prompt('/reload', direct);
+    await parent.prompt('/reload');
     assert.equal(requests.length, afterCompaction);
   },
 );
@@ -396,19 +394,8 @@ void test(
   {timeout: 15000},
   async t => {
     const {parent, cwd, requests} = await fixture(t);
-    let queued = true;
-    let submissions = 0;
-    const operation = parent.prompt('/fixture-command command arguments', {
-      isQueued: () => queued,
-      submitted: () => {
-        assert.ok(queued);
-        queued = false;
-        submissions++;
-      },
-    });
+    const operation = parent.prompt('/fixture-command command arguments');
     while (!parent.ui.snapshot().dialogs.length) await delay(5);
-    assert.equal(queued, false);
-    assert.equal(submissions, 1);
     assert.equal(
       await readFile(join(cwd, 'command-started.txt'), 'utf8'),
       'command arguments',
@@ -424,7 +411,6 @@ void test(
     assert.equal(dialog.message, 'command arguments');
     parent.ui.respond(dialog.id, true);
     await operation;
-    assert.equal(submissions, 1);
     assert.equal(requests.length, 0);
     assert.ok(
       parent.ui
@@ -433,15 +419,7 @@ void test(
           item => item.message === 'Fixture command finished: true',
         ),
     );
-    await parent.prompt('/fixture-command must not execute', {
-      isQueued: () => false,
-      submitted: () => assert.fail('cancelled queue item submitted'),
-    });
-    assert.equal(
-      await readFile(join(cwd, 'command-started.txt'), 'utf8'),
-      'command arguments',
-    );
-    await parent.prompt('/terminal-command', direct);
+    await parent.prompt('/terminal-command');
     assert.equal(typeof parent.ui.context.getEditorComponent(), 'function');
     const editor = parent.ui.snapshot().extensionEditor;
     assert.ok(editor);
@@ -484,7 +462,7 @@ void test(
       () => parent.ui.snapshot().dialogs.length === 0,
       'Completion editor cancels',
     );
-    await parent.prompt('/ui-error-command', direct);
+    await parent.prompt('/ui-error-command');
     assert.ok(
       (await parent.features()).diagnostics.some(item =>
         item.message.includes('Fixture component failed.'),
@@ -493,12 +471,12 @@ void test(
     assert.ok(
       parent.ui.snapshot().notifications.some(item => item.type === 'error'),
     );
-    const pending = parent.prompt('/fixture-command abort me', direct);
+    const pending = parent.prompt('/fixture-command abort me');
     while (!parent.ui.snapshot().dialogs.length) await delay(5);
     await parent.abort();
     await pending;
     assert.deepEqual(parent.ui.snapshot().dialogs, []);
-    const afterAbort = parent.prompt('/fixture-command after abort', direct);
+    const afterAbort = parent.prompt('/fixture-command after abort');
     while (!parent.ui.snapshot().dialogs.length) await delay(5);
     parent.ui.respond(parent.ui.snapshot().dialogs[0].id, false);
     await afterAbort;
@@ -511,7 +489,7 @@ void test(
     assert.deepEqual(parent.ui.snapshot().notifications, []);
     parent.ui.respond(editor.id, 'stale editor button');
     assert.deepEqual(parent.ui.snapshot().dialogs, []);
-    await parent.prompt('/terminal-command', direct);
+    await parent.prompt('/terminal-command');
     const reloadedEditor = parent.ui.snapshot().extensionEditor;
     assert.ok(reloadedEditor);
     assert.notEqual(reloadedEditor.id, editor.id);
@@ -532,18 +510,11 @@ void test(
 );
 
 void test(
-  'extension initiated model turns finish before the desktop queue advances',
+  'extension initiated model turns finish before command completion',
   {timeout: 15000},
   async t => {
     const {parent, requests} = await fixture(t);
-    let submissions = 0;
-    await parent.prompt('/model-command', {
-      isQueued: () => true,
-      submitted: () => {
-        submissions++;
-      },
-    });
-    assert.equal(submissions, 1);
+    await parent.prompt('/model-command');
     assert.equal(requests.length, 1);
     const transcript = parent.state.snapshot().conversation;
     assert.ok(

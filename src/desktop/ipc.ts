@@ -4,14 +4,7 @@ export interface FactoryRequest {
   type: 'request';
   id: string;
   sessionId: string;
-  action:
-    | 'prompt'
-    | 'abort'
-    | 'removeQueuedPrompt'
-    | 'features'
-    | 'configure'
-    | 'compact'
-    | 'reload';
+  action: 'prompt' | 'abort' | 'features' | 'configure' | 'compact' | 'reload';
   input?: unknown;
 }
 

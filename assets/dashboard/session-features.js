@@ -126,7 +126,6 @@ function insertCommand(command) {
   editor.setSelectionRange(editor.value.length, editor.value.length);
   draftChanged();
   $('command-suggestions').hidden = true;
-  if ($('commands-dialog').open) $('commands-dialog').close();
 }
 function renderCatalog() {
   const resource = features();
@@ -421,15 +420,23 @@ export function initSessionFeatures(options) {
       .catch(cause => error($('prompt-error'), cause));
   });
   $('open-commands').addEventListener('click', () => {
-    $('commands-dialog').showModal();
+    if (!$('commands-dialog').open) $('commands-dialog').show();
     $('command-search').value = '';
     renderCatalog();
     void load(true);
     $('command-search').focus();
   });
-  $('close-commands').addEventListener('click', () =>
-    $('commands-dialog').close(),
-  );
+  const closeCommands = () => {
+    $('commands-dialog').close();
+    $('parent-prompt').focus({preventScroll: true});
+  };
+  $('close-commands').addEventListener('click', closeCommands);
+  $('commands-dialog').addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeCommands();
+  });
   $('command-search').addEventListener('input', renderCatalog);
   $('open-session-settings').addEventListener('click', () => {
     $('session-settings-error').hidden = true;

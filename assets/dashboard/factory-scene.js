@@ -674,10 +674,16 @@ export function createFactoryScene(
   function master(g, fx) {
     const state = snapshot?.session?.status || 'idle';
     const active = state === 'running' || state === 'compacting';
-    const color = statusColor(state);
+    const activity = snapshot?.session?.activity || '';
+    const tools =
+      active &&
+      /using|tool|running (bash|read|write|edit|agent_)/i.test(activity);
+    const writing = active && !tools && /responding|writing/i.test(activity);
+    const thinking = active && !tools && !writing;
+    const color = tools ? C.amber : thinking ? C.cyan : statusColor(state);
     const t = active ? time : 0;
     const x = -6.25,
-      bob = active ? Math.sin(t * 2.5) * 0.045 : 0;
+      bob = active ? Math.sin(t * (writing ? 5 : 2.5)) * 0.09 : 0;
     const y = 0.4 + bob;
     g.cylinder([x, 0.38, 0], [2.25, 0.045, 1.5], [0.026, 0.055, 0.06]);
     // Two planted feet, visible knee joints and a segmented waist.
@@ -715,16 +721,29 @@ export function createFactoryScene(
     g.octagon([x - 0.53, y + 3.72, -0.48], [0.19, 0.16, 0.19], color, 0.95);
     for (const side of [-1, 1]) {
       const shoulder = [x, y + 1.94, side * 0.96];
-      const elbow = [
-        x + 0.46 + (active ? Math.sin(t * 2.2 + side) * 0.1 : 0),
-        y + 1.18,
-        side * 1.23,
-      ];
-      const hand = [
-        x + 1.23,
-        y + 0.98 + (active ? Math.sin(t * 3.5 + side) * 0.16 : 0),
-        side * 1.52,
-      ];
+      const stroke = Math.sin(
+        t * (writing ? 11 : tools ? 5 : 2.4) + side * 1.8,
+      );
+      const elbow =
+        thinking && side === 1
+          ? [x + 0.5, y + 1.85, 1.18]
+          : [x + 0.55 + (active ? stroke * 0.22 : 0), y + 1.2, side * 1.25];
+      const hand =
+        thinking && side === 1
+          ? [x + 0.95, y + 2.37 + stroke * 0.1, 0.52]
+          : [
+              x + 1.3 + (tools ? stroke * 0.45 : 0),
+              y +
+                0.98 +
+                (writing
+                  ? stroke * 0.3
+                  : tools
+                    ? Math.abs(stroke) * 0.45
+                    : active
+                      ? stroke * 0.12
+                      : 0),
+              side * (thinking ? 1.18 : 1.52),
+            ];
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
       g.octagon(elbow, [0.4, 0.36, 0.4], C.dark);
@@ -750,6 +769,46 @@ export function createFactoryScene(
       );
     if (active) {
       fx.ring([x, 0.44, 0], 2.12, 0.085, color, 0.08, 40);
+      // Distinct poses and signals follow the actual model/tool activity.
+      if (thinking) {
+        for (let i = 0; i < 3; i++) {
+          const angle = t * 1.8 + (i * TAU) / 3;
+          const pulse = 0.14 + (1 + Math.sin(t * 4 - i)) * 0.045;
+          g.octagon(
+            [
+              x + Math.cos(angle) * 1.05,
+              y + 3.55 + Math.sin(angle) * 0.16,
+              Math.sin(angle) * 1.05,
+            ],
+            [pulse, pulse, pulse],
+            C.cyan,
+            1,
+          );
+        }
+        g.ring([x, y + 3.5, 0], 1.08, 0.025, C.cyan, 0.7, 32, 0.72, t * 1.8);
+      } else if (writing) {
+        for (let row = 0; row < 5; row++) {
+          const length = 0.3 + ((t * 0.8 + row * 0.19) % 1) * 0.7;
+          g.box(
+            [x + 1.65, 1.75 + row * 0.14, 0],
+            [0.04, 0.035, length],
+            C.mint,
+            0.95,
+          );
+        }
+      } else if (tools) {
+        const strike = (t * 1.5) % 1;
+        for (let i = 0; i < 5; i++) {
+          const angle = (i * TAU) / 5;
+          const origin = [x + 1.4, 1.3, 1.5];
+          const tip = [
+            origin[0] + Math.cos(angle) * strike * 0.65,
+            origin[1] + Math.sin(angle) * strike * 0.5,
+            origin[2] + strike * 0.2,
+          ];
+          fx.rod(origin, tip, 0.028, C.amber, (1 - strike) * 0.8);
+        }
+      }
       // The command hologram is only live while the parent works.
       for (let i = 0; i < 3; i++)
         g.ring(
@@ -936,13 +995,15 @@ export function createFactoryScene(
     resize();
     const aspect = width / height;
     // Move back on narrow canvases so the entire factory remains inside frame.
-    const distance = 0.82 * Math.max(1, 1.6 / aspect);
+    const solo = units.length === 0;
+    const distance = (solo ? 0.44 : 0.82) * Math.max(1, 1.6 / aspect);
+    const target = solo ? [-5.6, 1.6, 0] : [-0.5, 0.6, 0];
     const eye = [
-      23 * distance + cameraOffset[0],
-      24 * distance + cameraOffset[1],
+      target[0] + 23 * distance + cameraOffset[0],
+      target[1] + 24 * distance + cameraOffset[1],
       30 * distance,
     ];
-    const matrix = cameraMatrix(eye, [-0.5, 0.6, 0], aspect);
+    const matrix = cameraMatrix(eye, target, aspect);
     const g = new Geometry(),
       fx = new Geometry();
     const positions = [{id: 'parent', p: master(g, fx), body: [-6.25, 2, 0]}];

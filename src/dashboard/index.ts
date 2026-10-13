@@ -13,12 +13,7 @@ import {
 } from '../desktop/launcher.ts';
 import {observeDashboardSession} from './observe.ts';
 import type {DashboardState} from './state.ts';
-import {
-  queuedPrompt,
-  sessionConfiguration,
-  compactionInstructions,
-  type QueuedPrompt,
-} from './hub.ts';
+import {sessionConfiguration, compactionInstructions} from './hub.ts';
 import {supportedThinkingLevels, type SessionFeatures} from './features.ts';
 
 interface FactoryConnection {
@@ -34,9 +29,7 @@ interface FactoryBinding {
   state: DashboardState;
   ctx: ExtensionContext;
   control: FactoryControl;
-  pending: QueuedPrompt[];
-  submitting: boolean;
-  validating: boolean;
+  submissions: number;
   stopping: boolean;
   maintaining: boolean;
   epoch: number;
@@ -73,123 +66,17 @@ export function registerFactory(
     if (
       current.maintaining ||
       current.stopping ||
-      current.submitting ||
-      current.pending.length ||
+      current.submissions ||
       !current.ctx.isIdle()
     )
-      throw new Error(
-        'Wait until this session is idle and its queue is empty.',
-      );
+      throw new Error('Wait until this session is idle.');
     current.maintaining = true;
     try {
       await action();
       ensureAttached(current);
     } finally {
       current.maintaining = false;
-      setImmediate(() => drain(current));
     }
-  };
-  const drain = (current: FactoryBinding) => {
-    if (
-      binding !== current ||
-      current.submitting ||
-      current.stopping ||
-      current.maintaining ||
-      !current.pending.length ||
-      !current.ctx.isIdle()
-    )
-      return;
-    const prompt = current.pending[0];
-    const epoch = current.epoch;
-    const commandName = prompt.text.startsWith('/')
-      ? prompt.text.split(/\s+/, 1)[0].slice(1)
-      : undefined;
-    const extensionCommand =
-      commandName !== undefined &&
-      pi
-        .getCommands()
-        .some(
-          command =>
-            command.name === commandName && command.source === 'extension',
-        );
-    let submitted = false;
-    current.submitting = true;
-    current.validating = true;
-    current.state.record('session', 'Starting a GUI task');
-    void (async () => {
-      let authError: string | undefined;
-      if (!extensionCommand) {
-        const model = current.ctx.model;
-        if (!model)
-          throw new Error(
-            'No model selected. Configure your Pi model before sending a task.',
-          );
-        const auth = await current.ctx.modelRegistry.getApiKeyAndHeaders(model);
-        if (!auth.ok) authError = auth.error;
-      }
-      current.validating = false;
-      if (
-        binding !== current ||
-        current.epoch !== epoch ||
-        !current.pending.some(item => item.id === prompt.id)
-      ) {
-        current.submitting = false;
-        setImmediate(() => drain(current));
-        return;
-      }
-      if (authError) throw new Error(authError);
-      if (!current.ctx.isIdle()) {
-        current.submitting = false;
-        current.state.record('session', 'GUI task waiting for the current run');
-        return;
-      }
-      cancelBeforeStart = false;
-      current.state.updateSession({
-        status: extensionCommand ? 'idle' : 'running',
-        activity: extensionCommand ? 'Running command' : 'Starting task',
-        error: undefined,
-      });
-      current.pending.splice(
-        current.pending.findIndex(item => item.id === prompt.id),
-        1,
-      );
-      submitted = true;
-      current.state.record('session', 'GUI task submitted');
-      pi.sendUserMessage(prompt.text, {
-        deliverAs: 'followUp',
-        expandPromptTemplates: true,
-      });
-      // Handled extension commands do not emit agent_settled. The attached SDK
-      // owns their execution after handoff; native desktop parents await them.
-      if (extensionCommand) {
-        current.submitting = false;
-        setImmediate(() => drain(current));
-      }
-    })().catch(error => {
-      current.submitting = false;
-      current.validating = false;
-      if (binding !== current) return;
-      if (
-        current.epoch !== epoch ||
-        (!submitted && !current.pending.some(item => item.id === prompt.id))
-      ) {
-        setImmediate(() => drain(current));
-        return;
-      }
-      if (!submitted)
-        current.pending.splice(
-          current.pending.findIndex(item => item.id === prompt.id),
-          1,
-        );
-      const message = error instanceof Error ? error.message : String(error);
-      current.state.updateSession({
-        status: 'idle',
-        activity: `Error: ${message.slice(0, 1000)}`,
-        error: message.slice(0, 4000),
-      });
-      current.state.record('error', message);
-      setImmediate(() => drain(current));
-    });
   };
   const open = async (show: boolean) => {
     const current = binding;
@@ -206,9 +93,7 @@ export function registerFactory(
     const current: FactoryBinding = {
       state,
       ctx,
-      pending: [],
-      submitting: false,
-      validating: false,
+      submissions: 0,
       stopping: false,
       maintaining: false,
       epoch: 0,
@@ -318,25 +203,11 @@ export function registerFactory(
             'Reload attached session resources with /reload in its terminal.',
           );
         },
-        get queuedPrompts() {
-          return structuredClone(current.pending);
-        },
-        prompt(prompt: string) {
-          if (binding !== current)
-            throw new Error(
-              'This Pi session is no longer attached to the factory.',
-            );
-          if (current.maintaining)
+        async prompt(prompt: string) {
+          ensureAttached(current);
+          if (current.maintaining || current.stopping)
             throw new Error(
               'This session is updating. Try again when it is idle.',
-            );
-          if (current.stopping)
-            throw new Error(
-              'This Pi session is stopping. Try again when it is idle.',
-            );
-          if (current.pending.length >= 32)
-            throw new Error(
-              'This Pi session already has 32 queued GUI prompts.',
             );
           if (
             typeof prompt !== 'string' ||
@@ -344,31 +215,52 @@ export function registerFactory(
             prompt.length > 64000
           )
             throw new Error('Prompt must contain 1 to 64000 characters.');
-          current.pending.push(queuedPrompt(prompt.trim()));
-          state.record('message', `GUI prompt queued: ${prompt}`);
-          drain(current);
-        },
-        removeQueuedPrompt(promptId: string) {
-          if (binding !== current)
-            throw new Error(
-              'This Pi session is no longer attached to the factory.',
-            );
-          const index = current.pending.findIndex(item => item.id === promptId);
-          if (index < 0) throw new Error('This prompt is no longer queued.');
-          current.pending.splice(index, 1);
-          state.record('session', 'Queued GUI prompt removed');
-          drain(current);
+          const epoch = current.epoch;
+          current.submissions++;
+          try {
+            const commandName = prompt.startsWith('/')
+              ? prompt.split(/\s+/, 1)[0].slice(1)
+              : undefined;
+            const extensionCommand =
+              commandName !== undefined &&
+              pi
+                .getCommands()
+                .some(
+                  command =>
+                    command.name === commandName &&
+                    command.source === 'extension',
+                );
+            if (!extensionCommand) {
+              if (!ctx.model)
+                throw new Error(
+                  'No model selected. Configure your Pi model before sending a task.',
+                );
+              const auth = await ctx.modelRegistry.getApiKeyAndHeaders(
+                ctx.model,
+              );
+              if (!auth.ok) throw new Error(auth.error);
+            }
+            ensureAttached(current);
+            if (current.epoch !== epoch || current.stopping) return;
+            cancelBeforeStart = false;
+            pi.sendUserMessage(prompt.trim(), {
+              deliverAs: 'steer',
+              expandPromptTemplates: true,
+            });
+            state.record('message', prompt.trim());
+          } finally {
+            current.submissions--;
+          }
         },
         async abort() {
           if (binding !== current)
             throw new Error(
               'This Pi session is no longer attached to the factory.',
             );
-          current.pending.length = 0;
           current.epoch++;
           current.stopping = true;
           cancelBeforeStart = true;
-          state.record('session', 'Stopping; queued GUI prompts cleared');
+          state.record('session', 'Stopping');
           const manager = cancelWorkers(ctx);
           ctx.abort();
           try {
@@ -429,23 +321,11 @@ export function registerFactory(
       ctx.abort();
     }
   });
-  pi.on('agent_settled', (_event, ctx) => {
-    const current = binding;
-    if (
-      !current ||
-      current.ctx.sessionManager.getSessionId() !==
-        ctx.sessionManager.getSessionId()
-    )
-      return;
-    if (!current.validating) current.submitting = false;
-    setImmediate(() => drain(current));
-  });
   pi.on('session_shutdown', event => {
     generation++;
     const current = binding;
     binding = undefined;
     if (current) {
-      current.pending.length = 0;
       current.epoch++;
     }
     cancelBeforeStart = false;

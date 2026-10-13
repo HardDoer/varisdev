@@ -1,0 +1,5 @@
+# Match Prettier's line endings in Git package installs on every platform.
+*.ts text eol=lf
+*.js text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf

@@ -4,12 +4,12 @@ import {
   type ExtensionContext,
   type FileEntry,
 } from '@earendil-works/pi-coding-agent';
-import {execFile, spawn} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {closeSync, mkdirSync, openSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {promisify} from 'node:util';
+import {buildDesktop} from './build.ts';
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -54,15 +54,7 @@ export async function launchDesktop(
   startup: DesktopStartup,
   signal: AbortSignal,
 ): Promise<void> {
-  await promisify(execFile)(
-    process.execPath,
-    [
-      require.resolve('typescript/bin/tsc'),
-      '--project',
-      join(root, 'tsconfig.desktop.json'),
-    ],
-    {cwd: root, maxBuffer: 1024 * 1024, signal},
-  );
+  await buildDesktop(signal);
   signal.throwIfAborted();
   const env = {...process.env, PI_CODING_AGENT_DIR: startup.agentDir};
   delete (env as NodeJS.ProcessEnv).ELECTRON_RUN_AS_NODE;

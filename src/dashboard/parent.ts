@@ -219,28 +219,28 @@ export async function createDashboardParent(
   }
   let closed = false;
   let closing: Promise<void> | undefined;
-  let activePrompt:
-    | {
-        cancelled: boolean;
-        operation: Promise<void>;
-        trackExtensionOperations: boolean;
-        extensionOperations: Promise<void>[];
-      }
-    | undefined;
-  // SDK extension messaging starts an async turn without returning its promise
-  // to the command handler. Keep that turn inside the desktop queue operation.
+  interface PromptRun {
+    cancelled: boolean;
+    operation: Promise<void>;
+    trackExtensionOperations: boolean;
+    extensionOperations: Promise<void>[];
+  }
+  const activePrompts = new Set<PromptRun>();
+  let extensionPrompt: PromptRun | undefined;
+  let maintaining = false;
+  // Extension commands can start model turns without returning their promises.
   const sendUserMessage = session.sendUserMessage.bind(session);
   session.sendUserMessage = (...args) => {
     const operation = sendUserMessage(...args);
-    if (activePrompt?.trackExtensionOperations)
-      activePrompt.extensionOperations.push(operation);
+    if (extensionPrompt?.trackExtensionOperations)
+      extensionPrompt.extensionOperations.push(operation);
     return operation;
   };
   const sendCustomMessage = session.sendCustomMessage.bind(session);
   session.sendCustomMessage = (message, options) => {
     const operation = sendCustomMessage(message, options);
-    if (options?.triggerTurn && activePrompt?.trackExtensionOperations)
-      activePrompt.extensionOperations.push(operation);
+    if (options?.triggerTurn && extensionPrompt?.trackExtensionOperations)
+      extensionPrompt.extensionOperations.push(operation);
     return operation;
   };
   const cancelWorkers = () => {
@@ -258,20 +258,20 @@ export async function createDashboardParent(
     return session.abort();
   };
   const abort = async () => {
-    const running = activePrompt;
-    if (running) running.cancelled = true;
+    const running = [...activePrompts];
+    for (const prompt of running) prompt.cancelled = true;
     try {
       await stop();
     } finally {
       // SDK preflight can still be waiting for credentials before agent_start.
-      await running?.operation.catch(() => {});
+      await Promise.allSettled(running.map(prompt => prompt.operation));
       // A tool may have spawned a worker just before the parent's abort settled.
       cancelWorkers();
     }
   };
   const requireIdle = () => {
     if (closed) throw new Error('This parent session has closed.');
-    if (activePrompt || session.isStreaming || session.isCompacting)
+    if (activePrompts.size || session.isStreaming || session.isCompacting)
       throw new Error('This parent session is already working.');
   };
   const configure = async (options: SessionConfiguration) => {
@@ -359,13 +359,15 @@ export async function createDashboardParent(
       trackExtensionOperations: false,
       extensionOperations: [] as Promise<void>[],
     };
-    activePrompt = running;
+    maintaining = true;
+    activePrompts.add(running);
     running.operation = Promise.resolve()
       .then(async () => {
         if (!running.cancelled) await action();
       })
       .finally(() => {
-        if (activePrompt === running) activePrompt = undefined;
+        activePrompts.delete(running);
+        maintaining = false;
       });
     await running.operation;
   };
@@ -377,24 +379,25 @@ export async function createDashboardParent(
     configure: options => idleAction(() => configure(options)),
     compact: instructions => idleAction(() => session.compact(instructions)),
     reload: () => idleAction(reload),
-    async prompt(text, delivery, images) {
-      requireIdle();
-      const running = {
+    async prompt(text, images) {
+      if (closed) throw new Error('This parent session has closed.');
+      if (maintaining || session.isCompacting)
+        throw new Error('This session is updating. Try again when it is idle.');
+      const steering = activePrompts.size > 0;
+      const running: PromptRun = {
         cancelled: false,
         operation: Promise.resolve(),
         trackExtensionOperations: false,
-        extensionOperations: [] as Promise<void>[],
+        extensionOperations: [],
       };
-      activePrompt = running;
+      activePrompts.add(running);
       running.operation = Promise.resolve()
         .then(async () => {
-          if (running.cancelled || !delivery.isQueued()) return;
+          if (running.cancelled) return;
           let aborting: Promise<void> | undefined;
-          let submitted = false;
           const unsubscribe = session.subscribe(event => {
-            if (running.cancelled && event.type === 'agent_start') {
+            if (running.cancelled && event.type === 'agent_start')
               aborting = stop().catch(() => {});
-            }
           });
           try {
             const commandMatch = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
@@ -408,46 +411,49 @@ export async function createDashboardParent(
             const local =
               name && desktopCommands.some(command => command.name === name);
             const extension = name && session.extensionRunner.getCommand(name);
-            // The SDK acknowledges extension commands after their handler returns.
-            // Remove their queue entry immediately before dispatch so it cannot be
-            // deleted while the command is already executing.
-            if (local || extension) {
-              if (running.cancelled || !delivery.isQueued()) return;
-              delivery.submitted();
-              submitted = true;
-            }
             if (local) {
+              if (steering)
+                throw new Error(
+                  'Wait until this session is idle to run this command.',
+                );
               await localCommand(name!, args);
               return;
             }
-            running.trackExtensionOperations = !!extension;
-            await session.prompt(
-              extension ? `/${name}${args ? ` ${args}` : ''}` : text,
-              {
-                expandPromptTemplates: true,
-                images,
-                preflightResult: accepted => {
-                  if (!accepted || submitted) return;
-                  if (running.cancelled || !delivery.isQueued())
-                    throw new Error('This prompt is no longer queued.');
-                  delivery.submitted();
-                  submitted = true;
+            if (extension) {
+              if (extensionPrompt)
+                throw new Error('An extension command is already running.');
+              extensionPrompt = running;
+              running.trackExtensionOperations = true;
+            }
+            if (steering && !session.isStreaming && !extension) {
+              // A prompt can arrive while the first request is still in SDK preflight.
+              // Put it directly into Pi's steering queue instead of starting a second run.
+              await session.steer(text, images);
+            } else {
+              await session.prompt(
+                extension ? '/' + name + (args ? ' ' + args : '') : text,
+                {
+                  expandPromptTemplates: true,
+                  streamingBehavior: 'steer',
+                  images,
+                  preflightResult: accepted => {
+                    if (accepted && running.cancelled)
+                      throw new Error('Prompt cancelled.');
+                  },
                 },
-              },
-            );
+              );
+            }
             for (const operation of running.extensionOperations)
               await operation;
           } catch (error) {
-            if (!running.cancelled && (submitted || delivery.isQueued()))
-              throw error;
+            if (!running.cancelled) throw error;
           } finally {
             unsubscribe();
             await aborting;
+            if (extensionPrompt === running) extensionPrompt = undefined;
           }
         })
-        .finally(() => {
-          if (activePrompt === running) activePrompt = undefined;
-        });
+        .finally(() => activePrompts.delete(running));
       await running.operation;
     },
     abort,

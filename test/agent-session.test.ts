@@ -471,7 +471,7 @@ void test(
 );
 
 void test(
-  'SDK workers discover peers, queue messages, resume conversations, and store parent inbox messages silently',
+  'SDK workers discover peers, steer active tool loops, resume conversations, and store parent inbox messages silently',
   {timeout: 20000},
   async t => {
     const directory = await mkdtemp(
@@ -575,12 +575,7 @@ void test(
               .map(tool => tool.function.name)
               .filter(tool => tool.startsWith('agent_'))
               .sort(),
-            [
-              'agent_list',
-              'agent_message_remove',
-              'agent_messages',
-              'agent_send',
-            ],
+            ['agent_list', 'agent_send'],
           );
           assert.ok(input.tools.some(tool => tool.function.name === 'read'));
           const prompt = JSON.stringify(
@@ -599,9 +594,9 @@ void test(
           reply(response, {name: 'agent_list', arguments: {view: 'all'}});
         } else if (name === 'Receiver' && step === 2) {
           assert.equal(discover(input, receiver).id, sender.id);
-          // Keep the recipient's initial turn open until the peer tool has queued work.
+          // Hold an unfinished tool loop until the peer sends steering.
           await peerQueued.promise;
-          reply(response, 'Receiver initial result.');
+          reply(response, {name: 'agent_list', arguments: {view: 'all'}});
         } else if (name === 'Sender' && step === 2) {
           const peer = discover(input, sender);
           reply(response, {
@@ -612,7 +607,6 @@ void test(
           const result = lastToolResult<{agents: AgentRecord[]}>(input);
           assert.equal(result.agents[0].id, receiver.id);
           assert.equal(result.agents[0].status, 'running');
-          assert.equal(result.agents[0].pendingMessages, 1);
           peerQueued.resolve();
           reply(response, 'Sender queued the peer finding.');
         } else if (name === 'Receiver' && step === 3) {
@@ -621,10 +615,7 @@ void test(
               ?.content,
             queuedMessage,
           );
-          assert.match(
-            JSON.stringify(input.messages),
-            /Receiver initial result/,
-          );
+          assert.match(JSON.stringify(input.messages), /Receiver initial task/);
           reply(response, {
             name: 'agent_send',
             arguments: {id: 'parent', message: parentMessage},
@@ -666,10 +657,7 @@ void test(
               ?.content,
             resumedMessage,
           );
-          assert.match(
-            JSON.stringify(input.messages),
-            /Receiver initial result/,
-          );
+          assert.match(JSON.stringify(input.messages), /Receiver initial task/);
           assert.match(
             JSON.stringify(input.messages),
             /Receiver handled the queued finding/,
@@ -860,7 +848,7 @@ void test(
     assert.match(JSON.stringify(userMessages[0]), /Receiver initial task/);
     assertSender(userMessages[1], queuedMessage);
     assertSender(userMessages[2], resumedMessage);
-    assert.match(transcript, /Receiver initial result/);
+    assert.match(transcript, /Receiver initial task/);
     assert.match(transcript, /Receiver handled the queued finding/);
     assert.match(transcript, /Received the queued peer finding/);
     assert.match(transcript, /Receiver handled the second finding/);
@@ -1019,7 +1007,7 @@ void test(
     const a = spawn('worker-a');
     await manager.wait([a.id], {timeoutMs: 10000});
     assert.equal(manager.get(a.id).usage?.totalTokens, 110);
-    manager.send(a.id, 'Follow up using your history.');
+    await manager.send(a.id, 'Follow up using your history.');
     await manager.wait([a.id], {timeoutMs: 10000});
     const aUsage = manager.get(a.id).usage!;
     assert.equal(aUsage.calls.length, 2);

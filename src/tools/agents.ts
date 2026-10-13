@@ -9,8 +9,6 @@ import {
   type AgentOrchestrator,
   isAgentFinished,
   type AgentRecord,
-  type QueuedAgentMessage,
-  type AgentMessageChange,
   type AgentMessageSender,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
@@ -34,21 +32,6 @@ const defaultModel = 'openai-codex/gpt-5.6-sol';
 const idSchema = Type.String({
   description: 'Agent ID returned by agent_spawn.',
 });
-const messageIdsSchema = Type.Array(Type.String({minLength: 1}), {
-  minItems: 1,
-  maxItems: 32,
-  uniqueItems: true,
-  description:
-    'Message IDs from agent_messages or agent_send. Every selected message must still be pending; otherwise the entire edit is rejected.',
-});
-const referenceSchema = Type.Optional(
-  Type.String({
-    minLength: 1,
-    maxLength: 1000,
-    description:
-      'Task or artifact reference, such as an issue ID or file path.',
-  }),
-);
 const spawnSchema = Type.Object({
   name: Type.String({
     minLength: 1,
@@ -99,7 +82,7 @@ const spawnSchema = Type.Object({
   autoCleanup: Type.Optional(
     Type.Boolean({
       description:
-        'Dispose the worker session after all queued work finishes, including failure or cancellation. Results stay available, but a finished agent cannot resume. Defaults to false.',
+        'Dispose the worker session after its work finishes, including failure or cancellation. Results stay available, but a finished agent cannot resume. Defaults to false.',
     }),
   ),
 });
@@ -161,7 +144,6 @@ function agentListResult(
     name: record.name,
     status: record.status,
     activity: record.activity,
-    pendingMessages: record.pendingMessages,
     finishedAt: record.finishedAt,
   }));
   return {
@@ -196,7 +178,6 @@ function toolResult(
     cwd: record.cwd,
     model: record.model,
     autoCleanup: record.autoCleanup,
-    pendingMessages: record.pendingMessages,
     createdAt: record.createdAt,
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
@@ -263,99 +244,9 @@ function registerAgentListTool(
   });
 }
 
-function messagePreview(message: QueuedAgentMessage | ParentMessage) {
+function messagePreview(message: ParentMessage) {
   const {message: text, ...metadata} = message;
   return {...metadata, length: text.length, preview: text.slice(0, 500)};
-}
-
-function messageChangeResult(change: AgentMessageChange) {
-  return toolResult([change.agent], false, {
-    outcome: change.outcome,
-    message: change.message && messagePreview(change.message),
-    affected: change.affected.map(messagePreview),
-  });
-}
-
-function registerAgentMessageTools(
-  pi: ExtensionAPI,
-  getManager: GetManager,
-  selfId?: string,
-): void {
-  pi.registerTool({
-    name: 'agent_messages',
-    label: 'Inspect agent messages',
-    description:
-      'Inspect an agent’s queued instructions with IDs, sender, timestamps, reference, and 500-character previews. Defaults to pending messages in delivery order; history contains delivered, removed, superseded, and discarded entries. Pass messageId to retrieve one full message and its current state.',
-    parameters: Type.Object({
-      id: idSchema,
-      messageId: Type.Optional(
-        Type.String({
-          minLength: 1,
-          description:
-            'Retrieve this message in full. Takes precedence over list options.',
-        }),
-      ),
-      view: Type.Optional(
-        Type.Union([
-          Type.Literal('pending'),
-          Type.Literal('history'),
-          Type.Literal('all'),
-        ]),
-      ),
-      offset: Type.Optional(
-        Type.Integer({
-          minimum: 0,
-          description:
-            'List offset. Defaults to 0; the queue may change between calls.',
-        }),
-      ),
-      limit: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: 20,
-          description: 'Maximum previews. Defaults to 10.',
-        }),
-      ),
-    }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const manager = getManager(ctx);
-      const listing = params.messageId
-        ? undefined
-        : manager.listMessages(params.id, params);
-      const data = listing
-        ? {
-            id: params.id,
-            ...listing,
-            messages: listing.messages.map(messagePreview),
-          }
-        : {
-            id: params.id,
-            message: manager.getMessage(params.id, params.messageId!),
-          };
-      return {
-        content: [{type: 'text', text: JSON.stringify(data, null, 2)}],
-        details: data,
-      };
-    },
-  });
-  pi.registerTool({
-    name: 'agent_message_remove',
-    label: 'Remove pending agent messages',
-    description:
-      'Remove selected pending instructions without interrupting the active task or clearing the agent conversation. The edit is atomic: if any entry has already been delivered or removed, returns not_pending with current states and changes nothing. Delivered instructions may already have started work.',
-    executionMode: 'sequential',
-    parameters: Type.Object({id: idSchema, messageIds: messageIdsSchema}),
-    async execute(_id, params, signal, _onUpdate, ctx) {
-      signal?.throwIfAborted();
-      const current = getManager(ctx);
-      if (selfId && current.get(selfId).status !== 'running') {
-        throw new Error('Only running agents can remove messages.');
-      }
-      return messageChangeResult(
-        current.removeMessages(params.id, params.messageIds),
-      );
-    },
-  });
 }
 
 function registerAgentSendTool(
@@ -367,12 +258,9 @@ function registerAgentSendTool(
     name: 'agent_send',
     label: 'Send to agent',
     description: sender
-      ? 'Send a message to another agent in this parent session, or use id="parent" to store a message in the parent inbox. Parent messages never trigger turns; the parent reads them with agent_inbox. Your name and ID are attached automatically. Peer messages queue after the current task and resume completed conversations. Failed or cancelled agents cannot receive messages.'
-      : 'Queue follow-up instructions for an agent after its current task. A completed agent resumes with its existing conversation. Failed or cancelled agents must be replaced with agent_spawn.',
+      ? 'Send a message to another agent in this parent session, or use id="parent" to store a message in the parent inbox. Parent messages never trigger turns; the parent reads them with agent_inbox. Your name and ID are attached automatically. Peer messages steer active work at the next turn boundary and resume completed conversations. Failed or cancelled agents cannot receive messages.'
+      : 'Steer an active agent at the next turn boundary. A completed agent resumes with its existing conversation. Failed or cancelled agents must be replaced with agent_spawn.',
     executionMode: 'sequential',
-    promptGuidelines: [
-      'Use agent_messages to inspect stale queued instructions. To replace or consolidate them, pass their IDs in supersedes. The replacement occupies the earliest selected position and preserves unrelated messages. Supersession works at the queue limit; if any selected message is no longer pending, nothing is queued or replaced. Work already delivered is never undone.',
-    ],
     parameters: Type.Object({
       id: sender
         ? Type.String({
@@ -380,8 +268,6 @@ function registerAgentSendTool(
           })
         : idSchema,
       message: Type.String({minLength: 1, maxLength: 64000}),
-      reference: referenceSchema,
-      supersedes: Type.Optional(messageIdsSchema),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       signal?.throwIfAborted();
@@ -403,14 +289,6 @@ function registerAgentSendTool(
         const attributed = {from: {id: from.id, name: from.name}, message};
         identity = {kind: 'agent', id: from.id, name: from.name};
         if (params.id === 'parent') {
-          if (
-            params.supersedes !== undefined ||
-            params.reference !== undefined
-          ) {
-            throw new Error(
-              'Queue references and supersession require an agent recipient.',
-            );
-          }
           const stored = sender.sendToParent(attributed);
           const data = {
             recipient: 'parent',
@@ -423,12 +301,9 @@ function registerAgentSendTool(
           };
         }
       }
-      return messageChangeResult(
-        current.send(params.id, message, {
-          sender: identity,
-          reference: params.reference,
-          supersedes: params.supersedes,
-        }),
+      return toolResult(
+        [await current.send(params.id, message, identity)],
+        false,
       );
     },
   });
@@ -514,10 +389,8 @@ export function registerAgentTools(
                 id,
                 sendToParent: message => team.storeMessage(message),
               });
-              registerAgentMessageTools(workerPi, getWorkerManager, id);
             },
           }),
-        {kind: 'parent', id: ctx.sessionManager.getSessionId()},
       );
       return toolResult([record], false);
     },
@@ -571,7 +444,6 @@ export function registerAgentTools(
     },
   });
   registerAgentSendTool(pi, getManager);
-  registerAgentMessageTools(pi, getManager);
   pi.registerTool({
     name: 'agent_wait',
     label: 'Wait for agents',
@@ -594,7 +466,7 @@ export function registerAgentTools(
     name: 'agent_cancel',
     label: 'Cancel agent',
     description:
-      'Cancel a queued or running agent and discard its pending messages. Running agents report cancelling until their tools stop. Finished agents are returned as they are.',
+      'Cancel a queued or running agent and clear its steering messages. Running agents report cancelling until their tools stop. Finished agents are returned as they are.',
     parameters: Type.Object({id: idSchema}),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return toolResult([getManager(ctx).cancel(params.id)], false);

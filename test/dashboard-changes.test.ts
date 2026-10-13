@@ -152,6 +152,9 @@ void test('worker hooks attribute changes and team snapshots retain bounded copi
     await options.agentToolsExtension(worker.pi);
     ready();
     return {
+      async steer() {
+        return true;
+      },
       async run() {
         return 'done';
       },

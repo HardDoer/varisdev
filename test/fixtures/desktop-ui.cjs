@@ -8,10 +8,6 @@ const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
 const report = {cases: []};
 const at = '2026-01-01T12:00:00.000Z';
-const longPrompt =
-  'Review every listed file and explain each change.\n' +
-  'Keep the complete queued instruction available for reading. '.repeat(12) +
-  '\nFINAL QUEUE LINE: preserve this exact ending.';
 let hub;
 let window;
 let calls = [];
@@ -72,14 +68,6 @@ function session(id, name) {
       updatedAt: at,
       owned: true,
       controllable: true,
-      pendingPrompts: 1,
-      queuedPrompts: [
-        {
-          id: `${id}-queued`,
-          text: id === 'alpha' ? longPrompt : 'Beta queue only',
-          queuedAt: at,
-        },
-      ],
     },
     agents: [],
     totalAgents: 0,
@@ -129,28 +117,9 @@ function reset() {
 
 ipcMain.handle('fixture:state', () => hub);
 ipcMain.on('fixture:error', (_event, error) => rendererErrors.push(error));
-ipcMain.handle('fixture:remove', (_event, sessionId, promptId) => {
-  calls.push({method: 'removeQueuedPrompt', sessionId, promptId});
-  const target = hub.sessions.find(
-    item => item.session.id === sessionId,
-  ).session;
-  target.queuedPrompts = target.queuedPrompts.filter(
-    item => item.id !== promptId,
-  );
-  target.pendingPrompts = target.queuedPrompts.length;
-  window.webContents.send('fixture:snapshot', hub);
-});
 for (const method of ['prompt', 'abort', 'workspace']) {
   ipcMain.handle(`fixture:${method}`, (_event, sessionId, request) => {
     calls.push({method, sessionId, request});
-    if (method === 'abort') {
-      const target = hub.sessions.find(
-        item => item.session.id === sessionId,
-      ).session;
-      target.queuedPrompts = [];
-      target.pendingPrompts = 0;
-      window.webContents.send('fixture:snapshot', hub);
-    }
     return method === 'workspace'
       ? {cwd: directory, files: [], diff: '', truncated: false}
       : undefined;
@@ -452,8 +421,6 @@ async function main() {
         status: 'idle',
         activity: 'Command failed',
         error: 'Permission denied: config.txt',
-        pendingPrompts: 0,
-        queuedPrompts: [],
       });
       await publish();
       assert.equal((await evaluate(activity)).visible, false);
@@ -534,152 +501,165 @@ async function main() {
     },
   );
 
-  await run(
-    'queue displays complete text and removes the selected prompt by ID',
-    async () => {
-      hub.sessions[0].session.queuedPrompts.push({
-        id: 'alpha-second',
-        text: 'Keep this next prompt',
-        queuedAt: at,
-      });
-      hub.sessions[0].session.pendingPrompts = 2;
-      await publish();
-      const queue = await evaluate(() => {
-        const section = document.getElementById('queued-prompts');
-        const rows = [...document.querySelectorAll('#prompt-queue > li')];
-        return {
-          visible: !section.hidden && section.getClientRects().length > 0,
-          texts: rows.map(item => item.textContent),
-          buttons: rows.map(item =>
-            [...item.querySelectorAll('button')].some(button =>
-              /remove/i.test(button.textContent),
-            ),
-          ),
-        };
-      });
-      assert.equal(queue.visible, true);
-      assert.equal(queue.texts.length, 2);
-      assert.ok(
-        queue.texts[0].includes(longPrompt),
-        'Queue must contain the entire multiline prompt',
-      );
-      assert.deepEqual(queue.buttons, [true, true]);
-      assert.equal(
-        await evaluate(() => {
-          const queue = document.getElementById('prompt-queue');
-          const content = queue.querySelector('.queued-prompt-text');
-          queue.scrollTop = queue.scrollHeight;
-          const range = document.createRange();
-          range.setStart(
-            content.firstChild,
-            content.textContent.indexOf('FINAL QUEUE LINE'),
-          );
-          range.setEnd(content.firstChild, content.textContent.length);
-          const ending = range.getBoundingClientRect();
-          const visible = queue.getBoundingClientRect();
-          return ending.top >= visible.top && ending.bottom <= visible.bottom;
-        }),
-        true,
-        'The final line must be readable by scrolling the queue',
-      );
-      await evaluate(() => {
-        const row = document.querySelectorAll('#prompt-queue > li')[1];
-        row.scrollIntoView({block: 'nearest'});
-        [...row.querySelectorAll('button')]
-          .find(item => /remove/i.test(item.textContent))
-          .click();
-      });
-      await until(
-        () => document.querySelectorAll('#prompt-queue > li').length === 1,
-        'Removed prompt remained in queue',
-      );
-      assert.deepEqual(calls, [
-        {
-          method: 'removeQueuedPrompt',
-          sessionId: 'alpha',
-          promptId: 'alpha-second',
+  await run('live activity events disclose linked details', async () => {
+    hub.sessions[0].changes = [
+      {
+        id: 'change-1',
+        unitId: 'parent',
+        unitName: 'Alpha factory',
+        path: 'src/example.js',
+        tool: 'edit',
+        summary: 'Updated the example',
+        diff: 'diff --git a/src/example.js b/src/example.js\n+const value = 1;\n',
+        at,
+      },
+    ];
+    hub.sessions[0].events = [
+      {
+        id: 'event-tool-change',
+        sourceId: 'parent',
+        sourceName: 'Alpha factory',
+        kind: 'tool',
+        message: 'Ran a command',
+        conversationId: 'alpha-tool',
+        details: {},
+        at,
+      },
+      {
+        id: 'event-change',
+        sourceId: 'parent',
+        sourceName: 'Alpha factory',
+        kind: 'tool',
+        message: 'Updated the example: src/example.js',
+        details: {
+          File: 'src/example.js',
+          Tool: 'edit',
+          Diff: hub.sessions[0].changes[0].diff,
         },
-      ]);
-      assert.ok(
-        (
-          await evaluate(
-            () => document.getElementById('prompt-queue').textContent,
-          )
-        ).includes(longPrompt),
-        'Removing the second prompt must retain the first prompt',
-      );
-      await evaluate(() =>
-        document.querySelector('#prompt-queue > li button').click(),
-      );
-      await until(
-        () => document.getElementById('queued-prompts').hidden,
-        'Empty queue must disappear',
-      );
-      assert.deepEqual(calls[1], {
-        method: 'removeQueuedPrompt',
-        sessionId: 'alpha',
-        promptId: 'alpha-queued',
-      });
-      assert.equal(hub.sessions[0].session.pendingPrompts, 0);
-      assert.equal(hub.sessions[1].session.queuedPrompts.length, 1);
-    },
-  );
+        at,
+      },
+    ];
+    hub.sessions[0].agents = [
+      {
+        id: 'worker-1',
+        name: 'Fixture worker',
+        task: 'Inspect the fixture project',
+        cwd: directory,
+        status: 'running',
+        createdAt: at,
+        startedAt: at,
+        model: 'fixture/worker',
+        activity: 'Reading src/example.js',
+        output: 'Found the example value',
+        autoCleanup: false,
+        taskTruncated: false,
+        outputTruncated: false,
+      },
+    ];
+    hub.sessions[0].totalAgents = 1;
+    hub.sessions[0].events.push({
+      id: 'event-worker',
+      sourceId: 'worker-1',
+      sourceName: 'Fixture worker',
+      kind: 'activity',
+      message: 'Worker inspected the file',
+      at,
+    });
+    await publish();
+    await evaluate(() => document.getElementById('tab-feed').click());
+    await settle();
+    const parentDetail = await evaluate(() => {
+      const event = document.querySelector('#live-feed .feed-event');
+      event.querySelector('summary').click();
+      return event.textContent;
+    });
+    assert.match(parentDetail, /printf "first line/);
+    assert.match(parentDetail, /first line/);
+    const changeDetail = await evaluate(() => {
+      const event = document.querySelectorAll('#live-feed .feed-event')[1];
+      event.querySelector('summary').click();
+      return event.textContent;
+    });
+    assert.match(changeDetail, /src\/example\.js/);
+    assert.match(changeDetail, /const value = 1/);
+    await evaluate(() =>
+      [...document.querySelectorAll('#active-workers button')]
+        .find(item => item.textContent.includes('Fixture worker'))
+        .click(),
+    );
+    await settle();
+    const workerDetail = await evaluate(() => {
+      const event = document.querySelector('#live-feed .feed-event');
+      event.querySelector('summary').click();
+      return event.textContent;
+    });
+    assert.match(workerDetail, /Inspect the fixture project/);
+    assert.match(workerDetail, /Reading src\/example\.js/);
+    assert.match(workerDetail, /Found the example value/);
+  });
 
-  await run(
-    'switching parents restores each draft, cursor and queue',
-    async () => {
-      await evaluate(() => {
-        const editor = document.getElementById('parent-prompt');
-        editor.value = 'Alpha unsent\nsecond line';
-        editor.dispatchEvent(new Event('input', {bubbles: true}));
-        editor.setSelectionRange(3, 9);
-        [...document.querySelectorAll('#parents button')]
-          .find(item => item.textContent.includes('Beta factory'))
-          .click();
-      });
-      await settle();
-      const beta = await evaluate(() => ({
-        draft: document.getElementById('parent-prompt').value,
-        queue: document.getElementById('prompt-queue').textContent,
-      }));
-      assert.equal(beta.draft, '');
-      assert.match(beta.queue, /Beta queue only/);
-      assert.ok(!beta.queue.includes(longPrompt));
-      await evaluate(() => {
-        const editor = document.getElementById('parent-prompt');
-        editor.value = 'Beta unsent';
-        editor.dispatchEvent(new Event('input', {bubbles: true}));
-        [...document.querySelectorAll('#parents button')]
-          .find(item => item.textContent.includes('Alpha factory'))
-          .click();
-      });
-      await settle();
-      const alpha = await evaluate(() => {
-        const editor = document.getElementById('parent-prompt');
-        return {
-          draft: editor.value,
-          start: editor.selectionStart,
-          end: editor.selectionEnd,
-          queue: document.getElementById('prompt-queue').textContent,
-        };
-      });
-      assert.equal(alpha.draft, 'Alpha unsent\nsecond line');
-      assert.equal(alpha.start, 3);
-      assert.equal(alpha.end, 9);
-      assert.ok(alpha.queue.includes(longPrompt));
-      assert.ok(!alpha.queue.includes('Beta queue only'));
-      await evaluate(() =>
-        [...document.querySelectorAll('#parents button')]
-          .find(item => item.textContent.includes('Beta factory'))
-          .click(),
+  await run('switching parents restores each draft and cursor', async () => {
+    await evaluate(() => {
+      const editor = document.getElementById('parent-prompt');
+      editor.value = 'Alpha unsent\nsecond line';
+      editor.dispatchEvent(new Event('input', {bubbles: true}));
+      editor.setSelectionRange(3, 9);
+      [...document.querySelectorAll('#parents button')]
+        .find(item => item.textContent.includes('Beta factory'))
+        .click();
+    });
+    await settle();
+    const beta = await evaluate(
+      () => document.getElementById('parent-prompt').value,
+    );
+    assert.equal(beta, '');
+    await evaluate(() => {
+      const editor = document.getElementById('parent-prompt');
+      editor.value = 'Beta unsent';
+      editor.dispatchEvent(new Event('input', {bubbles: true}));
+      [...document.querySelectorAll('#parents button')]
+        .find(item => item.textContent.includes('Alpha factory'))
+        .click();
+    });
+    await settle();
+    const alpha = await evaluate(() => {
+      const editor = document.getElementById('parent-prompt');
+      const before = editor.getBoundingClientRect().height;
+      const handle = document.getElementById('parent-prompt-resize');
+      handle.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'ArrowDown',
+          bubbles: true,
+          cancelable: true,
+        }),
       );
-      await settle();
-      assert.equal(
-        await evaluate(() => document.getElementById('parent-prompt').value),
-        'Beta unsent',
-      );
-    },
-  );
+      return {
+        draft: editor.value,
+        start: editor.selectionStart,
+        end: editor.selectionEnd,
+        before,
+        after: editor.getBoundingClientRect().height,
+        handle: handle.getAttribute('role'),
+        label: handle.getAttribute('aria-label'),
+      };
+    });
+    assert.equal(alpha.draft, 'Alpha unsent\nsecond line');
+    assert.equal(alpha.start, 3);
+    assert.equal(alpha.end, 9);
+    assert.equal(alpha.handle, 'separator');
+    assert.equal(alpha.label, 'Resize message field');
+    assert.ok(alpha.after > alpha.before, 'Resize handle must grow the editor');
+    await evaluate(() =>
+      [...document.querySelectorAll('#parents button')]
+        .find(item => item.textContent.includes('Beta factory'))
+        .click(),
+    );
+    await settle();
+    assert.equal(
+      await evaluate(() => document.getElementById('parent-prompt').value),
+      'Beta unsent',
+    );
+  });
 
   for (const [width, height] of [
     [1100, 760],
@@ -743,10 +723,6 @@ async function main() {
               !document.getElementById('attached-note').hidden &&
               document.getElementById('attached-note').getClientRects().length >
                 0,
-            queueVisible:
-              !document.getElementById('queued-prompts').hidden &&
-              document.getElementById('queued-prompts').getClientRects()
-                .length > 0,
             editorUsable:
               document.elementFromPoint(
                 editor.getBoundingClientRect().left + 5,
@@ -780,14 +756,16 @@ async function main() {
           'Conversation inspector must begin beside the overview',
         );
         assert.equal(geometry.attachedNoteVisible, true);
-        assert.equal(geometry.queueVisible, true);
         assert.ok(geometry.panel.height >= 90, JSON.stringify(geometry));
         assert.ok(
           geometry.composer.top >= geometry.panel.bottom - 1,
           JSON.stringify(geometry),
         );
         assert.ok(geometry.editor.height >= 40, JSON.stringify(geometry));
-        assert.ok(geometry.editor.height <= 240, JSON.stringify(geometry));
+        assert.ok(
+          geometry.editor.height <= height * 0.46,
+          JSON.stringify(geometry),
+        );
         assert.equal(
           geometry.editorUsable,
           true,
@@ -807,8 +785,8 @@ async function main() {
           'Send button must be visible and uncovered',
         );
         const scroll = await evaluate(() => {
-          const topbar = document.querySelector('.topbar');
-          const before = topbar.getBoundingClientRect().top;
+          const controls = document.querySelector('.app-controls');
+          const before = controls.getBoundingClientRect().top;
           const column = document.querySelector('.factory-column');
           const conversation = document.getElementById('panel-conversation');
           column.scrollTop = 200;
@@ -816,7 +794,7 @@ async function main() {
           conversation.dispatchEvent(new Event('scroll'));
           return {
             before,
-            after: topbar.getBoundingClientRect().top,
+            after: controls.getBoundingClientRect().top,
             factory: column.scrollTop,
             conversation: conversation.scrollTop,
             body: document.body.scrollTop,
@@ -836,7 +814,7 @@ async function main() {
         assert.equal(
           scroll.after,
           scroll.before,
-          'Topbar must remain fixed while both columns scroll',
+          'App controls must remain visible while both columns scroll',
         );
         assert.equal(scroll.body, 0);
         assert.equal(scroll.document, 0);
@@ -880,8 +858,6 @@ async function main() {
   await run(
     'stream follows the bottom while preserving a reader’s history position',
     async () => {
-      hub.sessions[0].session.queuedPrompts = [];
-      hub.sessions[0].session.pendingPrompts = 0;
       hub.sessions[0].conversation = Array.from({length: 35}, (_, index) => ({
         id: `history-${index}`,
         role: index % 2 ? 'assistant' : 'user',
@@ -917,6 +893,74 @@ async function main() {
         Math.abs(after - before) <= 1,
         `Reading history moved from ${before} to ${after}`,
       );
+    },
+  );
+
+  await run(
+    'robot motion follows thinking writing and tool activity and respects Motion off',
+    async () => {
+      await evaluate(() => {
+        if (
+          document
+            .getElementById('motion-toggle')
+            .getAttribute('aria-pressed') !== 'true'
+        )
+          document.getElementById('motion-toggle').click();
+      });
+      hub.sessions[0].session.activity = 'Thinking';
+      await publish();
+      const bounds = await evaluate(() => {
+        const rect = document
+          .getElementById('factory-canvas')
+          .getBoundingClientRect();
+        return {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.floor(rect.width),
+          height: Math.floor(Math.min(rect.height, innerHeight - rect.y)),
+        };
+      });
+      assert.equal(
+        await evaluate(() => document.getElementById('factory-canvas').hidden),
+        false,
+        'The live scene must render',
+      );
+      const frame = async () =>
+        (await window.webContents.capturePage(bounds)).toBitmap();
+      const thinking = await frame();
+      await new Promise(resolve => setTimeout(resolve, 180));
+      assert.equal(
+        thinking.equals(await frame()),
+        false,
+        'The working robot must visibly move between frames',
+      );
+      await evaluate(() => document.getElementById('motion-toggle').click());
+      await settle();
+      const still = await frame();
+      await new Promise(resolve => setTimeout(resolve, 180));
+      assert.equal(
+        still.equals(await frame()),
+        true,
+        'Motion off must freeze the scene',
+      );
+      hub.sessions[0].session.activity = 'Responding';
+      await publish();
+      const writing = await frame();
+      assert.equal(
+        still.equals(writing),
+        false,
+        'Writing must have a different pose from thinking',
+      );
+      hub.sessions[0].session.activity = 'Using bash';
+      await publish();
+      assert.equal(
+        writing.equals(await frame()),
+        false,
+        'Tool use must have a different pose from writing',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('robot-tools');
+      await evaluate(() => document.getElementById('motion-toggle').click());
     },
   );
 
@@ -1016,7 +1060,6 @@ async function main() {
           effect: document
             .getElementById('stop-burst')
             .classList.contains('braking'),
-          queueHidden: document.getElementById('queued-prompts').hidden,
         })),
         {
           processing: false,
@@ -1028,13 +1071,7 @@ async function main() {
           activityIndicator: 'none',
           burst: true,
           effect: true,
-          queueHidden: true,
         },
-      );
-      assert.equal(
-        hub.sessions[1].session.pendingPrompts,
-        1,
-        'Aborting Alpha must preserve Beta’s ordered queue',
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('stopping-1600x1000');
@@ -1104,11 +1141,11 @@ async function main() {
         'Skill catalog did not load from sessionFeatures',
       );
       const catalog = await evaluate(() => ({
-        modal: document.getElementById('commands-dialog').matches(':modal'),
+        open: document.getElementById('commands-dialog').open,
         text: document.getElementById('command-catalog').textContent,
         tools: document.getElementById('available-tools').textContent,
       }));
-      assert.equal(catalog.modal, true);
+      assert.equal(catalog.open, true);
       for (const source of ['Skill', 'Template', 'Extension', 'Command'])
         assert.ok(catalog.text.includes(source), `Catalog missing ${source}`);
       assert.match(catalog.tools, /bash/);
@@ -1123,8 +1160,9 @@ async function main() {
       );
       assert.equal(
         await evaluate(() => document.getElementById('commands-dialog').open),
-        false,
+        true,
       );
+      await evaluate(() => document.getElementById('close-commands').click());
       assert.deepEqual(calls, [], 'Selecting a skill must only edit the draft');
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
@@ -1656,7 +1694,6 @@ async function main() {
           model: 'fixture/worker',
           activity: 'Completed fixture task',
           output: 'Fixture result',
-          pendingMessages: 0,
           autoCleanup: false,
           taskTruncated: false,
           outputTruncated: false,

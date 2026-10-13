@@ -10,7 +10,6 @@ import type {
 import type {AgentSessionController} from '../src/agents/team.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import type {SessionFeatures} from '../src/dashboard/features.ts';
-import {queuedPrompt} from '../src/dashboard/hub.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
 import {
   ExternalSessionRequests,
@@ -81,8 +80,6 @@ void test('desktop IPC controls only the attached session and rejects stale or i
   const current = state('primary');
   bridge.attach(current, {
     ...featureControls,
-    queuedPrompts: [],
-    removeQueuedPrompt: () => {},
     prompt: text => {
       prompts.push(text);
     },
@@ -140,8 +137,6 @@ void test('desktop IPC controls only the attached session and rejects stale or i
   assert.deepEqual(prompts, ['Continue the conversation']);
   bridge.attach(state('replacement'), {
     ...featureControls,
-    queuedPrompts: [],
-    removeQueuedPrompt: () => {},
     prompt: text => {
       prompts.push(text);
     },
@@ -419,7 +414,7 @@ void test('the explicit factory command attaches the existing conversation, cont
   assert.deepEqual(first.messages, [
     {
       prompt: 'Continue through the GUI',
-      options: {deliverAs: 'followUp', expandPromptTemplates: true},
+      options: {deliverAs: 'steer', expandPromptTemplates: true},
     },
   ]);
   first.control.snapshot = () => ({});
@@ -431,7 +426,10 @@ void test('the explicit factory command attaches the existing conversation, cont
   assert.equal(desktop.shows, 2);
   await first.emit('session_shutdown', {reason: 'reload'});
   assert.equal(desktop.closes, 0);
-  assert.throws(() => old.prompt('Stale context'), /no longer attached/);
+  await assert.rejects(
+    Promise.resolve().then(() => old.prompt('Stale context')),
+    /no longer attached/,
+  );
   const second = extensionFixture('tui', 'second', launcher);
   await second.emit('session_start');
   assert.equal(launches, 1);
@@ -470,63 +468,30 @@ void test('a source switch during startup binds the new context to the single pe
   await next.emit('session_shutdown', {reason: 'quit'});
 });
 
-void test('GUI follow-ups wait for settled idle runs and Stop clears only their unsubmitted queue', async () => {
+void test('GUI follow-ups steer immediately while Stop still cancels active source work', async () => {
   const desktop = fakeWindow();
   const launcher = new FactoryLauncher(async () => desktop.window);
-  const source = extensionFixture('tui', 'queued-primary', launcher);
+  const source = extensionFixture('tui', 'steer-primary', launcher);
   await source.emit('session_start');
   await source.show();
   source.setIdle(false);
-  await desktop.callbacks.prompt('First follow-up');
-  await desktop.callbacks.prompt('Second follow-up');
-  assert.equal(desktop.callbacks.queuedPrompts.length, 2);
-  assert.equal(
-    source.messages.length,
-    0,
-    'busy prompts remain outside the native SDK queue',
+  await desktop.callbacks.prompt('First steer');
+  await desktop.callbacks.prompt('Second steer');
+  assert.deepEqual(
+    source.messages.map(message => message.prompt),
+    ['First steer', 'Second steer'],
   );
-  await source.emit('agent_settled');
-  assert.equal(
-    source.messages.length,
-    0,
-    'settled events only drain when the SDK is idle',
+  assert.deepEqual(
+    source.messages.map(message => message.options),
+    [
+      {deliverAs: 'steer', expandPromptTemplates: true},
+      {deliverAs: 'steer', expandPromptTemplates: true},
+    ],
   );
-  source.setIdle(true);
-  await source.emit('agent_settled');
-  assert.equal(source.messages.length, 1);
-  assert.equal(source.messages[0].prompt, 'First follow-up');
-  assert.equal(desktop.callbacks.queuedPrompts.length, 1);
-  await desktop.callbacks.prompt('Third follow-up');
-  await tick();
-  assert.equal(
-    source.messages.length,
-    1,
-    'SDK preflight reserves the runner even while isIdle is still true',
-  );
-  assert.equal(desktop.callbacks.queuedPrompts.length, 2);
-  source.setIdle(false);
-  await source.emit('agent_start');
-  source.setIdle(true);
-  await source.emit('agent_settled');
-  assert.equal(source.messages.length, 2);
-  assert.equal(source.messages[1].prompt, 'Second follow-up');
+  source.control.snapshot = () => ({});
   await desktop.callbacks.abort();
-  assert.equal(desktop.callbacks.queuedPrompts.length, 0);
-  await source.emit('agent_settled');
-  assert.equal(
-    source.messages.length,
-    2,
-    'Stop prevents the third follow-up from ever entering the SDK',
-  );
-  source.setIdle(false);
-  for (let index = 0; index < 32; index++)
-    await desktop.callbacks.prompt(`Queued ${index}`);
-  assert.throws(() => desktop.callbacks.prompt('Overflow'), /32 queued/);
-  assert.equal(desktop.callbacks.queuedPrompts.length, 32);
-  await desktop.callbacks.abort();
-  source.setIdle(true);
-  await source.emit('agent_settled');
-  assert.equal(source.messages.length, 2);
+  assert.equal(source.aborts, 1);
+  assert.equal(source.worker.status, 'cancelled');
   await source.emit('session_shutdown', {reason: 'quit'});
 });
 
@@ -542,23 +507,20 @@ void test('Stop during GUI credential setup prevents submission and configuratio
     'getApiKeyAndHeaders',
     () => credentials.promise,
   );
-  await desktop.callbacks.prompt('Must be cancelled before submission');
-  await desktop.callbacks.prompt('Must also be cleared');
-  await source.emit('agent_settled');
-  assert.equal(
-    desktop.callbacks.queuedPrompts.length,
-    2,
-    'credential setup keeps both prompts visibly queued',
+  const prompting = desktop.callbacks.prompt(
+    'Must be cancelled before submission',
   );
+  await source.emit('agent_settled');
   await desktop.callbacks.abort();
   credentials.resolve({ok: true, apiKey: 'private-fixture-key'});
+  await prompting;
   await tick();
   assert.equal(source.messages.length, 0);
-  assert.equal(desktop.callbacks.queuedPrompts.length, 0);
   source.ctx.model = undefined;
-  await desktop.callbacks.prompt('Needs a model');
-  await tick();
-  assert.match(desktop.current!.snapshot().session.error!, /No model selected/);
+  await assert.rejects(
+    Promise.resolve().then(() => desktop.callbacks.prompt('Needs a model')),
+    /No model selected/,
+  );
   assert.equal(source.messages.length, 0);
   assert.doesNotMatch(
     JSON.stringify(desktop.current!.snapshot()),
@@ -567,7 +529,7 @@ void test('Stop during GUI credential setup prevents submission and configuratio
   await source.emit('session_shutdown', {reason: 'quit'});
 });
 
-void test('source IPC snapshots preserve public conversation and the actual queued prompt list', () => {
+void test('source IPC snapshots preserve public conversation without queue payloads', () => {
   const child = new FakeChild();
   const bridge = createFactoryBridge(child as unknown as ChildProcess);
   const current = state('history-primary');
@@ -582,18 +544,12 @@ void test('source IPC snapshots preserve public conversation and the actual queu
   ]);
   bridge.attach(current, {
     ...featureControls,
-    queuedPrompts: [
-      queuedPrompt('one'),
-      queuedPrompt('two'),
-      queuedPrompt('three'),
-    ],
-    removeQueuedPrompt: () => {},
     prompt: () => {},
     abort: () => {},
   });
   bridge.ready();
   assert.deepEqual(child.sent.at(-1)?.snapshot, current.snapshot());
-  assert.equal((child.sent.at(-1)?.queuedPrompts as unknown[]).length, 3);
+  assert.equal('queuedPrompts' in child.sent.at(-1)!, false);
   bridge.detach();
 });
 
@@ -603,10 +559,11 @@ void test('delayed extension input cannot clear Stop before a cancelled GUI prom
   const source = extensionFixture('tui', 'delayed-input-primary', launcher);
   await source.emit('session_start');
   await source.show();
-  await desktop.callbacks.prompt('Cancelled during SDK preflight');
-  await desktop.callbacks.prompt('Queued GUI task must be discarded');
-  assert.equal(source.messages.length, 1);
-  assert.equal(desktop.callbacks.queuedPrompts.length, 1);
+  const credentials = Promise.withResolvers<{ok: true; apiKey: string}>();
+  const originalAuth = source.ctx.modelRegistry.getApiKeyAndHeaders;
+  source.ctx.modelRegistry.getApiKeyAndHeaders = () => credentials.promise;
+  const prompting = desktop.callbacks.prompt('Cancelled during SDK preflight');
+  assert.equal(source.messages.length, 0);
   await desktop.callbacks.abort();
   assert.equal(source.aborts, 1);
   await source.emit('input', {
@@ -620,14 +577,12 @@ void test('delayed extension input cannot clear Stop before a cancelled GUI prom
     2,
     'agent_start still cancels the stopped SDK preflight',
   );
+  credentials.resolve({ok: true, apiKey: 'fixture'});
+  await prompting;
+  source.ctx.modelRegistry.getApiKeyAndHeaders = originalAuth;
   source.setIdle(true);
   await source.emit('agent_settled');
-  assert.equal(desktop.callbacks.queuedPrompts.length, 0);
-  assert.equal(
-    source.messages.length,
-    1,
-    'cleared GUI follow-ups do not resume',
-  );
+  assert.equal(source.messages.length, 0, 'stopped GUI prompts do not resume');
   for (const inputSource of ['interactive', 'rpc']) {
     await desktop.callbacks.abort();
     const abortsBeforeInput: number = source.aborts;
@@ -642,94 +597,6 @@ void test('delayed extension input cannot clear Stop before a cancelled GUI prom
     source.setIdle(true);
     await source.emit('agent_settled');
   }
-  await source.emit('session_shutdown', {reason: 'quit'});
-});
-
-void test('attached queue snapshots and removal cross IPC, including removal during credential preflight', async t => {
-  const desktop = fakeWindow();
-  const launcher = new FactoryLauncher(async () => desktop.window);
-  const source = extensionFixture('tui', 'remove-primary', launcher);
-  await source.emit('session_start');
-  await source.show();
-  const child = new FakeChild();
-  const bridge = createFactoryBridge(child as unknown as ChildProcess);
-  const requests = new ExternalSessionRequests(
-    async message => {
-      child.emit('message', message);
-    },
-    () => child.connected,
-  );
-  child.deliver = message => {
-    requests.reply(message);
-  };
-  bridge.attach(desktop.current!, desktop.callbacks);
-  bridge.ready();
-  t.after(() => bridge.detach());
-  const snapshot = () => {
-    bridge.ready();
-    return child.sent.findLast(message => message.type === 'snapshot')!
-      .queuedPrompts as Array<{id: string; text: string; queuedAt: string}>;
-  };
-  source.setIdle(false);
-  await requests.request('prompt', 'remove-primary', 'Remove while waiting');
-  await requests.request(
-    'prompt',
-    'remove-primary',
-    'Remove during credentials',
-  );
-  await requests.request('prompt', 'remove-primary', 'Keep this task');
-  const initial = snapshot();
-  assert.deepEqual(
-    initial.map(item => item.text),
-    ['Remove while waiting', 'Remove during credentials', 'Keep this task'],
-  );
-  const ids = initial.map(item => item.id);
-  initial[2].text = 'Snapshot mutation';
-  assert.equal(snapshot()[2].text, 'Keep this task');
-  await requests.request('removeQueuedPrompt', 'remove-primary', ids[0]);
-  assert.deepEqual(
-    snapshot().map(item => item.id),
-    ids.slice(1),
-  );
-  await assert.rejects(
-    requests.request('removeQueuedPrompt', 'remove-primary', ids[0]),
-    /no longer queued/,
-  );
-  await assert.rejects(
-    requests.request('removeQueuedPrompt', 'previous', ids[1]),
-    /no longer attached/,
-  );
-  await assert.rejects(
-    requests.request('removeQueuedPrompt', 'remove-primary', '!invalid'),
-    /valid queued/,
-  );
-  const credentials = Promise.withResolvers<{ok: true; apiKey: string}>();
-  t.mock.method(
-    source.ctx.modelRegistry,
-    'getApiKeyAndHeaders',
-    () => credentials.promise,
-  );
-  source.setIdle(true);
-  await source.emit('agent_settled');
-  assert.equal(snapshot().length, 2, 'preflight prompt stays visible');
-  await requests.request('removeQueuedPrompt', 'remove-primary', ids[1]);
-  credentials.resolve({ok: true, apiKey: 'fixture'});
-  await tick();
-  await tick();
-  assert.deepEqual(
-    source.messages.map(item => item.prompt),
-    ['Keep this task'],
-  );
-  assert.equal(snapshot().length, 0);
-  assert.equal(
-    source.aborts,
-    0,
-    'removing pending work never aborts the active conversation',
-  );
-  await assert.rejects(
-    requests.request('removeQueuedPrompt', 'remove-primary', ids[2]),
-    /no longer queued/,
-  );
   await source.emit('session_shutdown', {reason: 'quit'});
 });
 
@@ -808,7 +675,7 @@ void test('feature catalogs and configuration results cross source IPC with sess
   await source.emit('agent_settled');
   assert.deepEqual(source.messages.at(-1), {
     prompt: '/skill:fixture',
-    options: {deliverAs: 'followUp', expandPromptTemplates: true},
+    options: {deliverAs: 'steer', expandPromptTemplates: true},
   });
   await requests.request('abort', 'features-primary');
   await assert.rejects(
@@ -818,7 +685,7 @@ void test('feature catalogs and configuration results cross source IPC with sess
   await source.emit('session_shutdown', {reason: 'quit'});
 });
 
-void test('attached extension commands reach SDK command dispatch without credentials and release the GUI queue', async t => {
+void test('attached extension commands reach SDK command dispatch without credentials', async t => {
   const desktop = fakeWindow();
   const launcher = new FactoryLauncher(async () => desktop.window);
   const source = extensionFixture('tui', 'commands-primary', launcher);
@@ -840,14 +707,13 @@ void test('attached extension commands reach SDK command dispatch without creden
   assert.deepEqual(source.messages, [
     {
       prompt: '/fixture-command first',
-      options: {deliverAs: 'followUp', expandPromptTemplates: true},
+      options: {deliverAs: 'steer', expandPromptTemplates: true},
     },
     {
       prompt: '/fixture-command second',
-      options: {deliverAs: 'followUp', expandPromptTemplates: true},
+      options: {deliverAs: 'steer', expandPromptTemplates: true},
     },
   ]);
-  assert.equal(desktop.callbacks.queuedPrompts.length, 0);
   assert.equal(desktop.current!.snapshot().session.status, 'idle');
   await source.emit('session_shutdown', {reason: 'quit'});
 });

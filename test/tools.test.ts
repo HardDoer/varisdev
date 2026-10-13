@@ -135,8 +135,6 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'agent_inbox',
     'agent_status',
     'agent_send',
-    'agent_messages',
-    'agent_message_remove',
     'agent_wait',
     'agent_cancel',
   ]);

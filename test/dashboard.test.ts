@@ -14,11 +14,7 @@ import {setImmediate as nextTick} from 'node:timers/promises';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
-import {
-  DashboardHub,
-  queuedPrompt,
-  type DashboardParent,
-} from '../src/dashboard/hub.ts';
+import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import type {SessionFeatures} from '../src/dashboard/features.ts';
@@ -74,9 +70,8 @@ function controlledParent(id: string, cwd: string) {
   const parent: DashboardParent = {
     ...featureControls,
     state: current,
-    async prompt(text, delivery) {
-      if (!delivery.isQueued()) return;
-      delivery.submitted();
+    async prompt(text) {
+      current.updateSession({status: 'running', activity: 'Working'});
       active++;
       maximum = Math.max(maximum, active);
       await new Promise<void>(resolve => runs.push({text, resolve}));
@@ -88,7 +83,7 @@ function controlledParent(id: string, cwd: string) {
       });
     },
     async abort() {
-      runs.at(-1)?.resolve();
+      for (const run of runs) run.resolve();
     },
     async close() {
       await parent.abort();
@@ -107,7 +102,7 @@ function controlledParent(id: string, cwd: string) {
   };
 }
 
-void test('dashboard keeps parallel parents isolated, serializes each prompt queue and stops pending work', async t => {
+void test('dashboard keeps parallel parents isolated, forwards prompts immediately and stops active work', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-hub-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
   const folders = [join(directory, 'one'), join(directory, 'two')];
@@ -135,15 +130,14 @@ void test('dashboard keeps parallel parents isolated, serializes each prompt que
   );
   await hub.promptSession(one.id, {prompt: 'Follow up'});
   await hub.promptSession(one.id, {prompt: 'Never run'});
-  assert.equal(parents[0].runs.length, 1);
-  assert.equal(hub.snapshot().sessions[1].session.pendingPrompts, 2);
-  parents[0].runs[0].resolve();
-  await until(() => parents[0].runs.length === 2);
-  assert.equal(parents[0].runs[1].text, 'Follow up');
+  await until(() => parents[0].runs.length === 3);
+  assert.deepEqual(
+    parents[0].runs.map(run => run.text),
+    ['Task 0', 'Follow up', 'Never run'],
+  );
   await hub.abortSession(one.id);
-  assert.equal(parents[0].runs.length, 2);
-  assert.equal(parents[0].maximum, 1);
-  assert.equal(hub.snapshot().sessions[1].session.pendingPrompts, 0);
+  assert.equal(parents[0].runs.length, 3);
+  assert.equal(parents[0].maximum, 3);
   assert.equal(hub.snapshot().sessions[2].session.status, 'running');
   assert.ok(notifications > 5);
   await assert.rejects(
@@ -207,18 +201,11 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
       at: new Date().toISOString(),
     },
   ]);
-  hub.updateExternal(original.snapshot(), [
-    queuedPrompt('one'),
-    queuedPrompt('two'),
-    queuedPrompt('three'),
-  ]);
+  hub.updateExternal(original.snapshot());
   hub.setExternalControl({
     ...featureControls,
     async prompt(id, prompt) {
       actions.push(`prompt:${id}:${prompt}`);
-    },
-    async removeQueuedPrompt(id, promptId) {
-      actions.push(`remove:${id}:${promptId}`);
     },
     async abort(id) {
       actions.push(`abort:${id}`);
@@ -227,28 +214,20 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
   const attached = hub.snapshot().sessions[0].session;
   assert.equal(attached.owned, false);
   assert.equal(attached.controllable, true);
-  assert.equal(attached.pendingPrompts, 3);
   assert.equal(attached.sessionFile, '/fixture/primary.jsonl');
   assert.deepEqual(
     hub.snapshot().sessions[0].conversation,
     original.snapshot().conversation,
   );
   await hub.promptSession('attached', {prompt: ' Follow up '});
-  const promptId = attached.queuedPrompts[0].id;
-  await hub.removeQueuedPrompt('attached', promptId);
   await hub.abortSession('attached');
-  assert.deepEqual(actions, [
-    'prompt:attached:Follow up',
-    `remove:attached:${promptId}`,
-    'abort:attached',
-  ]);
+  assert.deepEqual(actions, ['prompt:attached:Follow up', 'abort:attached']);
   await assert.rejects(hub.promptSession('attached', {prompt: ' '}), /Prompt/);
   await hub.createSession({cwd: process.cwd(), prompt: 'Owned work'});
   await until(() => owned.runs.length === 1);
   assert.equal(hub.snapshot().sessions[1].session.controllable, true);
   hub.closeExternal();
   assert.equal(hub.snapshot().sessions[0].session.controllable, false);
-  assert.equal(hub.snapshot().sessions[0].session.pendingPrompts, 0);
   await assert.rejects(
     hub.promptSession('attached', {prompt: 'Stale'}),
     /connected/,
@@ -258,11 +237,7 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
   assert.equal(owned.closed, false);
   await hub.abortSession('owned');
   await hub.close();
-  assert.deepEqual(actions, [
-    'prompt:attached:Follow up',
-    `remove:attached:${promptId}`,
-    'abort:attached',
-  ]);
+  assert.deepEqual(actions, ['prompt:attached:Follow up', 'abort:attached']);
   assert.equal(owned.closed, true);
 });
 
@@ -300,7 +275,6 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
     createdAt: new Date().toISOString(),
     status: 'queued',
     activity: 'Queued',
-    pendingMessages: 1,
   };
   view.updateTeam([record], []);
   view.updateTeam([{...record, status: 'running', activity: 'Using edit'}], []);
@@ -372,139 +346,7 @@ void test('workspace diff includes staged, unstaged and untracked files without 
   assert.equal(await readFile(join(cwd, 'tracked.txt'), 'utf8'), 'working\n');
 });
 
-void test('standalone queued prompts retain stable IDs through preflight and removal prevents handoff', async t => {
-  const credentials = Promise.withResolvers<void>();
-  let validating = false;
-  const submitted: string[] = [];
-  const parent: DashboardParent = {
-    ...featureControls,
-    state: state('preflight'),
-    async prompt(text, delivery) {
-      validating = true;
-      await credentials.promise;
-      if (!delivery.isQueued()) return;
-      delivery.submitted();
-      submitted.push(text);
-    },
-    async abort() {
-      credentials.resolve();
-    },
-    async close() {
-      credentials.resolve();
-    },
-  };
-  const hub = new DashboardHub(undefined, async () => parent);
-  t.after(() => hub.close());
-  const {id} = await hub.createSession({
-    cwd: process.cwd(),
-    prompt: 'Await credentials',
-  });
-  await until(() => validating);
-  await hub.promptSession(id, {prompt: 'Next task'});
-  const snapshot = hub.snapshot().sessions[0].session;
-  assert.deepEqual(
-    snapshot.queuedPrompts.map(item => item.text),
-    ['Await credentials', 'Next task'],
-  );
-  const firstId = snapshot.queuedPrompts[0].id;
-  const nextId = snapshot.queuedPrompts[1].id;
-  assert.notEqual(firstId, nextId);
-  assert.ok(Number.isFinite(Date.parse(snapshot.queuedPrompts[0].queuedAt)));
-  snapshot.queuedPrompts[0].text = 'Snapshot mutation';
-  snapshot.queuedPrompts.pop();
-  assert.equal(
-    hub.snapshot().sessions[0].session.queuedPrompts[0].text,
-    'Await credentials',
-  );
-  assert.equal(hub.snapshot().sessions[0].session.pendingPrompts, 2);
-  await assert.rejects(hub.removeQueuedPrompt('missing', firstId), /Unknown/);
-  await hub.removeQueuedPrompt(id, firstId);
-  await assert.rejects(hub.removeQueuedPrompt(id, firstId), /no longer queued/);
-  assert.equal(hub.snapshot().sessions[0].session.queuedPrompts[0].id, nextId);
-  credentials.resolve();
-  await until(() => submitted.length === 1);
-  assert.deepEqual(submitted, ['Next task']);
-  assert.equal(hub.snapshot().sessions[0].session.pendingPrompts, 0);
-  await assert.rejects(hub.removeQueuedPrompt(id, nextId), /no longer queued/);
-});
-
-void test('queued prompt removal preserves the active run and other sessions and queues are bounded', async t => {
-  const parents = [
-    controlledParent('one', process.cwd()),
-    controlledParent('two', process.cwd()),
-  ];
-  let created = 0;
-  const hub = new DashboardHub(
-    undefined,
-    async () => parents[created++].parent,
-  );
-  t.after(() => hub.close());
-  await hub.createSession({cwd: process.cwd(), prompt: 'Active one'});
-  await hub.createSession({cwd: process.cwd(), prompt: 'Active two'});
-  await until(() => parents.every(parent => parent.runs.length === 1));
-  await hub.promptSession('two', {prompt: 'Two later'});
-  for (let index = 0; index < 32; index++)
-    await hub.promptSession('one', {prompt: `${index}:${'x'.repeat(63997)}`});
-  await assert.rejects(
-    hub.promptSession('one', {prompt: 'overflow'}),
-    /32 queued/,
-  );
-  await assert.rejects(
-    hub.promptSession('two', {prompt: 'x'.repeat(64001)}),
-    /64000/,
-  );
-  const one = hub.snapshot().sessions[0].session.queuedPrompts;
-  const otherId = hub.snapshot().sessions[1].session.queuedPrompts[0].id;
-  await assert.rejects(
-    hub.removeQueuedPrompt('one', otherId),
-    /no longer queued/,
-  );
-  await hub.removeQueuedPrompt('one', one[5].id);
-  assert.equal(hub.snapshot().sessions[0].session.pendingPrompts, 31);
-  assert.equal(hub.snapshot().sessions[1].session.queuedPrompts[0].id, otherId);
-  assert.equal(parents[0].runs.length, 1);
-  assert.equal(hub.snapshot().sessions[0].session.status, 'running');
-  await hub.abortSession('one');
-  assert.equal(hub.snapshot().sessions[0].session.pendingPrompts, 0);
-  assert.equal(hub.snapshot().sessions[1].session.pendingPrompts, 1);
-});
-
-void test('external queued prompt snapshots are isolated and reject invalid or excessive data', async t => {
-  const hub = new DashboardHub(undefined, async () => {
-    throw new Error('Unused');
-  });
-  t.after(() => hub.close());
-  const external = state('external');
-  external.updateSession({context: {tokens: 1, window: 100, percent: 1}});
-  const prompts = [queuedPrompt('Visible task')];
-  hub.updateExternal(external.snapshot(), prompts);
-  prompts[0].text = 'Input mutation';
-  const snapshot = hub.snapshot();
-  snapshot.sessions[0].session.queuedPrompts[0].text = 'Output mutation';
-  snapshot.sessions[0].session.context!.tokens = 99;
-  assert.equal(
-    hub.snapshot().sessions[0].session.queuedPrompts[0].text,
-    'Visible task',
-  );
-  assert.equal(hub.snapshot().sessions[0].session.context!.tokens, 1);
-  const valid = queuedPrompt('Valid');
-  for (const invalid of [
-    [valid, valid],
-    Array.from({length: 33}, () => queuedPrompt('Overflow')),
-    [{...valid, text: 'x'.repeat(64001)}],
-    [{...valid, queuedAt: 'invalid'}],
-    [{...valid, id: '!invalid'}],
-  ])
-    assert.throws(
-      () => hub.updateExternal(external.snapshot(), invalid),
-      /Invalid queued/,
-    );
-  assert.equal(hub.snapshot().sessions[0].session.pendingPrompts, 1);
-  hub.closeExternal();
-  assert.deepEqual(hub.snapshot().sessions[0].session.queuedPrompts, []);
-});
-
-void test('native feature controls preserve catalog isolation and serialize changes against queued work', async t => {
+void test('native feature controls preserve catalog isolation and reject changes during running work', async t => {
   const current = controlledParent('features', process.cwd());
   const catalog = features();
   catalog.commands.push({
@@ -547,6 +389,7 @@ void test('native feature controls preserve catalog isolation and serialize chan
   );
   current.runs[0].resolve();
   await until(() => hub.snapshot().sessions[0].session.status === 'idle');
+  await nextTick();
   await hub.configureSession('features', {
     provider: 'fixture',
     modelId: 'model',
@@ -645,6 +488,7 @@ void test('native reload reconnects hub observation when the SDK replaces its da
   await until(() => current.runs.length === 1);
   current.runs[0].resolve();
   await until(() => hub.snapshot().sessions[0].session.status === 'idle');
+  await nextTick();
   const replacement = state('reloaded');
   current.parent.reload = async () => {
     current.parent.state = replacement;

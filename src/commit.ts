@@ -18,7 +18,7 @@ export function registerCommitCommand(pi: ExtensionAPI): void {
               ]
             : []),
         ].join('\n\n'),
-        {deliverAs: 'followUp'},
+        {deliverAs: 'steer'},
       );
     },
   });

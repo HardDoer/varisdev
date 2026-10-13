@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {cp, mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {cp, mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {createInterface} from 'node:readline';
 import {test} from 'node:test';
@@ -16,9 +16,12 @@ const cli =
       import.meta.resolve('@earendil-works/pi-coding-agent'),
     ),
   );
-const {peerDependencies} = JSON.parse(
-  await readFile(resolve('package.json'), 'utf8'),
-) as {peerDependencies: Record<string, string>};
+const hostModules = [
+  '@earendil-works/pi-ai',
+  '@earendil-works/pi-coding-agent',
+  '@earendil-works/pi-tui',
+  'typebox',
+];
 
 for (const missingSharp of [false, true]) {
   void test(
@@ -32,9 +35,9 @@ for (const missingSharp of [false, true]) {
         ),
       );
       await writeFile(join(directory, 'package.json'), '{"type":"module"}');
-      // Shadow the checkout's development peers with unavailable entries. Pi's
-      // virtual modules must supply these APIs without any filesystem lookup.
-      for (const name of Object.keys(peerDependencies)) {
+      // The terminal extension uses Pi's virtual modules even though the
+      // separate Electron process needs these packages installed on disk.
+      for (const name of hostModules) {
         const peerDir = join(directory, 'node_modules', name);
         await mkdir(peerDir, {recursive: true});
         await writeFile(
