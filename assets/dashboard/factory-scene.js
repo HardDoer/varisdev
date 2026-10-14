@@ -19,6 +19,10 @@ const COLORS = {
   red: [1, 0.22, 0.2],
   dim: [0.19, 0.34, 0.35],
   screen: [0.027, 0.13, 0.15],
+  selection: [0.725, 0.91, 1],
+  running: [0.47, 0.902, 0.631],
+  queued: [0.961, 0.843, 0.431],
+  completed: [0.569, 0.729, 1],
 };
 const BAYS = [
   [-1.5, -3.1],
@@ -603,11 +607,12 @@ export function createFactoryScene(
     if (
       status === 'queued' ||
       status === 'cancelling' ||
+      status === 'cancelled' ||
       status === 'compacting'
     )
-      return C.amber;
-    if (status === 'running') return C.mint;
-    if (status === 'completed') return C.cyan;
+      return C.queued;
+    if (status === 'running') return C.running;
+    if (status === 'completed') return C.completed;
     return C.dim;
   }
   function positionFor(unit) {
@@ -683,14 +688,14 @@ export function createFactoryScene(
         ) {
           const p = positionFor(agent);
           dispatches.push({from: [-5.7, 2.95, 0], to: p, age: 0, life: 1.5});
-          burst(p, C.mint, 42);
+          burst(p, C.running, 42);
         } else if (
           shown &&
           old &&
           old !== agent.status &&
           agent.status === 'completed'
         )
-          burst(positionFor(agent), C.cyan, 62);
+          burst(positionFor(agent), C.completed, 62);
         else if (shown && old !== agent.status && agent.status === 'failed')
           burst(positionFor(agent), C.red, 48);
       }
@@ -891,17 +896,10 @@ export function createFactoryScene(
           C.dark,
         );
     }
-    if (selected === 'parent' || active)
-      g.ring(
-        [x, 0.4, 0],
-        2.08,
-        selected === 'parent' ? 0.037 : 0.024,
-        color,
-        0.9,
-        48,
-        active ? 0.72 : 1,
-        t * 0.28,
-      );
+    if (active)
+      g.ring([x, 0.4, 0], 2.08, 0.024, color, 0.9, 48, 0.72, t * 0.28);
+    if (selected === 'parent')
+      g.ring([x, 0.41, 0], 2.38, 0.075, C.selection, 1, 48);
     if (active) {
       fx.ring([x, 0.44, 0], 2.12, 0.085, color, 0.08, 40);
       // Distinct poses and signals follow the actual model/tool activity.
@@ -1100,7 +1098,7 @@ export function createFactoryScene(
       g.ring([baseX, 0.25, z], 0.8, 0.028, C.red, 0.8, 24, 0.85);
     }
     if (selected === unit.id)
-      g.ring([baseX, 0.27, z], 0.97, 0.032, color, 0.95, 32);
+      g.ring([baseX, 0.27, z], 1.12, 0.075, C.selection, 1, 40);
     return [x, y + 1.02, z];
   }
 

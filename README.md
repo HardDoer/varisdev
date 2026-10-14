@@ -24,7 +24,7 @@ Varisware VarisDev package.
 Install the extension from GitHub:
 
 ```sh
-pi install git:git@github.com:varisware/pidev-plugins
+pi install git:https://github.com/HardDoer/varisdev
 ```
 
 Then start `pi` normally from any project folder. VarisDev opens automatically, takes over the current conversation, and closes Pi's terminal interface. The desktop owns the conversation and workers, so you can close the launching terminal. The selected project, session history, model, thinking level, active tools, CLI resource options, and initial prompts carry over. Print, JSON, and RPC runs stay headless.
@@ -51,7 +51,7 @@ Each parent session has a factory view, with robots representing the parent sess
 
 Select a parent session or agent to inspect its task, model, folder, elapsed time, response, errors, and saved result paths. The activity feed follows session events, tools, agent messages, and status changes. Click an event to inspect its inputs, output, errors, agent result, or file diff. The robot representing the parent session has distinct thinking, writing, and tool use animations and a closer view when working alone. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL.
 
-While a parent session is idle, its robot walks around and cycles through twelve activities: drinking coffee, jumping rope, juggling, dancing, stretching, lifting weights, using a hula hoop, playing with a yo-yo, reading, sweeping, balancing, and throwing a paper plane. A new prompt makes it jump in surprise and run back to its workstation while the session starts work. Motion off and reduced motion keep it stationary.
+While a parent session is idle, its robot occasionally walks around and does one of twelve activities: drinking coffee, jumping rope, juggling, dancing, stretching, lifting weights, using a hula hoop, playing with a yo-yo, reading, sweeping, balancing, and throwing a paper plane. It stands completely still for a random 40 seconds to 2 minutes before its first activity and between activities, pausing wherever it finished. A new prompt makes it jump in surprise and run back to its workstation while the session starts work. Motion off and reduced motion keep it stationary.
 
 The conversation shows user prompts, streaming replies, and live tool calls with their inputs, progress, results, and errors. Assistant replies use a brighter background, a strong accent border, and larger text. File reads, file changes, commands, agents, web requests, and media actions have named labels and distinct accents. Actions start expanded and retain your expansion choices through updates, session switches, and window reloads. The Live feed uses a compact layout. Application controls sit above the workspace. The factory view, parent selector, active workers, and history stay within the window. Long lists scroll inside their sections, and the conversation scrolls above the composer.
 
@@ -77,7 +77,7 @@ Electron runs the desktop window and the session runtime; graphics are loaded fr
 
 ### App updates and environment
 
-For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically. `pi list` should show `git:git@github.com:varisware/pidev-plugins` as the package source. A source pointing to a development folder makes Pi load that folder and is not updated from GitHub.
+For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically. `pi list` should show `git:https://github.com/HardDoer/varisdev` as the package source. A source pointing to a development folder makes Pi load that folder and is not updated from GitHub.
 
 The optional macOS launcher below is for a development checkout. The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
 
@@ -421,13 +421,13 @@ Sharp is loaded through Node only when an image is inspected or rendered. A miss
 ## Install from this repo
 
 ```bash
-pi install git:git@github.com:varisware/pidev-plugins
+pi install git:https://github.com/HardDoer/varisdev
 ```
 
 Pin a tag or commit when sharing with the team:
 
 ```bash
-pi install git:git@github.com:varisware/pidev-plugins@v0.1.0
+pi install git:https://github.com/HardDoer/varisdev@v0.1.0
 ```
 
 If needed, reapply branding inside Pi with:

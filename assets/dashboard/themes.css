@@ -19,6 +19,12 @@
   --accent-text: #09281f;
   --hover: #203442;
   --selected: #1b3635;
+  --selection-bg: #b9e8ff;
+  --selection-text: #102735;
+  --selection-border: #75d9ff;
+  --status-running: #78e6a1;
+  --status-queued: #f5d76e;
+  --status-completed: #91baff;
   --danger: #38232d;
   --scene: #111e2b;
   --scene-glow: #243c48;
@@ -44,6 +50,12 @@
   --accent-text: #242b35;
   --hover: #454f61;
   --selected: #414b5d;
+  --selection-bg: #d8ebff;
+  --selection-text: #242b35;
+  --selection-border: #a0d4e2;
+  --status-running: #b4d19b;
+  --status-queued: #ebcb8b;
+  --status-completed: #a8c6ff;
   --danger: #493947;
   --scene: #2e3440;
   --scene-glow: #3b4252;
@@ -69,6 +81,12 @@
   --accent-text: #20212b;
   --hover: #404252;
   --selected: #404252;
+  --selection-bg: #e2d1ff;
+  --selection-text: #20212b;
+  --selection-border: #bd93f9;
+  --status-running: #50fa7b;
+  --status-queued: #f1fa8c;
+  --status-completed: #a8bfff;
   --danger: #493342;
   --scene: #21222c;
   --scene-glow: #343746;
@@ -94,6 +112,12 @@
   --accent-text: #1e1e2e;
   --hover: #38394f;
   --selected: #38394f;
+  --selection-bg: #d5d9ff;
+  --selection-text: #1e1e2e;
+  --selection-border: #b4befe;
+  --status-running: #a6e3a1;
+  --status-queued: #f9e2af;
+  --status-completed: #a6c8ff;
   --danger: #3b2b3c;
   --scene: #181825;
   --scene-glow: #313244;
@@ -119,6 +143,12 @@
   --accent-text: #fffdf4;
   --hover: #e7dfc9;
   --selected: #e7dfc9;
+  --selection-bg: #005f89;
+  --selection-text: #fffdf4;
+  --selection-border: #005f89;
+  --status-running: #356600;
+  --status-queued: #895900;
+  --status-completed: #215ab0;
   --danger: #f5e5d7;
   --scene: #eee8d5;
   --scene-glow: #fdf6e3;
@@ -144,6 +174,12 @@
   --accent-text: #000000;
   --hover: #252525;
   --selected: #252525;
+  --selection-bg: #ffffff;
+  --selection-text: #000000;
+  --selection-border: #ffffff;
+  --status-running: #78f0a5;
+  --status-queued: #fff37a;
+  --status-completed: #99c2ff;
   --danger: #250f0f;
   --scene: #000000;
   --scene-glow: #121212;
@@ -287,14 +323,6 @@ a:focus-visible {
   border-color: var(--line);
 }
 
-.parent-card.selected,
-.worker-card.selected,
-.history-row.selected {
-  background: var(--selected);
-  border-color: var(--mint);
-  box-shadow: inset 0 0 0 1px var(--mint);
-}
-
 .worker-card-activity {
   border-color: var(--line);
 }
@@ -328,22 +356,23 @@ a:focus-visible {
 }
 
 .status-badge.running {
-  color: var(--mint);
-  border-color: var(--mint);
+  color: var(--status-running);
+  border-color: var(--status-running);
   background: var(--panel-raised);
 }
 
 .status-badge.queued,
 .status-badge.cancelling,
+.status-badge.cancelled,
 .status-badge.compacting {
-  color: var(--amber);
-  border-color: var(--amber);
+  color: var(--status-queued);
+  border-color: var(--status-queued);
   background: var(--panel-raised);
 }
 
 .status-badge.completed {
-  color: var(--cyan);
-  border-color: var(--cyan);
+  color: var(--status-completed);
+  border-color: var(--status-completed);
   background: var(--panel-raised);
 }
 
@@ -370,13 +399,6 @@ a:focus-visible {
   background: var(--panel);
   border-color: var(--line);
   box-shadow: 0 4px 15px color-mix(in srgb, var(--bg) 50%, transparent);
-}
-
-.scene-label.selected {
-  border-color: var(--mint);
-  box-shadow:
-    0 0 0 1px var(--mint),
-    0 4px 20px color-mix(in srgb, var(--bg) 50%, transparent);
 }
 
 .scene-label-name,
@@ -467,6 +489,37 @@ a:focus-visible {
 
 .fallback-station .muted {
   color: var(--muted);
+}
+
+.parent-card.selected,
+.worker-card.selected,
+.history-row.selected,
+.scene-label.selected,
+.fallback-station.selected {
+  color: var(--selection-text);
+  background: var(--selection-bg);
+  border-color: var(--selection-border);
+  box-shadow: inset 0 0 0 2px var(--selection-text);
+}
+
+.parent-card.selected:hover:enabled,
+.worker-card.selected:hover:enabled,
+.history-row.selected:hover:enabled,
+.scene-label.selected:hover:enabled,
+.fallback-station.selected:hover:enabled {
+  background: var(--selection-bg);
+  border-color: var(--selection-border);
+}
+
+.parent-card.selected .parent-card-name,
+.parent-card.selected .project-path,
+.parent-card.selected .parent-card-activity,
+.worker-card.selected .worker-card-activity,
+.worker-card.selected .worker-card-meta,
+.history-row.selected .history-row-task,
+.scene-label.selected .scene-label-name,
+.fallback-station.selected .muted {
+  color: var(--selection-text);
 }
 
 .fallback-station.running::after {

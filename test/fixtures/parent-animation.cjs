@@ -1,4 +1,4 @@
-/* global window, document, MouseEvent, Event, process, __dirname, Buffer */
+/* global window, document, MouseEvent, Event, URL, process, __dirname, Buffer */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -72,14 +72,19 @@ async function inspect() {
 async function advance(frames = 1) {
   return evaluate(frames => window.fixture.advance(frames), frames);
 }
-async function until(mode, maximum = 400) {
+// Production WebGL integrates at most 50ms per frame, including long rests.
+const REST_MIN_FRAMES = 800;
+const REST_MAX_FRAMES = 2400;
+const REST_STILL_FRAMES = REST_MIN_FRAMES - 20;
+async function until(mode, maximum = REST_MAX_FRAMES + 220) {
   const pose = await evaluate(
     ({mode, maximum}) => {
-      for (let i = 0; i < maximum; i++) {
-        if (window.fixture.mode() === mode) return window.fixture.inspect();
+      let frames = 0;
+      while (frames < maximum && window.fixture.mode() !== mode) {
         window.fixture.advance(1);
+        frames++;
       }
-      return window.fixture.inspect();
+      return {...window.fixture.inspect(), frames};
     },
     {mode, maximum},
   );
@@ -89,6 +94,35 @@ async function until(mode, maximum = 400) {
     `Expected ${mode} before ${maximum} virtual frames`,
   );
   return pose;
+}
+async function stillRest(pose, frames = REST_STILL_FRAMES) {
+  assert.equal(pose.mode, 'rest');
+  assert.equal(pose.activity, '');
+  await advance(frames);
+  const rested = await inspect();
+  finiteRendered(rested);
+  assert.equal(rested.mode, 'rest', 'Rest must last at least 40 seconds');
+  assert.equal(
+    rested.hash,
+    pose.hash,
+    'Rest must keep all robot geometry still',
+  );
+  assert.equal(rested.centerX, pose.centerX);
+  return rested;
+}
+async function restThenWalk(pose) {
+  await stillRest(pose);
+  const walk = await until('walk', REST_MAX_FRAMES - REST_STILL_FRAMES + 3);
+  const frames = REST_STILL_FRAMES + walk.frames;
+  assert.ok(
+    frames >= REST_MIN_FRAMES - 1,
+    'Rest must last at least 40 seconds',
+  );
+  assert.ok(
+    frames <= REST_MAX_FRAMES + 2,
+    'Rest must finish within 120 seconds',
+  );
+  return walk;
 }
 
 async function main() {
@@ -185,6 +219,14 @@ async function main() {
         return deleteBuffer(buffer);
       };
       const {createFactoryScene} = await import(moduleUrl);
+      const {idleActivityPose, drawIdleActivity} = await import(
+        new URL('./parent-activities.js', moduleUrl)
+      );
+      const {createParentFallback} = await import(
+        new URL('./parent-fallback.js', moduleUrl)
+      );
+      let fallback;
+      let fallbackContainer;
       let scene;
       let data;
       let anchor;
@@ -241,6 +283,100 @@ async function main() {
       };
       window.fixture = {
         scene: () => scene,
+        activityGeometry(activities) {
+          const colors = Object.fromEntries(
+            [
+              'shell',
+              'edge',
+              'metal',
+              'dark',
+              'white',
+              'dim',
+              'amber',
+              'cyan',
+              'mint',
+            ].map((name, i) => [name, [i / 10, 0.5, 0.8]]),
+          );
+          return activities.map(activity => {
+            const samples = [0.5, 1, 2, 4.5].map(time => {
+              const pose = idleActivityPose(activity, time);
+              const primitives = [];
+              const geometry = Object.fromEntries(
+                ['box', 'cylinder', 'octagon', 'rod', 'ring'].map(method => [
+                  method,
+                  (...args) => primitives.push([method, ...args]),
+                ]),
+              );
+              drawIdleActivity(
+                geometry,
+                geometry,
+                colors,
+                activity,
+                time,
+                pose,
+              );
+              const finite = value => {
+                if (typeof value === 'number') return Number.isFinite(value);
+                if (Array.isArray(value)) return value.every(finite);
+                if (value && typeof value === 'object')
+                  return Object.values(value).every(finite);
+                return true;
+              };
+              return {
+                finite: finite(pose) && finite(primitives),
+                primitives: primitives.length,
+                pose: JSON.stringify(pose),
+                geometry: JSON.stringify(primitives),
+              };
+            });
+            return {activity, samples};
+          });
+        },
+        createFallback() {
+          fallbackContainer = document.createElement('div');
+          fallbackContainer.innerHTML =
+            '<div class="fallback-station parent-session"><span class="robot-glyph"></span></div>';
+          document.body.append(fallbackContainer);
+          fallback = createParentFallback(fallbackContainer);
+          data = {session: {id: 'svg-parent', status: 'idle'}, agents: []};
+          fallback.update(data, 'parent');
+        },
+        fallbackMode() {
+          return fallbackContainer.querySelector('svg').dataset.mode;
+        },
+        fallbackPose() {
+          const svg = fallbackContainer.querySelector('svg');
+          const robot = svg.lastElementChild;
+          const bounds = robot.getBBox();
+          return {
+            mode: svg.dataset.mode,
+            activity: svg.dataset.activity,
+            geometry: JSON.stringify(
+              [...robot.children].map(path => [
+                path.getAttribute('d'),
+                path.getAttribute('fill'),
+                path.getAttribute('stroke'),
+                path.getAttribute('stroke-width'),
+                path.style.filter,
+              ]),
+            ),
+            paths: robot.children.length,
+            finite: [...robot.children].every(
+              path => !/NaN|Infinity/.test(path.getAttribute('d')),
+            ),
+            bounds: [bounds.x, bounds.y, bounds.width, bounds.height],
+          };
+        },
+        fallbackPrompt(id = 'svg-parent') {
+          fallback.prompt(id);
+        },
+        disposeFallback() {
+          fallback.dispose();
+          return {
+            pending: callbacks.size,
+            removed: !fallbackContainer.querySelector('svg'),
+          };
+        },
         reset(id, status) {
           data = {session: {id, status, activity: 'Thinking'}, agents: []};
           scene.update(data, 'parent');
@@ -309,11 +445,11 @@ async function main() {
   );
 
   await run(
-    'idle roaming moves GPU geometry and its clickable screen anchor',
+    'initial rest waits 40–120 seconds, then roaming and activities pause still in the aisle',
     async () => {
       const home = await reset();
       finiteRendered(home);
-      const walk = await until('walk');
+      const walk = await restThenWalk(home);
       await advance(40);
       const roaming = await inspect();
       finiteRendered(roaming);
@@ -329,107 +465,91 @@ async function main() {
         ) > 0.005,
       );
       assert.equal(await evaluate(() => window.fixture.click()), 'parent');
-    },
-  );
-
-  await run(
-    'every idle activity renders changing finite robot and prop geometry',
-    async () => {
-      await reset('twelve-activities');
-      const captures = await evaluate(() => {
-        const captures = [];
-        const seen = new Set();
-        for (let i = 0; i < 6000 && seen.size < 12; i++) {
-          window.fixture.advance(1);
-          const activity =
-            document.querySelector('canvas').dataset.parentActivity;
-          if (!activity || seen.has(activity)) continue;
-          seen.add(activity);
-          window.fixture.advance(10);
-          const first = window.fixture.inspect(true);
-          window.fixture.advance(10);
-          const second = window.fixture.inspect();
-          captures.push({first, second});
-        }
-        return captures;
-      });
-      assert.deepEqual(
-        captures.map(item => item.first.activity).sort(),
-        [...activities].sort(),
+      await until('idle', 220);
+      await advance(10);
+      const first = await evaluate(() => window.fixture.inspect(true));
+      await advance(10);
+      const second = await inspect();
+      finiteRendered(first);
+      finiteRendered(second);
+      assert.ok(activities.includes(first.activity));
+      assert.equal(second.activity, first.activity);
+      assert.notEqual(
+        second.hash,
+        first.hash,
+        'The rendered activity must animate',
       );
-      for (const {first, second} of captures) {
-        finiteRendered(first);
-        finiteRendered(second);
-        assert.equal(second.activity, first.activity);
-        assert.notEqual(
-          second.hash,
-          first.hash,
-          `${first.activity} must animate its geometry`,
-        );
-      }
+      const rest = await until('rest', 160);
+      assert.ok(rest.centerX >= -3 && rest.centerX <= 6.5);
+      assert.ok(
+        Math.abs(rest.centerX - second.centerX) < 0.000001,
+        'The pause must stay at the activity location',
+      );
+      await restThenWalk(rest);
       if (process.env.PARENT_ANIMATION_SCREENSHOT_DIR) {
-        const sharp = require('sharp');
         const output = process.env.PARENT_ANIMATION_SCREENSHOT_DIR;
         mkdirSync(output, {recursive: true});
-        const tiles = [];
-        for (let index = 0; index < captures.length; index++) {
-          const pose = captures[index].first;
-          const image = Buffer.from(pose.image.split(',')[1], 'base64');
-          writeFileSync(join(output, `${pose.activity}.png`), image);
-          const title = Buffer.from(
-            `<svg width="400" height="28"><rect width="400" height="28" fill="#101b20"/><text x="12" y="20" fill="white" font-size="16">${pose.activity}</text></svg>`,
-          );
-          const tile = await sharp(image)
-            .resize(400, 260)
-            .extend({
-              top: 28,
-              bottom: 0,
-              left: 0,
-              right: 0,
-              background: '#101b20',
-            })
-            .composite([{input: title, top: 0, left: 0}])
-            .png()
-            .toBuffer();
-          tiles.push({
-            input: tile,
-            left: (index % 3) * 400,
-            top: Math.floor(index / 3) * 288,
-          });
-        }
-        await sharp({
-          create: {
-            width: 1200,
-            height: 1152,
-            channels: 4,
-            background: '#101b20',
-          },
-        })
-          .composite(tiles)
-          .png()
-          .toFile(join(output, 'contact-sheet.png'));
+        writeFileSync(
+          join(output, `${first.activity}.png`),
+          Buffer.from(first.image.split(',')[1], 'base64'),
+        );
       }
     },
   );
 
   await run(
-    'prompt jumps in place, runs home, and repeated running snapshots do not restart it',
+    'every idle activity produces finite animated robot poses and prop geometry',
+    async () => {
+      // Exercise the shared production activity geometry separately from its
+      // 12 long rests. The preceding case checks its actual WebGL rendering.
+      const captures = await evaluate(
+        activities => window.fixture.activityGeometry(activities),
+        activities,
+      );
+      assert.deepEqual(
+        captures.map(item => item.activity),
+        activities,
+      );
+      for (const {activity, samples} of captures) {
+        assert.ok(
+          samples.every(sample => sample.finite),
+          `${activity} must stay finite`,
+        );
+        assert.ok(
+          samples.every(sample => sample.primitives > 0),
+          `${activity} must draw props`,
+        );
+        assert.ok(
+          new Set(samples.map(sample => sample.pose)).size > 1,
+          `${activity} must animate the robot pose`,
+        );
+        assert.ok(
+          new Set(samples.map(sample => sample.geometry)).size > 1,
+          `${activity} must animate its prop geometry`,
+        );
+      }
+    },
+  );
+
+  await run(
+    'prompt wakes aisle rest immediately, runs home, and completed work rests again',
     async () => {
       await reset('prompt-parent');
       await until('idle');
-      const idle = await inspect();
+      const rest = await until('rest', 165);
+      assert.ok(rest.centerX >= -3 && rest.centerX <= 6.5);
       await evaluate(() => window.fixture.scene().prompt('other-parent'));
-      assert.equal((await inspect()).mode, 'idle');
+      assert.equal((await inspect()).mode, 'rest');
       await evaluate(() => window.fixture.scene().prompt('prompt-parent'));
       assert.equal((await inspect()).mode, 'startled');
       await advance(5);
       const startled = await inspect();
       finiteRendered(startled);
       assert.ok(
-        Math.abs(startled.centerX - idle.centerX) < 0.001,
+        Math.abs(startled.centerX - rest.centerX) < 0.001,
         'Startle must jump before returning',
       );
-      assert.notEqual(startled.hash, idle.hash);
+      assert.notEqual(startled.hash, rest.hash);
       await evaluate(() => window.fixture.update('running'));
       const returning = await until('return');
       assert.equal(returning.activity, '');
@@ -457,6 +577,8 @@ async function main() {
       finiteRendered(working);
       assert.equal(working.mode, 'work');
       assert.ok(Math.abs(working.centerX + 6.25) < 0.001);
+      await evaluate(() => window.fixture.update('idle'));
+      await stillRest(await inspect());
     },
   );
 
@@ -471,7 +593,6 @@ async function main() {
       assert.equal(fresh.mode, 'rest');
       assert.equal(fresh.activity, '');
       assert.ok(Math.abs(fresh.centerX + 6.25) < 0.001);
-      await until('idle');
       await evaluate(() => window.fixture.update('compacting'));
       assert.equal((await inspect()).mode, 'startled');
       finiteRendered(await until('work'));
@@ -479,10 +600,11 @@ async function main() {
   );
 
   await run(
-    'motion off freezes uploaded geometry and cancelling a prompt permits idle roaming',
+    'motion off freezes geometry, and reenable and prompt cancellation enter long rests',
     async () => {
       await reset('motion-parent');
-      await until('idle');
+      await until('walk');
+      await advance(40);
       await evaluate(() => window.fixture.scene().setMotion(false));
       const staticPose = await inspect();
       assert.equal(staticPose.pending, 0);
@@ -499,14 +621,15 @@ async function main() {
         window.fixture.update('idle');
         window.fixture.scene().setMotion(true);
       });
-      await until('idle');
+      await stillRest(await inspect());
       await evaluate(() => {
         window.fixture.scene().prompt('motion-parent');
         window.fixture.scene().cancelPrompt('motion-parent');
       });
-      await until('return');
-      await until('rest');
-      await until('walk', 30);
+      await until('return', 20);
+      const cancelled = await until('rest', 220);
+      assert.ok(Math.abs(cancelled.centerX + 6.25) < 0.001);
+      await restThenWalk(cancelled);
       finiteRendered(await inspect());
     },
   );
@@ -523,7 +646,9 @@ async function main() {
       assert.equal(stopped.mode, 'rest');
       assert.ok(Math.abs(stopped.centerX + 6.25) < 0.001);
       await advance(25);
-      assert.equal((await inspect()).mode, 'rest');
+      const landedStop = await inspect();
+      assert.equal(landedStop.mode, 'rest');
+      await stillRest(landedStop, REST_STILL_FRAMES - 25);
       await evaluate(() => {
         window.fixture.scene().setMotion(false);
         window.fixture.scene().startle(true);
@@ -583,6 +708,95 @@ async function main() {
       assert.equal(cleanup.disconnected, true);
       assert.equal(cleanup.buffers, 3);
       assert.equal(cleanup.deleted, cleanup.buffers);
+      assert.deepEqual(rendererErrors, []);
+    },
+  );
+
+  await run(
+    'SVG fallback keeps aisle rest geometry still and prompt returns it home',
+    async () => {
+      const poses = await evaluate(() => {
+        window.fixture.createFallback();
+        const until = (mode, maximum) => {
+          for (
+            let i = 0;
+            window.fixture.fallbackMode() !== mode && i < maximum;
+            i++
+          )
+            window.fixture.advance(1);
+          return window.fixture.fallbackPose();
+        };
+        const home = window.fixture.fallbackPose();
+        const idle = until('idle', 2620);
+        window.fixture.advance(10);
+        const active = window.fixture.fallbackPose();
+        const rest = until('rest', 165);
+        window.fixture.advance(780);
+        const still = window.fixture.fallbackPose();
+        window.fixture.fallbackPrompt('other-parent');
+        const unrelated = window.fixture.fallbackPose();
+        window.fixture.fallbackPrompt();
+        const woken = window.fixture.fallbackPose();
+        window.fixture.advance(5);
+        const jump = window.fixture.fallbackPose();
+        const returning = until('return', 20);
+        const returned = until('rest', 220);
+        const cleanup = window.fixture.disposeFallback();
+        return {
+          home,
+          idle,
+          active,
+          rest,
+          still,
+          unrelated,
+          woken,
+          jump,
+          returning,
+          returned,
+          cleanup,
+        };
+      });
+      for (const pose of [
+        poses.home,
+        poses.active,
+        poses.rest,
+        poses.still,
+        poses.jump,
+        poses.returned,
+      ]) {
+        assert.equal(pose.finite, true);
+        assert.ok(pose.paths > 100, 'SVG must contain the actual robot shapes');
+        assert.ok(pose.bounds.every(Number.isFinite));
+      }
+      assert.equal(poses.home.mode, 'rest');
+      assert.equal(poses.idle.mode, 'idle');
+      assert.ok(activities.includes(poses.active.activity));
+      assert.equal(poses.rest.mode, 'rest');
+      assert.equal(poses.still.mode, 'rest');
+      assert.equal(poses.rest.activity, '');
+      assert.notEqual(
+        poses.rest.geometry,
+        poses.home.geometry,
+        'SVG pause must be away from home',
+      );
+      assert.equal(
+        poses.still.geometry,
+        poses.rest.geometry,
+        'SVG must not walk or bob during rest',
+      );
+      assert.deepEqual(poses.still.bounds, poses.rest.bounds);
+      assert.equal(poses.unrelated.mode, 'rest');
+      assert.equal(poses.woken.mode, 'startled');
+      assert.notEqual(poses.jump.geometry, poses.rest.geometry);
+      assert.equal(poses.returning.mode, 'return');
+      assert.equal(poses.returned.mode, 'rest');
+      assert.equal(
+        poses.returned.geometry,
+        poses.home.geometry,
+        'SVG must arrive back home',
+      );
+      assert.equal(poses.cleanup.pending, 0);
+      assert.equal(poses.cleanup.removed, true);
       assert.deepEqual(rendererErrors, []);
     },
   );

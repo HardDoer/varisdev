@@ -12,7 +12,7 @@ const execFile = promisify(execFileCallback);
 const require = createRequire(import.meta.url);
 
 void test(
-  'parent animation in the real Electron WebGL scene',
+  'parent animation in the real Electron WebGL and SVG scenes',
   {
     timeout: 120_000,
     skip:
@@ -55,8 +55,8 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      8,
-      'Every rendered scenario must execute',
+      9,
+      'Every animation scenario must execute',
     );
     for (const result of report.cases) {
       await t.test(result.name, () => assert.ifError(result.error));

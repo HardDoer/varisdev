@@ -16,6 +16,8 @@ export const IDLE_ACTIVITIES = Object.freeze([
 
 const HOME = -6.25;
 const STARTLE_SECONDS = 0.7;
+const REST_MIN_SECONDS = 40;
+const REST_MAX_SECONDS = 120;
 const TAU = Math.PI * 2;
 const active = status => status === 'running' || status === 'compacting';
 const smoothstep = value => {
@@ -37,7 +39,7 @@ export function createParentMotion() {
   let stride = 0;
   let speed = 0;
   let destination = HOME;
-  let duration = 0.6;
+  let duration = 0;
   let pendingPrompt = false;
   let stopRemaining = 0;
   let seed = 1;
@@ -56,12 +58,22 @@ export function createParentMotion() {
     duration = seconds;
   }
 
+  function rest() {
+    speed = 0;
+    stride = 0;
+    enter(
+      'rest',
+      REST_MIN_SECONDS + random() * (REST_MAX_SECONDS - REST_MIN_SECONDS),
+    );
+  }
+
   function settle() {
     x = HOME;
     yaw = 0;
     speed = 0;
     stride = 0;
-    enter(active(status) ? 'work' : 'rest', 0.6);
+    if (active(status)) enter('work');
+    else rest();
   }
 
   function reset(id) {
@@ -139,10 +151,7 @@ export function createParentMotion() {
   function advance(dt) {
     if (stopRemaining > 0) {
       stopRemaining = Math.max(0, stopRemaining - dt);
-      if (stopRemaining === 0) {
-        if (status === 'idle') roam();
-        else settle();
-      }
+      if (stopRemaining === 0) settle();
       return;
     }
     elapsed += dt;
@@ -155,7 +164,8 @@ export function createParentMotion() {
           yaw = 0;
           speed = 0;
           stride = 0;
-          enter(active(status) ? 'work' : 'rest', pendingPrompt ? 4 : 0.8);
+          if (active(status)) enter('work');
+          else rest();
         }
       }
     } else if (mode === 'walk') {
@@ -166,7 +176,7 @@ export function createParentMotion() {
       }
     } else if (mode === 'idle') {
       face(0, dt);
-      if (elapsed >= duration) roam();
+      if (elapsed >= duration) rest();
     } else if (mode === 'rest' && status === 'idle' && elapsed >= duration) {
       pendingPrompt = false;
       roam();
@@ -193,7 +203,7 @@ export function createParentMotion() {
       if (active(status) && !active(previousStatus)) {
         if (awaitingPrompt && mode === 'rest') enter('work');
         else wake();
-      } else if (!active(status) && active(previousStatus)) enter('rest', 0.8);
+      } else if (!active(status) && active(previousStatus)) rest();
     },
 
     prompt() {
@@ -206,8 +216,6 @@ export function createParentMotion() {
     cancelPrompt() {
       if (disposed) return;
       pendingPrompt = false;
-      if (mode === 'rest' && !active(status))
-        duration = Math.min(duration, 0.8);
     },
 
     tick(dt) {

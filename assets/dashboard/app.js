@@ -566,6 +566,7 @@ function renderFallback(data) {
       const task = parent ? unit.prompt || 'Parent session prompt' : unit.task;
       const activity = unit.activity || statusName(unit.status);
       entry.element.className = `fallback-station ${parent ? 'parent-session' : 'agent'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
+      entry.element.classList.toggle('selected', state.unitId === unit.id);
       entry.element.setAttribute(
         'aria-pressed',
         String(state.unitId === unit.id),
@@ -587,7 +588,10 @@ function sizeInspector() {
 }
 function sizeScene() {
   const element = $('scene');
-  element.classList.toggle('compact-scene', element.clientHeight < 360);
+  element.classList.toggle(
+    'compact-scene',
+    element.clientHeight < (scene ? 360 : 620),
+  );
 }
 function resizeFactory() {
   sizeScene();
@@ -746,6 +750,7 @@ function renderWorkers() {
         'aria-pressed',
         String(state.unitId === agent.id),
       );
+      entry.element.dataset.status = agent.status;
       text(entry.name, agent.name);
       badge(entry.status, agent.status);
       text(entry.task, agent.task);
@@ -919,17 +924,28 @@ function renderFeed(data) {
       preserveDisclosure(details, `feed:${disclosureKey}`);
       const summary = node('summary');
       const meta = node('span', 'feed-event-meta');
-      const kind = node('span');
+      const kind = node('span', 'feed-event-kind');
+      const status = node('span', 'status-badge');
       const at = node('time');
       const message = node('span', 'feed-event-message');
       const content = node('dl', 'feed-details');
-      meta.append(kind, at);
+      meta.append(kind, status, at);
       summary.append(meta, message);
       details.append(summary, content);
       element.append(details);
-      return {element, kind, at, message, content, fields: new Map()};
+      return {element, kind, status, at, message, content, fields: new Map()};
     },
     (entry, event) => {
+      // Event details preserve the status at that point in the agent's work.
+      const status =
+        event.kind === 'error'
+          ? 'failed'
+          : event.details?.Status || findEventTool(event, data)?.status;
+      const hasStatus = Object.hasOwn(STATUS, status);
+      if (hasStatus) entry.element.dataset.status = status;
+      else delete entry.element.dataset.status;
+      entry.status.hidden = !hasStatus;
+      if (hasStatus) badge(entry.status, status);
       entry.element.classList.toggle('error', event.kind === 'error');
       const [kind, label] =
         event.kind === 'tool'
@@ -1422,7 +1438,7 @@ function renderWorkspace() {
     $('workspace-summary'),
     result.git
       ? `${result.files.length} changed files · read ${date(at)}\n${result.cwd}`
-      : `No Git repository in ${result.cwd}. Robot edits are in Changes.`,
+      : `No Git repository in ${result.cwd}. Agent edits are in Changes.`,
   );
   $('workspace-files').replaceChildren(
     ...result.files.map(file => {

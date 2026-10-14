@@ -321,6 +321,29 @@ async function screenshot(name) {
   writeFileSync(join(output, `${name}.png`), image.toPNG());
 }
 
+function rgbChannels(color) {
+  return color
+    .match(/[\d.]+/g)
+    .slice(0, 3)
+    .map(Number);
+}
+
+function contrast(first, second) {
+  const luminance = color => {
+    const [r, g, b] = rgbChannels(color).map(channel => {
+      const value = channel / 255;
+      return value <= 0.04045
+        ? value / 12.92
+        : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return r * 0.2126 + g * 0.7152 + b * 0.0722;
+  };
+  const [low, high] = [luminance(first), luminance(second)].sort(
+    (a, b) => a - b,
+  );
+  return (high + 0.05) / (low + 0.05);
+}
+
 async function main() {
   await app.whenReady();
   window = new BrowserWindow({
@@ -659,6 +682,329 @@ async function main() {
     assert.match(workerDetail, /Reading src\/example\.js/);
     assert.match(workerDetail, /Found the example value/);
   });
+
+  await run(
+    'agent live feed keeps green working yellow queued and blue completed history',
+    async () => {
+      const agent = {
+        id: 'status-agent',
+        name: 'Status agent',
+        task: 'Inspect the project',
+        activity: 'Completed the inspection',
+        model: 'fixture/small',
+        status: 'completed',
+        createdAt: at,
+        startedAt: at,
+        finishedAt: at,
+      };
+      hub.sessions[0].agents = [agent];
+      hub.sessions[0].totalAgents = 1;
+      hub.sessions[0].events = ['queued', 'running', 'completed'].map(
+        (status, index) => ({
+          id: `status-event-${index}`,
+          sourceId: agent.id,
+          sourceName: agent.name,
+          kind: 'agent',
+          message: `Inspection ${status}`,
+          details: {Status: status},
+          at,
+        }),
+      );
+      await publish();
+      await evaluate(() => {
+        document.querySelector('#history-workers button').click();
+        document.getElementById('tab-feed').click();
+      });
+      await settle();
+      const feed = () =>
+        [...document.querySelectorAll('#live-feed .feed-event')].map(row => {
+          const badge = row.querySelector('.status-badge');
+          return {
+            label: badge.textContent,
+            visible: !badge.hidden && badge.getClientRects().length > 0,
+            accent: getComputedStyle(row).borderLeftColor,
+            color: getComputedStyle(badge).color,
+            background: getComputedStyle(badge).backgroundColor,
+          };
+        });
+      const original = await evaluate(feed);
+      assert.deepEqual(
+        original.map(row => row.label),
+        ['Queued', 'Working', 'Completed'],
+        'Historical events must expose the recorded status of the agent',
+      );
+      assert.ok(original.every(row => row.visible));
+      assert.equal(new Set(original.map(row => row.accent)).size, 3);
+      for (const row of original) {
+        assert.equal(row.accent, row.color);
+        assert.ok(
+          contrast(row.color, row.background) >= 4.5,
+          `${row.label} must remain readable`,
+        );
+      }
+      const [queued, working, completed] = original.map(row =>
+        rgbChannels(row.accent),
+      );
+      assert.ok(working[1] > working[0] + 30 && working[1] > working[2] + 30);
+      assert.ok(queued[0] > queued[2] + 60 && queued[1] > queued[2] + 60);
+      assert.ok(
+        completed[2] > completed[1] + 30 && completed[1] > completed[0] + 30,
+        'Completed must look blue with a clear difference from green',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await evaluate(() => {
+          for (const details of document.querySelectorAll('#live-feed details'))
+            details.open = false;
+          document.getElementById('panel-feed').scrollTop = 0;
+        });
+        await screenshot('agent-status-live-feed');
+      }
+      agent.status = 'failed';
+      agent.activity = 'Inspection failed';
+      hub.sessions[0].events.push({
+        id: 'status-event-failed',
+        sourceId: agent.id,
+        sourceName: agent.name,
+        kind: 'error',
+        message: agent.activity,
+        details: {Status: agent.status},
+        at,
+      });
+      await publish();
+      const updated = await evaluate(feed);
+      assert.deepEqual(
+        updated.slice(0, 3),
+        original,
+        'A new agent status must preserve earlier event colors and labels',
+      );
+      assert.equal(updated[3].label, 'Failed');
+      const failed = rgbChannels(updated[3].accent);
+      assert.ok(failed[0] > failed[1] + 50 && failed[0] > failed[2] + 50);
+    },
+  );
+
+  await run(
+    'selected agents are clear and readable in cards scene labels and fallback',
+    async () => {
+      hub.sessions[0].agents = ['running', 'queued', 'completed'].map(
+        (status, index) => ({
+          id: `selection-agent-${index}`,
+          name: ['Working agent', 'Queued agent', 'Completed agent'][index],
+          task: 'Inspect the project',
+          activity:
+            status === 'queued' ? 'Waiting for a slot' : 'Inspecting files',
+          model: 'fixture/small',
+          status,
+          createdAt: at,
+          startedAt: at,
+          ...(status === 'completed' ? {finishedAt: at} : {}),
+        }),
+      );
+      hub.sessions[0].totalAgents = 3;
+      await publish();
+      await evaluate(() => document.getElementById('motion-toggle').click());
+      await settle();
+      const themes = await evaluate(() =>
+        [...document.getElementById('factory-theme').options].map(
+          option => option.value,
+        ),
+      );
+      const selected = () => {
+        const card = document.querySelector(
+          '#active-workers [aria-pressed="true"], #history-workers [aria-pressed="true"]',
+        );
+        const label = document.querySelector(
+          '#scene-labels [aria-pressed="true"]',
+        );
+        const other = document.querySelector(
+          '#active-workers [aria-pressed="false"]',
+        );
+        const style = item => ({
+          color: getComputedStyle(item).color,
+          background: getComputedStyle(item).backgroundColor,
+        });
+        return {
+          inspector: document.getElementById('inspector-title').textContent,
+          card: {
+            ...style(card),
+            name: card.querySelector('.worker-card-name, .history-row-name')
+              .textContent,
+            taskColor: getComputedStyle(
+              card.querySelector('.worker-card-task, .history-row-task'),
+            ).color,
+          },
+          label: {
+            ...style(label),
+            color: getComputedStyle(label.querySelector('.scene-label-name'))
+              .color,
+            name: label.textContent,
+          },
+          other: style(other),
+          selectedCards: document.querySelectorAll(
+            '#active-workers [aria-pressed="true"], #history-workers [aria-pressed="true"]',
+          ).length,
+          selectedLabels: document.querySelectorAll(
+            '#scene-labels [aria-pressed="true"]',
+          ).length,
+        };
+      };
+      for (const theme of themes) {
+        await evaluate(theme => {
+          const select = document.getElementById('factory-theme');
+          select.value = theme;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+        }, theme);
+        for (const name of [
+          'Working agent',
+          'Queued agent',
+          'Completed agent',
+        ]) {
+          await evaluate(
+            name =>
+              [
+                ...document.querySelectorAll(
+                  '#active-workers button, #history-workers button',
+                ),
+              ]
+                .find(item => item.textContent.includes(name))
+                .click(),
+            name,
+          );
+          await settle();
+          const result = await evaluate(selected);
+          assert.equal(result.inspector, name);
+          assert.equal(result.card.name, name);
+          assert.equal(result.label.name, name);
+          assert.equal(result.selectedCards, 1);
+          assert.equal(result.selectedLabels, 1);
+          assert.ok(
+            contrast(result.card.background, result.other.background) >= 3,
+            `${theme}: selection must stand out from the other agents`,
+          );
+          for (const surface of [result.card, result.label])
+            assert.ok(
+              contrast(surface.color, surface.background) >= 4.5,
+              `${theme}: the selected name must remain readable`,
+            );
+          assert.ok(
+            contrast(result.card.taskColor, result.card.background) >= 4.5,
+            `${theme}: the selected task must remain readable`,
+          );
+        }
+      }
+      await evaluate(() => {
+        const select = document.getElementById('factory-theme');
+        select.value = 'factory';
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+        [...document.querySelectorAll('#active-workers button')]
+          .find(item => item.textContent.includes('Working agent'))
+          .click();
+      });
+      await settle();
+      const bounds = await evaluate(() => {
+        const rect = document.getElementById('scene').getBoundingClientRect();
+        return {
+          x: Math.ceil(rect.x),
+          y: Math.ceil(rect.y),
+          width: Math.floor(rect.width),
+          height: Math.floor(rect.height),
+        };
+      });
+      const before = (await window.webContents.capturePage(bounds)).toBitmap();
+      await evaluate(() =>
+        [...document.querySelectorAll('#scene-labels button')]
+          .find(item => item.textContent === 'Queued agent')
+          .click(),
+      );
+      await settle();
+      assert.equal((await evaluate(selected)).inspector, 'Queued agent');
+      const after = (await window.webContents.capturePage(bounds)).toBitmap();
+      let changed = 0;
+      for (let offset = 0; offset < before.length; offset += 4)
+        if (
+          !before
+            .subarray(offset, offset + 4)
+            .equals(after.subarray(offset, offset + 4))
+        )
+          changed++;
+      assert.ok(
+        changed > 50,
+        'Selecting an agent must visibly change the still 3D scene',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await evaluate(() =>
+          document.querySelector('#active-workers .selected').scrollIntoView({
+            block: 'nearest',
+          }),
+        );
+        await screenshot('selected-queued-agent');
+      }
+
+      // Exercise the same selection when WebGL is unavailable in the browser.
+      window.webContents.debugger.attach('1.3');
+      await window.webContents.debugger.sendCommand('Page.enable');
+      const {identifier} = await window.webContents.debugger.sendCommand(
+        'Page.addScriptToEvaluateOnNewDocument',
+        {
+          source: `(() => {
+            const getContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+              return type === 'webgl' ? null : getContext.call(this, type, ...args);
+            };
+          })();`,
+        },
+      );
+      try {
+        await reloadPage();
+        assert.equal(
+          await evaluate(() => !document.getElementById('fallback').hidden),
+          true,
+          'Disabling WebGL must reveal the fallback scene',
+        );
+        await evaluate(() =>
+          [...document.querySelectorAll('#fallback-units button')]
+            .find(item => item.textContent.includes('Queued agent'))
+            .click(),
+        );
+        await settle();
+        const fallback = await evaluate(() => {
+          const station = document.querySelector(
+            '#fallback-units [aria-pressed="true"]',
+          );
+          const other = document.querySelector(
+            '#fallback-units [aria-pressed="false"]',
+          );
+          return {
+            visible: !document.getElementById('fallback').hidden,
+            inspector: document.getElementById('inspector-title').textContent,
+            selected: station.classList.contains('selected'),
+            name: station.querySelector('strong').textContent,
+            color: getComputedStyle(station.querySelector('strong')).color,
+            background: getComputedStyle(station).backgroundColor,
+            otherBackground: getComputedStyle(other).backgroundColor,
+            cardSelected: document
+              .querySelector('#active-workers .selected')
+              .textContent.includes('Queued agent'),
+          };
+        });
+        assert.equal(fallback.visible, true);
+        assert.equal(fallback.selected, true);
+        assert.equal(fallback.name, 'Queued agent');
+        assert.equal(fallback.inspector, 'Queued agent');
+        assert.equal(fallback.cardSelected, true);
+        assert.ok(contrast(fallback.color, fallback.background) >= 4.5);
+        assert.ok(contrast(fallback.background, fallback.otherBackground) >= 3);
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot('selected-agent-fallback');
+      } finally {
+        await window.webContents.debugger.sendCommand(
+          'Page.removeScriptToEvaluateOnNewDocument',
+          {identifier},
+        );
+        window.webContents.debugger.detach();
+      }
+    },
+  );
 
   await run('switching parents restores each draft and cursor', async () => {
     await evaluate(() => {

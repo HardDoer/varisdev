@@ -15,7 +15,7 @@ function advance(controller: Controller, seconds: number) {
 function until(
   controller: Controller,
   condition: () => boolean,
-  maximumSeconds = 20,
+  maximumSeconds = 130,
 ) {
   for (let frame = 0; frame < maximumSeconds * 60; frame++) {
     if (condition()) return;
@@ -33,7 +33,17 @@ function idleController(id = 'parent-one') {
   return controller;
 }
 
-void test('idle visits all twelve activities before repeating, walking between destinations', () => {
+function waitAtRest(controller: Controller) {
+  const pose = controller.pose();
+  assert.equal(pose.mode, 'rest');
+  assert.equal(pose.activity, null);
+  assert.equal(pose.stride, 0);
+  advance(controller, 39.9);
+  assert.deepEqual({...controller.pose(), elapsed: pose.elapsed}, pose);
+  until(controller, () => controller.pose().mode === 'walk', 80.2);
+}
+
+void test('idle visits all twelve activities with long stationary pauses between walks', () => {
   assert.deepEqual(IDLE_ACTIVITIES, [
     'coffee',
     'jump-rope',
@@ -49,8 +59,7 @@ void test('idle visits all twelve activities before repeating, walking between d
     'paper-plane',
   ]);
   const controller = idleController();
-  advance(controller, 0.9);
-  assert.equal(controller.pose().mode, 'walk');
+  waitAtRest(controller);
   const activities: string[] = [];
   let previousX = HOME;
   for (let index = 0; index < 24; index++) {
@@ -67,9 +76,10 @@ void test('idle visits all twelve activities before repeating, walking between d
     previousX = pose.x;
     advance(controller, 4.9);
     assert.equal(controller.pose().mode, 'idle');
-    until(controller, () => controller.pose().mode === 'walk', 4);
-    assert.equal(controller.pose().activity, null);
+    until(controller, () => controller.pose().mode === 'rest', 4);
+    assert.equal(controller.pose().x, pose.x);
     assert.equal(controller.pose().duration, 0);
+    waitAtRest(controller);
   }
   for (const start of [0, 12]) {
     assert.deepEqual(
@@ -80,9 +90,34 @@ void test('idle visits all twelve activities before repeating, walking between d
   assert.notEqual(activities[11], activities[12]);
 });
 
+void test('standing in the aisle stays still through updates and wakes immediately for work', () => {
+  const controller = idleController();
+  until(controller, () => controller.pose().mode === 'idle');
+  until(controller, () => controller.pose().mode === 'rest', 9);
+  const standing = controller.pose();
+  assert.notEqual(standing.x, HOME);
+  for (let second = 0; second < 39; second++) {
+    advance(controller, 1);
+    controller.update({id: 'parent-one', status: 'idle'});
+    assert.deepEqual(
+      {...controller.pose(), elapsed: standing.elapsed},
+      standing,
+    );
+  }
+  controller.prompt();
+  assert.equal(controller.pose().mode, 'startled');
+  assert.equal(controller.pose().x, standing.x);
+  assert.equal(controller.pose().surprise, 1);
+  controller.update({id: 'parent-one', status: 'running'});
+  until(controller, () => controller.pose().mode === 'work', 5);
+  assert.equal(controller.pose().x, HOME);
+  controller.update({id: 'parent-one', status: 'idle'});
+  waitAtRest(controller);
+});
+
 void test('prompt during roaming jumps without teleporting, then returns quickly and faces home', () => {
   const controller = idleController();
-  until(controller, () => controller.pose().x > -2);
+  until(controller, () => controller.pose().x > HOME + 2);
   const before = controller.pose();
   assert.equal(before.mode, 'walk');
   controller.prompt();
@@ -121,9 +156,7 @@ void test('prompt during roaming jumps without teleporting, then returns quickly
   assert.equal(last.x, HOME);
   assert.equal(last.yaw, 0);
   assert.equal(last.ground, 0);
-  advance(controller, 3.5);
-  assert.equal(controller.pose().mode, 'rest');
-  until(controller, () => controller.pose().mode === 'walk', 1);
+  waitAtRest(controller);
 });
 
 void test('running snapshots do not restart the wake and an early completion still finishes returning', () => {
@@ -144,7 +177,7 @@ void test('running snapshots do not restart the wake and an early completion sti
   assert.deepEqual(controller.pose(), returning);
   until(controller, () => controller.pose().mode === 'rest');
   assert.equal(controller.pose().x, HOME);
-  until(controller, () => controller.pose().mode === 'walk', 1);
+  waitAtRest(controller);
 });
 
 void test('running work resumes at home and initial active snapshots never startle', () => {
@@ -194,11 +227,11 @@ void test('a rejected prompt releases its hold and repeated idle updates preserv
   controller.prompt();
   controller.cancelPrompt();
   until(controller, () => controller.pose().mode === 'rest');
-  until(controller, () => controller.pose().mode === 'walk', 1);
+  waitAtRest(controller);
   controller.prompt();
   until(controller, () => controller.pose().mode === 'rest');
   controller.cancelPrompt();
-  until(controller, () => controller.pose().mode === 'walk', 1);
+  waitAtRest(controller);
 });
 
 void test('session changes reset position, wake state, and the deterministic shuffle', () => {
@@ -212,7 +245,7 @@ void test('session changes reset position, wake state, and the deterministic shu
   assert.equal(controller.pose().jump, 0);
   controller.update({id: 'parent-one', status: 'idle'});
   const fresh = idleController();
-  for (let frame = 0; frame < 60 * 40; frame++) {
+  for (let frame = 0; frame < 60 * 160; frame++) {
     controller.tick(1 / 60);
     fresh.tick(1 / 60);
     assert.deepEqual(controller.pose(), fresh.pose());
@@ -229,9 +262,9 @@ void test('stop rests at home for the reaction, then respects the latest status'
   assert.equal(controller.pose().mode, 'rest');
   assert.equal(controller.pose().x, HOME);
   assert.equal(controller.pose().jump, 0);
-  advance(controller, 2.4);
+  advance(controller, 2.6);
   assert.equal(controller.pose().mode, 'rest');
-  until(controller, () => controller.pose().mode === 'walk', 1);
+  waitAtRest(controller);
   controller.update({id: 'parent-one', status: 'running'});
   controller.stop();
   advance(controller, 2.4);
@@ -268,7 +301,7 @@ void test('motion preference immediately settles and reenable respects status', 
   controller.setMotion(false);
   controller.update({id: 'parent-one', status: 'idle'});
   controller.setMotion(true);
-  until(controller, () => controller.pose().mode === 'walk', 1);
+  waitAtRest(controller);
 });
 
 void test('invalid deltas are ignored, long gaps are bounded, and disposal freezes the controller', () => {
@@ -277,7 +310,8 @@ void test('invalid deltas are ignored, long gaps are bounded, and disposal freez
   for (const dt of [NaN, Infinity, -Infinity, -1, 0]) controller.tick(dt);
   assert.deepEqual(controller.pose(), initial);
   controller.tick(Number.MAX_VALUE);
-  assert.equal(controller.pose().mode, 'walk');
+  assert.equal(controller.pose().mode, 'rest');
+  assert.ok(Math.abs(controller.pose().elapsed - 1) < 1e-8);
   for (const value of Object.values(controller.pose())) {
     if (typeof value === 'number') assert.ok(Number.isFinite(value));
   }
