@@ -24,7 +24,7 @@ Varisware VarisDev package.
 Install the extension from GitHub:
 
 ```sh
-pi install git:https://github.com/HardDoer/varisdev
+pi install git:github.com/HardDoer/varisdev
 ```
 
 Then start `pi` normally from any project folder. VarisDev opens automatically, takes over the current conversation, and closes Pi's terminal interface. The desktop owns the conversation and workers, so you can close the launching terminal. The selected project, session history, model, thinking level, active tools, CLI resource options, and initial prompts carry over. Print, JSON, and RPC runs stay headless.
@@ -77,7 +77,7 @@ Electron runs the desktop window and the session runtime; graphics are loaded fr
 
 ### App updates and environment
 
-For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically. `pi list` should show `git:https://github.com/HardDoer/varisdev` as the package source. A source pointing to a development folder makes Pi load that folder and is not updated from GitHub.
+For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically. `pi list` should show `git:github.com/HardDoer/varisdev` as the package source. A source pointing to a development folder makes Pi load that folder and is not updated from GitHub.
 
 The optional macOS launcher below is for a development checkout. The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
 
@@ -421,13 +421,13 @@ Sharp is loaded through Node only when an image is inspected or rendered. A miss
 ## Install from this repo
 
 ```bash
-pi install git:https://github.com/HardDoer/varisdev
+pi install git:github.com/HardDoer/varisdev
 ```
 
 Pin a tag or commit when sharing with the team:
 
 ```bash
-pi install git:https://github.com/HardDoer/varisdev@v0.1.0
+pi install git:github.com/HardDoer/varisdev@v0.1.0
 ```
 
 If needed, reapply branding inside Pi with:
