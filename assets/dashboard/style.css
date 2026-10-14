@@ -188,24 +188,6 @@ pre {
   border-color: #74434b;
   font-size: 0.875rem;
 }
-.connection {
-  color: var(--mint);
-  font-size: 0.75rem;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.connection::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  background: currentColor;
-  border-radius: 50%;
-  box-shadow: 0 0 10px currentColor;
-}
-.connection.error {
-  color: var(--red);
-}
 main {
   flex: 1;
   min-height: 0;
@@ -828,6 +810,46 @@ main > .welcome {
   font-size: 0.875rem;
   color: #bed3de;
   overflow-wrap: anywhere;
+}
+#inspector[data-conversation-kind='parent'] {
+  --conversation-accent: var(--cyan);
+}
+#inspector[data-conversation-kind='agent'] {
+  --conversation-accent: var(--mint);
+}
+#inspector[data-conversation-kind] .inspector-heading {
+  background: linear-gradient(
+    110deg,
+    color-mix(in srgb, var(--conversation-accent) 9%, var(--panel)),
+    var(--panel)
+  );
+  box-shadow: inset 3px 0 var(--conversation-accent);
+}
+.conversation-kind {
+  display: inline-flex;
+  flex: 0 0 138px;
+  width: 138px;
+  align-items: center;
+  gap: 6px;
+  color: var(--conversation-accent);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.conversation-kind-icon {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#inspector[data-conversation-kind='parent'] .kind-agent-icon,
+#inspector[data-conversation-kind='agent'] .kind-parent-icon {
+  display: none;
 }
 .inspector-tabs {
   display: flex;
@@ -1530,8 +1552,6 @@ dialog::backdrop {
 .tool-output {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 320px;
-  overflow: auto;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1540,7 +1560,6 @@ dialog::backdrop {
     0.875rem/1.65 'SFMono-Regular',
     Consolas,
     monospace;
-  scrollbar-gutter: stable;
 }
 .tool-status {
   color: var(--muted);
@@ -1607,6 +1626,30 @@ dialog::backdrop {
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
+#composer-slot.agent-selected {
+  height: var(--agent-dock-height, 290px);
+  max-height: max(90px, calc(var(--inspector-space, 720px) - 210px));
+}
+.agent-task-dock {
+  height: 100%;
+  padding: 16px 22px;
+  overflow: hidden;
+}
+.agent-task-dock h3 {
+  margin: 0 0 12px;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+#agent-task-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#tab-context[hidden],
+#open-context[hidden] {
+  display: block !important;
+  visibility: hidden;
+}
 .steering-messages {
   padding: 8px 18px;
   border-bottom: 1px solid var(--line);
@@ -1657,7 +1700,9 @@ dialog::backdrop {
   margin: 0;
   flex: 1;
   min-width: 0;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .composer-heading .quiet-button {
   flex: 0 0 auto;
@@ -1713,7 +1758,7 @@ dialog::backdrop {
   min-height: 104px;
   max-height: min(
     46vh,
-    max(104px, calc(var(--inspector-space, 720px) - 430px))
+    max(104px, calc(var(--inspector-space, 720px) - 450px))
   );
   font-size: 1rem;
 }
@@ -1850,9 +1895,6 @@ dialog::backdrop {
     padding: 8px;
     font-size: 0.75rem;
   }
-  .app-controls .connection {
-    flex: 1 0 100%;
-  }
   .section-heading {
     flex-wrap: wrap;
   }
@@ -1918,6 +1960,26 @@ dialog::backdrop {
   }
   .parent-summary {
     padding: 4px 10px;
+  }
+  .inspector > .inspector-body {
+    min-height: 60px;
+  }
+  .parent-controls:not(.editor-expanded) {
+    padding: 10px 14px;
+  }
+  .parent-controls:not(.editor-expanded) textarea {
+    height: 90px;
+    min-height: 70px;
+    max-height: max(70px, calc(var(--inspector-space, 720px) - 490px));
+  }
+  .parent-controls:not(.editor-expanded) .composer-heading {
+    margin-bottom: 6px;
+  }
+  .parent-controls:not(.editor-expanded) .composer-tab {
+    padding: 4px 10px;
+  }
+  .steering-messages {
+    max-height: 70px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2536,9 +2598,28 @@ select:focus-visible {
   font-size: 0.75rem;
 }
 #open-context {
-  padding: 2px 6px;
-  font-size: inherit;
+  flex-shrink: 0;
 }
-#open-context span {
-  margin-left: 6px;
+.composer-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin: 8px 0;
+}
+.composer-tab {
+  padding: 7px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.composer-tab.selected {
+  border-bottom-color: var(--mint);
+  color: var(--text);
+  background: var(--panel);
+}
+.composer-tab:hover {
+  color: var(--mint);
 }

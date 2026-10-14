@@ -12,17 +12,23 @@ async function start() {
   );
   if (
     !config ||
-    typeof config.main !== 'string' ||
-    !isAbsolute(config.main) ||
+    typeof config.installRoot !== 'string' ||
+    !isAbsolute(config.installRoot) ||
+    typeof config.nodeExecutable !== 'string' ||
+    !isAbsolute(config.nodeExecutable) ||
+    (config.dataDir !== undefined && typeof config.dataDir !== 'string') ||
     typeof config.path !== 'string' ||
     !config.path ||
     (config.agentDir !== undefined && typeof config.agentDir !== 'string')
   )
     throw new Error(
-      'Invalid launcher configuration. Run npm run desktop:install from the VarisDev checkout.',
+      'Invalid launcher configuration. Run varisdev app install.',
     );
   // Finder starts apps without the shell's tool paths or startup files.
   process.env.PATH = config.path;
+  process.env.VARISDEV_INSTALL_ROOT = config.installRoot;
+  process.env.VARISDEV_NODE_EXECUTABLE = config.nodeExecutable;
+  if (config.dataDir) process.env.VARISDEV_DATA_DIR = config.dataDir;
   if (config.agentDir) process.env.PI_CODING_AGENT_DIR = config.agentDir;
   const environmentFile = join(
     homedir(),
@@ -49,21 +55,23 @@ async function start() {
     }
   }
   process.chdir(homedir());
-  await import(pathToFileURL(config.main).href);
+  const {RuntimeManager} = await import(
+    pathToFileURL(
+      join(config.installRoot, 'desktop/build/src/runtime/manager.js'),
+    ).href
+  );
+  const runtime = new RuntimeManager({installRoot: config.installRoot});
+  const root = await runtime.currentRoot();
+  await import(
+    pathToFileURL(join(root, 'desktop/build/src/desktop/main.js')).href
+  );
 }
 
-// The installed app owns its sessions; reopening it should focus that runtime.
 app.setName('VarisDev');
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    void app.whenReady().then(() => app.emit('activate'));
-  });
-  start().catch(async error => {
-    console.error('Could not start VarisDev:', error);
-    await app.whenReady();
-    dialog.showErrorBox('Could not start VarisDev', error.message);
-    app.exit(1);
-  });
-}
+process.argv.push('--varisdev-launcher');
+start().catch(async error => {
+  console.error('Could not start VarisDev:', error);
+  await app.whenReady();
+  dialog.showErrorBox('Could not start VarisDev', error.message);
+  app.exit(1);
+});

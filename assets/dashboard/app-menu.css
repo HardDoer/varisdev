@@ -1,0 +1,127 @@
+.app-actions-slot {
+  flex: 0 0 auto;
+}
+#application-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+#application-controls > button {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  min-height: 32px;
+  white-space: nowrap;
+}
+#app-menu-button {
+  anchor-name: --app-menu-button;
+}
+#app-menu-panel {
+  position: fixed;
+  position-anchor: --app-menu-button;
+  inset: auto;
+  top: anchor(bottom);
+  right: anchor(right);
+  position-try-fallbacks: flip-inline, flip-block;
+  width: 256px;
+  max-width: calc(100vw - 24px);
+  margin: 8px 0 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 40px #0008;
+}
+#app-menu-panel:popover-open {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#app-menu-panel .zoom-control,
+#app-menu-panel .theme-control {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 0.875rem;
+}
+#app-menu-panel select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+#app-menu-panel > button {
+  width: 100%;
+  text-align: left;
+}
+#welcome {
+  position: relative;
+}
+#welcome-actions {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+}
+.inspector-heading > .inspector-title-row {
+  height: 36px;
+  align-items: center;
+  gap: 10px;
+}
+.inspector-unit-controls {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.inspector-unit-controls h2 {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inspector-session-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+.inspector-session-actions > button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.inspector-session-actions > button[hidden] {
+  display: block !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+.inspector-session-actions .status-badge {
+  flex: 0 0 86px;
+  width: 86px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inspector-heading > .inspector-activity-row {
+  height: 32px;
+  min-height: 32px;
+  align-items: center;
+}
+#inspector-activity {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 950px) {
+  #processing-state-text {
+    display: none;
+  }
+}

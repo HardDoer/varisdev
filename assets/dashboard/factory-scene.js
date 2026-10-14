@@ -3,6 +3,7 @@
  * the dashboard owns the accessible labels, session data and motion preference. */
 import {createParentMotion} from './parent-motion.js';
 import {idleActivityPose, drawIdleActivity} from './parent-activities.js';
+import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
@@ -592,6 +593,24 @@ export function createFactoryScene(
     flashes = [];
   let reaction = null;
   const parentMotion = createParentMotion();
+  const whip = createRobotWhip();
+
+  function syncWhip() {
+    const mode = parentMotion.pose().mode;
+    whip.update(
+      sessionId,
+      units
+        .filter(
+          unit =>
+            unit.status === 'running' &&
+            anchors.some(a => a.id === unit.id && a.visible),
+        )
+        .map(unit => unit.id),
+      Boolean(reaction) ||
+        !['rest', 'work'].includes(mode) ||
+        snapshot?.session?.status === 'closed',
+    );
+  }
   let cameraTarget = [-5.6, 1.6, 0];
   let lastFrame = 0,
     time = 0,
@@ -756,6 +775,9 @@ export function createFactoryScene(
         : moving
           ? Math.abs(Math.sin(pose.stride)) * (running ? 0.13 : 0.06)
           : 0;
+    const lash = whip.pose();
+    const lashPose = lash ? whipPose(lash.age) : null;
+    let whipHand;
     const reactionPose = startlePose();
     const surprise = Math.max(reactionPose.surprise, pose.surprise);
     const jump = reactionPose.jump + pose.jump;
@@ -877,6 +899,16 @@ export function createFactoryScene(
         hand[1] = y + (running ? 1.7 : 0.75);
         hand[2] = side * 1.1;
       }
+      if (lashPose && side === 1) {
+        for (let axis = 0; axis < 3; axis++) {
+          const origin = axis === 0 ? x : axis === 1 ? y : 0;
+          elbow[axis] +=
+            (origin + lashPose.elbow[axis] - elbow[axis]) * lashPose.blend;
+          hand[axis] +=
+            (origin + lashPose.hand[axis] - hand[axis]) * lashPose.blend;
+        }
+        whipHand = [...hand];
+      }
       // Blend from the frozen work pose into a broad, overhead flail.
       const raisedElbow = [x - 0.15, y + 2.6, side * 1.65];
       const raisedHand = [x + 0.25 + wobble * 0.12, y + 3.55, side * 1.95];
@@ -971,7 +1003,23 @@ export function createFactoryScene(
       fx.append(propEffects, [x, 0, 0]);
     }
     const position = [pose.x, pose.ground, pose.z];
-    const yaw = pose.yaw + (idle?.yaw || 0) * blend;
+    const targetUnit = lash && units.find(unit => unit.id === lash.target);
+    const targetPosition = targetUnit ? positionFor(targetUnit) : null;
+    const turn = targetPosition
+      ? Math.sign(-targetPosition[2]) * lashPose.turn
+      : 0;
+    const yaw = pose.yaw + (idle?.yaw || 0) * blend + turn;
+    let whipStart = null;
+    if (whipHand) {
+      const dx = whipHand[0] - x,
+        dz = whipHand[2];
+      whipStart = [
+        pose.x + dx * Math.cos(yaw) + dz * Math.sin(yaw),
+        pose.ground + whipHand[1],
+        pose.z + dz * Math.cos(yaw) - dx * Math.sin(yaw),
+      ];
+    }
+    canvas.dataset.robotWhip = lash?.target || '';
     sceneGeometry.append(g, position, yaw, x);
     sceneEffects.append(fx, position, yaw, x);
     canvas.dataset.parentMode = pose.mode;
@@ -979,6 +1027,7 @@ export function createFactoryScene(
     return {
       p: [pose.x, pose.ground + y + 4.0, pose.z],
       body: [pose.x, pose.ground + y + 1.6, pose.z],
+      whipStart,
     };
   }
 
@@ -988,8 +1037,10 @@ export function createFactoryScene(
     const active = unit.status === 'running',
       failed = unit.status === 'failed';
     const t = active ? time + index * 1.7 : 0;
-    const y = baseY + (active ? Math.sin(t * 3.4) * 0.24 : 0);
-    const x = baseX + (active ? Math.sin(t * 1.7) * 0.1 : 0);
+    const lash = whip.pose();
+    const recoil = lash?.target === unit.id ? whipPose(lash.age).recoil : 0;
+    const y = baseY + (active ? Math.sin(t * 3.4) * 0.24 : 0) + recoil * 0.68;
+    const x = baseX + (active ? Math.sin(t * 1.7) * 0.1 : 0) + recoil * 0.28;
     if (active) {
       const pulse = 0.75 + Math.sin(t * 4) * 0.2;
       g.ring([baseX, 0.26, z], 0.94, 0.065, C.running, 1, 36);
@@ -1155,6 +1206,7 @@ export function createFactoryScene(
   function render() {
     if (disposed || contextLost) return;
     resize();
+    syncWhip();
     const aspect = width / height;
     // Move back on narrow canvases so the entire factory remains inside frame.
     const solo = units.length === 0;
@@ -1179,6 +1231,13 @@ export function createFactoryScene(
         body: positionFor(unit),
       }),
     );
+    const lash = whip.pose();
+    const lashTarget = lash && positions.find(p => p.id === lash.target);
+    if (lashTarget && positions[0].whipStart) {
+      const endpoint = [...lashTarget.body];
+      endpoint[1] += 0.22 + whipPose(lash.age).recoil * 0.68;
+      drawRobotWhip(g, fx, C, positions[0].whipStart, endpoint, lash.age);
+    }
     for (const beam of dispatches) {
       const fade = Math.max(0, 1 - beam.age / beam.life);
       g.rod(beam.from, beam.to, 0.016 * fade, C.white, 1);
@@ -1294,12 +1353,14 @@ export function createFactoryScene(
       reaction.age += elapsed;
       if (reaction.age >= STARTLE_DURATION) reaction = null;
     }
-    // A Stop reaction has its own finite clock. Work, sparks and camera
-    // movement stay frozen even while its geometry is being redrawn.
+    // The parent Stop reaction and working agents keep separate clocks.
     if (motion) {
       const dt = Math.min(elapsed, 0.05);
       time += dt;
-      parentMotion.tick(dt);
+      syncWhip();
+      if (!whip.pose()) parentMotion.tick(dt);
+      syncWhip();
+      whip.tick(dt);
       const pose = parentMotion.pose();
       const target =
         units.length === 0 ? [pose.x + 0.65, 1.6, pose.z] : [-0.5, 0.6, 0];
@@ -1386,6 +1447,7 @@ export function createFactoryScene(
   function onContextLost(event) {
     event.preventDefault();
     contextLost = true;
+    whip.cancel();
     reaction = null;
     stop();
   }
@@ -1486,6 +1548,7 @@ export function createFactoryScene(
       if (disposed) return;
       motion = Boolean(enabled);
       parentMotion.setMotion(motion);
+      whip.setMotion(motion);
       if (motion) reaction = null;
       if (!canAnimate()) stop();
       render();
@@ -1493,6 +1556,7 @@ export function createFactoryScene(
     },
     prompt(id) {
       if (disposed || id !== sessionId) return;
+      whip.cancel();
       parentMotion.prompt();
       render();
       schedule();
@@ -1506,6 +1570,7 @@ export function createFactoryScene(
     startle(animate = true) {
       if (disposed || contextLost) return;
       stop();
+      whip.cancel();
       parentMotion.stop();
       reaction = {age: 0, animated: Boolean(animate)};
       render();
@@ -1523,6 +1588,7 @@ export function createFactoryScene(
       disposed = true;
       reaction = null;
       parentMotion.dispose();
+      whip.dispose();
       stop();
       resizeObserver?.disconnect();
       intersectionObserver?.disconnect();

@@ -1,0 +1,19 @@
+{
+  "id": "ink",
+  "name": "Ink",
+  "base": "nord",
+  "colors": {
+    "bg": "#131c29",
+    "panel": "#192536",
+    "panel-raised": "#233247",
+    "input": "#101a27",
+    "text": "#edf4ff",
+    "muted": "#b1c3dc",
+    "mint": "#a0f0d0",
+    "focus": "#e9c989",
+    "scene": "#132231",
+    "scene-glow": "#223c50",
+    "page-glow": "#213347"
+  },
+  "stylesheet": "./ink.css"
+}

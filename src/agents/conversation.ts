@@ -4,6 +4,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {
   ConversationState,
+  conversationVisualizations,
   messageText,
   publicText,
   resultStatus,
@@ -14,7 +15,7 @@ import {
 type Identity = {id: string; at: string};
 const toolId = (id: string) => `tool-${id}`;
 
-/** Projects SDK messages and tool events without exposing private thinking or details. */
+/** Projects public messages and validated visualization metadata from SDK events. */
 export class WorkerConversation {
   private readonly state = new ConversationState();
   private sequence = 0;
@@ -25,17 +26,26 @@ export class WorkerConversation {
   private user?: Identity;
   private latestAssistant?: Identity;
 
-  constructor(branch: readonly SessionEntry[]) {
+  private readonly cwd: string;
+
+  constructor(branch: readonly SessionEntry[], cwd = process.cwd()) {
+    this.cwd = cwd;
     for (const entry of branch) {
       if (entry.type === 'custom_message') {
         const id = `custom-${++this.customSequence}`;
+        if (!entry.display) continue;
         const text = messageText(entry);
-        if (entry.display && text)
+        const visuals = conversationVisualizations(entry, undefined, this.cwd);
+        if (
+          entry.display &&
+          (text || visuals.visualizations || visuals.visualizationErrors)
+        )
           this.state.update({
             id,
             at: entry.timestamp,
             role: 'assistant',
             text,
+            ...visuals,
           });
         continue;
       }
@@ -45,13 +55,24 @@ export class WorkerConversation {
       if (message.role === 'user' || message.role === 'assistant') {
         const identity = this.identity(message);
         const text = messageText(message);
+        const visuals = conversationVisualizations(
+          message,
+          undefined,
+          this.cwd,
+        );
         const error =
           message.role === 'assistant' ? message.errorMessage : undefined;
-        if (text || error)
+        if (
+          text ||
+          error ||
+          visuals.visualizations ||
+          visuals.visualizationErrors
+        )
           this.state.update({
             ...identity,
             role: message.role,
             text,
+            ...visuals,
             error: error ? publicText(error) : undefined,
             streaming: false,
           });
@@ -68,13 +89,23 @@ export class WorkerConversation {
         );
       } else if (message.role === 'custom') {
         const identity = this.customIdentity(message);
+        if (!message.display) continue;
         const text = messageText(message);
-        if (message.display && text)
+        const visuals = conversationVisualizations(
+          message,
+          undefined,
+          this.cwd,
+        );
+        if (
+          message.display &&
+          (text || visuals.visualizations || visuals.visualizationErrors)
+        )
           this.state.update({
             ...identity,
             at,
             role: 'assistant',
             text,
+            ...visuals,
           });
       }
     }
@@ -148,7 +179,7 @@ export class WorkerConversation {
   private finishTool(
     toolCallId: string,
     toolName: string,
-    result: {content?: unknown},
+    result: {content?: unknown; details?: unknown},
     isError: boolean,
     at = new Date().toISOString(),
   ): void {
@@ -162,6 +193,7 @@ export class WorkerConversation {
       toolName,
       at: previous?.at ?? at,
       text,
+      ...conversationVisualizations(result, undefined, this.cwd),
       status: resultStatus(isError, text),
       streaming: false,
       error: isError ? text || 'Tool execution failed' : undefined,
@@ -195,12 +227,23 @@ export class WorkerConversation {
           this.latestAssistant = identity;
         } else this.user = ended ? undefined : identity;
         const text = messageText(message);
+        const visuals = conversationVisualizations(
+          message,
+          undefined,
+          this.cwd,
+        );
         const error = role === 'assistant' ? message.errorMessage : undefined;
-        if (text || error)
+        if (
+          text ||
+          error ||
+          visuals.visualizations ||
+          visuals.visualizationErrors
+        )
           this.state.update({
             ...identity,
             role,
             text,
+            ...visuals,
             error: error ? publicText(error) : undefined,
             streaming: role === 'assistant' && !ended,
           });
@@ -219,12 +262,22 @@ export class WorkerConversation {
       }
       if (message.role === 'custom') {
         const identity = this.customIdentity(message);
+        if (!message.display) return true;
         const text = messageText(message);
-        if (message.display && text)
+        const visuals = conversationVisualizations(
+          message,
+          undefined,
+          this.cwd,
+        );
+        if (
+          message.display &&
+          (text || visuals.visualizations || visuals.visualizationErrors)
+        )
           this.state.update({
             ...identity,
             role: 'assistant',
             text,
+            ...visuals,
           });
         return true;
       }
@@ -246,6 +299,13 @@ export class WorkerConversation {
             ? messageText(event.partialResult ?? {})
             : (previous?.text ?? ''),
         at: previous?.at ?? new Date().toISOString(),
+        ...(event.type === 'tool_execution_update'
+          ? conversationVisualizations(
+              event.partialResult ?? {},
+              undefined,
+              this.cwd,
+            )
+          : {}),
         status: 'running',
         streaming: true,
       });

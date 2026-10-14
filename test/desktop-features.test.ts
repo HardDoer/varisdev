@@ -354,8 +354,6 @@ void test(
       'project-template',
       'fixture-command',
       'commit',
-      'varisdev',
-      'factory',
       'compact',
       'reload',
       'model',
@@ -392,6 +390,11 @@ void test(
       1,
     );
     assert.deepEqual(catalog.diagnostics, []);
+    for (const name of ['varisdev', 'factory', 'images'])
+      assert.ok(
+        !catalog.commands.some(command => command.name === name),
+        `App self-extension command ${name} should be excluded`,
+      );
     assert.equal(requests.length, 0);
     await writeFile(
       promptPath,

@@ -97,10 +97,10 @@ async function until(condition: () => boolean) {
   assert.fail('Expected state was not reached');
 }
 
-void test('agents respect concurrency, drain their queue, and skip cancelled work', async t => {
-  const manager = new AgentOrchestrator(2);
+void test('six agents run concurrently, drain their queue, and skip cancelled work', async t => {
+  const manager = new AgentOrchestrator();
   t.after(() => manager.close());
-  const workers = Array.from({length: 4}, () => controlledWorker());
+  const workers = Array.from({length: 8}, () => controlledWorker());
   let created = 0;
   const records = workers.map(({worker}) =>
     manager.spawn(spec, async () => {
@@ -108,25 +108,25 @@ void test('agents respect concurrency, drain their queue, and skip cancelled wor
       return worker;
     }),
   );
-  await until(() => workers[1].runs.length === 1);
-  assert.equal(created, 2);
-  assert.equal(manager.get(records[2].id).status, 'queued');
-  manager.cancel(records[3].id);
-  workers[0].runs[0].finish('first result');
-  await until(() => workers[2].runs.length === 1);
-  assert.equal(created, 3);
-  workers[1].runs[0].finish('second result');
-  workers[2].runs[0].finish('third result');
+  await until(() => workers[5].runs.length === 1);
+  assert.equal(created, 6);
+  assert.equal(manager.get(records[6].id).status, 'queued');
+  manager.cancel(records[7].id);
+  workers[0].runs[0].finish('result 0');
+  await until(() => workers[6].runs.length === 1);
+  assert.equal(created, 7);
+  for (let index = 1; index < 7; index++)
+    workers[index].runs[0].finish(`result ${index}`);
   const results = await manager.wait(records.map(record => record.id));
   assert.deepEqual(
     results.map(result => result.status),
-    ['completed', 'completed', 'completed', 'cancelled'],
+    [...Array(7).fill('completed'), 'cancelled'],
   );
   assert.deepEqual(
-    results.slice(0, 3).map(result => result.output),
-    ['first result', 'second result', 'third result'],
+    results.slice(0, 7).map(result => result.output),
+    Array.from({length: 7}, (_, index) => `result ${index}`),
   );
-  assert.equal(workers[3].runs.length, 0);
+  assert.equal(workers[7].runs.length, 0);
 });
 
 void test('messages steer active workers and completed workers retain their conversation', async t => {
@@ -1151,14 +1151,14 @@ void test('every session shutdown closes running and queued workers', async t =>
     const workers = teamWorkers();
     const parent = agentParent(`ordinary-${reason}`, workers.create);
     t.after(() => parent.shutdown());
-    for (let i = 0; i < 5; i++) await parent.spawn(`Worker ${i}`);
+    for (let i = 0; i < 7; i++) await parent.spawn(`Worker ${i}`);
     await until(
       () =>
-        workers.created.length === 4 &&
+        workers.created.length === 6 &&
         workers.created.every(w => w.controlled.runs.length === 1),
     );
     await parent.shutdown(reason);
-    assert.equal(workers.created.length, 4);
+    assert.equal(workers.created.length, 6);
     assert.ok(
       workers.created.every(
         w => w.controlled.disposed === 1 && w.controlled.runs[0].signal.aborted,

@@ -7,7 +7,6 @@ import {truncateToWidth, visibleWidth} from '@earendil-works/pi-tui';
 import {basename} from 'node:path';
 import {registerCompletionAlert} from '../src/completion-alert.ts';
 import {registerCommitCommand} from '../src/commit.ts';
-import {registerImagePreviews} from '../src/image-previews.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import {registerDesktopStartup} from '../src/desktop/startup.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
@@ -200,7 +199,6 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  registerImagePreviews(pi);
   registerProjectTools(pi);
   const agents = registerAgentTools(pi);
   // The desktop observer shares this controller when this extension is loaded.

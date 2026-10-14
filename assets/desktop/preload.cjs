@@ -21,6 +21,35 @@ contextBridge.exposeInMainWorld('pidev', {
       throw new TypeError('Zoom must be between 25% and 500%.');
     webFrame.setZoomFactor(factor);
   },
+  getUpdateStatus: () => invoke('varisdev:get-update-status'),
+  checkUpdates: () => invoke('varisdev:check-updates'),
+  installUpdate: () => invoke('varisdev:install-update'),
+  restartUpdate: sessionId => invoke('varisdev:restart-update', sessionId),
+  onUpdateStatus(callback) {
+    if (typeof callback !== 'function')
+      throw new TypeError('An update callback is required.');
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('varisdev:update-status', listener);
+    return () => ipcRenderer.removeListener('varisdev:update-status', listener);
+  },
+  onShowUpdates(callback) {
+    if (typeof callback !== 'function')
+      throw new TypeError('An updates callback is required.');
+    const listener = () => callback();
+    ipcRenderer.on('varisdev:show-updates', listener);
+    return () => ipcRenderer.removeListener('varisdev:show-updates', listener);
+  },
+  onSelectSession(callback) {
+    if (typeof callback !== 'function')
+      throw new TypeError('A parent session callback is required.');
+    const listener = (_event, id) => callback(id);
+    ipcRenderer.on('varisdev:select-session', listener);
+    return () =>
+      ipcRenderer.removeListener('varisdev:select-session', listener);
+  },
+  conversationImage: (imageId, variant = 'thumbnail') =>
+    invoke('varisdev:conversation-image', imageId, variant),
+  appThemes: sessionId => invoke('varisdev:app-themes', sessionId),
   getState: () => invoke('pidev:get-state'),
   onSnapshot(callback) {
     if (typeof callback !== 'function') {
@@ -33,6 +62,8 @@ contextBridge.exposeInMainWorld('pidev', {
   createSession: input => invoke('pidev:create-session', input),
   promptSession: (id, input) => invoke('pidev:prompt-session', id, input),
   abortSession: id => invoke('pidev:abort-session', id),
+  cancelAgent: (sessionId, agentId) =>
+    invoke('pidev:cancel-agent', sessionId, agentId),
   respondToDialog: (sessionId, dialogId, value) =>
     invoke('pidev:respond-to-dialog', sessionId, dialogId, value),
   sessionFeatures: id => invoke('pidev:session-features', id),
@@ -41,6 +72,7 @@ contextBridge.exposeInMainWorld('pidev', {
     invoke('pidev:compact-session', id, instructions),
   reloadSession: id => invoke('pidev:reload-session', id),
   workspace: id => invoke('pidev:workspace', id),
+  openTerminal: id => invoke('pidev:open-terminal', id),
   readMarkdown: (sessionId, path) =>
     invoke('pidev:read-markdown', sessionId, path),
   saveMarkdown: (sessionId, path, content, version) =>

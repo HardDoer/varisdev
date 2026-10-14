@@ -4,6 +4,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import type {DashboardState} from '../dashboard/state.ts';
 import {
+  agentCancellationId,
   sessionConfiguration,
   compactionInstructions,
   type StoppedMessages,
@@ -12,7 +13,8 @@ import type {
   SessionFeatures,
   SessionConfiguration,
 } from '../dashboard/features.ts';
-import {requestId} from './ipc.ts';
+import {conversationImageInput, requestId} from './ipc.ts';
+import {readConversationImage} from '../conversation-images.ts';
 import {buildDesktop} from './build.ts';
 
 const require = createRequire(import.meta.url);
@@ -21,6 +23,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 export interface FactoryControl {
   prompt(text: string): void | Promise<void>;
   abort(): StoppedMessages | Promise<StoppedMessages>;
+  cancelAgent(agentId: string): void | Promise<void>;
   features(): Promise<SessionFeatures>;
   configure(input: SessionConfiguration): Promise<void>;
   compact(instructions?: string): Promise<void>;
@@ -88,7 +91,9 @@ export function createFactoryBridge(
     // A closed or crashed GUI also stops work in its attached conversation.
     if (control)
       void Promise.resolve()
-        .then(() => control.abort())
+        .then(() =>
+          Promise.allSettled([control.abort(), control.cancelAgent('all')]),
+        )
         .catch(() => {});
   };
   child.on('disconnect', lost);
@@ -115,7 +120,10 @@ export function createFactoryBridge(
       });
     if (requests.has(id)) return;
     if (requests.size >= 32) {
-      reply(false, 'Pi already has 32 pending desktop requests.');
+      reply(
+        false,
+        'The parent session already has 32 pending desktop requests.',
+      );
       return;
     }
     const current = attachment;
@@ -125,18 +133,27 @@ export function createFactoryBridge(
       request.sessionId !== current.state.snapshot().session.id ||
       current.state.snapshot().session.status === 'closed'
     ) {
-      reply(false, 'This Pi session is no longer attached to the factory.');
+      reply(false, 'This parent session is no longer attached to the app.');
       return;
     }
     if (
       request.action !== 'prompt' &&
       request.action !== 'abort' &&
+      request.action !== 'cancelAgent' &&
       request.action !== 'features' &&
       request.action !== 'configure' &&
       request.action !== 'compact' &&
-      request.action !== 'reload'
+      request.action !== 'reload' &&
+      request.action !== 'conversationImage'
     ) {
       reply(false, 'Unknown factory request.');
+      return;
+    }
+    if (request.action === 'conversationImage' && requests.size >= 16) {
+      reply(
+        false,
+        'Too many pending requests to load another conversation image.',
+      );
       return;
     }
     if (
@@ -149,6 +166,10 @@ export function createFactoryBridge(
       return;
     }
     try {
+      if (request.action === 'conversationImage')
+        request.input = conversationImageInput(request.input);
+      if (request.action === 'cancelAgent')
+        request.input = agentCancellationId(request.input);
       if (request.action === 'configure')
         request.input = sessionConfiguration(request.input);
       if (request.action === 'compact')
@@ -164,11 +185,18 @@ export function createFactoryBridge(
     void Promise.resolve()
       .then(async () => {
         if (attachment !== current)
-          throw new Error('The attached Pi session changed.');
+          throw new Error('The attached parent session changed.');
         let value: unknown;
         if (request.action === 'prompt')
           await current.control.prompt((request.input as string).trim());
-        else if (request.action === 'features')
+        else if (request.action === 'cancelAgent')
+          await current.control.cancelAgent(request.input as string);
+        else if (request.action === 'conversationImage') {
+          const input = request.input as ReturnType<
+            typeof conversationImageInput
+          >;
+          value = await readConversationImage(input.imageId, input.variant);
+        } else if (request.action === 'features')
           value = await current.control.features();
         else if (request.action === 'configure')
           await current.control.configure(
@@ -179,13 +207,15 @@ export function createFactoryBridge(
         else if (request.action === 'reload') await current.control.reload();
         else value = await current.control.abort();
         if (attachment !== current)
-          throw new Error('The attached Pi session changed.');
+          throw new Error('The attached parent session changed.');
         reply(true, undefined, value);
       })
       .catch(error => {
         reply(
           false,
-          error instanceof Error ? error.message : 'The Pi request failed.',
+          error instanceof Error
+            ? error.message
+            : 'The parent session request failed.',
         );
       })
       .finally(() => requests.delete(id));
@@ -280,7 +310,7 @@ async function openFactory(state: DashboardState): Promise<FactoryWindow> {
   return bridge;
 }
 
-/** Reuses one window while Pi reloads extensions or switches conversations. */
+/** Reuses one window while the parent session reloads extensions or switches conversations. */
 export class FactoryLauncher {
   private window?: FactoryWindow;
   private starting?: Promise<FactoryWindow>;

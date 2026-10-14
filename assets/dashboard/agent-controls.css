@@ -1,0 +1,14 @@
+.agent-task-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-task-heading h3 {
+  margin: 0;
+}
+.control-error {
+  margin: 6px 0;
+  color: var(--danger, #ff8b94);
+  font-size: 12px;
+}

@@ -34,6 +34,7 @@ function features(): SessionFeatures {
 }
 
 const featureControls = {
+  cancelAgent: async () => {},
   features: async () => features(),
   configure: async () => {},
   compact: async () => {},
@@ -64,12 +65,19 @@ async function until(predicate: () => boolean): Promise<void> {
 function controlledParent(id: string, cwd: string) {
   const current = state(id, cwd);
   const runs: Array<{text: string; resolve: () => void}> = [];
+  const cancellations: string[] = [];
   let closed = false;
   let active = 0;
   let maximum = 0;
   const parent: DashboardParent = {
     ...featureControls,
     state: current,
+    restartSnapshot() {
+      throw new Error('This test parent cannot restart.');
+    },
+    async cancelAgent(agentId) {
+      cancellations.push(agentId);
+    },
     async prompt(text) {
       current.updateSession({status: 'running', activity: 'Working'});
       active++;
@@ -94,6 +102,7 @@ function controlledParent(id: string, cwd: string) {
   return {
     parent,
     runs,
+    cancellations,
     get closed() {
       return closed;
     },
@@ -145,6 +154,11 @@ void test('dashboard keeps parallel parents isolated, forwards prompts immediate
     parents[0].runs.map(run => run.text),
     ['Task 0', 'Follow up', 'Never run'],
   );
+  await hub.cancelAgent(one.id, 'worker');
+  assert.deepEqual(parents[0].cancellations, ['worker']);
+  assert.deepEqual(parents[1].cancellations, []);
+  await assert.rejects(hub.cancelAgent(one.id, {}), /Agent ID/);
+  await assert.rejects(hub.cancelAgent('missing', 'all'), /Unknown parent/);
   await hub.abortSession(one.id);
   assert.equal(parents[0].runs.length, 3);
   assert.equal(parents[0].maximum, 3);
@@ -212,6 +226,9 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
     async prompt(id, prompt) {
       actions.push(`prompt:${id}:${prompt}`);
     },
+    async cancelAgent(id, agentId) {
+      actions.push(`cancel:${id}:${agentId}`);
+    },
     async abort(id) {
       actions.push(`abort:${id}`);
       return {steering: [], followUp: []};
@@ -227,7 +244,12 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
   );
   await hub.promptSession('attached', {prompt: ' Follow up '});
   await hub.abortSession('attached');
-  assert.deepEqual(actions, ['prompt:attached:Follow up', 'abort:attached']);
+  await hub.cancelAgent('attached', 'all');
+  assert.deepEqual(actions, [
+    'prompt:attached:Follow up',
+    'abort:attached',
+    'cancel:attached:all',
+  ]);
   await assert.rejects(hub.promptSession('attached', {prompt: ' '}), /Prompt/);
   await hub.createSession({cwd: process.cwd()});
   await hub.promptSession('owned', {prompt: 'Owned work'});
@@ -240,11 +262,17 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
     /connected/,
   );
   await assert.rejects(hub.abortSession('attached'), /connected/);
+  await assert.rejects(hub.cancelAgent('attached', 'all'), /connected/);
   assert.equal(hub.snapshot().sessions[1].session.status, 'running');
   assert.equal(owned.closed, false);
   await hub.abortSession('owned');
   await hub.close();
-  assert.deepEqual(actions, ['prompt:attached:Follow up', 'abort:attached']);
+  await assert.rejects(hub.cancelAgent('attached', 'all'), /closed/);
+  assert.deepEqual(actions, [
+    'prompt:attached:Follow up',
+    'abort:attached',
+    'cancel:attached:all',
+  ]);
   assert.equal(owned.closed, true);
 });
 

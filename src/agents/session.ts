@@ -12,6 +12,7 @@ import {
 import {mkdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {registerProjectTools} from '../tools/index.ts';
+import {createAppResourceFilter} from '../dashboard/resources.ts';
 import type {AgentWorker} from './orchestrator.ts';
 import {createWorkerModelRuntime} from './model-runtime.ts';
 import {WorkerConversation} from './conversation.ts';
@@ -42,6 +43,7 @@ export function sessionWorker(
   const usage = new ModelUsageTracker();
   const conversation = new WorkerConversation(
     session.sessionManager.getBranch?.() ?? [],
+    session.sessionManager.getCwd?.(),
   );
   let finishing = false;
   function restoreUsage(): void {
@@ -225,11 +227,15 @@ export async function createSessionWorker(
   );
   await mkdir(directory, {recursive: true});
   const settingsManager = SettingsManager.create(options.cwd, agentDir);
+  const resources = createAppResourceFilter(
+    settingsManager,
+    options.cwd,
+    agentDir,
+  );
   const loader = new DefaultResourceLoader({
     cwd: options.cwd,
     agentDir,
-    settingsManager,
-    noExtensions: true,
+    settingsManager: resources.settingsManager,
     noThemes: true,
     noPromptTemplates: true,
     extensionFactories: [registerProjectTools, options.agentToolsExtension],

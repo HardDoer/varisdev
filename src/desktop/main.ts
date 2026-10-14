@@ -8,7 +8,25 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import {isAbsolute, join} from 'node:path';
-import {mkdirSync} from 'node:fs';
+import {spawn} from 'node:child_process';
+import {
+  accessSync,
+  closeSync,
+  openSync,
+  constants,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  unlinkSync,
+} from 'node:fs';
+import {RuntimeManager, defaultDataDir} from '../runtime/manager.ts';
+import {
+  publicUpdateStatus,
+  requireUpdateRestart,
+  updateMessage,
+  updateRestartCommand,
+} from './updates.ts';
 import {SettingsManager} from '@earendil-works/pi-coding-agent';
 import type {DesktopStartup} from './startup.ts';
 import {desktopInitialPrompts} from '../dashboard/startup.ts';
@@ -19,16 +37,28 @@ import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopPreferences} from './preferences.ts';
+import {openSystemTerminal} from './terminal.ts';
+import {
+  hasConversationImage,
+  readConversationImage,
+} from '../conversation-images.ts';
+import type {ConversationImageResponse} from '../visualizations.ts';
+import {loadPluginThemes} from './plugin-themes.ts';
 import type {
   SessionFeatures,
   SessionConfiguration,
 } from '../dashboard/features.ts';
 
 app.setName('VarisDev');
-// Keep Electron data alongside the installed package.
+const installRoot =
+  process.env.VARISDEV_INSTALL_ROOT ??
+  fileURLToPath(new URL('../../../../', import.meta.url));
+const runtime = new RuntimeManager({
+  installRoot,
+  runningRoot: fileURLToPath(new URL('../../../../', import.meta.url)),
+});
 const profile =
-  process.env.PIDEV_DESKTOP_DATA_DIR ??
-  fileURLToPath(new URL('../../../../.pi/desktop/', import.meta.url));
+  process.env.PIDEV_DESKTOP_DATA_DIR ?? join(defaultDataDir(), 'desktop');
 mkdirSync(join(profile, 'temp'), {recursive: true});
 app.setPath('userData', profile);
 app.setPath('sessionData', profile);
@@ -53,7 +83,17 @@ const cwdArgument = process.argv
   ?.slice('--pidev-cwd='.length);
 const launchCwd =
   cwdArgument && isAbsolute(cwdArgument) ? cwdArgument : process.cwd();
+const projectArgument = process.argv
+  .find(argument => argument.startsWith('--varisdev-project='))
+  ?.slice('--varisdev-project='.length);
+const launchProject =
+  projectArgument && isAbsolute(projectArgument) ? projectArgument : undefined;
 const replacingTerminal = process.argv.includes('--pidev-startup');
+const standalone = process.argv.includes('--varisdev-launcher');
+const primaryInstance =
+  !standalone || app.requestSingleInstanceLock({project: launchProject});
+let desktopReady = false;
+const pendingProjects: Array<string | undefined> = [];
 let receiveStartup: ((startup: DesktopStartup) => void) | undefined;
 const startupRequest = replacingTerminal
   ? new Promise<DesktopStartup>(resolve => {
@@ -69,12 +109,22 @@ let mainWindow: BrowserWindow | undefined;
 let snapshotTimer: NodeJS.Timeout | undefined;
 let shuttingDown = false;
 let cleanupFinished = false;
+let restarting = false;
+let sessionOperations = 0;
+let updateTimer: NodeJS.Timeout | undefined;
+const sessionActions = new Set([
+  'pidev:create-session',
+  'pidev:prompt-session',
+  'pidev:configure-session',
+  'pidev:compact-session',
+  'pidev:reload-session',
+]);
 let attachedSessionId: string | undefined;
 const requests = new ExternalSessionRequests(
   request =>
     new Promise<void>((resolve, reject) => {
       if (!process.connected || !process.send) {
-        reject(new Error('The attached Pi session disconnected.'));
+        reject(new Error('The attached parent session disconnected.'));
         return;
       }
       process.send(request, error => (error ? reject(error) : resolve()));
@@ -86,6 +136,8 @@ const externalControl = {
     requests.request('prompt', sessionId, prompt),
   abort: (sessionId: string) =>
     requests.request<StoppedMessages>('abort', sessionId),
+  cancelAgent: (sessionId: string, agentId: string) =>
+    requests.request('cancelAgent', sessionId, agentId),
   features: (sessionId: string) =>
     requests.request<SessionFeatures>('features', sessionId),
   configure: (sessionId: string, input: SessionConfiguration) =>
@@ -127,9 +179,11 @@ function handle(
   action: (...args: unknown[]) => unknown,
 ): void {
   ipcMain.handle(channel, async (event, ...args: unknown[]) => {
-    if (!trusted(event) || shuttingDown) {
+    if (!trusted(event) || shuttingDown || restarting) {
       return {ok: false, error: 'This desktop window is unavailable.'};
     }
+    const sessionAction = sessionActions.has(channel);
+    if (sessionAction) sessionOperations++;
     try {
       return {ok: true, value: await action(...args)};
     } catch (error) {
@@ -137,14 +191,52 @@ function handle(
         ok: false,
         error:
           error instanceof Error && error.message
-            ? error.message.slice(0, 2000)
+            ? updateMessage(error.message)
             : 'The request could not be completed.',
       };
+    } finally {
+      if (sessionAction) sessionOperations--;
     }
   });
 }
 
 function installHandlers(): void {
+  handle('varisdev:get-update-status', () =>
+    publicUpdateStatus(runtime.status()),
+  );
+  handle('varisdev:check-updates', async () =>
+    publicUpdateStatus(await runtime.check()),
+  );
+  handle('varisdev:install-update', async () =>
+    publicUpdateStatus(await runtime.update()),
+  );
+  handle('varisdev:restart-update', restartForUpdate);
+  handle('varisdev:conversation-image', (imageId, variant = 'thumbnail') => {
+    if (
+      typeof imageId !== 'string' ||
+      imageId.length > 96 ||
+      (variant !== 'thumbnail' && variant !== 'full')
+    )
+      throw new DashboardInputError('Choose a valid conversation image.');
+    if (!hasConversationImage(imageId) && attachedSessionId)
+      return requests.request<ConversationImageResponse>(
+        'conversationImage',
+        attachedSessionId,
+        {imageId, variant},
+      );
+    return readConversationImage(imageId, variant);
+  });
+  handle('varisdev:app-themes', sessionId => {
+    const selected =
+      sessionId === undefined
+        ? undefined
+        : hub
+            .snapshot()
+            .sessions.find(item => item.session.id === id(sessionId));
+    if (sessionId !== undefined && !selected)
+      throw new DashboardInputError('Choose a valid parent session.');
+    return loadPluginThemes({cwd: selected?.session.cwd ?? launchCwd});
+  });
   handle('pidev:get-state', () => hub.snapshot());
   handle('pidev:create-session', async input => {
     const result = await hub.createSession(input);
@@ -158,6 +250,9 @@ function installHandlers(): void {
     hub.promptSession(id(sessionId), input),
   );
   handle('pidev:abort-session', sessionId => hub.abortSession(id(sessionId)));
+  handle('pidev:cancel-agent', (sessionId, agentId) =>
+    hub.cancelAgent(id(sessionId), agentId),
+  );
   handle('pidev:respond-to-dialog', (sessionId, dialogId, value) =>
     hub.respondToDialog(id(sessionId), dialogId, value),
   );
@@ -178,6 +273,14 @@ function installHandlers(): void {
   handle('pidev:save-markdown', (sessionId, path, content, version) =>
     hub.saveMarkdown(id(sessionId), path, content, version),
   );
+  handle('pidev:open-terminal', sessionId => {
+    const selected = hub
+      .snapshot()
+      .sessions.find(item => item.session.id === id(sessionId));
+    if (!selected)
+      throw new DashboardInputError('Choose a valid parent session.');
+    return openSystemTerminal(selected.session.cwd);
+  });
   handle('pidev:choose-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: 'Choose a project folder',
@@ -208,6 +311,26 @@ function installMenu(): void {
         {role: 'zoomOut'},
         {type: 'separator'},
         {role: 'togglefullscreen'},
+      ],
+    },
+    {
+      label: 'Updates',
+      submenu: [
+        {
+          label: 'Check for updates…',
+          click: () => {
+            showWindow();
+            mainWindow?.webContents.send('varisdev:show-updates');
+            void runtime.check().catch(() => {});
+          },
+        },
+        {
+          label: 'Update VarisDev…',
+          click: () => {
+            showWindow();
+            mainWindow?.webContents.send('varisdev:show-updates');
+          },
+        },
       ],
     },
     {role: 'windowMenu'},
@@ -267,6 +390,181 @@ async function createWindow(): Promise<void> {
   await mainWindow.loadFile(fileURLToPath(pageUrl));
 }
 
+async function restartForUpdate(selectedSessionId?: unknown): Promise<void> {
+  const snapshot = hub.snapshot();
+  const selectedId =
+    selectedSessionId === undefined
+      ? snapshot.selectedSessionId
+      : id(selectedSessionId);
+  if (
+    selectedId !== undefined &&
+    !snapshot.sessions.some(item => item.session.id === selectedId)
+  )
+    throw new DashboardInputError('Choose a valid parent session.');
+  requireUpdateRestart(runtime.status(), snapshot, sessionOperations);
+  restarting = true;
+  const selected = snapshot.sessions.find(
+    item => item.session.id === selectedId,
+  );
+  const command = updateRestartCommand(
+    installRoot,
+    process.env.VARISDEV_NODE_EXECUTABLE,
+    process.execPath,
+    selected?.session.cwd,
+  );
+  const restartEnvironment = [
+    'ELECTRON_RUN_AS_NODE',
+    'VARISDEV_DESKTOP_RESTORE',
+  ] as const;
+  const previousEnvironment = Object.fromEntries(
+    restartEnvironment.map(key => [key, process.env[key]]),
+  );
+  try {
+    accessSync(command.executable, constants.X_OK);
+    accessSync(command.args[0], constants.R_OK);
+    if (
+      !statSync(command.executable).isFile() ||
+      !statSync(command.args[0]).isFile()
+    )
+      throw new Error('The VarisDev launcher is not a file.');
+    const saved = hub.restartSnapshots();
+    const selectedIndex = saved.findIndex(parent =>
+      parent.entries.some(
+        entry => entry.type === 'session' && entry.id === selectedId,
+      ),
+    );
+    if (selectedIndex > 0) saved.unshift(...saved.splice(selectedIndex, 1));
+    if (saved.length) {
+      const restorePath = join(profile, 'update-restart.json');
+      writeFileSync(restorePath, JSON.stringify(saved), {mode: 0o600});
+      command.env.VARISDEV_DESKTOP_RESTORE = restorePath;
+      command.args = [join(installRoot, 'bin', 'varisdev.mjs'), '--overview'];
+    }
+    requireUpdateRestart(runtime.status(), hub.snapshot(), sessionOperations);
+    if (!process.env.VARISDEV_NODE_EXECUTABLE) {
+      // ELECTRON_RUN_AS_NODE also affects Electron's relaunch helper. Use a
+      // separate CLI process that waits until this desktop has fully exited.
+      command.env.VARISDEV_RESTART_PID = String(process.pid);
+      const log = openSync(join(profile, 'startup.log'), 'a');
+      try {
+        const child = spawn(command.executable, command.args, {
+          cwd: installRoot,
+          env: command.env,
+          detached: true,
+          stdio: ['ignore', log, log],
+        });
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject);
+          child.once('spawn', resolve);
+        });
+        child.unref();
+      } finally {
+        closeSync(log);
+      }
+    } else {
+      for (const key of restartEnvironment) {
+        if (command.env[key] === undefined) delete process.env[key];
+        else process.env[key] = command.env[key];
+      }
+      // Electron starts the original CLI only after this process has exited.
+      app.relaunch({execPath: command.executable, args: command.args});
+    }
+    app.quit();
+  } catch (error) {
+    for (const key of restartEnvironment) {
+      if (previousEnvironment[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnvironment[key];
+    }
+    restarting = false;
+    throw error;
+  }
+}
+
+const openingProjects = new Map<string, Promise<string>>();
+async function openProject(project?: string): Promise<void> {
+  showWindow();
+  if (!project || shuttingDown || restarting) return;
+  const existing = hub
+    .snapshot()
+    .sessions.find(
+      item => item.session.cwd === project && item.session.status !== 'closed',
+    );
+  let sessionId = existing?.session.id;
+  if (!sessionId) {
+    let opening = openingProjects.get(project);
+    if (!opening) {
+      sessionOperations++;
+      opening = hub
+        .createSession({cwd: project})
+        .then(result => {
+          preferences.rememberFolder(project);
+          return result.id;
+        })
+        .finally(() => {
+          sessionOperations--;
+          openingProjects.delete(project);
+        });
+      openingProjects.set(project, opening);
+    }
+    sessionId = await opening;
+  }
+  mainWindow?.webContents.send('varisdev:select-session', sessionId);
+}
+
+app.on('second-instance', (_event, _argv, _cwd, data: unknown) => {
+  const project =
+    data &&
+    typeof data === 'object' &&
+    'project' in data &&
+    typeof data.project === 'string' &&
+    isAbsolute(data.project)
+      ? data.project
+      : undefined;
+  if (!desktopReady) pendingProjects.push(project);
+  else
+    void openProject(project).catch(error =>
+      dialog.showErrorBox(
+        'Could not open project',
+        updateMessage(String(error)),
+      ),
+    );
+});
+
+async function restoreAfterUpdate(): Promise<boolean> {
+  const restorePath = process.env.VARISDEV_DESKTOP_RESTORE;
+  delete process.env.VARISDEV_DESKTOP_RESTORE;
+  if (!restorePath || restorePath !== join(profile, 'update-restart.json'))
+    return false;
+  const saved = JSON.parse(
+    readFileSync(restorePath, 'utf8'),
+  ) as DesktopStartup[];
+  for (const startup of saved) {
+    const parent = await createDashboardParent(
+      {cwd: startup.cwd},
+      undefined,
+      startup,
+    );
+    hub.adoptSession(parent);
+    preferences.rememberFolder(startup.cwd);
+  }
+  unlinkSync(restorePath);
+  return saved.length > 0;
+}
+
+const unsubscribeUpdates = runtime.subscribe(status => {
+  if (
+    !shuttingDown &&
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    !mainWindow.webContents.isDestroyed()
+  ) {
+    mainWindow.webContents.send(
+      'varisdev:update-status',
+      publicUpdateStatus(status),
+    );
+  }
+});
+
 const unsubscribe = hub.subscribe(() => {
   if (shuttingDown || snapshotTimer) return;
   snapshotTimer = setTimeout(() => {
@@ -320,7 +618,7 @@ process.on('message', (message: unknown) => {
     const nextId =
       payload.controllable === true ? payload.snapshot.session.id : undefined;
     if (attachedSessionId !== nextId)
-      requests.disconnect('The attached Pi session changed.');
+      requests.disconnect('The attached parent session changed.');
     attachedSessionId = nextId;
     hub.updateExternal(payload.snapshot);
     hub.setExternalControl(nextId ? externalControl : undefined);
@@ -329,7 +627,7 @@ process.on('message', (message: unknown) => {
     payload.sessionId === attachedSessionId
   ) {
     attachedSessionId = undefined;
-    requests.disconnect('The attached Pi session changed.');
+    requests.disconnect('The attached parent session changed.');
     hub.closeExternal();
   } else if (payload.type === 'show') {
     showWindow();
@@ -347,13 +645,18 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   clearTimeout(snapshotTimer);
+  clearInterval(updateTimer);
   unsubscribe();
+  unsubscribeUpdates();
   try {
     if (attachedSessionId) {
       try {
-        await hub.abortSession(attachedSessionId);
+        await Promise.all([
+          hub.abortSession(attachedSessionId),
+          hub.cancelAgent(attachedSessionId, 'all'),
+        ]);
       } catch (error) {
-        console.error('Could not stop the attached Pi session:', error);
+        console.error('Could not stop the attached parent session:', error);
       }
     }
     await hub.close();
@@ -375,49 +678,80 @@ app.on('before-quit', event => {
 app.on('window-all-closed', () => app.quit());
 app.on('activate', showWindow);
 
-void app
-  .whenReady()
-  .then(async () => {
-    app.dock?.setIcon(iconPath);
-    installHandlers();
-    installMenu();
-    await createWindow();
-    if (startupRequest) {
-      process.send?.({type: 'startup-request'});
-      const startup = await startupRequest;
-      const parent = await createDashboardParent(
-        {cwd: startup.cwd},
-        undefined,
-        startup,
-      );
-      try {
-        const settings = SettingsManager.create(startup.cwd, startup.agentDir);
-        const prompts = await desktopInitialPrompts(
-          startup.argv,
-          settings.getImageAutoResize(),
+if (!primaryInstance) {
+  if (process.connected && process.send)
+    process.send({type: 'ready'}, () => app.exit(0));
+  else app.exit(0);
+} else
+  void app
+    .whenReady()
+    .then(async () => {
+      app.dock?.setIcon(iconPath);
+      installHandlers();
+      installMenu();
+      await createWindow();
+      if (startupRequest) {
+        process.send?.({type: 'startup-request'});
+        const startup = await startupRequest;
+        const parent = await createDashboardParent(
+          {cwd: startup.cwd},
+          undefined,
+          startup,
         );
-        hub.adoptSession(parent, prompts);
-        preferences.rememberFolder(startup.cwd);
-      } catch (error) {
-        await parent.close();
-        throw error;
+        try {
+          const settings = SettingsManager.create(
+            startup.cwd,
+            startup.agentDir,
+          );
+          const prompts = await desktopInitialPrompts(
+            startup.argv,
+            settings.getImageAutoResize(),
+          );
+          hub.adoptSession(parent, prompts);
+          preferences.rememberFolder(startup.cwd);
+        } catch (error) {
+          await parent.close();
+          throw error;
+        }
+        process.send?.({type: 'startup-ready'});
+      } else {
+        const restored = await restoreAfterUpdate();
+        if (launchProject && !restored) {
+          await hub.createSession({cwd: launchProject});
+          preferences.rememberFolder(launchProject);
+        }
+        if (process.connected) process.send?.({type: 'ready'});
       }
-      process.send?.({type: 'startup-ready'});
-    } else if (process.connected) process.send?.({type: 'ready'});
-  })
-  .catch(error => {
-    console.error('Could not start VarisDev:', error);
-    if (replacingTerminal && process.connected) {
-      process.send?.({
-        type: 'startup-error',
-        error: error instanceof Error ? error.message : String(error),
-      });
+      desktopReady = true;
+      for (const project of pendingProjects.splice(0))
+        await openProject(project);
+      if (!process.env.PI_OFFLINE) {
+        void runtime.check().catch(() => {});
+        updateTimer = setInterval(
+          () => {
+            if (['idle', 'available', 'error'].includes(runtime.status().phase))
+              void runtime.check().catch(() => {});
+          },
+          6 * 60 * 60 * 1000,
+        );
+        updateTimer.unref();
+      }
+    })
+    .catch(error => {
+      console.error('Could not start VarisDev:', error);
+      if (process.connected) {
+        process.send?.({
+          type: 'startup-error',
+          error: updateMessage(
+            error instanceof Error ? error.message : String(error),
+          ),
+        });
+        app.quit();
+        return;
+      }
+      dialog.showErrorBox(
+        'VarisDev could not start',
+        updateMessage(error instanceof Error ? error.message : String(error)),
+      );
       app.quit();
-      return;
-    }
-    dialog.showErrorBox(
-      'VarisDev could not start',
-      error instanceof Error ? error.message : String(error),
-    );
-    app.quit();
-  });
+    });

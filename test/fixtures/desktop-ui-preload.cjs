@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('pidev', {
   promptSession: (sessionId, request) =>
     ipcRenderer.invoke('fixture:prompt', sessionId, request),
   abortSession: sessionId => ipcRenderer.invoke('fixture:abort', sessionId),
+  cancelAgent: (sessionId, agentId) =>
+    ipcRenderer.invoke('fixture:cancelAgent', sessionId, agentId),
   workspace: sessionId => ipcRenderer.invoke('fixture:workspace', sessionId),
   readMarkdown: (sessionId, path) =>
     ipcRenderer.invoke('fixture:read-markdown', sessionId, path),

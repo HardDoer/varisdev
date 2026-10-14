@@ -320,9 +320,43 @@ export const THEMES = Object.freeze([
 
 const STORAGE_KEY = 'varisdev.factory.theme';
 
-/** Insert the native theme control and apply the saved palette immediately. */
-export function initThemes(onChange = () => {}) {
-  const actions = document.querySelector('.app-controls');
+/** Merge a plugin palette with a shipped base and derive matching scene colors. */
+export function pluginTheme(entry) {
+  const base =
+    THEMES.find(candidate => candidate.id === entry.base) ?? THEMES[0];
+  const colors = {...base.colors, ...entry.colors};
+  const scene = {
+    floor: colors.scene,
+    edge: colors.line,
+    dark: colors.bg,
+    metal: colors.muted,
+    shell: colors.text,
+    white: colors.text,
+    mint: colors.mint,
+    cyan: colors.cyan,
+    amber: colors.amber,
+    red: colors.red,
+    dim: colors['scene-glow'],
+    screen: colors.input,
+    selection: colors['selection-bg'],
+    running: colors['status-running'],
+    queued: colors['status-queued'],
+    completed: colors['status-completed'],
+    ...entry.scenePalette,
+  };
+  return {
+    ...entry,
+    colorScheme: base.colorScheme,
+    colors,
+    scenePalette: Object.fromEntries(
+      Object.entries(scene).map(([key, value]) => [key, rgb(value)]),
+    ),
+  };
+}
+
+/** Insert the theme control, discover installed plugins, and apply the saved theme. */
+export function initThemes(onChange = () => {}, {deferDiscovery = false} = {}) {
+  const actions = document.getElementById('app-menu-panel');
   const label = document.createElement('label');
   label.className = 'theme-control';
   const caption = document.createElement('span');
@@ -331,41 +365,112 @@ export function initThemes(onChange = () => {}) {
   select.id = 'factory-theme';
   select.name = 'theme';
   label.htmlFor = select.id;
-  for (const entry of THEMES) {
-    const option = document.createElement('option');
-    option.value = entry.id;
-    option.textContent = entry.name;
-    select.append(option);
-  }
   label.append(caption, select);
   actions?.insertBefore(label, actions.querySelector('#motion-toggle'));
 
-  let saved;
+  const diagnostics = document.createElement('details');
+  diagnostics.id = 'plugin-theme-errors';
+  diagnostics.hidden = true;
+  const summary = document.createElement('summary');
+  summary.textContent = 'Theme errors';
+  const errors = document.createElement('ul');
+  diagnostics.append(summary, errors);
+  label.after(diagnostics);
+
+  let entries = [...THEMES];
+  let selected;
+  let sessionId;
+  let generation = 0;
+  let disposed = false;
   try {
-    saved = window.localStorage.getItem(STORAGE_KEY);
+    selected = window.localStorage.getItem(STORAGE_KEY);
   } catch {
     // Theme selection remains available when storage is unavailable.
   }
-  function apply(id) {
-    const entry = THEMES.find(candidate => candidate.id === id) ?? THEMES[0];
-    select.value = entry.id;
-    document.documentElement.dataset.theme = entry.id;
-    document.documentElement.style.colorScheme = entry.colorScheme;
-    onChange(entry.scenePalette);
-    return entry.id;
+  function options() {
+    select.replaceChildren();
+    for (const entry of entries) {
+      const option = document.createElement('option');
+      option.value = entry.id;
+      option.textContent = entry.packageName
+        ? `${entry.name} · ${entry.packageName}`
+        : entry.name;
+      select.append(option);
+    }
   }
-  apply(saved);
-  function change() {
-    const id = apply(select.value);
+  function save(id) {
+    selected = id;
     try {
       window.localStorage.setItem(STORAGE_KEY, id);
     } catch {
       // The selected palette still applies for this window.
     }
   }
+  function apply(id) {
+    const entry = entries.find(candidate => candidate.id === id) ?? THEMES[0];
+    select.value = entry.id;
+    document.documentElement.dataset.theme = entry.id;
+    document.documentElement.style.colorScheme = entry.colorScheme;
+    document.getElementById('plugin-theme-style')?.remove();
+    if (entry.packageName) {
+      const style = document.createElement('style');
+      style.id = 'plugin-theme-style';
+      style.textContent = `:root {${Object.entries(entry.colors)
+        .map(([key, value]) => `--${key}: ${value};`)
+        .join('')}}\n${entry.css ?? ''}`;
+      document.head.append(style);
+    }
+    onChange(entry.scenePalette);
+    return entry.id;
+  }
+  options();
+  // Keep the preferred theme when its package is absent from the current project.
+  apply(selected);
+  function change() {
+    save(apply(select.value));
+  }
   select.addEventListener('change', change);
-  return () => {
+
+  async function refresh(...args) {
+    if (args.length) sessionId = args[0];
+    if (!window.pidev?.appThemes || disposed) return;
+    const request = ++generation;
+    let result;
+    try {
+      result = await window.pidev.appThemes(sessionId);
+    } catch (error) {
+      if (disposed || request !== generation) return;
+      errors.replaceChildren();
+      const item = document.createElement('li');
+      item.textContent = error instanceof Error ? error.message : String(error);
+      errors.append(item);
+      diagnostics.hidden = false;
+      return;
+    }
+    if (disposed || request !== generation) return;
+    entries = [...THEMES, ...result.themes.map(pluginTheme)];
+    options();
+    apply(selected);
+    errors.replaceChildren();
+    for (const message of result.errors) {
+      const item = document.createElement('li');
+      item.textContent = message;
+      errors.append(item);
+    }
+    diagnostics.hidden = !result.errors.length;
+  }
+  const opened = () => void refresh();
+  actions?.addEventListener('varisdev:app-menu-open', opened);
+  if (!deferDiscovery) void refresh();
+  const dispose = () => {
+    disposed = true;
+    generation++;
     select.removeEventListener('change', change);
+    actions?.removeEventListener('varisdev:app-menu-open', opened);
+    document.getElementById('plugin-theme-style')?.remove();
+    diagnostics.remove();
     label.remove();
   };
+  dispose.refresh = refresh;
+  return dispose;
 }

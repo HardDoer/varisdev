@@ -1,7 +1,7 @@
 import {readFileSync, writeFileSync, mkdirSync, statSync} from 'node:fs';
 import {isAbsolute, join} from 'node:path';
 
-/** Desktop preferences live in the installed package's .pi/desktop profile. */
+/** Desktop preferences live in the persistent VarisDev application profile. */
 export class DesktopPreferences {
   private lastFolder?: string;
   private readonly directory: string;

@@ -1,5 +1,6 @@
 import {createParentMotion} from './parent-motion.js';
 import {idleActivityPose, drawIdleActivity} from './parent-activities.js';
+import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
@@ -140,6 +141,52 @@ export function createParentFallback(container) {
   const document = container.ownerDocument;
   const window = document.defaultView;
   const controller = createParentMotion();
+  const whip = createRobotWhip();
+  const overlay = document.createElementNS(NS, 'svg');
+  overlay.setAttribute('class', 'robot-whip-overlay');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.setAttribute('focusable', 'false');
+  let agents = [];
+  let recoilGlyph = null;
+  function clearWhip() {
+    recoilGlyph?.style.removeProperty('translate');
+    recoilGlyph = null;
+    overlay.remove();
+  }
+  function targets() {
+    const running = new Set(
+      agents.filter(a => a.status === 'running').map(a => a.id),
+    );
+    return [...container.querySelectorAll('.fallback-station.agent')].filter(
+      element => {
+        const rect = element.getBoundingClientRect();
+        const glyphBounds = element
+          .querySelector('.robot-glyph')
+          ?.getBoundingClientRect();
+        return (
+          glyphBounds?.width > 0 &&
+          glyphBounds.height > 0 &&
+          running.has(element.dataset.unitId) &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > 0 &&
+          rect.top < window.innerHeight &&
+          rect.right > 0 &&
+          rect.left < window.innerWidth
+        );
+      },
+    );
+  }
+  function syncWhip() {
+    whip.update(
+      session?.id,
+      targets().map(element => element.dataset.unitId),
+      Boolean(reaction) ||
+        !['rest', 'work'].includes(controller.pose().mode) ||
+        session?.status === 'closed',
+    );
+    if (!whip.pose()) clearWhip();
+  }
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '0 0 240 180');
   svg.setAttribute('class', 'parent-fallback-robot');
@@ -185,7 +232,11 @@ export function createParentFallback(container) {
 
   function render() {
     if (disposed || !station || !session) return;
+    syncWhip();
     const pose = controller.pose();
+    const lash = whip.pose();
+    const lashPose = lash ? whipPose(lash.age) : null;
+    let whipHand;
     const idle = pose.activity
       ? idleActivityPose(pose.activity, pose.elapsed)
       : null;
@@ -215,12 +266,8 @@ export function createParentFallback(container) {
     const color = surprise ? C.amber : working ? C.cyan : C.mint;
     const origin = 57 + (pose.x - HOME) * 8.8;
     const shapes = [];
-    const g = primitives(
-      shapes,
-      origin,
-      pose.ground,
-      pose.yaw + (idle?.yaw || 0) * blend,
-    );
+    const yaw = pose.yaw + (idle?.yaw || 0) * blend - (lashPose?.turn || 0);
+    const g = primitives(shapes, origin, pose.ground, yaw);
     g.cylinder(
       [0, 0.36, 0],
       [2.25 - jump * 0.3, 0.04, 1.5 - jump * 0.18],
@@ -298,6 +345,12 @@ export function createParentFallback(container) {
         hand[1] += 0.2 + stroke * 0.12;
         hand[2] *= 0.75;
       }
+      if (lashPose && side === 1) {
+        const at = p => [p[0], p[1] + base, p[2]];
+        elbow = mix(elbow, at(lashPose.elbow), lashPose.blend);
+        hand = mix(hand, at(lashPose.hand), lashPose.blend);
+        whipHand = [...hand];
+      }
       elbow = mix(elbow, [-0.15, base + 2.6, side * 1.65], surprise);
       hand = mix(hand, [0.25, base + 3.55, side * 1.95], surprise);
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
@@ -315,6 +368,66 @@ export function createParentFallback(container) {
     if (idle && blend > 0.5)
       drawIdleActivity(g, g, C, pose.activity, pose.elapsed, {...idle, lift});
     paint(robot, shapes);
+    svg.dataset.robotWhip = lash?.target || '';
+    if (lash && whipHand) {
+      const target = targets().find(
+        element => element.dataset.unitId === lash.target,
+      );
+      const glyph = target?.querySelector('.robot-glyph');
+      if (glyph) {
+        if (recoilGlyph !== glyph) clearWhip();
+        recoilGlyph = glyph;
+        glyph.style.translate = `0 ${number(-lashPose.recoil * 16)}px`;
+        const bounds = container.getBoundingClientRect();
+        const icon = svg.getBoundingClientRect();
+        const hit = glyph.getBoundingClientRect();
+        const scale = Math.min(icon.width / 240, icon.height / 180);
+        const h = rotate(whipHand, yaw);
+        h[1] += pose.ground;
+        const start = [
+          icon.left -
+            bounds.left +
+            (icon.width - 240 * scale) / 2 +
+            (origin + h[0] * 6 + h[2] * 20) * scale,
+          -(
+            icon.top -
+            bounds.top +
+            (icon.height - 180 * scale) / 2 +
+            (143 - h[1] * 23 - h[0] * 4 + h[2] * 3) * scale
+          ),
+          0,
+        ];
+        const end = [
+          hit.left - bounds.left + hit.width / 2,
+          -(hit.top - bounds.top + hit.height / 2),
+          0,
+        ];
+        const paths = [];
+        const geometry = {
+          rod(a, b, radius, color) {
+            paths.push({
+              d: `M${number(a[0] * 24)} ${number(-a[1] * 24)} L${number(b[0] * 24)} ${number(-b[1] * 24)}`,
+              fill: 'none',
+              stroke: color,
+              width: radius * 42,
+              depth: 0,
+              shade: 0,
+            });
+          },
+        };
+        drawRobotWhip(
+          geometry,
+          geometry,
+          C,
+          start.map(n => n / 24),
+          end.map(n => n / 24),
+          lash.age,
+        );
+        overlay.setAttribute('viewBox', `0 0 ${bounds.width} ${bounds.height}`);
+        if (!overlay.parentNode) container.append(overlay);
+        paint(overlay, paths);
+      }
+    }
     svg.dataset.mode = reaction ? 'startled' : pose.mode;
     svg.dataset.activity = pose.activity || '';
   }
@@ -371,7 +484,10 @@ export function createParentFallback(container) {
       lastTime = timestamp;
       if (motion) {
         time += dt;
-        controller.tick(dt);
+        syncWhip();
+        if (!whip.pose()) controller.tick(dt);
+        syncWhip();
+        whip.tick(dt);
       }
       if (reaction?.animated) {
         reaction.age += dt;
@@ -399,6 +515,8 @@ export function createParentFallback(container) {
   observer?.observe(container);
 
   function detach() {
+    whip.cancel();
+    clearWhip();
     svg.remove();
     glyph?.classList.remove('parent-fallback-glyph');
     station = null;
@@ -424,6 +542,7 @@ export function createParentFallback(container) {
         time = 0;
       }
       session = data?.session || null;
+      agents = data?.agents || [];
       selected = selectedId === 'parent';
       controller.update(session);
       if (!session || !station) stopFrame();
@@ -434,6 +553,7 @@ export function createParentFallback(container) {
       if (disposed) return;
       motion = Boolean(enabled);
       controller.setMotion(motion);
+      whip.setMotion(motion);
       if (motion) reaction = null;
       stopFrame();
       render();
@@ -441,6 +561,7 @@ export function createParentFallback(container) {
     },
     prompt(sessionId) {
       if (disposed || sessionId !== session?.id) return;
+      whip.cancel();
       controller.prompt();
       render();
       schedule();
@@ -453,6 +574,7 @@ export function createParentFallback(container) {
     },
     startle(animate = true) {
       if (disposed) return;
+      whip.cancel();
       controller.stop();
       reaction = {age: 0, animated: Boolean(animate)};
       stopFrame();
@@ -473,6 +595,8 @@ export function createParentFallback(container) {
       observer?.disconnect();
       document.removeEventListener('visibilitychange', onVisibility);
       controller.dispose();
+      whip.dispose();
+      clearWhip();
       reaction = null;
       session = null;
       detach();

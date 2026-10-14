@@ -29,6 +29,6 @@
       "typebox": ["./desktop/node_modules/typebox/build/index.d.mts"]
     }
   },
-  "include": ["src/desktop/**/*.ts", "src/**/*.mjs"],
+  "include": ["src/**/*.ts", "src/**/*.mjs"],
   "exclude": ["build", "desktop", "node_modules"]
 }

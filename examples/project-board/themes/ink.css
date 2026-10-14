@@ -1,0 +1,8 @@
+/* The stylesheet is installed only while Ink is selected. */
+.conversation-entry {
+  border-radius: 14px;
+}
+
+.factory-title {
+  letter-spacing: 0.025em;
+}

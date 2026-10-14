@@ -269,6 +269,7 @@ async function main() {
         return {
           mode: canvas.dataset.parentMode,
           activity: canvas.dataset.parentActivity,
+          whip: canvas.dataset.robotWhip,
           centerX,
           hash,
           anchor,
@@ -331,6 +332,84 @@ async function main() {
             });
             return {activity, samples};
           });
+        },
+        whipScenario() {
+          window.fixture.reset('whip-parent', 'running');
+          data.agents = [
+            {id: 'working-robot', status: 'running'},
+            {id: 'queued-robot', status: 'queued'},
+          ];
+          scene.update(data, 'parent');
+          window.fixture.advance(300);
+          const baseline = inspect();
+          let frames = 300;
+          while (!canvas.dataset.robotWhip && frames++ < 1000) {
+            scene.update(data, frames % 2 ? 'parent' : 'working-robot');
+            window.fixture.advance(1);
+          }
+          const windup = inspect();
+          window.fixture.advance(14);
+          const crack = inspect();
+          data.agents[0].status = 'completed';
+          scene.update(data, 'parent');
+          const stopped = canvas.dataset.robotWhip;
+          data.agents[0].status = 'running';
+          scene.update(data, 'parent');
+          scene.setMotion(false);
+          window.fixture.advance(1000);
+          const disabled = canvas.dataset.robotWhip;
+          scene.setMotion(true);
+          return {baseline, windup, crack, stopped, disabled, frames};
+        },
+        fallbackWhipScenario() {
+          window.fixture.createFallback();
+          fallbackContainer.style.cssText =
+            'position:fixed;top:0;left:0;display:flex;width:480px;height:200px';
+          const station = fallbackContainer.firstElementChild;
+          station.style.cssText = 'width:240px;height:180px';
+          station.querySelector('svg').style.cssText =
+            'width:240px;height:180px';
+          const agent = document.createElement('div');
+          agent.className = 'fallback-station agent running';
+          agent.dataset.unitId = 'svg-worker';
+          agent.innerHTML =
+            '<span class="robot-glyph" style="display:block;width:48px;height:48px;margin:60px">Robot</span>';
+          agent.style.cssText = 'width:240px;height:180px';
+          fallbackContainer.append(agent);
+          data = {
+            session: {id: 'svg-parent', status: 'running'},
+            agents: [{id: 'svg-worker', status: 'running'}],
+          };
+          fallback.update(data, 'parent');
+          let frames = 0;
+          while (
+            !station.querySelector('svg').dataset.robotWhip &&
+            frames++ < 1100
+          )
+            window.fixture.advance(1);
+          window.fixture.advance(14);
+          const overlay = fallbackContainer.querySelector(
+            '.robot-whip-overlay',
+          );
+          const capture = {
+            target: station.querySelector('svg').dataset.robotWhip,
+            paths: overlay?.children.length || 0,
+            finite:
+              overlay &&
+              [...overlay.children].every(
+                path => !/NaN|Infinity/.test(path.getAttribute('d')),
+              ),
+            hop: agent.querySelector('.robot-glyph').style.translate,
+          };
+          fallback.setMotion(false);
+          capture.removed = !fallbackContainer.querySelector(
+            '.robot-whip-overlay',
+          );
+          capture.reset =
+            agent.querySelector('.robot-glyph').style.translate === '';
+          window.fixture.disposeFallback();
+          fallbackContainer.remove();
+          return capture;
         },
         createFallback() {
           fallbackContainer = document.createElement('div');
@@ -698,6 +777,28 @@ async function main() {
   );
 
   await run(
+    'decorative whip reaches a visible working robot and cancels when it completes',
+    async () => {
+      const poses = await evaluate(() => window.fixture.whipScenario());
+      finiteRendered(poses.windup);
+      finiteRendered(poses.crack);
+      assert.equal(poses.windup.whip, 'working-robot');
+      assert.equal(poses.crack.whip, 'working-robot');
+      assert.ok(
+        poses.crack.vertices > poses.baseline.vertices,
+        'Cable and crack must reach the GPU',
+      );
+      assert.notEqual(poses.crack.hash, poses.windup.hash);
+      assert.ok(
+        Math.abs(poses.crack.centerX - poses.baseline.centerX) < 0.001,
+        'The parent must stay at its station',
+      );
+      assert.equal(poses.stopped, '');
+      assert.equal(poses.disabled, '');
+    },
+  );
+
+  await run(
     'dispose cancels RAF, disconnects observers, and releases real GPU buffers',
     async () => {
       assert.equal((await inspect()).pending, 1);
@@ -797,6 +898,20 @@ async function main() {
       );
       assert.equal(poses.cleanup.pending, 0);
       assert.equal(poses.cleanup.removed, true);
+      assert.deepEqual(rendererErrors, []);
+    },
+  );
+
+  await run(
+    'SVG whip crosses the station layout, recoils the worker and cleans up with Motion off',
+    async () => {
+      const pose = await evaluate(() => window.fixture.fallbackWhipScenario());
+      assert.equal(pose.target, 'svg-worker');
+      assert.ok(pose.paths >= 56, 'The fallback must draw the curved cable');
+      assert.equal(pose.finite, true);
+      assert.notEqual(pose.hop, '0px 0px');
+      assert.equal(pose.removed, true);
+      assert.equal(pose.reset, true);
       assert.deepEqual(rendererErrors, []);
     },
   );

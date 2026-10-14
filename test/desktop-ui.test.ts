@@ -50,8 +50,10 @@ void test(
     }
     assert.ifError(report.fatal);
     assert.equal(
-      report.cases.length,
-      30,
+      process.env.DESKTOP_UI_CASE_PATTERN
+        ? report.cases.length > 0
+        : report.cases.length,
+      process.env.DESKTOP_UI_CASE_PATTERN ? true : 31,
       'All renderer scenarios must execute',
     );
     for (const result of report.cases) {

@@ -31,6 +31,7 @@ import {observeDashboardSession} from './observe.ts';
 import type {DashboardState} from './state.ts';
 import type {DesktopStartup} from '../desktop/startup.ts';
 import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
+import {createAppResourceFilter} from './resources.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -65,6 +66,13 @@ export async function createDashboardParent(
   );
   await mkdir(directory, {recursive: true});
   const settingsManager = SettingsManager.create(request.cwd, agentDir);
+  const resources = createAppResourceFilter(
+    settingsManager,
+    request.cwd,
+    agentDir,
+  );
+  const resourceOptions: Partial<ReturnType<typeof desktopResourceOptions>> =
+    args ? desktopResourceOptions(args) : {};
   let state: DashboardState | undefined;
   const ui = new DesktopExtensionUI(() => state?.updateSession({}));
   let context: ExtensionContext | undefined;
@@ -77,20 +85,27 @@ export async function createDashboardParent(
     state?.record('error', message);
   };
   const loader = new DefaultResourceLoader({
-    ...(args ? desktopResourceOptions(args) : {}),
+    ...resourceOptions,
+    additionalExtensionPaths: resources.paths(
+      resourceOptions.additionalExtensionPaths ?? [],
+    ),
+    additionalSkillPaths: resources.paths(
+      resourceOptions.additionalSkillPaths ?? [],
+    ),
+    additionalPromptTemplatePaths: resources.paths(
+      resourceOptions.additionalPromptTemplatePaths ?? [],
+    ),
+    additionalThemePaths: resources.paths(
+      resourceOptions.additionalThemePaths ?? [],
+    ),
     cwd: request.cwd,
     agentDir,
-    settingsManager,
+    settingsManager: resources.settingsManager,
     extensionFactories: [
       pi => {
-        const existing: {control?: AgentSessionController} = {};
-        pi.events.emit('varisdev:dashboard-controller', existing);
-        control = existing.control;
-        if (!control) {
-          registerProjectTools(pi);
-          control = registerAgentTools(pi);
-          registerCommitCommand(pi);
-        }
+        registerProjectTools(pi);
+        control = registerAgentTools(pi);
+        registerCommitCommand(pi);
         showCustomMessage = observeDashboardSession(
           pi,
           control,
@@ -157,6 +172,8 @@ export async function createDashboardParent(
     resourceLoader: loader,
     sessionManager,
   });
+  // SDK initialization can append model metadata to an otherwise blank branch.
+  if (startup?.leafId) sessionManager.branch(startup.leafId);
   // Deliver every desktop correction together at the next model turn.
   // Keep this policy local to the session rather than changing Pi settings.
   session.agent.steeringMode = 'all';
@@ -255,11 +272,6 @@ export async function createDashboardParent(
       extensionPrompt.extensionOperations.push(operation);
     return operation;
   };
-  const cancelWorkers = () => {
-    if (!control!.snapshot()) return;
-    const manager = control!.getTeam(context!).getManager();
-    for (const agent of manager.list()) manager.cancel(agent.id);
-  };
   const preserveQueue = () => {
     const queued = session.clearQueue();
     stoppedMessages?.steering.push(...queued.steering);
@@ -271,7 +283,6 @@ export async function createDashboardParent(
     session.abortRetry();
     session.abortCompaction();
     session.abortBash();
-    cancelWorkers();
     return session.abort();
   };
   const abort = () => {
@@ -289,8 +300,6 @@ export async function createDashboardParent(
           await Promise.allSettled(running.map(prompt => prompt.operation));
           // Preserve anything queued during prompt preflight before stopping settled.
           preserveQueue();
-          // A tool may have spawned a worker just before the parent's abort settled.
-          cancelWorkers();
         }
         return recovered;
       })
@@ -504,6 +513,38 @@ export async function createDashboardParent(
       await running.operation;
     },
     abort,
+    restartSnapshot() {
+      requireIdle();
+      if (maintaining || !session.isIdle)
+        throw new Error('This parent session is already working.');
+      const manager = session.sessionManager;
+      const header = manager.getHeader();
+      return structuredClone({
+        cwd: request.cwd,
+        agentDir,
+        sessionFile: manager.getSessionFile(),
+        sessionDir: manager.getSessionDir(),
+        entries: [...(header ? [header] : []), ...manager.getEntries()],
+        leafId: manager.getLeafId(),
+        model: session.model
+          ? {provider: session.model.provider, id: session.model.id}
+          : undefined,
+        thinkingLevel: session.thinkingLevel,
+        tools: session.getActiveToolNames(),
+        argv: [...(startup?.argv ?? [])],
+      });
+    },
+    async cancelAgent(agentId) {
+      if (closed) throw new Error('This parent session has closed.');
+      if (!control!.snapshot()) {
+        if (agentId === 'all') return;
+        throw new Error('This parent session has no agents.');
+      }
+      const manager = control!.getTeam(context!).getManager();
+      if (agentId === 'all') {
+        for (const agent of manager.list()) manager.cancel(agent.id);
+      } else manager.cancel(agentId);
+    },
     close() {
       if (closing) return closing;
       closed = true;

@@ -5,29 +5,87 @@
 }
 #markdown-panel {
   position: fixed;
-  top: 88px;
+  top: 80px;
   left: 20px;
   z-index: 15;
   display: flex;
   flex-direction: column;
   width: 520px;
-  height: calc(100vh - 155px);
-  min-width: min(340px, calc(40vw - 30px));
-  min-height: 280px;
-  max-width: calc(40vw - 30px);
-  max-height: calc(100vh - 108px);
-  resize: both;
-  overflow: auto;
+  height: min(650px, calc(100vh - 160px));
+  overflow: hidden;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--panel);
   box-shadow: 0 15px 65px #0009;
 }
-#markdown-panel[data-side='right'] {
-  left: auto;
-  right: 20px;
-  max-width: calc(100vw - 40px);
+#markdown-heading {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  flex-shrink: 0;
+}
+#markdown-heading:active {
+  cursor: grabbing;
+}
+#markdown-heading:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 4px;
+}
+#markdown-panel[data-locked='true'] #markdown-heading {
+  cursor: default;
+}
+#markdown-lock[aria-pressed='true'] {
+  color: var(--mint);
+  border-color: var(--mint);
+}
+#markdown-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 24px;
+  height: 24px;
+  padding: 0 !important;
+  border: 0;
+  background: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+#markdown-resize::after {
+  content: '';
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+}
+#markdown-resize:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+#markdown-updated {
+  color: var(--mint);
+  font-size: 11px;
+}
+#markdown-updated.is-updated {
+  animation: markdown-update 1.2s ease-out;
+}
+@keyframes markdown-update {
+  from {
+    background: var(--mint);
+    color: var(--bg);
+  }
+  to {
+    background: transparent;
+    color: var(--mint);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #markdown-updated.is-updated {
+    animation: none;
+  }
 }
 .markdown-heading-actions {
   display: flex;
@@ -58,6 +116,15 @@
 }
 #markdown-panel p {
   margin: 8px 0;
+}
+#markdown-session {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+#markdown-path-form {
+  flex-shrink: 0;
 }
 #markdown-session {
   font-size: 11px;
@@ -99,7 +166,10 @@
 #markdown-file-path {
   color: var(--muted);
   font-size: 11px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 .markdown-toolbar {
   flex-wrap: wrap;
@@ -108,6 +178,30 @@
 }
 #markdown-status {
   color: var(--muted);
+}
+#markdown-status:empty {
+  display: none;
+}
+#markdown-panel[data-compact='true'] {
+  padding: 10px;
+}
+#markdown-panel[data-compact='true'] #markdown-session {
+  display: none;
+}
+#markdown-panel[data-compact='true'] .markdown-heading h2 {
+  font-size: 15px;
+}
+#markdown-panel[data-compact='true'] button {
+  padding: 4px 7px;
+}
+#markdown-panel[data-compact='true'] .markdown-toolbar {
+  gap: 6px;
+}
+#markdown-panel[data-compact='true'] #markdown-preview,
+#markdown-panel[data-compact='true'] #markdown-editor {
+  padding: 10px;
+  min-height: 60px;
+  margin-top: 8px;
 }
 #markdown-progress {
   flex-shrink: 0;
@@ -228,18 +322,4 @@
 }
 .markdown-link {
   color: var(--cyan);
-}
-@media (max-width: 600px) {
-  #markdown-panel {
-    top: 65px;
-    left: 8px;
-    width: calc(100vw - 16px);
-    min-width: 240px;
-    max-width: calc(100vw - 16px);
-    max-height: calc(100vh - 80px);
-  }
-  #markdown-panel[data-side='right'] {
-    right: 8px;
-    max-width: calc(100vw - 16px);
-  }
 }

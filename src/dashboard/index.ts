@@ -6,7 +6,6 @@ import {
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionController} from '../agents/team.ts';
-import {isAgentFinished} from '../agents/orchestrator.ts';
 import {
   launchFactory,
   detachFactory,
@@ -55,15 +54,9 @@ export function registerFactory(
   let binding: FactoryBinding | undefined;
   let generation = 0;
   let cancelBeforeStart = false;
-  const cancelWorkers = (ctx: ExtensionContext) => {
-    if (!control.snapshot()) return;
-    const manager = control.getTeam(ctx).getManager();
-    for (const agent of manager.list()) manager.cancel(agent.id);
-    return manager;
-  };
   const ensureAttached = (current: FactoryBinding) => {
     if (binding !== current)
-      throw new Error('This Pi session is no longer attached to the factory.');
+      throw new Error('This parent session is no longer attached to the app.');
   };
   const maintain = async (
     current: FactoryBinding,
@@ -274,7 +267,7 @@ export function registerFactory(
             if (!extensionCommand) {
               if (!ctx.model)
                 throw new Error(
-                  'No model selected. Configure your Pi model before sending a task.',
+                  'Choose a model before sending a task.',
                 );
               const auth = await ctx.modelRegistry.getApiKeyAndHeaders(
                 ctx.model,
@@ -293,43 +286,31 @@ export function registerFactory(
             current.submissions--;
           }
         },
+        async cancelAgent(agentId) {
+          ensureAttached(current);
+          if (!control.snapshot()) {
+            if (agentId === 'all') return;
+            throw new Error('This parent session has no agents.');
+          }
+          const manager = control.getTeam(ctx).getManager();
+          if (agentId === 'all') {
+            for (const agent of manager.list()) manager.cancel(agent.id);
+          } else manager.cancel(agentId);
+        },
         async abort() {
           if (binding !== current)
             throw new Error(
-              'This Pi session is no longer attached to the factory.',
+              'This parent session is no longer attached to the app.',
             );
           current.epoch++;
           current.stopping = true;
           cancelBeforeStart = true;
           state.record('session', 'Stopping');
           const queued = state.snapshot().queue ?? {steering: [], followUp: []};
-          const manager = cancelWorkers(ctx);
           ctx.abort();
           try {
-            if (manager) {
-              // Wait for cancelled worker requests and SDK setup to finish.
-              await new Promise<void>(resolve => {
-                const done = () =>
-                  manager.list().every(agent => isAgentFinished(agent.status));
-                if (done()) {
-                  resolve();
-                  return;
-                }
-                const unsubscribe = manager.subscribe(() => {
-                  if (done()) {
-                    unsubscribe();
-                    resolve();
-                  }
-                });
-                if (done()) {
-                  unsubscribe();
-                  resolve();
-                }
-              });
-            }
             if (current.configuration)
               await Promise.allSettled([current.configuration]);
-            if (binding === current) cancelWorkers(ctx);
             return queued;
           } finally {
             current.stopping = false;
@@ -369,7 +350,6 @@ export function registerFactory(
     )
       return;
     if (cancelBeforeStart) {
-      cancelWorkers(ctx);
       ctx.abort();
     }
   });

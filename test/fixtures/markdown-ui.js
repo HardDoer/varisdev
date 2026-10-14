@@ -4,13 +4,19 @@ import {
   openMarkdownFile,
   updateMarkdownFiles,
 } from '../../assets/dashboard/markdown-files.js';
+import {flushDrafts} from '../../assets/dashboard/draft-storage.js';
 
-const disks = new Map();
+const disks = new Map(
+  JSON.parse(window.localStorage.getItem('fixture.markdown-disks') || '[]'),
+);
 let selection;
 let readError;
 let saveError;
 let delay;
-let revision = 0;
+let revision = Math.max(
+  0,
+  ...[...disks.values()].map(file => Number(file.version) || 0),
+);
 const key = (sessionId, path) =>
   `${sessionId}:${path.startsWith('/') ? path : `/project/${sessionId}/${path}`}`;
 function put(sessionId, path, content) {
@@ -19,15 +25,29 @@ function put(sessionId, path, content) {
     content,
     version: String(++revision),
   });
+  window.localStorage.setItem(
+    'fixture.markdown-disks',
+    JSON.stringify([...disks]),
+  );
 }
-put(
+function seed(sessionId, path, content) {
+  if (!disks.has(key(sessionId, path))) put(sessionId, path, content);
+}
+seed(
   'one',
   'PLAN.md',
   '# Build plan\n\n- [x] Read instructions\n- [ ] Implement editor\n\n```html\n<script>window.hacked = true</script>\n- [ ] code, not a task\n```\n\n<img src=x onerror="window.hacked=true">\n\n**Strong** and `inline code`.',
 );
-put('one', 'NOTES.md', '# Notes\n\n- Review the change');
-put('two', 'PLAN.md', '# Other project\n\n- [ ] Other task');
+seed('one', 'NOTES.md', '# Notes\n\n- Review the change');
+seed('two', 'PLAN.md', '# Other project\n\n- [ ] Other task');
 const api = {
+  async sessionFeatures(sessionId) {
+    return {
+      contextFiles: [
+        {path: `/project/${sessionId}/PLAN.md`, status: 'included'},
+      ],
+    };
+  },
   async readMarkdown(sessionId, path) {
     if (delay) await delay;
     if (readError) throw new Error(readError);
@@ -52,10 +72,25 @@ const api = {
     return {...disks.get(key(sessionId, path))};
   },
 };
+let originalSetItem;
 window.markdownFixture = {
+  flush: flushDrafts,
+  failDraftWrites(enabled) {
+    if (enabled && !originalSetItem) {
+      originalSetItem = window.Storage.prototype.setItem;
+      window.Storage.prototype.setItem = function (key, value) {
+        if (key === 'varisdev.markdown-drafts.v1')
+          throw new window.DOMException('Storage full', 'QuotaExceededError');
+        return originalSetItem.call(this, key, value);
+      };
+    } else if (!enabled && originalSetItem) {
+      window.Storage.prototype.setItem = originalSetItem;
+      originalSetItem = undefined;
+    }
+  },
   open: openMarkdownFile,
   select(sessionId, cwd = `/project/${sessionId}`) {
-    selection = {session: {id: sessionId, cwd}};
+    selection = {session: {id: sessionId, cwd}, changes: [{path: 'PLAN.md'}]};
     updateMarkdownFiles();
   },
   put,

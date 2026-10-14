@@ -41,7 +41,8 @@ function install() {
   const electron = require('electron');
   const source = join(dirname(electron), '../..');
   const main = join(root, 'desktop/build/src/desktop/main.js');
-  if (!existsSync(main)) throw new Error('Run npm run desktop:build first.');
+  if (!existsSync(main))
+    throw new Error('The app build is missing. Reinstall VarisDev.');
   if (existsSync(destination)) {
     const marker = join(destination, 'Contents/Resources/app/launch.json');
     if (!existsSync(marker))
@@ -90,7 +91,10 @@ function install() {
       join(appDirectory, 'launch.json'),
       JSON.stringify(
         {
-          main,
+          installRoot: root,
+          nodeExecutable:
+            process.env.VARISDEV_NODE_EXECUTABLE || process.execPath,
+          dataDir: process.env.VARISDEV_DATA_DIR,
           path: [
             ...new Set([
               dirname(process.execPath),
@@ -135,7 +139,7 @@ function install() {
       throw error;
     }
     console.log(
-      `Installed ${destination}\nOpen it from Finder or run npm run desktop:open.`,
+      `Installed ${destination}\nOpen VarisDev from Finder, Spotlight, or the Dock.`,
     );
   } finally {
     rmSync(temporary, {recursive: true, force: true});
@@ -145,12 +149,12 @@ function install() {
 try {
   if (process.platform !== 'darwin')
     throw new Error(
-      'The native app installer currently supports macOS. Use npm run desktop:dev on this platform.',
+      'The app launcher installer currently supports macOS. Run varisdev to open the app on this platform.',
     );
   if (command === 'install') install();
   else if (command === 'open') {
     if (!existsSync(destination))
-      throw new Error('Run npm run desktop:install first.');
+      throw new Error('Run varisdev app install first.');
     run('/usr/bin/open', [destination]);
   } else throw new Error('Usage: node scripts/desktop-app.mjs install|open');
 } catch (error) {

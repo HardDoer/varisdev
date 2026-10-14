@@ -1,11 +1,11 @@
 # Project notes for coding agents
 
-- This repository is an ongoing personal development tool for the user.
+- VarisDev is a distributed open-source application for multiple users. Design installation, updates, defaults, error messages, and documentation for clean machines and public releases; do not assume the developer's environment or credentials.
 - When the user gives several requests, create or update `PLAN.md` with a checklist of the requested work and verification. Keep it current as requests change and work is completed.
 - Use GPT-6.1-Sol (`openai-codex/gpt-6.1-sol`) for delegated agents. Do not use Astra agents or inherit an Astra model when spawning agents.
-- The user installs and runs this tool as a Pi package downloaded from GitHub (`pi install git:github.com/HardDoer/varisdev`), not from this development checkout. Implement and verify changes for Pi's managed package installation, including runtime dependencies, packaged assets, and automatic desktop builds. User update instructions are `pi update` followed by restarting Pi; do not assume local checkout changes affect the installed tool or ask the user to run development npm commands.
-- Keep the user's Pi package registration pointed at GitHub. Never replace it with this checkout for development or testing; use a temporary agent directory and an isolated package installation for verification.
+- VarisDev is a standalone app installed from GitHub (`npm install -g git+https://github.com/HardDoer/varisdev.git`) and launched with `varisdev`. Pi is an internal runtime; keep normal commands and UI branded VarisDev. `varisdev update` and the app's Updates menu manage runtime updates. Verify production dependencies, packaged assets, and automatic builds outside this checkout. The package can also load as a Pi extension; keep that managed installation working. Do not assume checkout changes affect installed copies or ask users to run development npm commands.
+- Keep the user's existing Pi package registration pointed at GitHub. Never replace it with this checkout for development or testing. Use temporary `PI_CODING_AGENT_DIR` and `VARISDEV_DATA_DIR` directories and an isolated package installation for verification.
 - Use “agents” and “parent sessions” consistently in UI text, logs, and documentation.
 - Let controls, layout, and interaction guide the user. Avoid redundant explanatory labels and notes that repeat what the UI already communicates.
-- The user is the only consumer; prefer clean refactors over backward compatibility.
-- Do not preserve legacy tool names, schemas, or compatibility shims unless explicitly requested.
+- Consider existing installations and saved user data when changing public commands, settings, or package formats. Keep internal refactors clean, and document deliberate public interface changes.
+- Do not introduce legacy tool names, schemas, or compatibility shims without a concrete installed-user need.

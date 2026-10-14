@@ -1,0 +1,38 @@
+#updates-button {
+  white-space: nowrap;
+  border-color: var(--mint);
+}
+#updates-dialog {
+  width: min(440px, calc(100vw - 48px));
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 70px #0009;
+}
+#updates-dialog::backdrop {
+  background: #0008;
+}
+#updates-dialog h2 {
+  margin: 0;
+}
+#updates-dialog p {
+  margin: 18px 0;
+}
+#updates-error {
+  color: var(--red, #ff8e8e);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.updates-heading,
+.updates-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.updates-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}

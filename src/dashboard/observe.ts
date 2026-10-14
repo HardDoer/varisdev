@@ -9,6 +9,7 @@ import {observeFileChanges} from './changes.ts';
 import {modelUsage, compactionUsage, type ModelUsageCall} from '../usage.ts';
 import {
   messageText,
+  conversationVisualizations,
   publicText,
   resultStatus,
   toolInput,
@@ -28,6 +29,7 @@ export interface DashboardCustomMessage {
   role: 'custom';
   customType: string;
   content: unknown;
+  details?: unknown;
   display: boolean;
   timestamp: number;
 }
@@ -39,6 +41,7 @@ export function observeDashboardSession(
   existingState?: DashboardState,
 ): (message: DashboardCustomMessage, ctx: ExtensionContext) => void {
   let state: DashboardState | undefined;
+  let cwd = process.cwd();
   let unsubscribe: (() => void) | undefined;
   const tools = new Map<string, string>();
   let lastError: string | undefined;
@@ -131,13 +134,19 @@ export function observeDashboardSession(
       sequence: 0,
     };
     rememberMessage(message, identity);
+    if (!message.display) return;
     const text = messageText(message);
-    if (message.display && text)
+    const visuals = conversationVisualizations(message, undefined, ctx.cwd);
+    if (
+      message.display &&
+      (text || visuals.visualizations || visuals.visualizationErrors)
+    )
       state.updateConversation({
         id: identity.id,
         at: identity.at,
         role: 'assistant',
         text,
+        ...visuals,
         streaming: false,
       });
   }
@@ -199,14 +208,29 @@ export function observeDashboardSession(
       for (const entry of branch) {
         if (entry.type === 'custom_message') {
           const id = `custom-${++customSequence}`;
+          if (!entry.display) continue;
           const text = messageText(entry);
-          if (entry.display && text)
-            yield {id, at: entry.timestamp, role: 'assistant', text};
+          const visuals = conversationVisualizations(entry, undefined, ctx.cwd);
+          if (
+            entry.display &&
+            (text || visuals.visualizations || visuals.visualizationErrors)
+          )
+            yield {
+              id,
+              at: entry.timestamp,
+              role: 'assistant',
+              text,
+              ...visuals,
+            };
           continue;
         }
         if (entry.type !== 'message') continue;
         const message = entry.message;
         const text = 'content' in message ? messageText(message) : '';
+        const visuals =
+          'content' in message && (message.role !== 'custom' || message.display)
+            ? conversationVisualizations(message, undefined, ctx.cwd)
+            : {};
         const at =
           'timestamp' in message
             ? new Date(message.timestamp).toISOString()
@@ -215,11 +239,17 @@ export function observeDashboardSession(
           const identity = newMessage(message);
           const error =
             message.role === 'assistant' ? message.errorMessage : undefined;
-          if (text || error)
+          if (
+            text ||
+            error ||
+            visuals.visualizations ||
+            visuals.visualizationErrors
+          )
             yield {
               id: identity.id,
               role: message.role,
               text,
+              ...visuals,
               at,
               error,
             };
@@ -248,6 +278,18 @@ export function observeDashboardSession(
               };
             }
           }
+        } else if (message.role === 'custom') {
+          if (
+            message.display &&
+            (text || visuals.visualizations || visuals.visualizationErrors)
+          )
+            yield {
+              id: `custom-${++customSequence}`,
+              at,
+              role: 'assistant',
+              text,
+              ...visuals,
+            };
         } else if (message.role === 'toolResult') {
           yield {
             id: toolId(message.toolCallId),
@@ -255,6 +297,7 @@ export function observeDashboardSession(
             toolCallId: message.toolCallId,
             toolName: message.toolName,
             text,
+            ...visuals,
             at,
             status: resultStatus(message.isError, text),
             error: message.isError
@@ -332,7 +375,7 @@ export function observeDashboardSession(
   function finishTool(
     toolCallId: string,
     toolName: string,
-    result: {content?: unknown},
+    result: {content?: unknown; details?: unknown},
     isError: boolean,
     at = new Date().toISOString(),
   ): void {
@@ -346,6 +389,7 @@ export function observeDashboardSession(
       toolName,
       at: previous?.at ?? at,
       text,
+      ...conversationVisualizations(result, undefined, cwd),
       status: resultStatus(isError, text),
       streaming: false,
       error: isError ? text || 'Tool execution failed' : undefined,
@@ -355,6 +399,7 @@ export function observeDashboardSession(
   }
 
   pi.on('session_start', (_event, ctx) => {
+    cwd = ctx.cwd;
     unsubscribe?.();
     tools.clear();
     lastError = undefined;
@@ -383,13 +428,14 @@ export function observeDashboardSession(
   });
   pi.on('before_agent_start', (event, ctx) => {
     lastError = undefined;
+    const prompt = 'prompt' in event ? event.prompt : undefined;
     state?.updateSession({
       ...metadata(ctx),
-      prompt: event.prompt,
+      ...(prompt !== undefined ? {prompt} : {}),
       response: '',
       error: undefined,
     });
-    state?.record('message', event.prompt);
+    if (prompt !== undefined) state?.record('message', prompt);
   });
   pi.on('agent_start', (_event, ctx) => {
     state?.updateSession({
@@ -408,30 +454,37 @@ export function observeDashboardSession(
       return;
     const entry = newMessage(event.message);
     const text = messageText(event.message);
+    const visuals = conversationVisualizations(event.message, undefined, cwd);
     if (event.message.role === 'assistant') {
       assistantMessage = entry;
       state?.updateSession({
         activity: activity(text ? 'Responding' : 'Thinking'),
       });
     } else userMessage = entry;
-    if (text)
+    if (text || visuals.visualizations || visuals.visualizationErrors)
       state?.updateConversation({
         id: entry.id,
         at: entry.at,
         role: event.message.role,
         text,
+        ...visuals,
         streaming: event.message.role === 'assistant',
       });
   });
   pi.on('message_update', event => {
     if (event.message.role !== 'assistant') return;
     const text = messageText(event.message);
-    if (text && assistantMessage)
+    const visuals = conversationVisualizations(event.message, undefined, cwd);
+    if (
+      (text || visuals.visualizations || visuals.visualizationErrors) &&
+      assistantMessage
+    )
       state?.updateConversation({
         id: assistantMessage.id,
         at: assistantMessage.at,
         role: 'assistant',
         text,
+        ...visuals,
         streaming: true,
       });
     state?.updateSession({
@@ -458,6 +511,7 @@ export function observeDashboardSession(
     if (event.message.role !== 'assistant' && event.message.role !== 'user')
       return;
     const text = messageText(event.message);
+    const visuals = conversationVisualizations(event.message, undefined, cwd);
     const entry =
       (event.message.role === 'assistant' ? assistantMessage : userMessage) ??
       knownMessage(event.message, ctx) ??
@@ -467,12 +521,13 @@ export function observeDashboardSession(
       event.message.role === 'assistant'
         ? event.message.errorMessage
         : undefined;
-    if (text || error)
+    if (text || error || visuals.visualizations || visuals.visualizationErrors)
       state?.updateConversation({
         id: entry.id,
         at: entry.at,
         role: event.message.role,
         text,
+        ...visuals,
         error,
         streaming: false,
       });
@@ -521,6 +576,7 @@ export function observeDashboardSession(
       toolCallId: event.toolCallId,
       input: previous?.input ?? toolInput(event.args),
       text: messageText(event.partialResult ?? {}),
+      ...conversationVisualizations(event.partialResult ?? {}, undefined, cwd),
       at: previous?.at ?? new Date().toISOString(),
       status: 'running',
       streaming: true,

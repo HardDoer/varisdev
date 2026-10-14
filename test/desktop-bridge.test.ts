@@ -35,6 +35,7 @@ function features(): SessionFeatures {
 }
 
 const featureControls = {
+  cancelAgent: async () => {},
   features: async () => features(),
   configure: async () => {},
   compact: async () => {},
@@ -78,9 +79,13 @@ void test('desktop IPC controls only the attached session and rejects stale or i
   const bridge = createFactoryBridge(child as unknown as ChildProcess);
   const prompts: string[] = [];
   let aborts = 0;
+  const cancellations: string[] = [];
   const current = state('primary');
   bridge.attach(current, {
     ...featureControls,
+    cancelAgent: agentId => {
+      cancellations.push(agentId);
+    },
     prompt: text => {
       prompts.push(text);
     },
@@ -107,6 +112,19 @@ void test('desktop IPC controls only the attached session and rejects stale or i
     followUp: [],
   });
   assert.equal(aborts, 1);
+  assert.equal(cancellations.length, 0);
+  await requests.request('cancelAgent', 'primary', 'worker');
+  await requests.request('cancelAgent', 'primary', 'all');
+  assert.deepEqual(cancellations, ['worker', 'all']);
+  await assert.rejects(
+    requests.request('cancelAgent', 'other', 'all'),
+    /no longer attached/,
+  );
+  await assert.rejects(
+    requests.request('cancelAgent', 'primary', {}),
+    /Agent ID/,
+  );
+  assert.deepEqual(cancellations, ['worker', 'all']);
   await assert.rejects(
     requests.request('prompt', 'previous-session', 'Do not run'),
     /no longer attached/,
@@ -142,6 +160,9 @@ void test('desktop IPC controls only the attached session and rejects stale or i
   assert.deepEqual(prompts, ['Continue the conversation']);
   bridge.attach(state('replacement'), {
     ...featureControls,
+    cancelAgent: agentId => {
+      cancellations.push(agentId);
+    },
     prompt: text => {
       prompts.push(text);
     },
@@ -159,6 +180,11 @@ void test('desktop IPC controls only the attached session and rejects stale or i
     aborts,
     2,
     'losing the GUI stops work in its active conversation',
+  );
+  assert.equal(
+    cancellations.at(-1),
+    'all',
+    'GUI loss cancels its attached agents',
   );
   assert.equal(bridge.connected, false);
   await assert.rejects(
@@ -481,6 +507,8 @@ void test('the explicit factory command attaches the existing conversation, cont
   first.control.snapshot = () => ({});
   await old.abort();
   assert.equal(first.aborts, 1);
+  assert.equal(first.worker.status, 'running');
+  await old.cancelAgent('worker');
   assert.equal(first.worker.status, 'cancelled');
   await first.show();
   assert.equal(launches, 1);
@@ -530,7 +558,7 @@ void test('a source switch during startup binds the new context to the single pe
   await next.emit('session_shutdown', {reason: 'quit'});
 });
 
-void test('GUI follow-ups steer immediately while Stop still cancels active source work', async () => {
+void test('GUI follow-ups steer immediately while Stop preserves agents until explicit cancellation', async () => {
   const desktop = fakeWindow();
   const launcher = new FactoryLauncher(async () => desktop.window);
   const source = extensionFixture('tui', 'steer-primary', launcher);
@@ -553,6 +581,8 @@ void test('GUI follow-ups steer immediately while Stop still cancels active sour
   source.control.snapshot = () => ({});
   await desktop.callbacks.abort();
   assert.equal(source.aborts, 1);
+  assert.equal(source.worker.status, 'running');
+  await desktop.callbacks.cancelAgent('all');
   assert.equal(source.worker.status, 'cancelled');
   await source.emit('session_shutdown', {reason: 'quit'});
 });

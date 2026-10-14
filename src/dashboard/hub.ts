@@ -1,4 +1,5 @@
 import type {ImageContent} from '@earendil-works/pi-ai';
+import type {DesktopStartup} from '../desktop/startup.ts';
 import {realpath, stat} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
@@ -25,6 +26,8 @@ export interface DashboardParent {
   ui?: DesktopExtensionUI;
   prompt(text: string, images?: ImageContent[]): Promise<void>;
   abort(): Promise<StoppedMessages>;
+  restartSnapshot(): DesktopStartup;
+  cancelAgent(agentId: string): Promise<void>;
   close(): Promise<void>;
   features(): Promise<SessionFeatures>;
   configure(input: SessionConfiguration): Promise<void>;
@@ -39,6 +42,7 @@ export type ParentFactory = (
 export interface ExternalSessionControl {
   prompt(id: string, prompt: string): Promise<void>;
   abort(id: string): Promise<StoppedMessages>;
+  cancelAgent(id: string, agentId: string): Promise<void>;
   features(id: string): Promise<SessionFeatures>;
   configure(id: string, input: SessionConfiguration): Promise<void>;
   compact(id: string, instructions?: string): Promise<void>;
@@ -82,6 +86,10 @@ function text(value: unknown, label: string, max: number): string {
     );
   }
   return value.trim();
+}
+
+export function agentCancellationId(input: unknown): string {
+  return text(input, 'Agent ID', 128);
 }
 
 export function sessionConfiguration(input: unknown): SessionConfiguration {
@@ -351,7 +359,10 @@ export class DashboardHub {
     }
   }
 
-  private owned(id: string): Headquarters & {parent: DashboardParent} {
+  private owned(
+    id: string,
+    allowStopping = false,
+  ): Headquarters & {parent: DashboardParent} {
     this.ensureOpen();
     if (this.external?.session.id === id)
       throw new DashboardInputError('Continue this session in its terminal.');
@@ -359,7 +370,7 @@ export class DashboardHub {
     if (!entry) throw new DashboardInputError('Unknown parent session.');
     if (!entry.parent)
       throw new DashboardInputError('Continue this session in its terminal.');
-    if (entry.stopping)
+    if (entry.stopping && !allowStopping)
       throw new DashboardInputError(
         'This session is stopping. Try again when it is idle.',
       );
@@ -371,7 +382,7 @@ export class DashboardHub {
     if (this.external?.session.id !== id) return;
     if (!this.externalControl || this.external.session.status === 'closed')
       throw new DashboardInputError(
-        'This Pi session is no longer connected. Reopen the factory from Pi.',
+        'This parent session is no longer connected. Reopen the app from the terminal.',
       );
     return this.externalControl;
   }
@@ -508,6 +519,39 @@ export class DashboardHub {
     entry.running.add(operation);
     this.changed();
     return operation;
+  }
+
+  restartSnapshots(): DesktopStartup[] {
+    this.ensureOpen();
+    if (this.creating.size)
+      throw new DashboardInputError('A parent session is still starting.');
+    const parents: DesktopStartup[] = [];
+    for (const entry of this.sessions.values()) {
+      if (!entry.parent) continue;
+      const snapshot = entry.state.snapshot();
+      if (snapshot.session.status === 'closed') continue;
+      if (
+        entry.running.size ||
+        entry.stopping ||
+        entry.maintaining ||
+        snapshot.session.status !== 'idle' ||
+        snapshot.agents.some(agent =>
+          ['queued', 'running', 'cancelling'].includes(agent.status),
+        )
+      )
+        throw new DashboardInputError(
+          'Parent sessions and agents must be idle before restarting.',
+        );
+      parents.push(entry.parent.restartSnapshot());
+    }
+    return parents;
+  }
+
+  async cancelAgent(id: string, input: unknown): Promise<void> {
+    const agentId = agentCancellationId(input);
+    const attached = this.attached(id);
+    if (attached) return attached.cancelAgent(id, agentId);
+    await this.owned(id, true).parent.cancelAgent(agentId);
   }
 
   async abortSession(id: string): Promise<StoppedMessages> {

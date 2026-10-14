@@ -1,5 +1,5 @@
 /* global process, __dirname, document, requestAnimationFrame, setTimeout,
-   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone */
+   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -19,6 +19,7 @@ let featureErrors;
 let editorSubmission;
 let chosenFolder;
 let abortDelay = 0;
+let cancellationError;
 
 function features() {
   return {
@@ -123,6 +124,7 @@ function reset() {
   editorSubmission = undefined;
   chosenFolder = undefined;
   abortDelay = 0;
+  cancellationError = undefined;
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
@@ -134,10 +136,22 @@ function reset() {
 
 ipcMain.handle('fixture:state', () => hub);
 ipcMain.on('fixture:error', (_event, error) => rendererErrors.push(error));
-for (const method of ['prompt', 'abort', 'workspace']) {
+for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
   ipcMain.handle(`fixture:${method}`, async (_event, sessionId, request) => {
     calls.push({method, sessionId, request});
     const target = hub.sessions.find(item => item.session.id === sessionId);
+    if (method === 'cancelAgent') {
+      if (cancellationError) throw new Error(cancellationError);
+      for (const agent of target.agents) {
+        if (
+          (request === 'all' || request === agent.id) &&
+          ['running', 'queued'].includes(agent.status)
+        )
+          agent.status =
+            agent.status === 'running' ? 'cancelling' : 'cancelled';
+      }
+      window.webContents.send('fixture:snapshot', hub);
+    }
     if (method === 'prompt' && target.session.status === 'running') {
       target.queue.steering.push(request.prompt);
       window.webContents.send('fixture:snapshot', hub);
@@ -286,9 +300,7 @@ async function reloadPage() {
     window.webContents.reload();
   });
   await until(
-    () =>
-      document.getElementById('connection')?.textContent ===
-      'Desktop connected',
+    () => document.querySelectorAll('#parents .parent-card').length > 0,
     'Reloaded dashboard did not connect',
   );
   await settle();
@@ -300,9 +312,19 @@ async function publish() {
 }
 
 async function run(name, callback, width = 1600, height = 1000) {
+  if (
+    process.env.DESKTOP_UI_CASE_PATTERN &&
+    !new RegExp(process.env.DESKTOP_UI_CASE_PATTERN).test(name)
+  )
+    return;
   try {
-    if (window.webContents.getURL().startsWith('file:'))
-      await evaluate(() => window.localStorage.clear());
+    if (window.webContents.getURL().startsWith('file:')) {
+      // Finish the previous window's recovery writes before resetting its profile.
+      await window.loadURL('about:blank');
+      await window.webContents.session.clearStorageData({
+        storages: ['localstorage'],
+      });
+    }
     if (Math.abs(window.webContents.getZoomFactor() - 1) > 0.001)
       window.webContents.setZoomFactor(1);
     reset();
@@ -311,9 +333,7 @@ async function run(name, callback, width = 1600, height = 1000) {
       resolve(__dirname, '../../assets/dashboard/index.html'),
     );
     await until(
-      () =>
-        document.getElementById('connection')?.textContent ===
-        'Desktop connected',
+      () => document.querySelectorAll('#parents .parent-card').length > 0,
       'Dashboard never connected to the isolated preload fixture',
     );
     await settle();
@@ -1034,68 +1054,186 @@ async function main() {
     },
   );
 
-  await run('switching parents restores each draft and cursor', async () => {
-    await evaluate(() => {
-      const editor = document.getElementById('parent-prompt');
-      editor.value = 'Alpha unsent\nsecond line';
-      editor.dispatchEvent(new Event('input', {bubbles: true}));
-      editor.setSelectionRange(3, 9);
-      [...document.querySelectorAll('#parents button')]
-        .find(item => item.textContent.includes('Beta factory'))
-        .click();
-    });
-    await settle();
-    const beta = await evaluate(
-      () => document.getElementById('parent-prompt').value,
-    );
-    assert.equal(beta, '');
-    await evaluate(() => {
-      const editor = document.getElementById('parent-prompt');
-      editor.value = 'Beta unsent';
-      editor.dispatchEvent(new Event('input', {bubbles: true}));
-      [...document.querySelectorAll('#parents button')]
-        .find(item => item.textContent.includes('Alpha factory'))
-        .click();
-    });
-    await settle();
-    const alpha = await evaluate(() => {
-      const editor = document.getElementById('parent-prompt');
-      const before = editor.getBoundingClientRect().height;
-      const handle = document.getElementById('parent-prompt-resize');
-      handle.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'ArrowDown',
-          bubbles: true,
-          cancelable: true,
-        }),
+  await run(
+    'switching parents and restarting restores drafts and cursors; submitting clears recovery',
+    async () => {
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Alpha unsent\nsecond line';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.setSelectionRange(3, 9);
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click();
+      });
+      await settle();
+      const beta = await evaluate(
+        () => document.getElementById('parent-prompt').value,
       );
-      return {
-        draft: editor.value,
-        start: editor.selectionStart,
-        end: editor.selectionEnd,
-        before,
-        after: editor.getBoundingClientRect().height,
-        handle: handle.getAttribute('role'),
-        label: handle.getAttribute('aria-label'),
-      };
-    });
-    assert.equal(alpha.draft, 'Alpha unsent\nsecond line');
-    assert.equal(alpha.start, 3);
-    assert.equal(alpha.end, 9);
-    assert.equal(alpha.handle, 'separator');
-    assert.equal(alpha.label, 'Resize message field');
-    assert.ok(alpha.after > alpha.before, 'Resize handle must grow the editor');
-    await evaluate(() =>
-      [...document.querySelectorAll('#parents button')]
-        .find(item => item.textContent.includes('Beta factory'))
-        .click(),
-    );
-    await settle();
-    assert.equal(
-      await evaluate(() => document.getElementById('parent-prompt').value),
-      'Beta unsent',
-    );
-  });
+      assert.equal(beta, '');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Beta unsent';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Alpha factory'))
+          .click();
+      });
+      await settle();
+      const alpha = await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        const before = editor.getBoundingClientRect().height;
+        const handle = document.getElementById('parent-prompt-resize');
+        handle.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        return {
+          draft: editor.value,
+          start: editor.selectionStart,
+          end: editor.selectionEnd,
+          before,
+          after: editor.getBoundingClientRect().height,
+          handle: handle.getAttribute('role'),
+          label: handle.getAttribute('aria-label'),
+        };
+      });
+      assert.equal(alpha.draft, 'Alpha unsent\nsecond line');
+      assert.equal(alpha.start, 3);
+      assert.equal(alpha.end, 9);
+      assert.equal(alpha.handle, 'separator');
+      assert.equal(alpha.label, 'Resize message field');
+      assert.ok(
+        alpha.after > alpha.before,
+        'Resize handle must grow the editor',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click(),
+      );
+      await settle();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Beta unsent',
+      );
+      await reloadPage();
+      assert.deepEqual(
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          return {
+            value: editor.value,
+            start: editor.selectionStart,
+            end: editor.selectionEnd,
+          };
+        }),
+        {value: 'Alpha unsent\nsecond line', start: 3, end: 9},
+        'Restart recovers original parent text and selection',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Beta unsent',
+        'Restart retains the other parent draft',
+      );
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Submitted recovered draft did not clear',
+      );
+      assert.equal(
+        await evaluate(() =>
+          JSON.parse(
+            window.localStorage.getItem('varisdev.composer-drafts.v1'),
+          ).some(([id]) => id === 'beta'),
+        ),
+        false,
+        'Acknowledged submission clears persisted recovery',
+      );
+      await reloadPage();
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '',
+        'Submitted draft stays cleared after restart',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Alpha factory'))
+          .click(),
+      );
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '',
+        'Manually cleared draft stays cleared',
+      );
+      const storage = await evaluate(async () => {
+        const {flushDrafts} = await import('./draft-storage.js');
+        const editor = document.getElementById('parent-prompt');
+        const draft = value => {
+          editor.value = value;
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+        };
+        draft('Persisted before quota failure');
+        const original = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (key, value) {
+          if (key === 'varisdev.composer-drafts.v1')
+            throw new DOMException('Storage full', 'QuotaExceededError');
+          return original.call(this, key, value);
+        };
+        let blocked = false;
+        let retained;
+        try {
+          draft('Editable through quota failure');
+          try {
+            flushDrafts();
+          } catch {
+            blocked = true;
+          }
+          retained =
+            editor.value === 'Editable through quota failure' &&
+            !document.getElementById('prompt-error').hidden &&
+            JSON.parse(
+              window.localStorage.getItem('varisdev.composer-drafts.v1'),
+            ).some(
+              ([, value]) => value.value === 'Persisted before quota failure',
+            );
+        } finally {
+          Storage.prototype.setItem = original;
+        }
+        draft('Recovered from quota failure');
+        flushDrafts();
+        const recovered = document.getElementById('prompt-error').hidden;
+        draft('');
+        flushDrafts();
+        return {blocked, retained, recovered};
+      });
+      assert.deepEqual(
+        storage,
+        {blocked: true, retained: true, recovered: true},
+        'Quota failure preserves text and fails restart check until storage recovers',
+      );
+    },
+  );
 
   for (const [width, height] of [
     [1100, 760],
@@ -1406,7 +1544,7 @@ async function main() {
   }
 
   await run(
-    'stream follows the bottom while preserving a reader’s history position',
+    'conversation switches follow bottom, snapshots preserve readers and long outputs share one scroll',
     async () => {
       hub.sessions[0].conversation = Array.from({length: 35}, (_, index) => ({
         id: `history-${index}`,
@@ -1442,6 +1580,160 @@ async function main() {
       assert.ok(
         Math.abs(after - before) <= 1,
         `Reading history moved from ${before} to ${after}`,
+      );
+      hub.sessions[1].conversation = hub.sessions[0].conversation.map(
+        message => ({...message, id: `beta-${message.id}`}),
+      );
+      await publish();
+      for (const name of ['Beta factory', 'Alpha factory']) {
+        await evaluate(
+          name =>
+            [...document.querySelectorAll('#parents button')]
+              .find(item => item.textContent.includes(name))
+              .click(),
+          name,
+        );
+        await settle();
+        const position = await evaluate(() => {
+          const panel = document.getElementById('panel-conversation');
+          return {
+            gap: panel.scrollHeight - panel.clientHeight - panel.scrollTop,
+            follow: document.getElementById('follow-conversation').checked,
+          };
+        });
+        assert.ok(
+          position.gap < 4,
+          `${name} restored an earlier position: ${JSON.stringify(position)}`,
+        );
+        assert.equal(position.follow, true);
+        await evaluate(() => {
+          const panel = document.getElementById('panel-conversation');
+          panel.scrollTop = 120;
+          panel.dispatchEvent(new Event('scroll'));
+          document.getElementById('follow-conversation').checked = false;
+          document
+            .getElementById('follow-conversation')
+            .dispatchEvent(new Event('change'));
+        });
+      }
+      for (const tab of ['feed', 'context']) {
+        await evaluate(
+          tab => document.getElementById(`tab-${tab}`).click(),
+          tab,
+        );
+        await evaluate(() =>
+          document.getElementById('tab-conversation').click(),
+        );
+        await settle();
+        assert.ok(
+          await evaluate(() => {
+            const panel = document.getElementById('panel-conversation');
+            return (
+              panel.scrollHeight - panel.clientHeight - panel.scrollTop < 4
+            );
+          }),
+          `Returning from ${tab} must follow the conversation bottom`,
+        );
+      }
+      await evaluate(() => {
+        const last = document.querySelector('#conversation li:last-child');
+        requestAnimationFrame(() => {
+          last.style.paddingBottom = '260px';
+        });
+      });
+      await settle();
+      await settle();
+      assert.ok(
+        await evaluate(() => {
+          const panel = document.getElementById('panel-conversation');
+          return panel.scrollHeight - panel.clientHeight - panel.scrollTop < 4;
+        }),
+        'Deferred layout growth should stay at the bottom',
+      );
+      await evaluate(() => {
+        const panel = document.getElementById('panel-conversation');
+        panel.scrollTop = 120;
+        panel.dispatchEvent(new Event('scroll'));
+        requestAnimationFrame(() => {
+          document.querySelector(
+            '#conversation li:last-child',
+          ).style.paddingBottom = '420px';
+        });
+      });
+      await settle();
+      await settle();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        ),
+        120,
+        'Deferred layout must leave a reader in history',
+      );
+
+      hub.sessions[0].conversation.unshift({
+        id: 'old-long-result',
+        role: 'tool',
+        toolName: 'bash',
+        at,
+        status: 'completed',
+        input: JSON.stringify({command: 'printf long-result'}),
+        text: 'Older result line\n'.repeat(80),
+      });
+      await publish();
+      const wheel = await evaluate(() => {
+        const details = document.querySelector('#conversation details');
+        const output = details.querySelector('.tool-output');
+        const panel = document.getElementById('panel-conversation');
+        panel.scrollTop +=
+          output.getBoundingClientRect().top -
+          panel.getBoundingClientRect().top +
+          80;
+        panel.dispatchEvent(new Event('scroll'));
+        const bounds = panel.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + 100),
+          top: panel.scrollTop,
+          open: details.open,
+          nestedOverflow: output.scrollHeight - output.clientHeight,
+          outputTop: output.scrollTop,
+        };
+      });
+      assert.equal(wheel.open, true, 'New tool results should be expanded');
+      assert.ok(
+        wheel.nestedOverflow <= 1,
+        'Tool results must have no nested vertical scroll',
+      );
+      window.webContents.sendInputEvent({
+        type: 'mouseWheel',
+        x: wheel.x,
+        y: wheel.y,
+        deltaY: -160,
+        deltaX: 0,
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await settle();
+      const wheelAfter = await evaluate(() => ({
+        top: document.getElementById('panel-conversation').scrollTop,
+        nested: document.querySelector('#conversation .tool-output').scrollTop,
+      }));
+      assert.ok(
+        wheelAfter.top > wheel.top,
+        `Wheel over old output must scroll conversation: ${JSON.stringify({wheel, wheelAfter})}`,
+      );
+      assert.equal(wheelAfter.nested, 0);
+      await evaluate(() =>
+        document.querySelector('#conversation summary').click(),
+      );
+      hub.sessions[0].conversation.at(-1).text +=
+        '\nSnapshot after deliberate collapse';
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#conversation details').open,
+        ),
+        false,
+        'A deliberate collapse should survive snapshots',
       );
     },
   );
@@ -1515,7 +1807,148 @@ async function main() {
   );
 
   await run(
-    'Escape stops active work once preserves the draft and resumes visuals on the next run',
+    'Escape preserves running agents and manual cancellation selects agents with error retry',
+    async () => {
+      const parent = hub.sessions[0];
+      parent.agents = [
+        {
+          id: 'alpha-worker',
+          name: 'Working agent',
+          task: 'Keep working',
+          status: 'running',
+          activity: 'Thinking',
+          startedAt: at,
+          updatedAt: at,
+          conversation: [],
+        },
+        {
+          id: 'alpha-queued',
+          name: 'Queued agent',
+          task: 'Wait for capacity',
+          status: 'queued',
+          activity: 'Queued',
+          startedAt: at,
+          updatedAt: at,
+          conversation: [],
+        },
+      ];
+      hub.sessions[1].agents = [
+        {
+          id: 'beta-worker',
+          name: 'Other agent',
+          task: 'Other parent task',
+          status: 'running',
+          activity: 'Thinking',
+          startedAt: at,
+          updatedAt: at,
+          conversation: [],
+        },
+      ];
+      await publish();
+      await evaluate(() => document.getElementById('parent-prompt').focus());
+      await press('Escape');
+      Object.assign(parent.session, {status: 'idle', activity: 'Stopped'});
+      await publish();
+      assert.equal(parent.agents[0].status, 'running');
+      assert.equal(parent.agents[1].status, 'queued');
+      assert.equal(
+        await evaluate(() => document.getElementById('abort-parent').disabled),
+        true,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('processing-state-text').textContent,
+        ),
+        'Agents running',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector(
+              '[data-agent-id="alpha-worker"].agent-work-marker',
+            )?.textContent,
+        ),
+        'Working',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            getComputedStyle(
+              document.querySelector(
+                '[data-agent-id="alpha-worker"].agent-work-marker',
+              ),
+              '::before',
+            ).animationName,
+        ),
+        'working-beacon',
+      );
+      await evaluate(() =>
+        document.querySelector('#active-workers .worker-card').click(),
+      );
+      cancellationError = 'Cancellation fixture unavailable';
+      await evaluate(() => document.getElementById('cancel-agent').click());
+      await until(
+        () => !document.getElementById('cancel-agent-error').hidden,
+        'Cancellation error missing',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('cancel-agent-error').textContent,
+        ),
+        /unavailable/,
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('cancel-agent').disabled),
+        false,
+      );
+      cancellationError = undefined;
+      await evaluate(() => document.getElementById('cancel-agent').click());
+      await until(
+        () =>
+          document.getElementById('cancel-agent').textContent === 'Cancelling…',
+        'Running agent cancellation not shown',
+      );
+      assert.equal(parent.session.status, 'idle');
+      assert.equal(parent.agents[0].status, 'cancelling');
+      assert.equal(parent.agents[1].status, 'queued');
+      assert.equal(hub.sessions[1].agents[0].status, 'running');
+      assert.deepEqual(
+        calls
+          .filter(call => call.method === 'cancelAgent')
+          .map(call => [call.sessionId, call.request]),
+        [
+          ['alpha', 'alpha-worker'],
+          ['alpha', 'alpha-worker'],
+        ],
+      );
+      await evaluate(() =>
+        document.getElementById('cancel-all-agents').click(),
+      );
+      await until(
+        () => document.getElementById('cancel-all-agents').disabled,
+        'Cancel all still enabled',
+      );
+      assert.equal(parent.agents[1].status, 'cancelled');
+      assert.equal(calls.at(-1).sessionId, 'alpha');
+      assert.equal(calls.at(-1).request, 'all');
+      parent.agents[0].status = 'cancelled';
+      await publish();
+      assert.equal(
+        await evaluate(() => document.getElementById('cancel-agent').disabled),
+        true,
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelectorAll('#active-workers button button').length,
+        ),
+        0,
+      );
+    },
+  );
+
+  await run(
+    'Escape stops parent work once preserves the draft and resumes parent visuals on the next run',
     async () => {
       hub.sessions[0].session.activity = 'Thinking about the next operation';
       await publish();
@@ -1615,9 +2048,9 @@ async function main() {
         })),
         {
           processing: false,
-          stopping: true,
+          stopping: false,
           bubbleHidden: true,
-          status: 'Stopping',
+          status: '—',
           paused: true,
           indicator: 'none',
           activityIndicator: 'none',
@@ -2376,7 +2809,7 @@ async function main() {
   );
 
   await run(
-    'agent conversations isolate messages, tools, disclosures, scroll, drafts and parent controls',
+    'agent conversations isolate messages, tools, disclosures and drafts and switch to bottom',
     async () => {
       const parent = hub.sessions[0];
       parent.conversation[2].id = 'shared-tool';
@@ -2444,7 +2877,7 @@ async function main() {
           input: document.querySelector('#conversation .tool-input')
             .textContent,
           open: document.querySelector('#conversation details').open,
-          composer: document.getElementById('composer-slot').hidden,
+          composer: document.getElementById('parent-controls').hidden,
           settings: document.getElementById('open-session-settings').hidden,
           context: document.getElementById('tab-context').hidden,
           meter: document.getElementById('open-context').hidden,
@@ -2471,7 +2904,7 @@ async function main() {
           steering: true,
           notifications: true,
           statuses: true,
-          back: 'Back to parent session',
+          back: 'Back',
           preview: true,
           activity: 'Working on First agent',
         },
@@ -2600,13 +3033,14 @@ async function main() {
         await evaluate(
           () => document.getElementById('follow-conversation').checked,
         ),
-        false,
+        true,
       );
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('panel-conversation').scrollTop,
-        ),
-        180,
+      assert.ok(
+        await evaluate(() => {
+          const panel = document.getElementById('panel-conversation');
+          return panel.scrollHeight - panel.clientHeight - panel.scrollTop < 4;
+        }),
+        'Returning to an agent must show its latest content',
       );
       parent.agents[0].status = 'failed';
       parent.agents[0].conversation[2].status = 'failed';
@@ -2654,7 +3088,7 @@ async function main() {
           tool: document.querySelector('#conversation .tool-output')
             .textContent,
           open: document.querySelector('#conversation details').open,
-          composer: document.getElementById('composer-slot').hidden,
+          composer: document.getElementById('parent-controls').hidden,
           context: document.getElementById('tab-context').hidden,
           follow: document.getElementById('follow-conversation').checked,
         })),
@@ -2668,6 +3102,185 @@ async function main() {
           follow: true,
         },
       );
+      parent.agents[1].name =
+        'Second agent with a long name that stays within the header';
+      hub.sessions[1].session.name =
+        'Beta factory with a long parent session name that stays within the header';
+      hub.sessions[1].queue.steering = [...parent.queue.steering];
+      await publish();
+      for (const [width, height] of [
+        [1100, 760],
+        [1600, 1000],
+      ]) {
+        window.setContentSize(width, height);
+        await settle();
+        await settle();
+        const geometry = async () =>
+          evaluate(() =>
+            Object.fromEntries(
+              [
+                '#inspector',
+                '.inspector-heading',
+                '.conversation-kind',
+                '.inspector-tabs',
+                '#panel-conversation',
+                '#composer-slot',
+                '#scene',
+                '#active-workers button',
+              ].map(selector => {
+                const box = document
+                  .querySelector(selector)
+                  .getBoundingClientRect();
+                return [
+                  selector,
+                  {x: box.x, y: box.y, width: box.width, height: box.height},
+                ];
+              }),
+            ),
+          );
+        const inspectKind = async () =>
+          evaluate(() => {
+            const inspector = document.getElementById('inspector');
+            const label = document.getElementById('conversation-kind-label');
+            const range = document.createRange();
+            range.selectNodeContents(label);
+            const textBounds = range.getBoundingClientRect();
+            const slotBounds = label.parentElement.getBoundingClientRect();
+            return {
+              kind: inspector.dataset.conversationKind,
+              label: label.textContent,
+              title: document.getElementById('inspector-title').textContent,
+              titleHint: document.getElementById('inspector-title').title,
+              complete: textBounds.right <= slotBounds.right + 1,
+              background: getComputedStyle(
+                document.querySelector('.inspector-heading'),
+              ).backgroundImage,
+              parentIcon:
+                getComputedStyle(document.querySelector('.kind-parent-icon'))
+                  .display !== 'none',
+              agentIcon:
+                getComputedStyle(document.querySelector('.kind-agent-icon'))
+                  .display !== 'none',
+            };
+          });
+        const parentKind = await inspectKind();
+        assert.equal(parentKind.label, 'Parent session');
+        assert.equal(parentKind.kind, 'parent');
+        assert.equal(parentKind.title, 'Alpha factory');
+        assert.equal(
+          parentKind.complete,
+          true,
+          'Parent session label should be fully visible',
+        );
+        assert.equal(parentKind.parentIcon, true);
+        assert.equal(parentKind.agentIcon, false);
+        const parentBounds = await geometry();
+        await evaluate(() =>
+          [...document.querySelectorAll('#parents button')]
+            .find(button => button.textContent.includes('Beta factory'))
+            .click(),
+        );
+        await settle();
+        const otherParentBounds = await evaluate(() =>
+          Object.fromEntries(
+            [
+              '#inspector',
+              '.inspector-heading',
+              '.inspector-tabs',
+              '#panel-conversation',
+              '#composer-slot',
+              '#scene',
+            ].map(selector => {
+              const box = document
+                .querySelector(selector)
+                .getBoundingClientRect();
+              return [
+                selector,
+                {x: box.x, y: box.y, width: box.width, height: box.height},
+              ];
+            }),
+          ),
+        );
+        for (const selector of Object.keys(otherParentBounds))
+          assert.deepEqual(
+            otherParentBounds[selector],
+            parentBounds[selector],
+            `Parent switch moved ${selector} at ${width}`,
+          );
+        await evaluate(() =>
+          [...document.querySelectorAll('#parents button')]
+            .find(button => button.textContent.includes('Alpha factory'))
+            .click(),
+        );
+        await settle();
+        await evaluate(() =>
+          [
+            ...document.querySelectorAll(
+              '#active-workers button, #history-workers button',
+            ),
+          ]
+            .find(button => button.textContent.includes('Second agent'))
+            .click(),
+        );
+        await settle();
+        const agentBounds = await geometry();
+        const agentKind = await inspectKind();
+        assert.equal(agentKind.label, 'Agent conversation');
+        assert.equal(agentKind.kind, 'agent');
+        assert.equal(agentKind.title, parent.agents[1].name);
+        assert.equal(agentKind.titleHint, parent.agents[1].name);
+        assert.equal(
+          agentKind.complete,
+          true,
+          'Agent conversation label should be fully visible',
+        );
+        assert.equal(agentKind.parentIcon, false);
+        assert.equal(agentKind.agentIcon, true);
+        assert.notEqual(
+          agentKind.background,
+          parentKind.background,
+          'Conversation headers should have distinct accents',
+        );
+        for (const selector of Object.keys(parentBounds))
+          for (const dimension of ['x', 'y', 'width', 'height'])
+            assert.ok(
+              Math.abs(
+                parentBounds[selector][dimension] -
+                  agentBounds[selector][dimension],
+              ) <= 1,
+              `Selection moved ${selector} ${dimension} at ${width}: ${JSON.stringify({parentBounds, agentBounds})}`,
+            );
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('agent-task-dock').hidden,
+          ),
+          false,
+        );
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('parent-controls').hidden,
+          ),
+          true,
+        );
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('agent-task-text').textContent,
+          ),
+          'Task for Second agent',
+        );
+        await evaluate(() => document.getElementById('back-to-parent').click());
+        await settle();
+        const returnedBounds = await geometry();
+        const returnedKind = await inspectKind();
+        assert.equal(returnedKind.label, 'Parent session');
+        assert.equal(returnedKind.parentIcon, true);
+        assert.equal(returnedKind.agentIcon, false);
+        assert.deepEqual(
+          returnedBounds,
+          parentBounds,
+          `Returning to parent must preserve geometry at ${width}`,
+        );
+      }
     },
   );
 
@@ -3634,8 +4247,12 @@ async function main() {
   );
 
   await run(
-    'theme selector is visible and applies and remembers every palette',
+    'menu theme selector is visible and applies and remembers every palette',
     async () => {
+      await evaluate(() => {
+        if (!document.getElementById('app-menu-panel').matches(':popover-open'))
+          document.getElementById('app-menu-button').click();
+      });
       const themes = await evaluate(() =>
         [...document.getElementById('factory-theme').options].map(
           option => option.value,
@@ -3981,6 +4598,16 @@ async function main() {
         await evaluate(() => document.getElementById('parent-prompt').value),
         'Beta draft',
       );
+      assert.equal(
+        await evaluate(
+          () =>
+            JSON.parse(
+              window.localStorage.getItem('varisdev.composer-drafts.v1'),
+            ).find(([id]) => id === 'alpha')?.[1].value,
+        ),
+        'Delayed steering\n\nAlpha before delay',
+        'Recovered steering persists while another parent is selected',
+      );
       await evaluate(() =>
         [...document.querySelectorAll('#parents button')]
           .find(button => button.textContent.includes('Alpha'))
@@ -3995,7 +4622,7 @@ async function main() {
   );
 
   await run(
-    'pinned Markdown stays beside a reachable parent composer and can move between sides',
+    'pinned Markdown stays beside a reachable parent composer and supports movement and Lock',
     async () => {
       await evaluate(async () => {
         const editor = document.getElementById('parent-prompt');
@@ -4073,35 +4700,163 @@ async function main() {
           },
         ],
       );
+      const placement = await evaluate(() => {
+        const panel = document.getElementById('markdown-panel');
+        const heading = document.getElementById('markdown-heading');
+        const before = panel.getBoundingClientRect().left;
+        heading.focus();
+        heading.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'ArrowRight',
+            shiftKey: true,
+            bubbles: true,
+          }),
+        );
+        const moved = panel.getBoundingClientRect().left;
+        document.getElementById('markdown-lock').click();
+        heading.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'ArrowRight',
+            shiftKey: true,
+            bubbles: true,
+          }),
+        );
+        const locked = panel.getBoundingClientRect().left;
+        const lockVisible =
+          document.getElementById('markdown-lock').textContent === 'Unlock';
+        const resizeLocked =
+          document.getElementById('markdown-resize').disabled;
+        document.getElementById('markdown-lock').click();
+        heading.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'ArrowLeft',
+            shiftKey: true,
+            bubbles: true,
+          }),
+        );
+        return {
+          before,
+          moved,
+          locked,
+          lockVisible,
+          resizeLocked,
+          restored: panel.getBoundingClientRect().left,
+        };
+      });
       assert.equal(
-        await evaluate(
-          () => document.getElementById('markdown-position').textContent,
-        ),
-        'Move right',
-      );
-      await evaluate(() =>
-        document.getElementById('markdown-position').click(),
+        placement.moved,
+        placement.before + 40,
+        'Keyboard moves panel freely',
       );
       assert.equal(
-        await evaluate(
-          () => document.getElementById('markdown-panel').dataset.side,
+        placement.locked,
+        placement.moved,
+        'Lock fixes panel position',
+      );
+      assert.equal(placement.lockVisible, true, 'Lock state is visible');
+      assert.equal(placement.resizeLocked, true, 'Lock also disables resize');
+      assert.equal(
+        placement.restored,
+        placement.before,
+        'Unlock permits moving back',
+      );
+      const preferred = await evaluate(() =>
+        JSON.parse(
+          window.localStorage.getItem('varisdev.markdown-placement.v1'),
         ),
-        'right',
+      );
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      const compact = await evaluate(() => {
+        const panel = document
+          .getElementById('markdown-panel')
+          .getBoundingClientRect();
+        const preview = document
+          .getElementById('markdown-preview')
+          .getBoundingClientRect();
+        const editor = document.getElementById('parent-prompt');
+        const send = document.getElementById('send-prompt');
+        const reachable = element => {
+          const box = element.getBoundingClientRect();
+          return (
+            box.bottom <= innerHeight &&
+            document.elementFromPoint(
+              box.left + box.width / 2,
+              box.top + box.height / 2,
+            ) === element
+          );
+        };
+        const rect = element => {
+          const box = element.getBoundingClientRect();
+          return {
+            left: box.left,
+            top: box.top,
+            right: box.right,
+            bottom: box.bottom,
+          };
+        };
+        return {
+          panel: {
+            left: panel.left,
+            top: panel.top,
+            right: panel.right,
+            bottom: panel.bottom,
+          },
+          preview: {
+            top: preview.top,
+            bottom: preview.bottom,
+            height: preview.height,
+          },
+          viewport: {width: innerWidth, height: innerHeight},
+          editor: rect(editor),
+          send: rect(send),
+          editorReachable: reachable(editor),
+          sendReachable: reachable(send),
+        };
+      });
+      assert.equal(
+        compact.editorReachable,
+        true,
+        `Composer reachable at 1100px and 150% zoom: ${JSON.stringify(compact)}`,
       );
       assert.equal(
-        await evaluate(
-          () => document.getElementById('markdown-position').textContent,
-        ),
-        'Move left',
+        compact.sendReachable,
+        true,
+        `Send reachable at 1100px and 150% zoom: ${JSON.stringify(compact)}`,
       );
-      await evaluate(() =>
-        document.getElementById('markdown-position').click(),
+      assert.ok(
+        compact.panel.left >= 8 &&
+          compact.panel.top >= 8 &&
+          compact.panel.right <= compact.viewport.width - 8 &&
+          compact.panel.bottom <= compact.viewport.height - 8,
+        'Panel remains inside zoomed viewport',
       );
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('markdown-panel').dataset.side,
-        ),
-        'left',
+      assert.ok(
+        compact.preview.height >= 60 &&
+          compact.preview.bottom <= compact.panel.bottom,
+        `File remains readable at 150% zoom: ${JSON.stringify(compact)}`,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('markdown-zoomed');
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      const restored = await evaluate(() => {
+        const box = document
+          .getElementById('markdown-panel')
+          .getBoundingClientRect();
+        return {x: box.left, y: box.top, width: box.width, height: box.height};
+      });
+      assert.deepEqual(
+        restored,
+        {
+          x: preferred.x,
+          y: preferred.y,
+          width: preferred.width,
+          height: preferred.height,
+        },
+        'Zoom restores saved placement and size',
       );
       await evaluate(() => document.getElementById('markdown-close').click());
     },

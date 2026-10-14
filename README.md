@@ -1,6 +1,45 @@
-# Varisware Pi/pidev plugins
+# VarisDev
 
-Varisware VarisDev package.
+A desktop coding app with parent sessions, background agents, and extensible tools.
+
+## Install and start
+
+Install [Node.js 24 or newer](https://nodejs.org/) and Git, then:
+
+```sh
+npm install -g git+https://github.com/HardDoer/varisdev.git
+varisdev login
+varisdev
+```
+
+`varisdev` opens the current folder. Use `varisdev /path/to/project` to open another folder, or **Open folder** in the app. Existing model accounts, settings, plugins, and saved conversations are reused. The app includes its runtime and builds automatically during installation.
+
+On macOS, `varisdev app install` also adds **VarisDev** to `~/Applications`, ready for Finder, Spotlight, and the Dock.
+
+## Updates
+
+Use **Updates → Check for updates**, click **Updates available** at the top of the app, or run:
+
+```sh
+varisdev update
+```
+
+`varisdev update --check` checks without installing. Updates prepare and verify a new runtime before activating it. A failed installation leaves the working runtime in place. Choose **Restart to finish update** once parent sessions and agents are idle. Preferences and saved conversations survive updates.
+
+## Accounts and plugins
+
+```sh
+varisdev login openai-codex
+varisdev login anthropic --api-key
+varisdev logout openai-codex
+varisdev install npm:example-plugin
+varisdev install git:github.com/owner/plugin --local
+varisdev list
+varisdev plugins update
+varisdev remove npm:example-plugin
+```
+
+Run `varisdev login` to see available accounts. Plugins use the existing extension, skill, prompt, and theme formats. **Model & settings → Reload resources** reloads them in an idle conversation. Plugins can also add [conversation visuals and app themes](docs/plugins.md); the [project board example](examples/project-board/) includes both. `varisdev run [options]` runs prompts and automation from the terminal. `varisdev --help` lists the commands.
 
 ## Included
 
@@ -10,82 +49,62 @@ Varisware VarisDev package.
 - `src/tools/elevenlabs.ts` — agent-callable `elevenlabs` tool for finding voices and generating speech or sound effects as local audio files.
 - `src/tools/gamemaker-query.ts` — agent-callable `gamemaker_query` tool for inspecting, filtering, grouping, and sampling trailing-comma GameMaker `.yy` and `.yyp` files.
 - `src/tools/image-query.ts` — agent-callable `image_query` tool for inspecting image metadata, transparency, visible bounds, and grid occupancy across files without one-off scripts.
-- `src/image-previews.ts` and `src/image-preview/` — native image previews in the conversation, a terminal image viewer, and Sixel support for Windows Terminal.
+- `src/conversation-images.ts` and `assets/dashboard/visualizations.js` — inline conversation images, a larger viewer, and plugin visuals.
 - `src/tools/image-preview.ts` — agent-callable `image_preview` tool for showing an existing local image to the user.
 - `src/tools/json-query.ts` — agent-callable `json_query` tool for inspecting, filtering, grouping, and sampling JSON files without one-off scripts.
 - `src/tools/openai-image.ts` — agent-callable `openai_image` tool that creates or edits images with the OpenAI Images API and saves them to files.
 - `src/tools/agents.ts` and `src/agents/` — background agent orchestration with spawning, progress, results, direct messages between agents, waiting, and cancellation.
-- `src/commit.ts` — adds `/commit [instructions]` to delegate committing and pushing to Codex GPT-5.5 with xhigh effort and automatic worker cleanup.
+- `src/commit.ts` — adds `/commit [instructions]` to delegate committing and pushing to Codex GPT-5.5 with xhigh effort and automatic agent cleanup.
 - `src/desktop/`, `src/dashboard/`, and `assets/dashboard/` — a desktop factory view of parent sessions and agents, with 3D robots, task effects, and file changes.
 - `themes/varisware.json` — Varisware phosphor-green terminal theme.
 
 ## Desktop factory app
 
-Install the extension from GitHub:
+The app owns its conversations and agents, so you can close the launching terminal. Reopening VarisDev focuses the existing window; opening another folder adds its parent session.
 
-```sh
-pi install git:github.com/HardDoer/varisdev
-```
-
-Then start `pi` normally from any project folder. VarisDev opens automatically, takes over the current conversation, and closes Pi's terminal interface. The desktop owns the conversation and workers, so you can close the launching terminal. The selected project, session history, model, thinking level, active tools, CLI resource options, and initial prompts carry over. Print, JSON, and RPC runs stay headless.
-
-The GUI starts with your current conversation selected and ready to use. **Open folder** adds another project or conversation using the native folder picker.
-
-Pi installs the package and its runtime dependencies in its managed Git directory. VarisDev builds and opens Electron from that installation, with your project folder as the working directory. The extension declares Pi's host modules as peers. Installation also installs a separate Pi SDK in `desktop/node_modules` for Electron, and the desktop compiles into `desktop/build`. No separate clone or manual npm command is needed.
-
-On macOS, you can also install an app launcher from this repository:
-
-```sh
-npm install
-npm run desktop:install
-npm run desktop
-```
-
-Then open **VarisDev** from `~/Applications/VarisDev.app` in Finder, Spotlight, or the Dock. This opens the GUI directly with no terminal window. You can close the terminal used for installation. `npm run desktop` and `npm run desktop:open` compile the current desktop code, open the installed app, and return after launch. Reopening the app focuses its existing window and sessions.
-
-Use **Open folder** to choose a project and start an idle conversation. No initial prompt is required. The picker remembers your last project in `.pi/desktop/settings.json` inside the installed package. Electron owns the Pi SDK sessions, model API calls, coding tools, and worker teams. It reads your existing Pi credentials, model settings, project context, and session storage from the usual Pi directories (normally `~/.pi/agent`). There is no terminal session hosting the app.
-
-If the desktop cannot start, Pi reports the error and keeps its terminal interface available. `/factory` can still open a companion window for that terminal session. Normal interactive startup uses the desktop's own session runtime.
+Use **Open folder** to choose a project and start an idle conversation. No initial prompt is required. The picker remembers your last project. Accounts, model settings, project context, and session storage are read from their existing locations.
 
 Each parent session has a factory view, with robots representing the parent session and its agents. Working agents stay visible automatically, with bright floor rings, stronger movement, and a visible Working marker. Labels show their task and current action. Dispatch beams and sparks follow actual starts and completions. The session overview shows the other parent sessions and their activity, so work in another folder stays visible too.
 
-Select a parent session or agent to inspect its task, model, folder, elapsed time, response, errors, and saved result paths. The activity feed follows session events, tools, agent messages, and status changes. Click an event to inspect its inputs, output, errors, agent result, or file diff. The robot representing the parent session has distinct thinking, writing, and tool use animations and a closer view when working alone. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL.
+Select a parent session or agent to inspect its task, model, folder, elapsed time, response, errors, and saved result paths. The activity feed follows session events, tools, agent messages, and status changes. Click an event to inspect its inputs, output, errors, agent result, or file diff. The robot representing the parent session has distinct thinking, writing, and tool use animations and a closer view when working alone. The motion control and system reduced-motion setting disable animation; a graphical fallback is available without WebGL. Occasionally the parent robot cracks a whip toward a working agent, which reacts briefly. This is a visual effect and does not change agent work.
 
 While a parent session is idle, its robot rests for a random 15–60 seconds before each walk, then randomly picks one of twelve activities: drinking coffee, jumping rope, juggling, dancing, stretching, lifting weights, using a hula hoop, playing with a yo-yo, reading, sweeping, balancing, and throwing a paper plane. It pauses wherever it finished before wandering again. A new prompt makes it jump in surprise and run back to its workstation while the session starts work. Motion off and reduced motion keep it stationary.
 
-The conversation shows user prompts, streaming replies, and live tool calls with their inputs, progress, results, and errors. Click an agent’s robot or card to open its own conversation with the same message and tool views. Each agent keeps its own scroll position and expanded tool details, and its recent conversation remains available after it finishes. **Back to parent session** returns to the coordinator’s conversation. The prompt box and parent controls appear only in the parent session view. Assistant replies use a brighter background, a strong accent border, and larger text. File reads, file changes, commands, agents, web requests, and media actions have named labels and distinct accents. Actions start expanded and retain your expansion choices through updates, session switches, and window reloads. The Live feed uses a compact layout. Application controls sit above the workspace. The factory view, parent selector, active workers, and history stay within the window. Long lists scroll inside their sections, and the conversation scrolls above the composer.
+The conversation shows user prompts, streaming replies, and live tool calls with their inputs, progress, results, and errors. Click an agent’s robot or card to open its own conversation with the same message and tool views. Switching conversations scrolls to the latest message. Expanded tool details and recent agent conversations remain available after an agent finishes. **Back to parent session** returns to the coordinator’s conversation. **Parent session** and **Agent conversation** labels and distinct header accents identify the current view. Headers, tabs, and panel positions remain stable when switching. The prompt box and parent controls appear in the parent session view; the agent view shows its task in the same dock. Assistant replies use a brighter background, a strong accent border, and larger text. File reads, file changes, commands, agents, web requests, and media actions have named labels and distinct accents. Outputs start expanded. The conversation provides the vertical scrolling for long outputs, and you can deliberately collapse individual items. The Live feed uses a compact layout. The **Menu** at the right holds Zoom, Theme, Motion, and Open folder, leaving more room for the conversation. The factory view, parent selector, active agents, and history stay within the window. Long lists scroll inside their sections, and the conversation scrolls above the composer.
 
-**Skills & commands** lists the current project's skills, prompt templates, extension commands, and available tools. Search the list or type `/` in the composer for suggestions; Enter or Tab inserts a command, then add any arguments and send it. Skills and templates use Pi's normal expansion. Configured project and user extensions load in the desktop runtime.
+**Skills & commands** lists the current project's skills, prompt templates, extension commands, and available tools. Search the list or type `/` in the composer for suggestions; Enter or Tab inserts a command, then add any arguments and send it. Skills and templates use the runtime's normal expansion. Configured project and user extensions load in the desktop runtime.
 
 **Model & settings** changes the model and thinking level during active work or while idle. Changes apply to subsequent model calls. Compaction and reloading skills, templates, and extensions require an idle session. Extension selections, confirmations, inputs, and editors appear as dialogs in the app. Extension notifications remain in Conversation until dismissed. Custom terminal dialogs render inside the GUI and receive keyboard input there. Extensions that supply an editor or autocomplete provider expose an **Extension editor** button. It opens their editor with your draft and returns submitted text to the composer.
 
-**Context** shows the selected parent session’s Markdown context files, their paths, and how they are used. Expand a file to preview its loaded text. Project instructions and system prompt files appear alongside available skills and prompt templates, with each file’s inclusion status shown. Click the factory’s context meter to open this view. Open or edit Markdown files from Context or recorded file changes, and pin them in the Markdown panel. Pinned task lists refresh as agents update them. Unsaved edits are kept while the preview refreshes, and saving checks whether another edit changed the file on disk. Reload session resources to apply edits to automatically loaded instruction files.
+**Context files** opens the selected parent session’s Markdown context files, their paths, and how they are used. Expand a file to preview its loaded text. Open or edit files from Context or recorded changes, and pin them in the Markdown window. Drag the window to place it, resize it, or lock its position. Open files refresh as agents and parent sessions edit them, with a visible update cue. Unsaved edits are preserved, and saving checks for changes made on disk. Reload session resources to apply edits to automatically loaded instruction files.
 
-**Tokens** shows context occupancy separately from cumulative recorded model usage: input, output, cache reads, cache writes, and estimated cost by response. Set an optional token target to visualize progress; it does not stop a run. Model usage comes from saved assistant usage records and configured model rates. Tool execution and UI actions add no model tokens themselves; tool results can consume input tokens on later calls. Individual files, skills, and tool results do not have exact token counts in provider reports. Choose the parent or an individual worker in the usage selector. Each has separate totals that remain available after its run finishes. Recorded compaction summaries also count; one summary row can combine several model calls. Failed compaction attempts do not expose usage. Image and audio services have separate billing.
+**Tokens** shows context occupancy separately from cumulative recorded model usage: input, output, cache reads, cache writes, and estimated cost by response. Set an optional token target to visualize progress; it does not stop a run. Model usage comes from saved assistant usage records and configured model rates. Tool execution and UI actions add no model tokens themselves; tool results can consume input tokens on later calls. Individual files, skills, and tool results do not have exact token counts in provider reports. Choose the parent or an individual agent in the usage selector. Each has separate totals that remain available after its run finishes. Recorded compaction summaries also count; one summary row can combine several model calls. Failed compaction attempts do not expose usage. Image and audio services have separate billing.
 
-The composer stays at the bottom of the conversation. It supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Drag the prompt field’s resize handle or expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions. During active work, the send button becomes **Steer**. Every message goes directly to Pi’s native steering; desktop sessions apply all available steering together after the current turn’s tool calls, before the next model call. Steering instructions remain visible above the composer until applied. A data trail and electricity burst reach the parent robot when a prompt enters processing, including when queued steering is applied. **Esc** or **Stop** cancels the active parent's work and moves pending steering back into the prompt field, preserving your draft. Dialogs handle Esc within their own interaction. Thinking, writing, and tool execution have distinct activity indicators. Stopping pauses work and makes the robot jump in surprise, throw up its arms, and settle as a brief red alert lights the factory. Motion off and reduced motion use a static startled pose and alert.
+The composer stays at the bottom of the conversation. **Terminal ↗** opens an available system terminal in the selected project folder. **Prompt** returns focus to the message field. The composer supports normal cursor editing, selection, undo, and paste. **Enter sends; Shift+Enter inserts a new line.** Drag the prompt field’s resize handle or expand the editor for longer prompts. Each parent keeps its own draft and cursor position as you switch between sessions. During active work, the send button becomes **Steer**. The parent session applies all available steering together after the current turn’s tool calls, before the next model call. Steering instructions remain visible above the composer until applied. A small data trail flies from the prompt field to the parent robot when a prompt enters processing, including when queued steering is applied. **Esc** or **Stop** stops only the parent session and moves pending steering back into the prompt field, preserving your draft. Its running and queued agents continue. Select an agent and choose **Cancel agent** to stop it, or use **Cancel all agents** above the active agents. Dialogs handle Esc within their own interaction. Thinking, writing, and tool execution have distinct activity indicators. Stopping the parent makes its robot jump in surprise, throw up its arms, and settle as a brief red alert lights the factory. Motion off and reduced motion use a static startled pose and alert.
 
 **Zoom** scales the whole interface, including Skills & commands and the expanded editor. The setting is saved across restarts; changes through the View menu and its zoom shortcuts are saved too. Interface text uses a shared 16 px base with larger metadata and controls.
 
-Choose a ready-made palette from **Theme**: Factory, Nord, Dracula, Catppuccin Mocha, Solarized Light, or High Contrast. The choice applies to the interface and the 3D factory and is saved locally. Text contrast, visible keyboard focus, and named status labels keep the interface readable. The app uses a bold robot crow icon with native Windows taskbar sizes. Regenerate its PNG, ICO, and ICNS assets from the SVG with `node scripts/build-icon.mjs`.
+Choose a palette from **Menu → Theme**: Factory, Nord, Dracula, Catppuccin Mocha, Solarized Light, High Contrast, or a theme supplied by an installed plugin. The choice applies to the interface and the 3D factory and is saved locally. Text contrast, visible keyboard focus, and named status labels keep the interface readable. The app uses a bold robot crow icon with native Windows taskbar sizes. Regenerate its PNG, ICO, and ICNS assets from the SVG with `node scripts/build-icon.mjs`.
 
 **Changes** shows successful `edit` and `write` operations attributed to the parent session or agent that made them, with file paths and bounded diffs. Tracking begins when the extension loads. The dashboard retains the latest 100 change records and 160 activity events per parent session. **Workspace diff** reads current Git changes, including staged, unstaged, and untracked files. This folder view can include earlier changes and shell commands from any parent session or agent sharing that folder. It refreshes on request. File changes tracked through the tools also work outside Git repositories.
 
-Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own worker team. You can run up to eight parents, steer active work, and stop their work from the app. Stopping a parent returns pending steering to its prompt field and cancels its workers. When opened with `/factory`, the connected terminal conversation can also be controlled from the GUI.
+Each new session creates an independent parent conversation with that folder's project context, coding tools, VarisDev tools, and its own agent team. You can run up to eight parents, steer active work, and stop their work from the app. Stopping a parent returns pending steering to its prompt field while its agents continue. Closing a parent session cancels its agents. When opened with `/factory`, the connected terminal conversation can also be controlled from the GUI.
 
-Starting `pi` opens its conversation in the app; any initial CLI prompts run there. Opening the app directly starts with an empty overview. Agents use pidev's existing delegation behavior; visual effects never trigger work.
+Opening the app from Finder starts with an overview. `varisdev` opens the current project. Visual effects follow actual work.
 
-Electron runs the desktop window and the session runtime; graphics are loaded from local files. Its profile, theme preferences, and cache live in `.pi/desktop/` inside the installed package. Closing the app stops its parents and workers. Parent conversations are saved in Pi's normal session storage and can be resumed there. Recent conversation text, activity, and change previews are kept in memory for the current runtime.
+Graphics load from local files. Closing the app stops its parent sessions and agents. Conversations are saved, while activity and change previews are kept in memory for the current runtime. Preferences and cache live outside the installed package in the VarisDev application data folder.
 
-### App updates and environment
+### Storage and environment
 
-For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically. `pi list` should show `git:github.com/HardDoer/varisdev` as the package source. A source pointing to a development folder makes Pi load that folder and is not updated from GitHub.
+Runtime updates and desktop preferences use:
 
-The optional macOS launcher below is for a development checkout. The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
+- macOS: `~/Library/Application Support/VarisDev/`
+- Windows: `%LOCALAPPDATA%/VarisDev/`
+- Linux: `$XDG_DATA_HOME/varisdev/`, or `~/.local/share/varisdev/`
 
-After backend changes, quit VarisDev and run `npm run desktop` to compile and reopen it. Finder launches use the most recent build; run `npm run desktop:build` before opening from Finder after source changes. GUI assets are read directly from the checkout on launch or **View → Reload**. Reloading the window keeps its running sessions; backend changes require restarting the app.
+Set `VARISDEV_DATA_DIR` to choose another location. The desktop profile lives in its `desktop` subdirectory. Account and conversation storage continues to use `~/.pi/agent`, or `PI_CODING_AGENT_DIR` when configured.
 
-After launcher changes, Electron updates, or moving the checkout, quit VarisDev and run `npm run desktop:install` again. The installer refuses to replace a running app. Removing `~/Applications/VarisDev.app` uninstalls the launcher; saved Pi sessions remain in their usual location.
+`varisdev update` updates the bundled session runtime. To install new VarisDev application code from GitHub, repeat the installation command and restart the app. After reinstalling the application or moving it, run `varisdev app install` again if you use the macOS launcher. Removing `~/Applications/VarisDev.app` removes that launcher; saved conversations remain.
 
 The installer saves your current executable search path so tools such as Node and Git remain available when opened from Finder. It also preserves `PI_CODING_AGENT_DIR` if set during installation. Shell startup files are not loaded. For additional environment settings such as `OPENAI_API_KEY` or `ELEVENLABS_API_KEY`, create `~/Library/Application Support/VarisDev/environment.json` containing a JSON object of string values, then restart the app. For example:
 
@@ -95,27 +114,25 @@ The installer saves your current executable search path so tools such as Node an
 }
 ```
 
-Pi's saved model login credentials are read directly from its normal auth storage. Environment settings in this file override the launch environment.
-
-`npm run desktop:build` compiles the desktop entry point. `npm run desktop:dev` builds and runs the GUI in the foreground with startup output in your terminal, including on Windows and Linux.
+Saved model login credentials are read from the account storage directly. Environment settings in this file override the launch environment.
 
 ## Conversation compaction
 
-VarisDev uses Pi's native compaction for parent and background agent sessions. Pi's compaction settings control automatic compaction and recovery from context overflow. Use `/compact` to compact the current conversation manually. Compaction keeps the current session and its background agents active.
+VarisDev uses the runtime's native compaction for parent and background agent sessions. Compaction settings control automatic compaction and recovery from context overflow. Use `/compact` to compact the current conversation manually. Compaction keeps the current session and its background agents active.
 
 ## Agent orchestration
 
-VarisDev can delegate work to background Pi agents while the parent continues working. Each agent has its own conversation and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Agents accept any model from the parent’s model registry using `provider/model` format. The parent model is inherited by default; when no parent model is set, the default is `openai-codex/gpt-5.6-sol`. Workers use the parent’s credential registry and inherit its thinking level, with `xhigh` as the maximum. Include the relevant context in the task; the parent conversation is not copied. Workers also receive `agent_list` and `agent_send` to communicate directly with peers and the parent.
+VarisDev can delegate work to background agents while the parent continues working. Each agent has its own conversation and receives the project’s context files, skills, built-in coding tools, and VarisDev project tools. Agents accept any model from the parent’s model registry using `provider/model` format. The parent model is inherited by default; when no parent model is set, the default is `openai-codex/gpt-5.6-sol`. Agents use the parent’s credential registry and inherit its thinking level, with `xhigh` as the maximum. Include the relevant context in the task; the parent conversation is not copied. Agents also receive `agent_list` and `agent_send` to communicate directly with peers and the parent.
 
-| Tool | Purpose |
-| --- | --- |
-| `agent_spawn` | Start an agent and immediately return its ID. |
-| `agent_list` | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
-| `agent_status` | Read one agent’s latest result, error, and transcript paths. |
-| `agent_inbox` | Read messages workers sent to the parent, newest first, or retrieve full text by message ID. |
-| `agent_send` | Steer active work or resume a completed agent. Workers can also message `"parent"`. |
-| `agent_wait` | Wait for any or all selected agents and collect their results. |
-| `agent_cancel` | Cancel an agent and clear its steering messages. |
+| Tool           | Purpose                                                                                                    |
+| -------------- | ---------------------------------------------------------------------------------------------------------- |
+| `agent_spawn`  | Start an agent and immediately return its ID.                                                              |
+| `agent_list`   | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
+| `agent_status` | Read one agent’s latest result, error, and transcript paths.                                               |
+| `agent_inbox`  | Read messages agents sent to the parent, newest first, or retrieve full text by message ID.               |
+| `agent_send`   | Steer active work or resume a completed agent. Agents can also message `"parent"`.                        |
+| `agent_wait`   | Wait for any or all selected agents and collect their results.                                             |
+| `agent_cancel` | Cancel an agent and clear its steering messages.                                                           |
 
 The `/commit` shortcut requests Codex GPT-5.5 with xhigh effort.
 
@@ -148,7 +165,7 @@ Send additional work through `agent_send`:
 }
 ```
 
-Workers use `agent_list` to discover peers by name and ID in the same parent session. Their list also includes `selfId`, and their system instructions include their own ID. A worker can call `agent_send` with a peer’s ID using the example above, or send a progress update or question directly to the parent:
+Agents use `agent_list` to discover peers by name and ID in the same parent session. Their list also includes `selfId`, and their system instructions include their own ID. A agent can call `agent_send` with a peer’s ID using the example above, or send a progress update or question directly to the parent:
 
 ```json
 {
@@ -157,15 +174,15 @@ Workers use `agent_list` to discover peers by name and ID in the same parent ses
 }
 ```
 
-Worker messages automatically identify the sender by name and ID. Messages to peers use Pi’s native steering during active work. Messages to the parent are stored in `agent_inbox`; they never add prompts or trigger parent turns. The parent reads the inbox explicitly. Workers put their final result in their final answer, which the parent retrieves through `agent_status` or `agent_wait`. Communication tools are scoped to the parent session. Workers have `agent_list` and `agent_send`; the parent also manages spawning, status, inbox access, waiting, and cancellation.
+Agent messages automatically identify the sender by name and ID. Messages to peers use native steering during active work. Messages to the parent are stored in `agent_inbox`; they never add prompts or trigger parent turns. The parent reads the inbox explicitly. Agents put their final result in their final answer, which the parent retrieves through `agent_status` or `agent_wait`. Communication tools are scoped to the parent session. Agents have `agent_list` and `agent_send`; the parent also manages spawning, status, inbox access, waiting, and cancellation.
 
-`agent_inbox` retains the latest 100 explicit worker messages, newest first. With no arguments it returns up to 10 previews of 500 characters with message IDs, sender names, and timestamps. Use `limit` (up to 20), `offset`, and `nextOffset` to browse, or `{"messageId":"<message ID>"}` to retrieve full text. Reading does not remove messages.
+`agent_inbox` retains the latest 100 explicit agent messages, newest first. With no arguments it returns up to 10 previews of 500 characters with message IDs, sender names, and timestamps. Use `limit` (up to 20), `offset`, and `nextOffset` to browse, or `{"messageId":"<message ID>"}` to retrieve full text. Reading does not remove messages.
 
-Four agents run concurrently; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Messages sent during active work steer the next model turn after the current assistant turn’s tool calls. Completed agents resume with the same conversation. Failed and cancelled agents require a new spawn.
+Six agents run concurrently, matching the six seats; additional agents queue. An agent moves through `queued`, `running`, and `completed` or `failed`. Cancelling active work first reports `cancelling`, then `cancelled` when its tools stop. Messages sent during active work steer the next model turn after the current assistant turn’s tool calls. Completed agents resume with the same conversation. Failed and cancelled agents require a new spawn.
 
 Spawn options include `cwd` (relative to the parent directory), `model` (any registered model in `provider/model` format), `thinkingLevel` (`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`), `instructions`, `timeoutMs`, and `autoCleanup`. Runtime validation checks model availability and enforces the effort cap. Omitted model inherits the parent model or defaults to GPT-5.6-sol when no parent model is set; omitted thinking level inherits the parent's setting. Agents have no execution deadline by default. Set `timeoutMs` to impose a deadline of up to one hour, including initialization and work directed by steering messages. Queue time is excluded. When configured, the timeout starts afresh when a completed agent receives new work. Each parent session can hold 64 agents. Finished agents with `autoCleanup: true` do not count toward that limit.
 
-Set `autoCleanup: true` for a task whose worker should be disposed after its work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work. The default is `false`, allowing completed agents to resume.
+Set `autoCleanup: true` for a task whose agent should be disposed after its work finishes. Cleanup also runs after failure or cancellation, once running tools have stopped. Results, transcript paths, and history stay available; a cleaned agent cannot accept new work. The default is `false`, allowing completed agents to resume.
 
 Collect results with `agent_status` or `agent_wait`. Completion, failure, and cancellation update the agent's stored status without sending a parent message or triggering a turn. `agent_wait` defaults to all agents and a 60-second wait, capped at 120 seconds; `timeoutMs: 0` polls immediately. A wait timeout or interrupted wait leaves agents running. In `any` mode, an already finished agent satisfies the wait.
 
@@ -191,7 +208,7 @@ Use `/commit` to ask the current session to **commit and push** through a **Code
 
 With no arguments, the task is the same as saying “commit and push.” Additional instructions refine that request. The current session supplies the relevant conversation context, change scope, and completed checks to `agent_spawn`, setting `model: "openai-codex/gpt-5.5"`, `thinkingLevel: "xhigh"`, and `autoCleanup: true`. If the parent is working, the request uses native steering.
 
-The worker follows repository instructions, inspects changes, runs required checks, commits, and pushes. The parent collects its result and reports the outcome. The worker session is automatically disposed when the task finishes, fails, or is cancelled. Saved results and transcript paths can be inspected with `agent_status`; `/agents cancel <id>` cancels active work.
+The agent follows repository instructions, inspects changes, runs required checks, commits, and pushes. The parent collects its result and reports the outcome. The agent session is automatically disposed when the task finishes, fails, or is cancelled. Saved results and transcript paths can be inspected with `agent_status`; `/agents cancel <id>` cancels active work.
 
 ## Completion sound
 
@@ -244,9 +261,7 @@ For example, this replaces a script that scans map files, selects neutral outpos
   "where": {
     "objectId": "obj_neutral_outpost"
   },
-  "groupBy": [
-    "properties.owner_id"
-  ],
+  "groupBy": ["properties.owner_id"],
   "includeRootKeys": true
 }
 ```
@@ -265,13 +280,8 @@ For example, this scans object resources, keeps GameMaker object definitions, gr
   "where": {
     "$GMObject": ""
   },
-  "groupBy": [
-    "parent.path"
-  ],
-  "select": [
-    "name",
-    "spriteId.name"
-  ],
+  "groupBy": ["parent.path"],
+  "select": ["name", "spriteId.name"],
   "sampleLimit": 5,
   "includeRootKeys": true
 }
@@ -298,27 +308,19 @@ For example, this inspects every 32×32 mech sprite as four 16×16 regions while
 
 The default `alphaThreshold` is `0`, so occupancy means the same as `alpha > 0`. Edge cells are clipped when image dimensions are not exact multiples of the grid size. Multi-page images inspect their first page. Results are capped at 2,000 lines or 50 KiB; complete output is saved to a temporary file when truncated.
 
-## Native image previews
+## Conversation images
 
-Images generated by `openai_image`, downloaded images, and images opened with `read` get previews directly in the interactive conversation. Local image links in assistant messages also create previews when the referenced files exist. Repeated references to an unchanged file are deduplicated.
+Image attachments, images opened with `read`, and `openai_image` results appear directly in parent and agent conversations. Call **`image_preview`** with `{"path":"screenshots/result.png"}` to show an existing local image in VarisDev. Generated images appear automatically.
 
-- **Click a preview** to enlarge it inside the terminal.
-- **`/images`** opens the most recent image; use the left/right arrows to browse and **Esc** to close.
-- **`/images list`** selects an image from the current session.
-- **`/images <path>`** opens a local file, including paths with spaces.
-- The agent can call **`image_preview`** with `{"path":"screenshots/result.png"}` to explicitly show any existing image. Generation already creates previews automatically.
+Click a thumbnail for a larger view. **Esc** closes that view; the parent keeps working. Loading errors include a retry control. Images load as they approach the visible conversation, and switching conversations clears the previous viewer.
 
-The plugin adds a Sixel renderer for **Windows Terminal 1.22 or newer**. It queries the terminal's graphics mode, reserves ordinary text cells in Pi's layout, and draws the corresponding image regions after Pi finishes each screen update. This handles both the regular terminal and fullscreen Pi interface without modifying the installed Pi packages. Terminal hooks are removed when the session shuts down or reloads, and each draw restores the cursor and graphics mode.
+Supported formats are PNG, JPEG, GIF, WebP, AVIF, SVG, and TIFF. Animated and multipage files show their first frame or page. SVG is rasterized before display. Decoding is limited to 50 MiB and 40 million pixels, with bounded reference and image caches. Snapshots carry image references, and the app loads raster data on demand. Sharp runs in a separate process so native image libraries are released after each operation.
 
-Pi's official image component handles Kitty and iTerm2 terminals. Other terminals get thumbnails made from true color text cells. Sharp is the library used to decode and resize images; the `sixel` library encodes the graphics sent to Windows Terminal. VarisDev runs Sharp in a separate Node process for each image operation, including `image_query` and `image_preview`, and waits for that process to exit before returning its result. This releases Sharp's native DLLs on Windows so they do not remain locked for the Pi session and block package updates. Cancellation and a 60 second timeout terminate the image process. The preview interface and larger viewer run inside pidev. Preview entries store file paths outside the model context, with no browser server or image copies on disk.
-
-Supported formats are PNG, JPEG, GIF, WebP, AVIF, SVG, and TIFF. Animated and multipage files show their first frame/page. Transparent areas use a checkerboard in Sixel and text thumbnails. Preview decoding is limited to 50 MiB and 40 million pixels. Conversation image links are also converted to proper `file://` URLs for opening the original with the terminal's normal link action.
-
-After updating this package, use **`/reload`** to load the preview support into an existing session. When upgrading from a version that loaded Sharp directly into Pi, close that Pi process once to release any DLLs it already loaded; `/reload` cannot unload native libraries.
+Plugins can return image, Markdown, and progress blocks with their tool results or displayed messages. See [plugin visuals and themes](docs/plugins.md) for the format, optional helpers, and a working example.
 
 ## OpenAI image tool
 
-Configure the API key through the environment before starting Pi:
+Configure the API key through the environment before starting VarisDev:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
@@ -339,7 +341,7 @@ export OPENAI_IMAGE_OUTPUT_DIR="generated-images"
 
 ## ElevenLabs audio tool
 
-The `elevenlabs` tool is available to the main agent and background workers. Set the API key in the environment before starting Pi:
+The `elevenlabs` tool is available to parent sessions and agents. Set the API key in the environment before starting VarisDev:
 
 ```bash
 export ELEVENLABS_API_KEY="your-api-key"
@@ -402,7 +404,7 @@ API references: [speech](https://elevenlabs.io/docs/api-reference/text-to-speech
 
 ## Development
 
-This repo targets Node.js 24+ and uses Google's TypeScript Style via `gts`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and isolated testing. This repo targets Node.js 24+ and uses Google's TypeScript Style via `gts`.
 
 ```bash
 npm run lint
@@ -411,29 +413,23 @@ npm test
 npm run fix
 ```
 
-## Local test
+### Runtime and extension development
 
-```bash
-npm ci --include=optional
-pi -e ./extensions/varisdev.ts
+VarisDev uses Pi internally. The SDK is bundled in `desktop/node_modules`, independent of any globally installed command. Updates install a candidate SDK in a separate runtime directory, compile the app against it, and verify its imports before switching an atomic pointer. Running sessions retain their original runtime until restart. Failed updates do not replace it.
+
+The root package declares the host SDK modules as peers for extension loading. Electron and the command use the separately installed SDK. Production dependencies include the compiler and package manager, and installation compiles `desktop/build` automatically. Runtime generations share the base application's non-SDK dependencies. Changing the base application invalidates generations built from older source.
+
+For development:
+
+```sh
+npm ci
+npm run desktop:build
+node bin/varisdev.mjs
+npm run desktop:dev
 ```
 
-Sharp is loaded through Node only when an image is inspected or rendered. A missing image dependency reports an error in that image operation instead of preventing the entire plugin from starting.
+Use a temporary `PI_CODING_AGENT_DIR` and `VARISDEV_DATA_DIR` for integration checks. Production installation tests run outside the checkout and verify runtime dependencies, assets, automatic builds, plugin loading, and desktop startup.
 
-## Install from this repo
+VarisDev can also be loaded as a Pi extension with `pi install git:github.com/HardDoer/varisdev`. Interactive startup transfers the current conversation, model, tools, CLI options, and initial prompts to the app. Print, JSON, and RPC runs remain headless. Extension users update that package through `pi update` and restart Pi. Keep its GitHub registration rather than replacing it with a development folder.
 
-```bash
-pi install git:github.com/HardDoer/varisdev
-```
-
-Pin a tag or commit when sharing with the team:
-
-```bash
-pi install git:github.com/HardDoer/varisdev@v0.1.0
-```
-
-If needed, reapply branding inside Pi with:
-
-```txt
-/varisdev
-```
+Sharp is loaded only when an image is inspected or rendered. A missing image dependency reports an error in that operation.

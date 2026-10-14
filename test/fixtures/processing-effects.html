@@ -8,8 +8,43 @@
       rel="stylesheet"
       href="../../assets/dashboard/processing-effects.css"
     />
+    <style>
+      body {
+        display: block;
+      }
+      #scene {
+        position: absolute;
+        left: 30px;
+        top: 30px;
+        width: 360px;
+        height: 300px;
+        overflow: hidden;
+      }
+      #prompt-form {
+        position: absolute;
+        left: 500px;
+        top: 440px;
+        width: 230px;
+      }
+      #parent-prompt {
+        width: 230px;
+        height: 90px;
+      }
+      .fallback-station {
+        position: absolute;
+        left: 135px;
+        top: 90px;
+        width: 70px;
+        height: 80px;
+      }
+    </style>
   </head>
   <body>
-    <div id="scene" class="scene" style="width: 700px; height: 450px"></div>
+    <div id="scene" class="scene">
+      <div class="fallback-station parent-session">Robot</div>
+    </div>
+    <form id="prompt-form">
+      <textarea id="parent-prompt" aria-label="Prompt"></textarea>
+    </form>
   </body>
 </html>

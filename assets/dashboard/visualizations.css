@@ -1,0 +1,118 @@
+.conversation-visualizations {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 10px;
+}
+.conversation-visualizations[hidden],
+.conversation-visualizations [hidden],
+#conversation-image-dialog [hidden] {
+  display: none;
+}
+.visualization-image {
+  margin: 0;
+  min-width: 0;
+  max-width: 640px;
+}
+.visualization-image-open {
+  display: block;
+  max-width: 100%;
+  min-width: 120px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: zoom-in;
+  text-align: left;
+}
+.visualization-image-open img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 640px;
+  object-fit: contain;
+}
+.visualization-image figcaption,
+.visualization-image-status,
+#conversation-image-metadata {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.visualization-image figcaption {
+  margin-top: 5px;
+}
+.visualization-image-status {
+  display: block;
+  padding: 12px;
+}
+.visualization-image-retry {
+  margin-top: 6px;
+}
+.visualization-markdown {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.visualization-markdown > :first-child {
+  margin-top: 0;
+}
+.visualization-markdown > :last-child {
+  margin-bottom: 0;
+}
+.visualization-markdown pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.visualization-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.visualization-progress progress {
+  max-width: 100%;
+  accent-color: var(--mint);
+}
+.visualization-errors {
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+#conversation-image-dialog {
+  width: min(1100px, calc(100vw - 40px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 40px);
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--panel);
+  overflow: auto;
+}
+#conversation-image-dialog::backdrop {
+  background: rgb(0 0 0 / 70%);
+}
+.conversation-image-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+#conversation-image-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 18px;
+}
+#conversation-image-close {
+  flex-shrink: 0;
+}
+#conversation-image-dialog img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16px auto 0;
+}

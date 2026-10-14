@@ -1,10 +1,19 @@
 import {randomUUID} from 'node:crypto';
+import type {ConversationImageVariant} from '../visualizations.ts';
 
 export interface FactoryRequest {
   type: 'request';
   id: string;
   sessionId: string;
-  action: 'prompt' | 'abort' | 'features' | 'configure' | 'compact' | 'reload';
+  action:
+    | 'prompt'
+    | 'abort'
+    | 'cancelAgent'
+    | 'features'
+    | 'configure'
+    | 'compact'
+    | 'reload'
+    | 'conversationImage';
   input?: unknown;
 }
 
@@ -12,7 +21,29 @@ export function requestId(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(value);
 }
 
-/** Tracks the small set of desktop requests waiting for the attached Pi. */
+export function conversationImageInput(value: unknown): {
+  imageId: string;
+  variant: ConversationImageVariant;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Conversation image request requires an image ID.');
+  const input = value as Record<string, unknown>;
+  if (
+    typeof input.imageId !== 'string' ||
+    !/^image-[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(
+      input.imageId,
+    )
+  )
+    throw new Error(
+      'Conversation image request requires a registered image ID.',
+    );
+  const variant = input.variant ?? 'thumbnail';
+  if (variant !== 'thumbnail' && variant !== 'full')
+    throw new Error('Unknown conversation image variant.');
+  return {imageId: input.imageId, variant};
+}
+
+/** Tracks the small set of desktop requests waiting for the attached parent session. */
 export class ExternalSessionRequests {
   private readonly pending = new Map<
     string,
@@ -43,21 +74,34 @@ export class ExternalSessionRequests {
     input?: unknown,
   ): Promise<T> {
     if (!this.connected())
-      return Promise.reject(new Error('The attached Pi session disconnected.'));
+      return Promise.reject(
+        new Error('The attached parent session disconnected.'),
+      );
+    if (action === 'conversationImage' && this.pending.size >= 16)
+      return Promise.reject(
+        new Error(
+          'Too many pending requests to load another conversation image.',
+        ),
+      );
     if (this.pending.size >= 32)
       return Promise.reject(
-        new Error('The attached Pi session already has 32 pending requests.'),
+        new Error('The parent session already has 32 pending requests.'),
       );
     const id = randomUUID();
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
-          new Error(
-            'The attached Pi session did not answer. Reopen the factory from Pi.',
-          ),
-        );
-      }, this.timeoutMs);
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(id);
+          reject(
+            new Error(
+              'The attached parent session did not answer. Reopen the app from the terminal.',
+            ),
+          );
+        },
+        action === 'conversationImage'
+          ? Math.max(this.timeoutMs, 65000)
+          : this.timeoutMs,
+      );
       this.pending.set(id, {
         resolve: value => resolve(value as T),
         reject,
@@ -77,7 +121,7 @@ export class ExternalSessionRequests {
         reject(
           error instanceof Error
             ? error
-            : new Error('The attached Pi session disconnected.'),
+            : new Error('The attached parent session disconnected.'),
         );
       });
     });
@@ -108,13 +152,13 @@ export class ExternalSessionRequests {
         new Error(
           typeof reply.error === 'string'
             ? reply.error.slice(0, 2000)
-            : 'The attached Pi request failed.',
+            : 'The parent session request failed.',
         ),
       );
     return true;
   }
 
-  disconnect(reason = 'The attached Pi session disconnected.'): void {
+  disconnect(reason = 'The attached parent session disconnected.'): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));

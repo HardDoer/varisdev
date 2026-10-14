@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
-import {cp, mkdtemp, readFile, rm, access} from 'node:fs/promises';
+import {mkdtemp, readFile, rm, access} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
@@ -11,36 +11,52 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const run = promisify(execFile);
 
 void test(
-  'managed production install builds and opens the desktop without checkout dependencies',
-  {timeout: 180_000},
+  'production install builds and launches standalone and extension entry points without checkout dependencies',
+  {timeout: 240_000},
   async t => {
     // Outside the checkout: Node and TypeScript cannot find its node_modules.
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-package-'));
-    t.after(() => rm(directory, {recursive: true, force: true}));
-    // Copy tracked package inputs only. The Git package must not depend on an
-    // untracked local .npmrc from this checkout.
-    for (const name of [
-      'package.json',
-      'package-lock.json',
-      'tsconfig.desktop.json',
-      'desktop/package.json',
-      'desktop/package-lock.json',
-      'src',
-      'extensions',
-      'scripts',
-      'assets',
-      'themes',
-    ]) {
-      await cp(join(root, name), join(directory, name), {recursive: true});
-    }
+    const temporary = await mkdtemp(join(tmpdir(), 'varisdev-package-'));
+    const prefix = join(temporary, 'installation');
+    const directory = join(
+      prefix,
+      process.platform === 'win32' ? 'node_modules' : 'lib/node_modules',
+      'varisdev',
+    );
+    t.after(() => rm(temporary, {recursive: true, force: true}));
     const npm = process.env.npm_execpath;
     assert.ok(npm, 'Run this installation check through npm test.');
-    // Match Pi's Git install, including the package's postinstall script.
+    // Pack exactly the published files, then install globally into a temporary
+    // prefix. This also checks that npm's inherited global setting cannot make
+    // the nested runtime installer write to a global location.
+    const packed = await run(
+      process.execPath,
+      [
+        npm,
+        'pack',
+        '--json',
+        '--ignore-scripts',
+        '--pack-destination',
+        temporary,
+      ],
+      {cwd: root},
+    );
+    const [{filename}] = JSON.parse(packed.stdout) as Array<{filename: string}>;
     await run(
       process.execPath,
-      [npm, 'install', '--omit=dev', '--offline', '--no-audit', '--no-fund'],
+      [
+        npm,
+        'install',
+        '--global',
+        '--prefix',
+        prefix,
+        join(temporary, filename),
+        '--omit=dev',
+        '--offline',
+        '--no-audit',
+        '--no-fund',
+      ],
       {
-        cwd: directory,
+        cwd: temporary,
         maxBuffer: 1024 * 1024,
         env: {...process.env, npm_config_offline: 'true'},
       },
@@ -56,19 +72,30 @@ void test(
       });
       await access(join(directory, 'desktop/node_modules', name));
     }
-    const {buildDesktop} = (await import(
-      pathToFileURL(join(directory, 'src/desktop/build.ts')).href
-    )) as {
-      buildDesktop(): Promise<void>;
-    };
-    await buildDesktop();
+    // postinstall must compile both entry points even when only production
+    // dependencies are present and native TypeScript loading is unavailable.
+    await access(join(directory, 'desktop/build/src/runtime/cli.js'));
+    await access(join(directory, 'desktop/build/src/desktop/main.js'));
+    for (const path of [
+      'assets/dashboard/visualizations.js',
+      'assets/dashboard/robot-whip.js',
+      'examples/project-board/index.mjs',
+      'docs/plugins.md',
+    ])
+      await access(join(directory, path));
+    const version = await run(
+      process.execPath,
+      [join(directory, 'bin/varisdev.mjs'), '--version'],
+      {cwd: directory},
+    );
+    assert.match(version.stdout, /^VarisDev /);
     // Exercise the entire session runtime import graph, even without a display.
     await run(
       process.execPath,
       [
         '--input-type=module',
         '-e',
-        `await import(${JSON.stringify(pathToFileURL(join(directory, 'desktop/build/src/dashboard/parent.js')).href)})`,
+        `await import(${JSON.stringify(pathToFileURL(join(directory, 'desktop/build/src/dashboard/parent.js')).href)}); await import('varisdev/visualizations');`,
       ],
       {cwd: directory},
     );
@@ -80,6 +107,7 @@ void test(
         '--test',
         '--test-reporter=tap',
         join(root, 'test/desktop-startup.test.ts'),
+        join(root, 'test/standalone.test.ts'),
       ],
       {
         cwd: directory,

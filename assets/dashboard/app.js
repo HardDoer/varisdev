@@ -1,9 +1,14 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createFactoryScene} from './factory-scene.js';
+import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createParentFallback} from './parent-fallback.js';
 import {createProcessingEffects} from './processing-effects.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
+import {initUpdates} from './updates.js';
+import {initAppMenu} from './app-menu.js';
+import {initAgentControls} from './agent-controls.js';
+import {createConversationVisualizations} from './visualizations.js';
 import {initUsage, renderUsage} from './usage.js';
 import {
   formatToolInput,
@@ -22,7 +27,9 @@ import {
 } from './session-features.js';
 
 const $ = id => document.getElementById(id);
-const processingEffects = createProcessingEffects($('scene'));
+const processingEffects = createProcessingEffects($('scene'), {
+  getOrigin: () => (state.unitId === 'parent' ? $('parent-prompt') : null),
+});
 const LIVE = new Set(['queued', 'running', 'cancelling']);
 const WORKING = new Set(['running', 'cancelling']);
 const TABS = [
@@ -45,6 +52,11 @@ const STATUS = {
   cancelled: 'Cancelled',
 };
 const api = window.pidev;
+const conversationVisualizations = createConversationVisualizations({
+  api,
+  root: $('panel-conversation'),
+  dialog: $('conversation-image-dialog'),
+});
 const state = {
   hub: {sessions: [], launchCwd: ''},
   sessionId: null,
@@ -79,8 +91,48 @@ try {
 } catch {
   // Actions start expanded when no saved preference is available.
 }
-const conversationPositions = new Map();
-const promptDrafts = new Map();
+let promptDraftStorageError;
+const promptDraftStore = createDraftStore('varisdev.composer-drafts.v1', {
+  maxLength: 500_000,
+  validate: (id, draft) =>
+    typeof id === 'string' &&
+    id.length < 8192 &&
+    draft &&
+    typeof draft.value === 'string' &&
+    draft.value.length <= 500_000 &&
+    Number.isSafeInteger(draft.revision) &&
+    draft.revision >= 0 &&
+    ['start', 'end', 'scrollTop', 'scrollLeft'].every(
+      key =>
+        draft[key] === undefined ||
+        (Number.isFinite(draft[key]) && draft[key] >= 0),
+    ) &&
+    (draft.direction === undefined ||
+      ['none', 'forward', 'backward'].includes(draft.direction)) &&
+    (draft.height === undefined ||
+      (typeof draft.height === 'string' &&
+        /^(?:\d+(?:\.\d+)?px)?$/.test(draft.height))),
+  onError: () => {
+    promptDraftStorageError =
+      'Composer draft recovery could not be saved. Your draft remains in this window.';
+    text($('prompt-error'), promptDraftStorageError);
+    $('prompt-error').hidden = false;
+  },
+});
+const promptDrafts = new Map(
+  [...promptDraftStore.entries()].map(([id, draft]) => [
+    id,
+    {
+      start: 0,
+      end: 0,
+      direction: 'none',
+      scrollTop: 0,
+      scrollLeft: 0,
+      height: '',
+      ...draft,
+    },
+  ]),
+);
 const workspaceCache = new Map();
 const workspacePending = new Set();
 const sending = new Set();
@@ -98,6 +150,8 @@ let feedKey = '';
 let lastFeedId;
 let changeKey = '';
 let conversationKey = '';
+let conversationFollowing = true;
+let conversationScrollFrame;
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
@@ -137,7 +191,8 @@ function canControl(session) {
 function parentHasWork(data) {
   return (
     ['running', 'compacting'].includes(data.session.status) ||
-    data.agents.some(agent => LIVE.has(agent.status))
+    sending.has(data.session.id) ||
+    Boolean(data.queue?.steering?.length || data.queue?.followUp?.length)
   );
 }
 function parentHasError(session) {
@@ -241,6 +296,17 @@ function restorePosition(textarea, position) {
   textarea.scrollTop = position.scrollTop;
   textarea.scrollLeft = position.scrollLeft;
 }
+function persistComposerDraft(id) {
+  const draft = promptDrafts.get(id);
+  if (promptDraftStore.save(id, draft?.value ? draft : undefined)) {
+    if (
+      promptDraftStorageError &&
+      $('prompt-error').textContent === promptDraftStorageError
+    )
+      $('prompt-error').hidden = true;
+    promptDraftStorageError = undefined;
+  }
+}
 function saveDraft() {
   if (!state.sessionId) return;
   const textarea = $('parent-prompt');
@@ -252,6 +318,7 @@ function saveDraft() {
     revision,
     ...editorPosition(textarea),
   });
+  persistComposerDraft(state.sessionId);
 }
 function restoreDraft(id) {
   const textarea = $('parent-prompt');
@@ -267,7 +334,8 @@ function restoreDraft(id) {
   };
   textarea.value = draft.value;
   textarea.style.height = draft.height;
-  $('prompt-error').hidden = true;
+  $('prompt-error').hidden = !promptDraftStorageError;
+  if (promptDraftStorageError) text($('prompt-error'), promptDraftStorageError);
   restorePosition(textarea, draft);
   pendingDraftPosition = {id, position: draft};
 }
@@ -290,6 +358,7 @@ function clearSubmittedDraft(id, submitted) {
     scrollTop: 0,
     scrollLeft: 0,
   });
+  persistComposerDraft(id);
   if (id === state.sessionId) restoreDraft(id);
 }
 function expandEditor(element, textarea, button) {
@@ -417,7 +486,7 @@ function selectSession(id) {
   )
     return;
   saveDraft();
-  saveConversationPosition();
+  saveConversationDisclosures();
   state.sessionId = id;
   state.unitId = 'parent';
   state.historyQuery = '';
@@ -430,7 +499,8 @@ function selectUnit(id) {
   if (id !== 'parent' && !snapshot()?.agents.some(item => item.id === id))
     return;
   if (state.unitId !== id) {
-    saveConversationPosition();
+    if (state.unitId === 'parent') rememberComposerHeight();
+    saveConversationDisclosures();
     saveDraft();
     state.unitId = id;
   }
@@ -587,6 +657,7 @@ function renderFallback(data) {
       return {element, status, name, task, activity};
     },
     (entry, unit) => {
+      entry.element.dataset.unitId = unit.id;
       const parent = unit.id === 'parent';
       const task = parent ? unit.prompt || 'Parent session prompt' : unit.task;
       const activity = unit.activity || statusName(unit.status);
@@ -630,8 +701,11 @@ function setSceneMotion(enabled) {
   animation.setMotion(enabled);
 }
 function activityPhase(data) {
-  if (stopping.has(data.session.id) || pausedActivity.has(data.session.id))
-    return 'Stopping';
+  if (stopping.has(data.session.id)) return 'Stopping';
+  if (pausedActivity.has(data.session.id))
+    return data.agents.some(agent => WORKING.has(agent.status))
+      ? 'Agents running'
+      : '';
   if (data.ui?.dialogs?.length) return 'Needs input';
   if (data.session.status === 'compacting') return 'Compacting';
   if (data.session.status !== 'running')
@@ -660,12 +734,7 @@ function renderProcessing(data) {
   $('processing-state').hidden = !phase;
   $('processing-state').classList.toggle('paused', !processing);
   text($('processing-state-text'), phase);
-  setSceneMotion(
-    state.motion &&
-      !motionPreference.matches &&
-      phase !== 'Stopping' &&
-      stopEffectSession !== data.session.id,
-  );
+  setSceneMotion(state.motion && !motionPreference.matches);
 }
 function clearStopEffect() {
   clearTimeout(stopEffectTimer);
@@ -720,6 +789,7 @@ function renderFactory() {
   $('parent-activity').title = $('parent-activity').textContent;
   sizeScene();
   renderProcessing(data);
+  agentControls.render();
   processingEffects.update(data, {
     motion: state.motion && !motionPreference.matches,
     stopping: stopping.has(session.id) || pausedActivity.has(session.id),
@@ -1091,16 +1161,45 @@ function conversationData(data = snapshot()) {
     }
   );
 }
-function saveConversationPosition() {
-  const key = conversationScope();
-  if (!state.sessionId || conversationKey !== key) return;
+function saveConversationDisclosures() {
+  if (!state.sessionId || conversationKey !== conversationScope()) return;
   for (const details of $('conversation').querySelectorAll(
     'details[data-disclosure-key]',
-  ))
-    disclosures.set(details.dataset.disclosureKey, details.open);
-  conversationPositions.set(key, {
-    top: $('panel-conversation').scrollTop,
-    follow: $('follow-conversation').checked,
+  )) {
+    const key = details.dataset.disclosureKey;
+    if (details.open !== (disclosures.get(key) ?? true))
+      disclosures.set(key, details.open);
+  }
+}
+function followConversationBottom() {
+  conversationFollowing = true;
+  $('follow-conversation').checked = true;
+  scheduleConversationBottom();
+}
+function scheduleConversationBottom() {
+  window.cancelAnimationFrame(conversationScrollFrame);
+  if (
+    state.tab !== 'conversation' ||
+    !conversationFollowing ||
+    !$('follow-conversation').checked
+  )
+    return;
+  const key = conversationScope();
+  const scroll = () => {
+    if (
+      state.disposed ||
+      state.tab !== 'conversation' ||
+      conversationScope() !== key ||
+      !conversationFollowing ||
+      !$('follow-conversation').checked
+    )
+      return;
+    $('panel-conversation').scrollTop = $('panel-conversation').scrollHeight;
+  };
+  scroll();
+  conversationScrollFrame = window.requestAnimationFrame(() => {
+    scroll();
+    conversationScrollFrame = window.requestAnimationFrame(scroll);
   });
 }
 // Keep existing text nodes so selection and open tool details survive snapshots.
@@ -1125,8 +1224,10 @@ function updateStreamText(textNode, value, selection) {
 function preserveDisclosure(details, key) {
   details.dataset.disclosureKey = key;
   details.open = disclosures.get(key) ?? true;
+  let previousOpen = details.open;
   details.addEventListener('toggle', () => {
-    if (!details.isConnected || disclosures.get(key) === details.open) return;
+    if (!details.isConnected || previousOpen === details.open) return;
+    previousOpen = details.open;
     disclosures.delete(key);
     disclosures.set(key, details.open);
     if (disclosures.size > 2000)
@@ -1178,6 +1279,7 @@ function conversationEntry(message) {
     'Preview truncated; full text is in the session file.',
   );
   const error = node('p', 'conversation-error');
+  const visualizations = conversationVisualizations.create();
   let inputNode;
   let inputPreview;
   let outputLabel;
@@ -1198,13 +1300,14 @@ function conversationEntry(message) {
       input,
       outputLabel,
       content,
+      visualizations.element,
       truncated,
       error,
     );
     details.append(summary, body);
     element.append(details);
   } else {
-    element.append(header, content, truncated, error);
+    element.append(header, content, visualizations.element, truncated, error);
   }
   return {
     element,
@@ -1218,6 +1321,7 @@ function conversationEntry(message) {
     outputLabel,
     truncated,
     error,
+    visualizations,
     status: undefined,
   };
 }
@@ -1228,12 +1332,12 @@ function renderConversation(snapshot) {
   const body = $('panel-conversation');
   const sessionChanged = conversationKey !== key;
   if (sessionChanged) {
+    conversationVisualizations.reset();
     conversationNodes.clear();
     $('conversation').replaceChildren();
     conversationKey = key;
-    const saved = conversationPositions.get(key);
-    $('follow-conversation').checked = saved?.follow ?? true;
-    body.scrollTop = saved?.top || 0;
+    conversationFollowing = true;
+    $('follow-conversation').checked = true;
   }
   const nearBottom =
     body.scrollHeight - body.scrollTop - body.clientHeight < 70;
@@ -1243,6 +1347,10 @@ function renderConversation(snapshot) {
     !selection.isCollapsed &&
     $('conversation').contains(selection.anchorNode);
   const messages = data.conversation || [];
+  const messageKeys = new Set(messages.map(message => `${key}:${message.id}`));
+  for (const [id, entry] of conversationNodes) {
+    if (!messageKeys.has(id)) entry.visualizations.dispose();
+  }
   let changed = sessionChanged || messages.length !== conversationNodes.size;
   text(
     $('conversation-recipient'),
@@ -1314,19 +1422,13 @@ function renderConversation(snapshot) {
         entry.streaming.hidden = !message.streaming;
         text(entry.streaming, 'Streaming');
       }
-      const outputNearBottom =
-        entry.content.scrollHeight -
-          entry.content.scrollTop -
-          entry.content.clientHeight <
-        40;
       const outputChanged = updateStreamText(
         entry.textNode,
         tool ? formatToolResult(message.text) : message.text,
         selection,
       );
       changed = outputChanged || changed;
-      if (tool && outputChanged && outputNearBottom && !selectedText)
-        entry.content.scrollTop = entry.content.scrollHeight;
+      entry.visualizations.update(message);
       entry.truncated.hidden = !message.truncated;
       entry.error.hidden =
         !message.error || (tool && message.error === message.text);
@@ -1350,7 +1452,9 @@ function renderConversation(snapshot) {
   activity.hidden = !active;
   activity.classList.toggle(
     'paused',
-    phase === 'Stopping' || phase === 'Needs input',
+    phase === 'Stopping' ||
+      phase === 'Needs input' ||
+      (parent && pausedActivity.has(data.session.id)),
   );
   text(
     activityText,
@@ -1371,11 +1475,9 @@ function renderConversation(snapshot) {
     !selectedText &&
     (nearBottom || sessionChanged) &&
     changed
-  )
-    body.scrollTop = body.scrollHeight;
-  if (sessionChanged) {
-    const saved = conversationPositions.get(key);
-    if (saved) body.scrollTop = saved.top;
+  ) {
+    conversationFollowing = true;
+    scheduleConversationBottom();
   }
 }
 function renderSteering(data) {
@@ -1400,11 +1502,27 @@ function renderSteering(data) {
     (entry, message) => text(entry.content, message.text),
   );
 }
+function rememberComposerHeight() {
+  const dock = $('composer-slot');
+  if (
+    state.unitId !== 'parent' ||
+    dock.hidden ||
+    expandedEditor?.textarea === $('parent-prompt')
+  )
+    return;
+  const height = dock.getBoundingClientRect().height;
+  if (height > 0) dock.style.setProperty('--agent-dock-height', `${height}px`);
+}
 function renderInspector() {
   const data = snapshot();
   const unit = selectedUnit();
   if (!data || !unit) return;
   const parent = state.unitId === 'parent';
+  $('inspector').dataset.conversationKind = parent ? 'parent' : 'agent';
+  text(
+    $('conversation-kind-label'),
+    parent ? 'Parent session' : 'Agent conversation',
+  );
   const key = `${state.sessionId}:${state.unitId}`;
   if (inspectorKey !== key) {
     for (const tab of ['details', 'feed', 'changes', 'tokens'])
@@ -1412,6 +1530,7 @@ function renderInspector() {
     inspectorKey = key;
   }
   text($('inspector-title'), unit.name);
+  $('inspector-title').title = unit.name;
   if (parent) parentBadge($('inspector-status'), unit);
   else badge($('inspector-status'), unit.status);
   text(
@@ -1456,7 +1575,7 @@ function renderInspector() {
             canControl(unit)
               ? unit.owned
                 ? 'Desktop parent session'
-                : 'Connected pidev'
+                : 'Connected parent session'
               : 'Unavailable',
           ],
         ]
@@ -1500,7 +1619,11 @@ function renderInspector() {
     expandedEditor?.textarea === $('parent-prompt')
   )
     collapseEditor(false);
-  $('composer-slot').hidden = !parent;
+  $('composer-slot').hidden = false;
+  $('composer-slot').classList.toggle('agent-selected', !parent);
+  agentControls.render();
+  $('agent-task-dock').hidden = parent;
+  text($('agent-task-text'), parent ? '' : unit.task);
   $('parent-controls').hidden = !parent || !canControl(data.session);
   $('inspector').classList.toggle(
     'has-composer',
@@ -1511,8 +1634,8 @@ function renderInspector() {
   text(
     $('attached-note'),
     canControl(data.session)
-      ? 'Connected pidev · this conversation is controlled here.'
-      : 'Disconnected pidev · controls are unavailable.',
+      ? 'Connected parent session'
+      : 'Disconnected parent session',
   );
   if (
     pendingDraftPosition?.id === state.sessionId &&
@@ -1587,6 +1710,7 @@ function renderWorkspace() {
   $('workspace-truncated').hidden = !result.truncated;
 }
 function setTab(tab) {
+  const previousTab = state.tab;
   state.tab = tab;
   for (const name of TABS) {
     const selected = name === tab;
@@ -1595,21 +1719,31 @@ function setTab(tab) {
     $(`panel-${name}`).hidden = !selected;
   }
   if (tab === 'context') refreshContext();
-  if (tab === 'conversation' && $('follow-conversation').checked)
-    $('panel-conversation').scrollTop = $('panel-conversation').scrollHeight;
+  if (tab === 'conversation' && previousTab !== 'conversation')
+    followConversationBottom();
   if (tab === 'feed' && $('follow-feed').checked)
     $('panel-feed').scrollTop = $('panel-feed').scrollHeight;
 }
+let themeSessionId;
+let themesDiscovered = false;
 function render() {
   if (state.disposed) return;
   const hasSession = Boolean(snapshot());
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
+  appMenu.place(hasSession);
+  if (!themesDiscovered || themeSessionId !== state.sessionId) {
+    themesDiscovered = true;
+    themeSessionId = state.sessionId;
+    void cleanupThemes.refresh(state.sessionId ?? undefined);
+  }
   renderOverview();
   if (hasSession) {
     renderFactory();
     renderWorkers();
     renderInspector();
+  } else {
+    conversationVisualizations.reset();
   }
 }
 function receive(hub) {
@@ -1627,7 +1761,7 @@ function receive(hub) {
           : hub.sessions[0]?.session.id || null;
   if (state.sessionId !== next) {
     saveDraft();
-    saveConversationPosition();
+    saveConversationDisclosures();
     state.sessionId = next;
     state.unitId = 'parent';
     restoreDraft(next);
@@ -1639,7 +1773,6 @@ function receive(hub) {
     !snapshot()?.agents.some(item => item.id === state.unitId)
   )
     state.unitId = 'parent';
-  text($('connection'), 'Desktop connected');
   render();
 }
 function applyMotion() {
@@ -1650,11 +1783,7 @@ function applyMotion() {
   $('motion-toggle').title = motionPreference.matches
     ? 'Reduced motion is enabled in system settings'
     : 'Toggle factory animation';
-  setSceneMotion(
-    enabled &&
-      !pausedActivity.has(state.sessionId) &&
-      stopEffectSession !== state.sessionId,
-  );
+  setSceneMotion(enabled);
   if (!enabled && stopEffectSession) (scene || fallbackScene)?.startle(false);
   const data = snapshot();
   if (data)
@@ -1771,6 +1900,7 @@ async function abortParent() {
         end: existing ? prefix.length + (draft.end || 0) : value.length,
         direction: draft.direction || 'none',
       });
+      persistComposerDraft(id);
       if (id === state.sessionId) {
         restoreDraft(id);
         if (state.unitId === 'parent') $('parent-prompt').focus();
@@ -1807,6 +1937,28 @@ async function loadWorkspace() {
 
 $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
+$('prompt-tab').addEventListener('click', () => $('parent-prompt').focus());
+let openingTerminal = false;
+$('terminal-tab').addEventListener('click', async () => {
+  if (openingTerminal || !state.sessionId) return;
+  const sessionId = state.sessionId;
+  openingTerminal = true;
+  $('terminal-tab').disabled = true;
+  $('terminal-error').hidden = true;
+  try {
+    if (!api?.openTerminal)
+      throw new Error('Restart VarisDev to use the terminal.');
+    await api.openTerminal(sessionId);
+  } catch (error) {
+    if (state.sessionId === sessionId) {
+      text($('terminal-error'), error.message || String(error));
+      $('terminal-error').hidden = false;
+    }
+  } finally {
+    openingTerminal = false;
+    $('terminal-tab').disabled = false;
+  }
+});
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('back-to-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', sendPrompt);
@@ -1899,12 +2051,31 @@ for (const tab of TABS) {
     $(`tab-${tabs[next]}`).focus();
   });
 }
-$('panel-conversation').addEventListener('scroll', saveConversationPosition);
-$('follow-conversation').addEventListener('change', () => {
-  if ($('follow-conversation').checked)
-    $('panel-conversation').scrollTop = $('panel-conversation').scrollHeight;
-  saveConversationPosition();
+$('panel-conversation').addEventListener('scroll', () => {
+  const body = $('panel-conversation');
+  conversationFollowing =
+    body.scrollHeight - body.clientHeight - body.scrollTop < 70;
+  if (!conversationFollowing)
+    window.cancelAnimationFrame(conversationScrollFrame);
 });
+$('follow-conversation').addEventListener('change', () => {
+  conversationFollowing = $('follow-conversation').checked;
+  if (conversationFollowing) scheduleConversationBottom();
+});
+const conversationResize = new window.ResizeObserver(() => {
+  if (conversationFollowing && !window.getSelection()?.toString())
+    scheduleConversationBottom();
+});
+for (const id of [
+  'conversation',
+  'conversation-activity',
+  'panel-conversation',
+])
+  conversationResize.observe($(id));
+const composerResize = new window.ResizeObserver(() => {
+  rememberComposerHeight();
+});
+composerResize.observe($('composer-slot'));
 $('follow-feed').addEventListener('change', () => {
   if ($('follow-feed').checked)
     $('panel-feed').scrollTop = $('panel-feed').scrollHeight;
@@ -1927,8 +2098,31 @@ try {
   scene = null;
 }
 if (!scene) fallbackScene = createParentFallback($('fallback-units'));
-const cleanupThemes = initThemes(palette => scene?.setPalette(palette));
+const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
+  deferDiscovery: true,
+});
 const cleanupZoom = initZoom(api);
+const cleanupUpdates = initUpdates(api, {
+  beforeRestart() {
+    saveDraft();
+    flushDrafts();
+  },
+  selectedSessionId: () => state.sessionId,
+});
+const agentControls = initAgentControls({
+  api,
+  selected: snapshot,
+  selectedAgent: () => state.unitId,
+  refresh: () => {
+    renderFactory();
+    renderInspector();
+  },
+});
+const appMenu = initAppMenu();
+const cleanupSessionSelection = api?.onSelectSession?.(id => {
+  state.desiredSessionId = id;
+  api.getState().then(receive).catch(showError);
+});
 $('fallback').hidden = Boolean(scene);
 $('factory-canvas').hidden = !scene;
 $('scene-labels').hidden = !scene;
@@ -1965,10 +2159,12 @@ initUsage(call => {
     entry.element.getBoundingClientRect().top -
     body.getBoundingClientRect().top -
     12;
-  saveConversationPosition();
+  saveConversationDisclosures();
 });
 render();
 window.addEventListener('unload', () => {
+  saveDraft();
+  promptDraftStore.flush();
   state.disposed = true;
   unsubscribe?.();
   clearInterval(clock);
@@ -1976,8 +2172,15 @@ window.addEventListener('unload', () => {
   motionPreference.removeEventListener('change', applyMotion);
   window.removeEventListener('resize', resizeFactory);
   sceneResize.disconnect();
+  conversationResize.disconnect();
+  conversationVisualizations.dispose();
+  composerResize.disconnect();
+  window.cancelAnimationFrame(conversationScrollFrame);
   cleanupThemes();
   cleanupZoom();
+  cleanupUpdates();
+  appMenu.dispose();
+  cleanupSessionSelection?.();
   scene?.dispose();
   fallbackScene?.dispose();
   processingEffects.dispose();
@@ -2015,8 +2218,6 @@ if (api) {
     }
   }, 1000);
 } else {
-  text($('connection'), 'Desktop API unavailable');
-  $('connection').classList.add('error');
   $('new-session').disabled = true;
   $('welcome-create').disabled = true;
   showError(

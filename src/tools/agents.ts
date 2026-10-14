@@ -321,7 +321,7 @@ export function registerAgentTools(
     name: 'agent_spawn',
     label: 'Spawn agent',
     description:
-      'Start a background agent with its own conversation. Accepts any model from the parent model registry in provider/model format. Defaults to the parent model, or openai-codex/gpt-5.6-sol when no parent model is set. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to four agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
+      'Start a background agent with its own conversation. Accepts any model from the parent model registry in provider/model format. Defaults to the parent model, or openai-codex/gpt-5.6-sol when no parent model is set. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
     promptSnippet:
       'Start a background agent with its own conversation and return its ID immediately.',
     parameters: spawnSchema,

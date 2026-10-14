@@ -96,7 +96,7 @@ export class AgentOrchestrator {
   private closed = false;
   private closing?: Promise<void>;
 
-  constructor(concurrency = 4) {
+  constructor(concurrency = 6) {
     if (!Number.isInteger(concurrency) || concurrency < 1) {
       throw new Error('Agent concurrency must be a positive integer.');
     }

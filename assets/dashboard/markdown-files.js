@@ -1,7 +1,9 @@
-/* global document, localStorage, setInterval, clearInterval */
+/* global document, window, localStorage, setInterval, clearInterval */
+import {createDraftStore} from './draft-storage.js';
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'varisdev.markdown-pins.v1';
-const POSITION_KEY = 'varisdev.markdown-position';
+const PLACEMENT_KEY = 'varisdev.markdown-placement.v1';
+let placement = {x: 20, y: 80, width: 520, height: 650, locked: false};
 const scopes = new Map();
 let api;
 let selected;
@@ -10,6 +12,55 @@ let polling;
 let previousFocus;
 let receivedSession = false;
 let pins = {};
+let draftStore;
+let draftStorageError;
+const DRAFT_KEY = 'varisdev.markdown-drafts.v1';
+function validDraft(id, value) {
+  return (
+    value &&
+    typeof value.cwd === 'string' &&
+    value.cwd.length < 8192 &&
+    typeof value.path === 'string' &&
+    value.path.length < 8192 &&
+    id === JSON.stringify([value.cwd, value.path]) &&
+    typeof value.draft === 'string' &&
+    value.draft.length <= 1_048_576 &&
+    typeof value.baseContent === 'string' &&
+    value.baseContent.length <= 1_048_576 &&
+    value.draft !== value.baseContent &&
+    typeof value.editVersion === 'string' &&
+    value.editVersion.length > 0 &&
+    value.editVersion.length <= 256 &&
+    Number.isFinite(value.savedAt)
+  );
+}
+function saveMarkdownDraft(scope, doc) {
+  if (!scope || !doc || !draftStore) return;
+  const id = JSON.stringify([scope.key, doc.path]);
+  const previous = draftStore.get(id);
+  const unchanged =
+    previous?.draft === doc.draft &&
+    previous?.baseContent === doc.baseContent &&
+    previous?.editVersion === doc.editVersion;
+  const record = dirty(doc)
+    ? {
+        cwd: scope.key,
+        path: doc.path,
+        draft: doc.draft,
+        baseContent: doc.baseContent,
+        editVersion: doc.editVersion,
+        savedAt: unchanged ? previous.savedAt : Date.now(),
+      }
+    : undefined;
+  if (draftStore.save(id, record)) {
+    if (
+      draftStorageError &&
+      $('markdown-storage-status').textContent === draftStorageError
+    )
+      $('markdown-storage-status').textContent = '';
+    draftStorageError = undefined;
+  }
+}
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -125,6 +176,8 @@ export function renderMarkdown(target, content) {
         'muted',
       ),
     );
+  if (!content.length)
+    fragment.append(node('p', 'This file is empty.', 'muted'));
   target.replaceChildren(fragment);
 }
 
@@ -173,6 +226,27 @@ function getScope() {
       scope.documents.set(path, {path, pinned: true});
       scope.active ||= path;
     }
+    const recovered = [...(draftStore?.entries() || [])]
+      .map(([, record]) => record)
+      .filter(record => record.cwd === session.cwd)
+      .sort((a, b) => a.savedAt - b.savedAt);
+    for (const record of recovered) {
+      const doc = scope.documents.get(record.path) || {path: record.path};
+      Object.assign(doc, {
+        editing: true,
+        recovered: true,
+        draft: record.draft,
+        baseContent: record.baseContent,
+        editVersion: record.editVersion,
+        disk: {
+          path: record.path,
+          content: record.baseContent,
+          version: record.editVersion,
+        },
+      });
+      scope.documents.set(record.path, doc);
+      scope.active = record.path;
+    }
     scopes.set(session.cwd, scope);
   }
   scope.sessionId = session.id;
@@ -194,7 +268,234 @@ function savePins(scope) {
 function showPanel() {
   if ($('markdown-panel').hidden) previousFocus = document.activeElement;
   $('markdown-panel').hidden = false;
+  applyPlacement(false, true);
   $('markdown-launcher').setAttribute('aria-expanded', 'true');
+}
+function applyPlacement(save = false, besideComposer = false) {
+  // Reserve the bottom of the window for the parent session composer.
+  const margin = 8;
+  let availableWidth = Math.max(1, window.innerWidth - margin * 2);
+  const height = Math.max(1, window.innerHeight - 104);
+  const editor = $('parent-prompt');
+  const composer = editor?.getBoundingClientRect();
+  // Keep the default left placement beside the composer in narrow windows.
+  const besideWidth = composer?.left - Math.max(margin, placement.x) - margin;
+  if (
+    besideComposer &&
+    window.innerWidth < 1000 &&
+    composer?.width &&
+    besideWidth >= 260
+  )
+    availableWidth = Math.min(availableWidth, besideWidth);
+  const width = Math.min(
+    availableWidth,
+    Math.max(Math.min(280, availableWidth), placement.width),
+  );
+  const panelHeight = Math.min(
+    height,
+    Math.max(Math.min(460, height), placement.height),
+  );
+  const geometry = {
+    x: Math.min(
+      window.innerWidth - width - margin,
+      Math.max(margin, placement.x),
+    ),
+    y: Math.min(
+      window.innerHeight - 96 - panelHeight,
+      Math.max(margin, placement.y),
+    ),
+    width,
+    height: panelHeight,
+  };
+  const panel = $('markdown-panel');
+  Object.assign(panel.style, {
+    left: `${geometry.x}px`,
+    top: `${geometry.y}px`,
+    width: `${geometry.width}px`,
+    height: `${geometry.height}px`,
+  });
+  panel.dataset.compact = String(width < 400 || height < 460);
+  // Window and zoom changes constrain the display without overwriting the user's placement.
+  if (save) Object.assign(placement, geometry);
+  panel.dataset.locked = String(placement.locked);
+  $('markdown-lock').textContent = placement.locked ? 'Unlock' : 'Lock';
+  $('markdown-lock').setAttribute('aria-pressed', String(placement.locked));
+  $('markdown-heading').setAttribute('aria-disabled', String(placement.locked));
+  $('markdown-resize').disabled = placement.locked;
+  if (save) {
+    try {
+      localStorage.setItem(PLACEMENT_KEY, JSON.stringify(placement));
+    } catch {
+      $('markdown-storage-status').textContent =
+        'Panel placement could not be saved for restart.';
+    }
+  }
+}
+function panelGeometry() {
+  const box = $('markdown-panel').getBoundingClientRect();
+  return {x: box.left, y: box.top, width: box.width, height: box.height};
+}
+function initPlacement() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PLACEMENT_KEY) || 'null');
+    if (
+      stored &&
+      ['x', 'y', 'width', 'height'].every(key => Number.isFinite(stored[key]))
+    )
+      placement = {
+        ...placement,
+        ...Object.fromEntries(
+          ['x', 'y', 'width', 'height'].map(key => [key, stored[key]]),
+        ),
+        locked: stored.locked === true,
+      };
+  } catch {
+    /* Use the default placement. */
+  }
+  applyPlacement();
+  $('markdown-lock').addEventListener('click', () => {
+    Object.assign(placement, panelGeometry());
+    placement.locked = !placement.locked;
+    applyPlacement(true);
+  });
+  for (const [id, resize] of [
+    ['markdown-heading', false],
+    ['markdown-resize', true],
+  ]) {
+    const handle = $(id);
+    let gesture;
+    handle.addEventListener('pointerdown', event => {
+      if (
+        placement.locked ||
+        event.button !== 0 ||
+        (!resize && event.target.closest('button'))
+      )
+        return;
+      event.preventDefault();
+      handle.focus();
+      gesture = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        start: {...placement, ...panelGeometry()},
+      };
+      Object.assign(placement, gesture.start);
+      handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove', event => {
+      if (!gesture || gesture.id !== event.pointerId || placement.locked)
+        return;
+      const dx = event.clientX - gesture.x;
+      const dy = event.clientY - gesture.y;
+      if (resize) {
+        placement.width = Math.min(
+          window.innerWidth - 8 - placement.x,
+          gesture.start.width + dx,
+        );
+        placement.height = Math.min(
+          window.innerHeight - 96 - placement.y,
+          gesture.start.height + dy,
+        );
+      } else {
+        placement.x = gesture.start.x + dx;
+        placement.y = gesture.start.y + dy;
+      }
+      applyPlacement();
+    });
+    const finish = () => {
+      if (!gesture) return;
+      gesture = undefined;
+      applyPlacement(true);
+    };
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+    handle.addEventListener('lostpointercapture', finish);
+    handle.addEventListener('keydown', event => {
+      if (
+        event.target !== handle ||
+        placement.locked ||
+        !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+      )
+        return;
+      event.preventDefault();
+      Object.assign(placement, panelGeometry());
+      const amount = event.shiftKey ? 40 : 10;
+      const horizontal =
+        event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+      const key = resize
+        ? horizontal
+          ? 'width'
+          : 'height'
+        : horizontal
+          ? 'x'
+          : 'y';
+      placement[key] +=
+        (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) *
+        amount;
+      if (resize) {
+        placement.width = Math.min(
+          window.innerWidth - 8 - placement.x,
+          placement.width,
+        );
+        placement.height = Math.min(
+          window.innerHeight - 96 - placement.y,
+          placement.height,
+        );
+      }
+      applyPlacement(true);
+    });
+  }
+  window.addEventListener('resize', () =>
+    window.requestAnimationFrame(() => applyPlacement(false, true)),
+  );
+}
+async function discoverFiles(scope) {
+  if (!scope || scope.finding) return scope?.finding;
+  const snapshot = selected?.();
+  const changed = [...(snapshot?.changes || [])]
+    .reverse()
+    .map(item => item.path)
+    .filter(path => /\.md$/i.test(path));
+  scope.choices = [...new Set(changed)];
+  scope.catalogError = false;
+  scope.finding = (async () => {
+    try {
+      const resource = await api.sessionFeatures?.(scope.sessionId);
+      const files = (resource?.contextFiles || []).filter(file =>
+        /\.md$/i.test(file.path),
+      );
+      files.sort((a, b) => {
+        const rank = file =>
+          (file.path.startsWith(scope.key + '/') ? 0 : 2) +
+          (file.status === 'included' ? 0 : 1);
+        return rank(a) - rank(b);
+      });
+      scope.choices = [
+        ...new Set([...changed, ...files.map(file => file.path)]),
+      ];
+    } catch {
+      scope.catalogError = true;
+    } finally {
+      scope.finding = undefined;
+      if (current === scope) render();
+    }
+  })();
+  render();
+  await scope.finding;
+}
+async function launch() {
+  updateMarkdownFiles();
+  const scope = current;
+  showPanel();
+  if (activeDocument()) {
+    void refresh(scope, activeDocument());
+    $('markdown-file-path').focus();
+  }
+  await discoverFiles(scope);
+  if (current !== scope || $('markdown-panel').hidden) return;
+  if (!activeDocument() && scope?.choices?.length)
+    await openMarkdownFile(scope.choices[0]);
+  else if (!activeDocument()) $('markdown-path').focus();
 }
 function hidePanel() {
   $('markdown-panel').hidden = true;
@@ -207,6 +508,33 @@ function render() {
   $('markdown-session').textContent = current?.key || 'Select a parent session';
   $('markdown-open-path').disabled = !current;
   $('markdown-path').disabled = !current;
+  const choices = [
+    ...new Set(
+      [
+        ...(current?.choices || []),
+        ...[...(current?.documents.keys() || [])],
+      ].map(path => current.aliases.get(path) || path),
+    ),
+  ];
+  const picker = $('markdown-files');
+  const signature = JSON.stringify(choices);
+  if (picker.dataset.choices !== signature) {
+    picker.replaceChildren(
+      ...choices.map(path => {
+        const option = node('option', path);
+        option.value = path;
+        return option;
+      }),
+    );
+    picker.dataset.choices = signature;
+  }
+  $('markdown-empty').textContent = !current
+    ? 'Select a parent session.'
+    : current.finding
+      ? 'Loading files…'
+      : current.catalogError
+        ? 'Could not load the file list. Enter a file path.'
+        : 'Choose a file or enter its path.';
   const tabFocused = $('markdown-tabs').contains(document.activeElement);
   $('markdown-tabs').replaceChildren(
     ...[...(current?.documents.values() || [])].map(item => {
@@ -239,6 +567,7 @@ function render() {
   $('markdown-empty').hidden = Boolean(doc);
   if (!doc) return;
   $('markdown-file-path').textContent = doc.path;
+  $('markdown-file-path').title = doc.path;
   $('markdown-pin').textContent = doc.pinned ? 'Unpin' : 'Pin';
   $('markdown-pin').setAttribute('aria-pressed', String(Boolean(doc.pinned)));
   $('markdown-edit').hidden = Boolean(doc.editing);
@@ -257,17 +586,44 @@ function render() {
   editor.disabled = Boolean(doc.saving);
   if (doc.editing && editor.value !== doc.draft) editor.value = doc.draft;
   $('markdown-preview').hidden = Boolean(doc.editing);
-  if (!doc.editing && doc.renderedVersion !== doc.disk?.version) {
-    renderMarkdown($('markdown-preview'), doc.disk?.content || '');
-    doc.renderedVersion = doc.disk?.version;
+  const preview = $('markdown-preview');
+  // Cache against the shared preview, so changed tabs and parent sessions repaint.
+  const previewKey = JSON.stringify([
+    current.key,
+    doc.path,
+    doc.disk?.version,
+    !doc.disk && doc.loading,
+    !doc.disk && doc.error,
+  ]);
+  if (!doc.editing && preview.dataset.document !== previewKey) {
+    if (doc.disk) renderMarkdown(preview, doc.disk.content);
+    else
+      preview.replaceChildren(
+        node(
+          'p',
+          doc.loading ? 'Loading…' : 'File contents could not be loaded.',
+          'muted',
+        ),
+      );
+    preview.dataset.document = previewKey;
   }
-  // The shared preview element needs repainting when tabs or parent sessions switch.
-  if (
-    !doc.editing &&
-    $('markdown-preview').dataset.path !== `${current.key}:${doc.path}`
-  ) {
-    renderMarkdown($('markdown-preview'), doc.disk?.content || '');
-    $('markdown-preview').dataset.path = `${current.key}:${doc.path}`;
+  const updated = $('markdown-updated');
+  updated.hidden = !doc.updatedAt;
+  if (doc.updatedAt) {
+    const at = new Date(doc.updatedAt);
+    updated.textContent = `Updated ${at.toLocaleTimeString()}`;
+    updated.dateTime = at.toISOString();
+    updated.title = `File changed on disk · ${at.toLocaleString()}`;
+    const updateKey = `${current.key}:${doc.path}:${doc.updatedAt}`;
+    if (updated.dataset.update !== updateKey) {
+      updated.classList.remove('is-updated');
+      if (doc.notifiedUpdatedAt !== doc.updatedAt) {
+        void updated.offsetWidth;
+        updated.classList.add('is-updated');
+        doc.notifiedUpdatedAt = doc.updatedAt;
+      }
+      updated.dataset.update = updateKey;
+    }
   }
   const tasks = progress(doc.disk?.content || '');
   $('markdown-progress').hidden = !tasks.total;
@@ -280,14 +636,14 @@ function render() {
     : doc.loading && !doc.disk
       ? 'Loading…'
       : dirty(doc)
-        ? 'Unsaved changes'
+        ? doc.recovered
+          ? 'Recovered draft · Unsaved changes'
+          : 'Unsaved changes'
         : doc.saved
           ? 'Saved'
           : doc.editing
             ? 'Editing'
-            : doc.disk
-              ? 'Current disk contents'
-              : '';
+            : '';
   $('markdown-disk-status').textContent = doc.diskChanged
     ? 'File changed on disk. Your draft is preserved.'
     : '';
@@ -335,6 +691,8 @@ async function refresh(scope, doc, force = false) {
     }
     const previous = doc.disk;
     doc.disk = result;
+    if (previous && previous.content !== result.content)
+      doc.updatedAt = Date.now();
     if (doc.editing && !dirty(doc)) {
       doc.draft = result.content;
       doc.baseContent = result.content;
@@ -344,6 +702,7 @@ async function refresh(scope, doc, force = false) {
       doc.editing && result.version !== doc.editVersion,
     );
     if (previous?.version !== result.version) doc.saved = false;
+    if (doc.editing) saveMarkdownDraft(scope, doc);
   } catch (cause) {
     if (doc.errorSource !== 'save') {
       doc.error = cause.message || String(cause);
@@ -399,13 +758,24 @@ export function updateMarkdownFiles() {
   if (scope === current) return;
   current = scope;
   // Preview content is shared by tabs; force its refresh after a scope change.
-  $('markdown-preview').dataset.path = '';
+  $('markdown-preview').dataset.document = '';
   render();
   if (scope && !receivedSession) {
     receivedSession = true;
-    if (activeDocument()?.pinned) showPanel();
+    if (activeDocument()?.pinned || dirty(activeDocument())) showPanel();
   }
   if (scope && activeDocument()) void refresh(scope, activeDocument());
+  else if (scope && !$('markdown-panel').hidden) {
+    void discoverFiles(scope).then(() => {
+      if (
+        current === scope &&
+        !$('markdown-panel').hidden &&
+        !activeDocument() &&
+        scope.choices?.length
+      )
+        void openMarkdownFile(scope.choices[0]);
+    });
+  }
 }
 export function initMarkdownFiles(options) {
   api = options.api;
@@ -432,37 +802,20 @@ export function initMarkdownFiles(options) {
   } catch {
     pins = {};
   }
-  $('markdown-launcher').addEventListener('click', () => {
-    updateMarkdownFiles();
-    showPanel();
-    $('markdown-path').focus();
-    void refresh(current, activeDocument());
+  draftStore = createDraftStore(DRAFT_KEY, {
+    validate: validDraft,
+    onError: () => {
+      draftStorageError =
+        'Markdown draft recovery could not be saved. Your changes remain in this window.';
+      $('markdown-storage-status').textContent = draftStorageError;
+    },
   });
-  const positionPanel = side => {
-    $('markdown-panel').dataset.side = side;
-    $('markdown-position').textContent =
-      side === 'left' ? 'Move right' : 'Move left';
-  };
-  let side = 'left';
-  try {
-    if (localStorage.getItem(POSITION_KEY) === 'right') side = 'right';
-  } catch {
-    /* Keep the default position. */
-  }
-  positionPanel(side);
-  $('markdown-position').addEventListener('click', () => {
-    const next = $('markdown-panel').dataset.side === 'left' ? 'right' : 'left';
-    positionPanel(next);
-    try {
-      localStorage.setItem(POSITION_KEY, next);
-    } catch {
-      /* The position still applies to this window. */
-    }
-  });
+  initPlacement();
+  $('markdown-launcher').addEventListener('click', () => void launch());
   $('markdown-close').addEventListener('click', hidePanel);
   $('markdown-path-form').addEventListener('submit', event => {
     event.preventDefault();
-    void openMarkdownFile($('markdown-path').value, {pin: true});
+    void openMarkdownFile($('markdown-path').value);
   });
   $('markdown-pin').addEventListener('click', () => {
     const doc = activeDocument();
@@ -476,14 +829,18 @@ export function initMarkdownFiles(options) {
     const doc = activeDocument();
     if (!doc) return;
     doc.draft = $('markdown-editor').value;
+    doc.recovered = false;
     doc.saved = false;
+    saveMarkdownDraft(current, doc);
     render();
   });
   $('markdown-cancel').addEventListener('click', () => {
     const doc = activeDocument();
     doc.editing = false;
+    doc.recovered = false;
     doc.diskChanged = false;
     doc.error = undefined;
+    saveMarkdownDraft(current, doc);
     render();
     void refresh(current, doc, true);
     $('markdown-edit').focus();
@@ -505,8 +862,10 @@ export function initMarkdownFiles(options) {
         doc.editVersion,
       );
       doc.editing = false;
+      doc.recovered = false;
       doc.diskChanged = false;
       doc.saved = true;
+      saveMarkdownDraft(scope, doc);
     } catch (cause) {
       doc.error = cause.message || String(cause);
       doc.errorSource = 'save';
@@ -524,6 +883,8 @@ export function initMarkdownFiles(options) {
       doc.baseContent = doc.disk.content;
       doc.editVersion = doc.disk.version;
       doc.diskChanged = false;
+      doc.recovered = false;
+      saveMarkdownDraft(scope, doc);
       if (current === scope && activeDocument() === doc) render();
     }
   });
@@ -557,11 +918,19 @@ export function initMarkdownFiles(options) {
     }
   });
   updateMarkdownFiles();
-  if (activeDocument()?.pinned) showPanel();
+  if (activeDocument()?.pinned || dirty(activeDocument())) showPanel();
+  window.addEventListener('unload', () => {
+    for (const scope of scopes.values())
+      for (const doc of scope.documents.values())
+        if (dirty(doc)) saveMarkdownDraft(scope, doc);
+    draftStore.flush();
+  });
   clearInterval(polling);
   polling = setInterval(() => {
     updateMarkdownFiles();
-    if (!$('markdown-panel').hidden && !document.hidden)
-      void refresh(current, activeDocument());
+    if (!$('markdown-panel').hidden && !document.hidden) {
+      for (const doc of current?.documents.values() || [])
+        if (doc.pinned || doc === activeDocument()) void refresh(current, doc);
+    }
   }, 1500);
 }

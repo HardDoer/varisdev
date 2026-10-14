@@ -13,7 +13,11 @@
     <link rel="stylesheet" href="themes.css" />
     <link rel="stylesheet" href="parent-fallback.css" />
     <link rel="stylesheet" href="processing-effects.css" />
+    <link rel="stylesheet" href="agent-controls.css" />
     <link rel="stylesheet" href="markdown-files.css" />
+    <link rel="stylesheet" href="visualizations.css" />
+    <link rel="stylesheet" href="updates.css" />
+    <link rel="stylesheet" href="app-menu.css" />
     <link
       rel="stylesheet"
       href="../../node_modules/@xterm/xterm/css/xterm.css"
@@ -23,43 +27,107 @@
   </head>
   <body>
     <a class="skip-link" href="#factory-title">Skip to parent session</a>
-    <main>
-      <div class="app-controls" aria-label="Application controls">
-        <label class="zoom-control" for="app-zoom">
-          Zoom
-          <select id="app-zoom" name="zoom" aria-label="Window zoom">
-            <option value="0.5">50%</option>
-            <option value="0.67">67%</option>
-            <option value="0.75">75%</option>
-            <option value="0.8">80%</option>
-            <option value="0.9">90%</option>
-            <option value="1" selected>100%</option>
-            <option value="1.1">110%</option>
-            <option value="1.25">125%</option>
-            <option value="1.5">150%</option>
-            <option value="1.75">175%</option>
-            <option value="2">200%</option>
-          </select>
-        </label>
-        <span id="connection" class="connection" role="status"
-          >Starting desktop</span
-        ><button
-          id="motion-toggle"
+    <dialog id="updates-dialog" aria-labelledby="updates-title">
+      <div class="updates-heading">
+        <h2 id="updates-title">VarisDev updates</h2>
+        <button
+          id="updates-close"
           class="quiet-button"
           type="button"
-          aria-pressed="true"
+          aria-label="Close updates"
         >
-          Motion on</button
-        ><button id="new-session" class="primary-button" type="button">
-          Open folder
+          Close
         </button>
       </div>
+      <p id="updates-message" role="status"></p>
+      <p id="updates-error" role="alert" hidden></p>
+      <div class="updates-actions">
+        <button id="updates-check" class="quiet-button" type="button">
+          Check for updates
+        </button>
+        <button id="updates-action" class="primary-button" type="button" hidden>
+          Update VarisDev
+        </button>
+      </div>
+    </dialog>
+    <main>
       <section
         id="welcome"
         class="welcome"
         hidden
         aria-labelledby="welcome-title"
       >
+        <div id="welcome-actions" class="app-actions-slot">
+          <div
+            id="application-controls"
+            class="app-controls"
+            aria-label="Application controls"
+          >
+            <button
+              id="updates-button"
+              class="quiet-button"
+              type="button"
+              hidden
+              aria-haspopup="dialog"
+              aria-controls="updates-dialog"
+            >
+              Updates available
+            </button>
+            <button
+              id="app-menu-button"
+              class="quiet-button"
+              type="button"
+              aria-expanded="false"
+              aria-controls="app-menu-panel"
+              aria-haspopup="dialog"
+            >
+              Menu
+            </button>
+            <div
+              id="app-menu-panel"
+              popover="auto"
+              role="dialog"
+              aria-labelledby="app-menu-button"
+            >
+              <label class="zoom-control" for="app-zoom">
+                Zoom
+                <select id="app-zoom" name="zoom" aria-label="Window zoom">
+                  <option value="0.5">50%</option>
+                  <option value="0.67">67%</option>
+                  <option value="0.75">75%</option>
+                  <option value="0.8">80%</option>
+                  <option value="0.9">90%</option>
+                  <option value="1" selected>100%</option>
+                  <option value="1.1">110%</option>
+                  <option value="1.25">125%</option>
+                  <option value="1.5">150%</option>
+                  <option value="1.75">175%</option>
+                  <option value="2">200%</option>
+                </select>
+              </label>
+              <button
+                id="motion-toggle"
+                class="quiet-button"
+                type="button"
+                aria-pressed="true"
+              >
+                Motion on
+              </button>
+              <button
+                id="open-session-settings"
+                aria-label="Model and settings"
+                title="Model and settings"
+                class="quiet-button"
+                type="button"
+              >
+                Model &amp; settings
+              </button>
+              <button id="new-session" class="primary-button" type="button">
+                Open folder
+              </button>
+            </div>
+          </div>
+        </div>
         <div class="welcome-machine" aria-hidden="true">
           <span class="robot-glyph parent-session"><i></i></span
           ><span class="orbit orbit-one"></span
@@ -92,6 +160,14 @@
                 <h2 id="factory-title">Parent session</h2>
                 <p id="factory-path" class="mono muted"></p>
               </div>
+              <button
+                id="open-context"
+                class="quiet-button"
+                type="button"
+                aria-controls="panel-context"
+              >
+                Context files
+              </button>
               <div class="factory-state">
                 <span id="parent-status" class="status-badge"></span>
                 <div class="model-settings">
@@ -105,14 +181,7 @@
               ><span><strong id="metric-queued">0</strong> queued</span
               ><span><strong id="metric-completed">0</strong> completed</span
               ><span><strong id="metric-attention">0</strong> failed</span
-              ><button
-                id="open-context"
-                class="quiet-button context-meter"
-                type="button"
-                aria-controls="panel-context"
-              >
-                Context files <span id="context-meter" hidden></span>
-              </button>
+              ><span id="context-meter" class="context-meter" hidden></span>
             </div>
             <div id="scene" class="scene">
               <div
@@ -163,7 +232,21 @@
                   Active agents
                   <span id="active-count" class="count-tag">0</span>
                 </h2>
+                <button
+                  id="cancel-all-agents"
+                  class="quiet-button"
+                  type="button"
+                  disabled
+                >
+                  Cancel all agents
+                </button>
               </div>
+              <p
+                id="cancel-all-agents-error"
+                class="control-error"
+                role="alert"
+                hidden
+              ></p>
               <div id="active-workers" class="worker-grid"></div>
               <p id="no-workers" class="empty-state">No active agents.</p>
             </section>
@@ -194,29 +277,34 @@
         <aside
           id="inspector"
           class="inspector panel"
-          aria-labelledby="inspector-title"
+          aria-labelledby="conversation-kind-label inspector-title"
         >
           <div class="inspector-heading">
-            <div>
-              <h2 id="inspector-title">Inspector</h2>
-              <button
-                id="back-to-parent"
-                class="quiet-button"
-                type="button"
-                hidden
-              >
-                Back to parent session
-              </button>
-              <button
-                id="open-session-settings"
-                class="quiet-button"
-                type="button"
-              >
-                Model &amp; settings
-              </button>
-              <span id="inspector-status" class="status-badge"></span>
+            <div class="inspector-title-row">
+              <div class="inspector-unit-controls">
+                <h2 id="inspector-title">Inspector</h2>
+              </div>
+              <div id="inspector-actions" class="app-actions-slot"></div>
             </div>
             <div class="inspector-activity-row">
+              <span class="conversation-kind">
+                <svg
+                  class="conversation-kind-icon"
+                  viewBox="0 0 16 16"
+                  aria-hidden="true"
+                >
+                  <g class="kind-parent-icon">
+                    <path d="M8 5v4M3 11V9h10v2" />
+                    <circle cx="8" cy="3" r="2" />
+                    <circle cx="3" cy="13" r="2" />
+                    <circle cx="13" cy="13" r="2" />
+                  </g>
+                  <g class="kind-agent-icon">
+                    <path d="M3 2v7a3 3 0 0 0 3 3h7M10 8l4 4-4 4" />
+                  </g>
+                </svg>
+                <span id="conversation-kind-label">Parent session</span>
+              </span>
               <p id="inspector-activity"></p>
               <span
                 id="processing-state"
@@ -225,6 +313,19 @@
                 hidden
                 ><i></i><span id="processing-state-text"></span
               ></span>
+              <div class="inspector-session-actions">
+                <button
+                  id="back-to-parent"
+                  aria-label="Back to parent session"
+                  title="Back to parent session"
+                  class="quiet-button"
+                  type="button"
+                  hidden
+                >
+                  Back
+                </button>
+                <span id="inspector-status" class="status-badge"></span>
+              </div>
             </div>
           </div>
           <div
@@ -581,8 +682,35 @@
               </p>
             </section>
           </div>
-          <p id="attached-note" class="attached-note" hidden>Connected pidev</p>
+          <p id="attached-note" class="attached-note" hidden>
+            Connected parent session
+          </p>
           <div id="composer-slot">
+            <section
+              id="agent-task-dock"
+              class="agent-task-dock"
+              hidden
+              aria-labelledby="agent-task-title"
+            >
+              <div class="agent-task-heading">
+                <h3 id="agent-task-title">Agent task</h3>
+                <button
+                  id="cancel-agent"
+                  class="quiet-button"
+                  type="button"
+                  disabled
+                >
+                  Cancel agent
+                </button>
+              </div>
+              <p
+                id="cancel-agent-error"
+                class="control-error"
+                role="alert"
+                hidden
+              ></p>
+              <p id="agent-task-text"></p>
+            </section>
             <section
               id="steering-messages"
               class="steering-messages"
@@ -630,6 +758,33 @@
                     Expand editor
                   </button>
                 </div>
+                <div
+                  class="composer-tabs"
+                  role="group"
+                  aria-label="Prompt and terminal"
+                >
+                  <button
+                    id="prompt-tab"
+                    class="composer-tab selected"
+                    type="button"
+                  >
+                    Prompt
+                  </button>
+                  <button
+                    id="terminal-tab"
+                    class="composer-tab"
+                    type="button"
+                    title="Open system terminal in this project"
+                  >
+                    Terminal <span aria-hidden="true">↗</span>
+                  </button>
+                </div>
+                <p
+                  id="terminal-error"
+                  class="form-error"
+                  role="alert"
+                  hidden
+                ></p>
                 <div class="composer-resize-frame">
                   <textarea
                     id="parent-prompt"
@@ -796,10 +951,17 @@
       Markdown files
     </button>
     <section id="markdown-panel" aria-labelledby="markdown-title" hidden>
-      <header class="markdown-heading">
+      <header
+        id="markdown-heading"
+        class="markdown-heading"
+        tabindex="0"
+        aria-label="Move Markdown panel with arrow keys"
+      >
         <h2 id="markdown-title">Markdown files</h2>
         <div class="markdown-heading-actions">
-          <button id="markdown-position" type="button">Move right</button>
+          <button id="markdown-lock" type="button" aria-pressed="false">
+            Lock
+          </button>
           <button
             id="markdown-close"
             type="button"
@@ -815,15 +977,15 @@
         <input
           id="markdown-path"
           type="text"
-          placeholder="Path to a .md file"
+          placeholder="Choose a file or enter its path"
+          list="markdown-files"
           autocomplete="off"
         />
-        <button id="markdown-open-path" type="submit">Open &amp; pin</button>
+        <datalist id="markdown-files"></datalist>
+        <button id="markdown-open-path" type="submit">Open</button>
       </form>
       <div id="markdown-tabs" role="tablist" aria-label="Markdown files"></div>
-      <p id="markdown-empty" class="muted">
-        Open a Markdown file to view or edit it.
-      </p>
+      <p id="markdown-empty" class="muted">Choose a file or enter its path.</p>
       <div
         id="markdown-document"
         role="tabpanel"
@@ -840,6 +1002,12 @@
           <button id="markdown-cancel" type="button" hidden>Cancel</button>
           <button id="markdown-reload" type="button" hidden>Reload disk</button>
           <span id="markdown-status" role="status" aria-live="polite"></span>
+          <time
+            id="markdown-updated"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></time>
         </div>
         <div id="markdown-progress" hidden>
           <progress
@@ -861,6 +1029,30 @@
         <textarea id="markdown-editor" spellcheck="false" hidden></textarea>
       </div>
       <p id="markdown-storage-status" class="form-error" role="status"></p>
+      <button
+        id="markdown-resize"
+        type="button"
+        aria-label="Resize Markdown panel with arrow keys"
+        title="Resize Markdown panel"
+      ></button>
     </section>
+    <dialog
+      id="conversation-image-dialog"
+      aria-labelledby="conversation-image-title"
+      aria-describedby="conversation-image-metadata"
+    >
+      <div class="conversation-image-heading">
+        <h2 id="conversation-image-title">VarisDev image</h2>
+        <button id="conversation-image-close" type="button" autofocus>
+          Close
+        </button>
+      </div>
+      <p id="conversation-image-metadata"></p>
+      <p role="status" aria-live="polite"></p>
+      <button id="conversation-image-retry" type="button" hidden>
+        Retry image
+      </button>
+      <img alt="VarisDev image" decoding="async" hidden />
+    </dialog>
   </body>
 </html>

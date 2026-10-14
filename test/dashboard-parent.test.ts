@@ -304,7 +304,7 @@ void test(
         message => message.status === 'completed' && message.finishedAt,
       ),
     );
-    assert.equal(tools[0].input?.split('\n')[0], 'parent.txt');
+    assert.equal(JSON.parse(tools[0].input!).path, 'parent.txt');
     assert.match(tools[0].text, /Successfully wrote/);
     assert.match(tools[1].input ?? '', /Writer worker/);
     assert.match(tools[2].text, /Completed worker result/);
@@ -619,6 +619,100 @@ void test(
           agent => agent.name === 'Held worker' && agent.status === 'running',
         ),
     );
+    const heldAgent = parent.state
+      .snapshot()
+      .agents.find(agent => agent.name === 'Held worker')!;
+    steeringResponse = undefined;
+    const parentRun = parent.prompt(
+      'steer-held-parent: stop parent while agents continue',
+    );
+    await waitFor(
+      () => !!steeringResponse && !steeringResponse.destroyed,
+      'parent working alongside agent',
+    );
+    await parent.prompt('Recover steering while agent continues.');
+    assert.deepEqual(await parent.abort(), {
+      steering: ['Recover steering while agent continues.'],
+      followUp: [],
+    });
+    await parentRun;
+    assert.equal(
+      parent.state.snapshot().agents.find(agent => agent.id === heldAgent.id)!
+        .status,
+      'running',
+    );
+    assert.equal(heldDisconnected, false);
+    await assert.rejects(parent.cancelAgent('missing-agent'), /Unknown agent/);
+    await parent.cancelAgent(heldAgent.id);
+    await waitFor(
+      () =>
+        parent.state.snapshot().agents.find(agent => agent.id === heldAgent.id)!
+          .status === 'cancelled',
+      'explicit cancellation finishes running agent',
+    );
+    heldDisconnected = false;
+    heldResponse = undefined;
+    for (let index = 0; index < 7; index++) {
+      await parent.prompt(
+        'start-held-worker: create background worker ' + index,
+      );
+    }
+    await waitFor(
+      () =>
+        parent.state
+          .snapshot()
+          .agents.filter(
+            agent => agent.name === 'Held worker' && agent.status === 'running',
+          ).length === 6,
+      'six agents running',
+    );
+    assert.equal(
+      parent.state.snapshot().agents.filter(agent => agent.status === 'queued')
+        .length,
+      1,
+    );
+    steeringResponse = undefined;
+    const queuedParentRun = parent.prompt(
+      'steer-held-parent: stop with queued and running agents',
+    );
+    await waitFor(() => !!steeringResponse, 'parent alongside queued agents');
+    await parent.abort();
+    await queuedParentRun;
+    assert.equal(
+      parent.state.snapshot().agents.filter(agent => agent.status === 'running')
+        .length,
+      6,
+    );
+    assert.equal(
+      parent.state.snapshot().agents.filter(agent => agent.status === 'queued')
+        .length,
+      1,
+    );
+    steeringResponse = undefined;
+    const independentParentRun = parent.prompt(
+      'steer-held-parent: manual agent cancellation preserves parent',
+    );
+    await waitFor(
+      () => !!steeringResponse,
+      'parent working during manual cancellation',
+    );
+    await parent.cancelAgent('all');
+    await waitFor(
+      () =>
+        parent.state
+          .snapshot()
+          .agents.filter(agent => agent.name === 'Held worker')
+          .every(agent => agent.status === 'cancelled'),
+      'cancel all queued and running agents',
+    );
+    assert.equal(parent.state.snapshot().session.status, 'running');
+    assert.equal(steeringResponse!.destroyed, false);
+    await parent.abort();
+    await independentParentRun;
+    heldDisconnected = false;
+    heldResponse = undefined;
+    await parent.prompt('start-held-worker: shutdown still cancels agent');
+    await waitFor(() => !!heldResponse, 'shutdown worker reaches provider');
     const closing = parent.close();
     assert.equal(parent.close(), closing);
     await closing;

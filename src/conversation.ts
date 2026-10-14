@@ -1,4 +1,17 @@
-export interface ConversationMessage {
+import {conversationImageRegistry} from './conversation-images.ts';
+import {
+  MAX_VISUALIZATION_BLOCKS,
+  MAX_VISUALIZATION_MARKDOWN,
+  type ConversationVisualizations,
+  type DisplayVisualization,
+} from './visualizations.ts';
+
+export type {
+  ConversationImage,
+  DisplayVisualization,
+} from './visualizations.ts';
+
+export interface ConversationMessage extends ConversationVisualizations {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   text: string;
@@ -149,6 +162,154 @@ export function toolInput(args: unknown): string {
   }
 }
 
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** Validate plugin metadata and register image references without decoding images. */
+export function conversationVisualizations(
+  message: {content?: unknown; details?: unknown},
+  details: unknown = message.details,
+  cwd = process.cwd(),
+): ConversationVisualizations {
+  const visualizations: DisplayVisualization[] = [];
+  const errors: string[] = [];
+  const error = (text: string) => {
+    if (errors.length < MAX_VISUALIZATION_BLOCKS)
+      errors.push(text.slice(0, 200));
+  };
+  const room = () => {
+    if (visualizations.length < MAX_VISUALIZATION_BLOCKS) return true;
+    error('Only the first 8 visualization blocks are displayed.');
+    return false;
+  };
+  const label = (value: unknown) =>
+    typeof value === 'string' ? publicText(value).slice(0, 200) : undefined;
+  const image = (block: Record<string, unknown>) => {
+    if (!room()) return;
+    if (typeof block.path !== 'string') {
+      error('Image visualization requires a path.');
+      return;
+    }
+    try {
+      const legacy = Array.isArray(data.images)
+        ? record(
+            data.images
+              .slice(0, MAX_VISUALIZATION_BLOCKS)
+              .find(item => record(item).path === block.path),
+          )
+        : {};
+      visualizations.push(
+        conversationImageRegistry.registerPath(block.path, cwd, {
+          label: label(block.label),
+          width:
+            typeof block.width === 'number'
+              ? block.width
+              : typeof legacy.width === 'number'
+                ? legacy.width
+                : undefined,
+          height:
+            typeof block.height === 'number'
+              ? block.height
+              : typeof legacy.height === 'number'
+                ? legacy.height
+                : undefined,
+        }),
+      );
+    } catch (failure) {
+      error(
+        failure instanceof Error
+          ? failure.message
+          : 'Image visualization is unavailable.',
+      );
+    }
+  };
+  const data = record(details);
+  if ('varisdev' in data) {
+    const metadata = record(data.varisdev);
+    if (metadata.version !== 1)
+      error('Unsupported VarisDev visualization version.');
+    else if (!Array.isArray(metadata.blocks))
+      error('VarisDev visualization blocks must be an array.');
+    else {
+      if (metadata.blocks.length > MAX_VISUALIZATION_BLOCKS)
+        error('Only the first 8 visualization blocks are displayed.');
+      for (const item of metadata.blocks.slice(0, MAX_VISUALIZATION_BLOCKS)) {
+        const block = record(item);
+        if (block.type === 'image') image(block);
+        else if (block.type === 'markdown') {
+          if (typeof block.text !== 'string')
+            error('Markdown visualization requires text.');
+          else if (room()) {
+            const text = publicText(block.text);
+            if (text.length > MAX_VISUALIZATION_MARKDOWN)
+              error(
+                'Markdown visualization was truncated to 16000 characters.',
+              );
+            visualizations.push({
+              type: 'markdown',
+              text: text.slice(0, MAX_VISUALIZATION_MARKDOWN),
+            });
+          }
+        } else if (block.type === 'progress') {
+          if (
+            typeof block.value !== 'number' ||
+            !Number.isFinite(block.value) ||
+            (block.total !== undefined &&
+              (typeof block.total !== 'number' ||
+                !Number.isFinite(block.total) ||
+                block.total <= 0))
+          )
+            error(
+              'Progress visualization requires a finite value and a positive finite total when supplied.',
+            );
+          else if (room())
+            visualizations.push({
+              type: 'progress',
+              value: block.value,
+              total: block.total as number | undefined,
+              label: label(block.label),
+            });
+        } else error('Unsupported VarisDev visualization block type.');
+      }
+    }
+  } else if (Array.isArray(data.images)) {
+    if (data.images.length > MAX_VISUALIZATION_BLOCKS)
+      error('Only the first 8 visualization blocks are displayed.');
+    for (const item of data.images.slice(0, MAX_VISUALIZATION_BLOCKS))
+      image(record(item));
+  }
+  if (Array.isArray(message.content)) {
+    // Scan a bounded number of parts; text projection remains independent.
+    for (const item of message.content.slice(0, 100)) {
+      const part = record(item);
+      if (part.type !== 'image') continue;
+      if (!room()) break;
+      try {
+        if (typeof part.data !== 'string' || typeof part.mimeType !== 'string')
+          throw new Error(
+            'Image attachment requires base64 data and a media type.',
+          );
+        visualizations.push(
+          conversationImageRegistry.registerInline(part.data, part.mimeType),
+        );
+      } catch (failure) {
+        error(
+          failure instanceof Error
+            ? failure.message
+            : 'Image attachment is unavailable.',
+        );
+      }
+    }
+  }
+  return {
+    visualizations: visualizations.length ? visualizations : undefined,
+    visualizationErrors: errors.length ? errors : undefined,
+  };
+}
+
 export function resultStatus(
   isError: boolean,
   text: string,
@@ -166,7 +327,13 @@ export function projectMessage(
 ): ConversationMessage {
   return {
     ...message,
-    text: preview(message.text),
+    text: preview(publicText(message.text)),
+    visualizations: message.visualizations
+      ?.slice(0, MAX_VISUALIZATION_BLOCKS)
+      .map(block => ({...block})),
+    visualizationErrors: message.visualizationErrors
+      ?.slice(0, MAX_VISUALIZATION_BLOCKS)
+      .map(error => publicText(error).slice(0, 200)),
     input:
       message.input === undefined ? undefined : preview(message.input, 8000),
     error:
@@ -188,7 +355,13 @@ function messageSize(message: ConversationMessage): number {
   return (
     message.text.length +
     (message.input?.length ?? 0) +
-    (message.error?.length ?? 0)
+    (message.error?.length ?? 0) +
+    (message.visualizations?.reduce(
+      (size, block) =>
+        size + (block.type === 'markdown' ? block.text.length : 400),
+      0,
+    ) ?? 0) +
+    (message.visualizationErrors?.join('').length ?? 0)
   );
 }
 
@@ -227,7 +400,7 @@ export class ConversationState {
 
   get(id: string): ConversationMessage | undefined {
     const message = this.messages.find(item => item.id === id);
-    return message ? {...message} : undefined;
+    return message ? projectMessage(message) : undefined;
   }
 
   settle(status: 'cancelled' | 'failed' = 'cancelled', error?: string): void {
@@ -244,7 +417,7 @@ export class ConversationState {
 
   snapshot(): ConversationSnapshot {
     return {
-      conversation: this.messages.map(message => ({...message})),
+      conversation: this.messages.map(projectMessage),
       conversationTruncated: this.truncated,
     };
   }
