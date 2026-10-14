@@ -1,51 +1,30 @@
 # VarisDev
 
-VarisDev is built on top of [Pi (pi.dev)](https://pi.dev), adding a desktop GUI and visualization layer.
+VarisDev is built on top of the open-source coding harness [Pi](https://pi.dev), adding a desktop GUI, some tools and a data visualization layer. Its designed to be as minimal as possible and does not pollute your prompts with anything or enforce any particular workflows. Its functions should be very familiar to anyone who has used Pi.
 
-Pi provides the coding agent runtime. Pi is a very cool project, and the foundation that makes this possible—check out [its repository](https://github.com/earendil-works/pi).
-
-## Vision
-
-A minimal visual layer over Pi that preserves its capabilities and keeps your prompts intact. The idea is to make AI engineering feel like playing a game from the early 2000s.
+Pi is a very cool project and VarisDev would not have been possible without it. Check it out [here](https://github.com/earendil-works/pi).
 
 ## Install
 
-Requires [Node.js](https://nodejs.org/) 24.15+ on the 24.x line or 26+, Git, and npm 12.
-
-Upgrade npm if needed:
-
-```sh
-npm install -g npm@12
-```
-
-npm 12 fixes a global Git installation bug in npm 11 that can cause `Cannot find module 'npm/package.json'`. The options below enable Git installation and VarisDev's automatic setup.
-
-```sh
-npm install -g --allow-git=root --allow-scripts=github:HardDoer/varisdev git+https://github.com/HardDoer/varisdev.git
-varisdev
-```
-
-## Use
-
-- **Menu → Accounts**: connect a provider or sign out. Existing Pi credentials work.
-- **Open folder**: choose a project.
-- **Menu → Model & settings**: select a model and thinking level.
+Requires [Node.js](https://nodejs.org/) 24.15+ and npm 12.
 
 ## Features
 
-- Parent sessions and background agents with a live factory view.
-- Conversations, tool activity, file changes, and token usage.
+- Parent sessions and background agents with a cool 3D-view reminiscent of early 2000s tycoon games.
+- Robots drinking coffee!
+- Detailed visualizations regarding whatever the agents are doing and token usage.
 - Context files, Markdown editing, and image previews.
-- Pi extensions, skills, prompt templates, and themes.
+- Supports all plugins that Pi has.
+- Has its own theming system that you can extend as you wish.
 - Additional tools for browsing, structured data, images, and audio.
 
 ## Updates
 
 Use **Updates → Check for updates** in the app, or run `varisdev update`.
 
-## Pi runtime
+## Commands
 
-For the underlying runtime's commands, extensions, and configuration, see [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#commands).
+Since VarisDev uses Pi under the hood many of the things you see in VarisDev work exactly like in Pidev. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#commands).
 
 ## VarisDev documentation
 
