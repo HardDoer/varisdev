@@ -15,6 +15,12 @@ import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {refreshMacLauncher} from './mac-launcher.ts';
+import {
+  downloadRelease,
+  readRelease,
+  releaseURL,
+  type Release,
+} from './distribution.mjs';
 
 const enginePackage = '@earendil-works/pi-coding-agent';
 const sourceInputs = [
@@ -56,6 +62,8 @@ export interface RuntimeHooks {
   ) => Promise<string | void>;
   smokeImport?: (root: string) => Promise<void>;
   now?: () => Date;
+  readRelease?: typeof readRelease;
+  downloadRelease?: typeof downloadRelease;
 }
 
 export interface RuntimeManagerOptions {
@@ -80,6 +88,7 @@ interface ActiveRuntime {
 interface AppRelease {
   revision: string;
   source: string;
+  archive?: Release;
 }
 
 export function defaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -237,7 +246,8 @@ function applicationSource(root: string): string | undefined {
     const info = JSON.parse(
       readFileSync(join(root, 'build-info.json'), 'utf8'),
     ) as {source?: string};
-    return info.source && applicationSources.includes(info.source)
+    return info.source &&
+      (applicationSources.includes(info.source) || info.source === releaseURL)
       ? info.source
       : undefined;
   } catch {
@@ -402,7 +412,7 @@ export class RuntimeManager {
               : 'idle',
         currentVersion,
         currentRevision,
-        latestVersion: undefined,
+        latestVersion: release.archive?.version,
         latestRevision: release.revision,
         checkedAt: this.now().toISOString(),
       });
@@ -437,7 +447,7 @@ export class RuntimeManager {
       this.publish({
         currentVersion,
         currentRevision,
-        latestVersion: undefined,
+        latestVersion: release.archive?.version,
         latestRevision: release.revision,
         checkedAt: this.now().toISOString(),
       });
@@ -466,26 +476,38 @@ export class RuntimeManager {
         timeoutMs: this.options.commandTimeoutMs ?? 10 * 60_000,
       };
       const source = join(stage, 'source');
-      await run('git', ['init', source], {...commandOptions, cwd: stage});
-      await run(
-        'git',
-        ['fetch', '--depth=1', release.source, release.revision],
-        {...commandOptions, cwd: source},
-      );
-      await run('git', ['checkout', '--detach', 'FETCH_HEAD'], {
-        ...commandOptions,
-        cwd: source,
-      });
-      const version = applicationVersion(source);
       const npm = join(
         dirname(require.resolve('npm/package.json')),
         'bin/npm-cli.js',
       );
-      await run(executable, [npm, 'pack', '--pack-destination', stage], {
-        ...commandOptions,
-        cwd: source,
-      });
-      const archive = join(stage, `varisdev-${version}.tgz`);
+      let version: string;
+      let archive: string;
+      if (release.archive) {
+        version = release.archive.version;
+        archive = join(stage, `varisdev-${version}.tgz`);
+        await (this.options.hooks?.downloadRelease || downloadRelease)(
+          release.archive,
+          archive,
+          commandOptions.timeoutMs,
+        );
+      } else {
+        await run('git', ['init', source], {...commandOptions, cwd: stage});
+        await run(
+          'git',
+          ['fetch', '--depth=1', release.source, release.revision],
+          {...commandOptions, cwd: source},
+        );
+        await run('git', ['checkout', '--detach', 'FETCH_HEAD'], {
+          ...commandOptions,
+          cwd: source,
+        });
+        version = applicationVersion(source);
+        await run(executable, [npm, 'pack', '--pack-destination', stage], {
+          ...commandOptions,
+          cwd: source,
+        });
+        archive = join(stage, `varisdev-${version}.tgz`);
+      }
       await run(
         executable,
         [
@@ -498,6 +520,7 @@ export class RuntimeManager {
           '--legacy-peer-deps',
           '--no-audit',
           '--no-fund',
+          ...(release.archive ? ['--ignore-scripts'] : []),
           archive,
         ],
         {...commandOptions, cwd: stage},
@@ -507,6 +530,16 @@ export class RuntimeManager {
         process.platform === 'win32' ? 'node_modules' : 'lib/node_modules',
         'varisdev',
       );
+      if (release.archive) {
+        if (applicationRevision(root) !== release.revision)
+          throw new Error(
+            'The prepared application does not match the release manifest.',
+          );
+        await run(executable, [join(root, 'scripts/install-desktop.mjs')], {
+          ...commandOptions,
+          cwd: root,
+        });
+      }
       if (applicationVersion(root) !== version)
         throw new Error(
           'The prepared VarisDev application has an unexpected version.',
@@ -589,7 +622,14 @@ export class RuntimeManager {
   }
 
   private async latest(): Promise<AppRelease> {
-    // Archive installs may have no Git metadata. Public HTTPS needs no SSH setup.
+    if (applicationSource(await this.currentRoot()) === releaseURL) {
+      const archive = await (this.options.hooks?.readRelease || readRelease)(
+        releaseURL,
+        this.options.requestTimeoutMs ?? 15000,
+      );
+      return {revision: archive.revision, source: releaseURL, archive};
+    }
+    // Git installations retain their original update source.
     const preferred =
       applicationSource(await this.currentRoot()) || applicationSources[1];
     const sources = [

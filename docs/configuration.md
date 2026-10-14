@@ -34,4 +34,4 @@ Finder uses the executable search path and agent directory recorded when the lau
 
 ## CLI
 
-`varisdev --help` lists VarisDev commands. `varisdev run` exposes Pi's terminal automation options. The GUI and `varisdev update` both update the full application and its bundled dependencies. Updates use Git access through SSH or HTTPS and preserve the working installation if preparation fails.
+`varisdev --help` lists VarisDev commands. `varisdev run` exposes Pi's terminal automation options. The GUI and `varisdev update` both update the full application and its bundled dependencies. Website installations download verified application packages from joonas.ninja; existing Git installations use their Git source. Updates preserve the working installation if preparation fails. See [installation and release publishing](installation.md).

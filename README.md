@@ -6,7 +6,29 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 
 ## Install
 
-Requires [Node.js](https://nodejs.org/) 24.15+ and npm 12.
+**macOS / Linux**
+
+```sh
+curl -fsSL https://joonas.ninja/varisdev/install.sh | sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://joonas.ninja/varisdev/install.ps1 | iex
+```
+
+**Windows (Command Prompt)**
+
+```cmd
+curl -fsSLo install.cmd https://joonas.ninja/varisdev/install.cmd && install.cmd
+```
+
+Requires [Node.js](https://nodejs.org/) 24+.
+
+Open a new terminal and run `varisdev`. On macOS, `varisdev app install` adds the app to Applications.
+
+See [installation options and releases](docs/installation.md).
 
 ## Features
 
@@ -15,7 +37,7 @@ Requires [Node.js](https://nodejs.org/) 24.15+ and npm 12.
 - Robots drinking coffee!
 - Detailed visualizations regarding whatever the agents are doing and token usage.
 - Context files, Markdown editing, and image previews.
-- Supports all plugins that Pi has.
+- Supports all plugins that Pi supports. Though because the visualization is quite different some plugins that do UI-stuff probably do not work that well. You have been warned!
 - Has its own theming system that you can extend as you wish.
 - Additional tools for browsing, structured data, images, and audio.
 
