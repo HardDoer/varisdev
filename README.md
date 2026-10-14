@@ -11,6 +11,7 @@ Requires [Node.js](https://nodejs.org/) 24.15+ and npm 12.
 ## Features
 
 - Parent sessions and background agents with a cool 3D-view reminiscent of early 2000s tycoon games.
+- Makes you look like you are not working when in fact you are!
 - Robots drinking coffee!
 - Detailed visualizations regarding whatever the agents are doing and token usage.
 - Context files, Markdown editing, and image previews.
