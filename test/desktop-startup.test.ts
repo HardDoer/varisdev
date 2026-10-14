@@ -118,6 +118,7 @@ void test(
     });
     source.appendModelChange('startup-test', 'model');
     source.appendSessionInfo('Resumed GUI conversation');
+    source.appendCustomEntry('startup-marker', {from: 'terminal'});
     const sessionFile = join(directory, 'session.jsonl');
     await Promise.all([
       mkdir(cwd, {recursive: true}),
@@ -132,6 +133,7 @@ void test(
     await writeFile(
       join(agentDir, 'settings.json'),
       JSON.stringify({
+        packages: [packageRoot],
         defaultProvider: 'startup-test',
         defaultModel: 'model',
         quietStartup: true,
@@ -171,10 +173,7 @@ export default function(pi) {
   const commands = [];
   let timer;
   pi.on('session_start', (_event, ctx) => {
-    if (ctx.mode === 'tui') {
-      pi.appendEntry('startup-marker', {from: 'terminal'});
-      return;
-    }
+    if (ctx.mode === 'tui') return;
     const {app, BrowserWindow} = require('electron');
     writeFileSync(${JSON.stringify(join(directory, 'desktop.pid'))}, String(process.pid));
     timer = setInterval(async () => {
@@ -217,8 +216,6 @@ export default function(pi) {
         'high',
         '--extension',
         extension,
-        '--extension',
-        join(packageRoot, 'extensions/varisdev.ts'),
         '/startup-probe first',
         '/startup-probe second',
       ],
@@ -306,6 +303,7 @@ export default function(pi) {
         break;
       await delay(100);
     }
+    assert.doesNotMatch(output, /Host-provided extension packages/);
     assert.ok(result, `No desktop report. CLI output:\n${output}`);
     assert.ifError(result.error);
     desktopPid = result.pid;

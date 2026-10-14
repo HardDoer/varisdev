@@ -9,8 +9,9 @@ process.stdin.setRawMode = () => process.stdin;
 process.stdout.columns = 120;
 process.stdout.rows = 35;
 await import(
-  new URL(
-    './bundle/cli.js',
-    import.meta.resolve('@earendil-works/pi-coding-agent'),
-  ).href
+  process.env.PI_TEST_CLI ??
+    new URL(
+      './bundle/cli.js',
+      import.meta.resolve('@earendil-works/pi-coding-agent'),
+    ).href
 );

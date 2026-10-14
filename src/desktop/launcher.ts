@@ -229,7 +229,7 @@ async function openFactory(state: DashboardState): Promise<FactoryWindow> {
   const child = spawn(
     require('electron') as string,
     [
-      join(root, 'build/desktop/src/desktop/main.js'),
+      join(root, 'desktop/build/src/desktop/main.js'),
       `--pidev-cwd=${state.snapshot().session.cwd}`,
     ],
     {

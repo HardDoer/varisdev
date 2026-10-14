@@ -68,7 +68,7 @@ export async function launchDesktop(
     child = spawn(
       require('electron') as string,
       [
-        join(root, 'build/desktop/src/desktop/main.js'),
+        join(root, 'desktop/build/src/desktop/main.js'),
         '--pidev-startup',
         `--pidev-cwd=${startup.cwd}`,
       ],

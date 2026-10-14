@@ -40,7 +40,7 @@ function checkNotRunning() {
 function install() {
   const electron = require('electron');
   const source = join(dirname(electron), '../..');
-  const main = join(root, 'build/desktop/src/desktop/main.js');
+  const main = join(root, 'desktop/build/src/desktop/main.js');
   if (!existsSync(main)) throw new Error('Run npm run desktop:build first.');
   if (existsSync(destination)) {
     const marker = join(destination, 'Contents/Resources/app/launch.json');

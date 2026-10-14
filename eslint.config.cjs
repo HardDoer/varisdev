@@ -4,6 +4,7 @@ module.exports = [
   {
     ignores: [
       'build/',
+      'desktop/build/',
       'node_modules/',
       '.pi/',
       'generated-images/',

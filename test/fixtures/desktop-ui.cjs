@@ -323,6 +323,8 @@ async function main() {
   await app.whenReady();
   window = new BrowserWindow({
     show: false,
+    // Exercise the requested viewport on laptops with smaller displays too.
+    enableLargerThanScreen: true,
     width: 1600,
     height: 1000,
     webPreferences: {

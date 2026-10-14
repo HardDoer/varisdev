@@ -31,7 +31,7 @@ Then start `pi` normally from any project folder. VarisDev opens automatically, 
 
 The GUI starts with your current conversation selected and ready to use. **Open folder** adds another project or conversation using the native folder picker.
 
-Pi installs the package and its runtime dependencies in its managed Git directory. VarisDev builds and opens Electron from that installation, with your project folder as the working directory. The Pi SDK packages and `typebox` are runtime dependencies because Electron runs the session runtime in its own process. No separate clone or manual npm command is needed.
+Pi installs the package and its runtime dependencies in its managed Git directory. VarisDev builds and opens Electron from that installation, with your project folder as the working directory. The extension declares Pi's host modules as peers. Installation also installs a separate Pi SDK in `desktop/node_modules` for Electron, and the desktop compiles into `desktop/build`. No separate clone or manual npm command is needed.
 
 On macOS, you can also install an app launcher from this repository:
 
@@ -75,7 +75,7 @@ Electron runs the desktop window and the session runtime; graphics are loaded fr
 
 ### App updates and environment
 
-For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically.
+For the GitHub installation, run `pi update` and restart Pi. The next interactive startup builds the updated desktop automatically. `pi list` should show `git:git@github.com:varisware/pidev-plugins` as the package source. A source pointing to a development folder makes Pi load that folder and is not updated from GitHub.
 
 The optional macOS launcher below is for a development checkout. The macOS installer reuses Electron from `node_modules`, adds the crow icon and app identity, and signs the local bundle. The installed app loads compiled code, dependencies, and GUI assets from this checkout. Keep the checkout in place.
 

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "rootDir": ".",
-    "outDir": "build/desktop",
+    "outDir": "desktop/build",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2024",
@@ -15,8 +15,20 @@
     "rewriteRelativeImportExtensions": true,
     "allowImportingTsExtensions": true,
     "allowJs": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "paths": {
+      "@earendil-works/pi-ai": [
+        "./desktop/node_modules/@earendil-works/pi-ai/dist/index.d.ts"
+      ],
+      "@earendil-works/pi-coding-agent": [
+        "./desktop/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+      ],
+      "@earendil-works/pi-tui": [
+        "./desktop/node_modules/@earendil-works/pi-tui/dist/index.d.ts"
+      ],
+      "typebox": ["./desktop/node_modules/typebox/build/index.d.mts"]
+    }
   },
   "include": ["src/desktop/**/*.ts", "src/**/*.mjs"],
-  "exclude": ["build", "node_modules"]
+  "exclude": ["build", "desktop", "node_modules"]
 }
