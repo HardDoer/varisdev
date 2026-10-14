@@ -51,14 +51,13 @@ void test(
         prefix,
         join(temporary, filename),
         '--omit=dev',
-        '--offline',
         '--no-audit',
         '--no-fund',
       ],
       {
         cwd: temporary,
         maxBuffer: 1024 * 1024,
-        env: {...process.env, npm_config_offline: 'true'},
+        env: process.env,
       },
     );
     const manifest = JSON.parse(
@@ -72,6 +71,14 @@ void test(
       });
       await access(join(directory, 'desktop/node_modules', name));
     }
+    // The binary must already exist before any launch can trigger a download.
+    const electronExecutable = await readFile(
+      join(directory, 'node_modules/electron/path.txt'),
+      'utf8',
+    );
+    await access(
+      join(directory, 'node_modules/electron/dist', electronExecutable),
+    );
     // postinstall must compile both entry points even when only production
     // dependencies are present and native TypeScript loading is unavailable.
     await access(join(directory, 'desktop/build/src/runtime/cli.js'));
@@ -114,7 +121,9 @@ void test(
         env,
         maxBuffer: 1024 * 1024,
       },
-    );
+    ).catch(error => {
+      throw new Error(`${error.message}\n${error.stdout}\n${error.stderr}`);
+    });
     assert.match(result.stdout, /# fail 0/);
   },
 );

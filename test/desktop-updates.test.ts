@@ -102,7 +102,7 @@ void test('restart resolves the active generation through the original installat
   );
   assert.equal(command.executable, '/node/24');
   assert.deepEqual(command.args, [
-    '/original root/bin/varisdev.mjs',
+    join('/original root', 'bin', 'varisdev.mjs'),
     '/project folder',
   ]);
   assert.equal(command.env.ELECTRON_RUN_AS_NODE, undefined);
@@ -110,7 +110,7 @@ void test('restart resolves the active generation through the original installat
   assert.equal(development.executable, '/electron');
   assert.equal(development.env.ELECTRON_RUN_AS_NODE, '1');
   assert.deepEqual(development.args, [
-    '/original/bin/varisdev.mjs',
+    join('/original', 'bin', 'varisdev.mjs'),
     '--overview',
   ]);
   const publicStatus = publicUpdateStatus({
@@ -147,7 +147,14 @@ void test(
   },
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-updates-'));
-    t.after(() => rm(directory, {recursive: true, force: true}));
+    t.after(() =>
+      rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 100,
+      }),
+    );
     const reportPath = join(directory, 'report.json');
     const env = {...process.env};
     delete env.ELECTRON_RUN_AS_NODE;
@@ -192,7 +199,6 @@ void test(
     const directory = await mkdtemp(
       join(tmpdir(), 'varisdev-single-instance-'),
     );
-    t.after(() => rm(directory, {recursive: true, force: true}));
     const env = {
       ...process.env,
       PI_OFFLINE: '1',
@@ -210,11 +216,17 @@ void test(
             new Promise<void>(resolve => {
               if (child.exitCode !== null || child.signalCode !== null)
                 return resolve();
-              child.once('exit', () => resolve());
+              child.once('close', () => resolve());
               child.kill();
             }),
         ),
       );
+      await rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 100,
+      });
     });
     function launch(): {
       child: ChildProcess;
@@ -290,7 +302,14 @@ for (const mode of ['node', 'electron'] as const)
     },
     async t => {
       const directory = await mkdtemp(join(tmpdir(), 'varisdev-relaunch-'));
-      t.after(() => rm(directory, {recursive: true, force: true}));
+      t.after(() =>
+        rm(directory, {
+          recursive: true,
+          force: true,
+          maxRetries: 20,
+          retryDelay: 100,
+        }),
+      );
       const reportPath = join(directory, 'report.json');
       const env = {...process.env};
       delete env.ELECTRON_RUN_AS_NODE;

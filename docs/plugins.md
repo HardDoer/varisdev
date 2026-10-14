@@ -22,8 +22,15 @@ return {
       version: 1,
       blocks: [
         {type: 'progress', value: 3, total: 5, label: 'Scenes'},
-        {type: 'markdown', text: '## Preview\n- [x] Lighting\n- [ ] Final render'},
-        {type: 'image', path: '/absolute/path/to/preview.png', label: 'Scene preview'},
+        {
+          type: 'markdown',
+          text: '## Preview\n- [x] Lighting\n- [ ] Final render',
+        },
+        {
+          type: 'image',
+          path: '/absolute/path/to/preview.png',
+          label: 'Scene preview',
+        },
       ],
     },
   },
@@ -43,10 +50,10 @@ api.sendMessage({
 
 The same blocks appear in parent and agent conversations, including restored history. Plugins keep their existing execution and model-facing tool results.
 
-| Block | Fields | Display |
-| --- | --- | --- |
-| `image` | `path`, optional `label` | Lazy thumbnail; click for a larger view. Relative paths use the session's project folder. |
-| `markdown` | `text` | Headings, lists, checkboxes, code, and links through the app's safe Markdown renderer. HTML remains text. |
+| Block      | Fields                                | Display                                                                                                            |
+| ---------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `image`    | `path`, optional `label`              | Lazy thumbnail; click for a larger view. Relative paths use the session's project folder.                          |
+| `markdown` | `text`                                | Headings, lists, checkboxes, code, and links through the app's safe Markdown renderer. HTML remains text.          |
 | `progress` | `value`, optional `total` and `label` | Progress bar with a readable value. `total` defaults to `1` and must be positive. Values are clamped to the range. |
 
 Version 1 accepts up to eight blocks, 16,000 characters per Markdown block, and 200 characters per label. Unsupported versions, malformed fields, and excess blocks produce visible diagnostics alongside any usable content. Images use local files. PNG, JPEG, GIF, WebP, AVIF, SVG, and TIFF are supported; animated and multipage files show their first frame or page. Input limits are 50 MiB and 40 million pixels. SVG is rasterized before display. Thumbnails are at most 640 pixels per edge; larger views at most 2560. Image references and decoded images use bounded caches, and missing files can be retried. Keep files available when reopening saved conversations.
@@ -59,7 +66,10 @@ For projects that already depend on VarisDev, `varisdev/visualizations` exports:
 
 ```ts
 import {visualResult, visualizationDetails} from 'varisdev/visualizations';
-import type {VisualizationBlock, VisualizationMetadata} from 'varisdev/visualizations';
+import type {
+  VisualizationBlock,
+  VisualizationMetadata,
+} from 'varisdev/visualizations';
 
 const blocks: VisualizationBlock[] = [
   {type: 'progress', value: 1, total: 2, label: 'Build'},

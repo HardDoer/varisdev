@@ -679,7 +679,6 @@ function sizeInspector() {
   if (!snapshot() || $('factory-workspace').hidden) return;
   const element = $('inspector');
   const available = Math.max(300, $('factory-workspace').clientHeight);
-  element.style.maxHeight = `${Math.round(available)}px`;
   element.style.setProperty('--inspector-space', `${Math.round(available)}px`);
 }
 function sizeScene() {
@@ -2082,6 +2081,8 @@ $('follow-feed').addEventListener('change', () => {
 });
 motionPreference.addEventListener('change', applyMotion);
 window.addEventListener('resize', resizeFactory);
+const workspaceResize = new window.ResizeObserver(sizeInspector);
+workspaceResize.observe($('factory-workspace'));
 const sceneResize = new window.ResizeObserver(sizeScene);
 sceneResize.observe($('scene'));
 try {
@@ -2172,6 +2173,7 @@ window.addEventListener('unload', () => {
   motionPreference.removeEventListener('change', applyMotion);
   window.removeEventListener('resize', resizeFactory);
   sceneResize.disconnect();
+  workspaceResize.disconnect();
   conversationResize.disconnect();
   conversationVisualizations.dispose();
   composerResize.disconnect();

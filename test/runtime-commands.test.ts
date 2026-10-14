@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
 import {test} from 'node:test';
 import {pathToFileURL} from 'node:url';
 import type {AuthInteraction} from '@earendil-works/pi-ai';
@@ -82,8 +82,8 @@ void test('login lists interactive providers and selects OAuth with normal auth 
   assert.deepEqual(fixture.calls[0], [
     'create',
     {
-      authPath: '/isolated/agent/auth.json',
-      modelsPath: '/isolated/agent/models.json',
+      authPath: join('/isolated/agent', 'auth.json'),
+      modelsPath: join('/isolated/agent', 'models.json'),
       allowModelNetwork: false,
       refreshOnCreate: false,
       signal:
@@ -204,7 +204,7 @@ void test('logout delegates one provider and login rejects unsupported providers
 });
 
 void test('account storage errors retain the original auth path while branding prose', async () => {
-  const authPath = '/users/pi/.pi/agent/auth.json';
+  const authPath = join('/users/pi/.pi/agent', 'auth.json');
   const fixture = accountFixture();
   const load = fixture.dependencies.loadSDK!;
   fixture.dependencies.loadSDK = async root => ({
@@ -337,7 +337,10 @@ void test('bundled package manager persists user and local plugins without repla
   await runPluginCommand(directory, 'install', [source], cwd, dependencies);
   const global = JSON.parse(await readFile(globalPath, 'utf8'));
   assert.equal(global.theme, 'custom');
-  assert.deepEqual(global.packages, [...existing.packages, '../plugin']);
+  assert.deepEqual(global.packages, [
+    ...existing.packages,
+    relative(agentDir, source),
+  ]);
   assert.equal(global.npmCommand, undefined);
   await runPluginCommand(
     directory,
@@ -348,7 +351,7 @@ void test('bundled package manager persists user and local plugins without repla
   );
   const projectPath = join(cwd, sdk.CONFIG_DIR_NAME, 'settings.json');
   assert.deepEqual(JSON.parse(await readFile(projectPath, 'utf8')).packages, [
-    '../../plugin',
+    relative(dirname(projectPath), source),
   ]);
   await runPluginCommand(directory, 'list', [], cwd, dependencies);
   assert.match(output.join('\n'), /\(local\)/);
@@ -367,7 +370,7 @@ void test('bundled package manager persists user and local plugins without repla
   );
   assert.deepEqual(JSON.parse(await readFile(globalPath, 'utf8')).packages, [
     ...existing.packages,
-    '../plugin',
+    relative(agentDir, source),
   ]);
   await runPluginCommand(directory, 'remove', [source], cwd, dependencies);
   assert.deepEqual(JSON.parse(await readFile(globalPath, 'utf8')), existing);
@@ -423,7 +426,7 @@ void test('package commands use bundled npm or respect a configured command and 
       command,
       configured ?? [
         process.env.VARISDEV_NODE_EXECUTABLE || process.execPath,
-        '/runtime/node_modules/npm/bin/npm-cli.js',
+        join('/runtime', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
       ],
     );
     assert.deepEqual(calls, [
@@ -450,10 +453,13 @@ void test('package commands use bundled npm or respect a configured command and 
   }
 });
 
-function terminalAccountProcess() {
+function terminalAccountProcess(simulateSignal = false) {
   const commandsURL = pathToFileURL(resolve('src/runtime/commands.ts')).href;
   const script = `
     const {runAccountCommand, CommandCancelledError} = await import(${JSON.stringify(commandsURL)});
+    if (${simulateSignal}) process.once('message', message => {
+      if (message === 'SIGINT') process.emit('SIGINT');
+    });
     const runtime = {
       getProviders: () => [{id: 'cloud', name: 'Cloud', auth: {apiKey: {login() {}}}}],
       async login(provider, type, interaction) {
@@ -468,11 +474,13 @@ function terminalAccountProcess() {
     } catch (error) {
       console.log(error.message);
       process.exitCode = error instanceof CommandCancelledError ? 130 : 1;
+    } finally {
+      if (process.connected) process.disconnect();
     }
   `;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+    stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+  }) as ChildProcessWithoutNullStreams;
   let output = '';
   let errors = '';
   child.stdout.on('data', chunk => {
@@ -511,7 +519,9 @@ void test(
   'terminal Ctrl-C cancels a pending secret prompt and exits cleanly',
   {timeout: 15000},
   async t => {
-    const {child, closed} = terminalAccountProcess();
+    const {child, closed} = terminalAccountProcess(
+      process.platform === 'win32',
+    );
     t.after(() => child.kill());
     child.stdin.write('cloud\n');
     await new Promise<void>((resolve, reject) => {
@@ -528,7 +538,9 @@ void test(
         reject(new Error('Child exited before prompting')),
       );
     });
-    child.kill('SIGINT');
+    // Windows kill('SIGINT') terminates the process without running its handler.
+    if (process.platform === 'win32') child.send('SIGINT');
+    else child.kill('SIGINT');
     const result = await closed;
     assert.equal(result.code, 130, result.errors);
     assert.match(result.output, /Cancelled/);

@@ -276,7 +276,7 @@ async function openFactory(state: DashboardState): Promise<FactoryWindow> {
       bridge.close();
       reject(
         new Error(
-          'The factory window did not finish starting. Run npm run desktop to see startup details.',
+          'The VarisDev window did not finish starting. Try opening VarisDev again.',
         ),
       );
     }, 30000);
@@ -284,7 +284,7 @@ async function openFactory(state: DashboardState): Promise<FactoryWindow> {
       clearTimeout(timer);
       reject(
         new Error(
-          'Could not open the factory window. Run npm run desktop to see startup details.',
+          'Could not open the VarisDev window. Try opening VarisDev again.',
         ),
       );
     };

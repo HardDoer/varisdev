@@ -15,7 +15,6 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
-import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 import {
   defaultDataDir,
@@ -306,7 +305,7 @@ void test('cross-process updates serialize installation and both use the active 
   const f = await fixture(t);
   const log = join(f.temp, 'install.log');
   const childCode = `
-    import {RuntimeManager} from ${JSON.stringify(fileURLToPath(new URL('../src/runtime/manager.ts', import.meta.url)))};
+    import {RuntimeManager} from ${JSON.stringify(new URL('../src/runtime/manager.ts', import.meta.url).href)};
     import {mkdir,writeFile,readFile,appendFile} from 'node:fs/promises';
     import {dirname,join} from 'node:path';
     const put=async(p,s)=>{await mkdir(dirname(p),{recursive:true});await writeFile(p,s)};

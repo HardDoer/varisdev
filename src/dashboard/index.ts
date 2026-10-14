@@ -266,9 +266,7 @@ export function registerFactory(
                 );
             if (!extensionCommand) {
               if (!ctx.model)
-                throw new Error(
-                  'Choose a model before sending a task.',
-                );
+                throw new Error('Choose a model before sending a task.');
               const auth = await ctx.modelRegistry.getApiKeyAndHeaders(
                 ctx.model,
               );

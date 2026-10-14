@@ -12,7 +12,7 @@ varisdev login
 varisdev
 ```
 
-`varisdev` opens the current folder. Use `varisdev /path/to/project` to open another folder, or **Open folder** in the app. Existing model accounts, settings, plugins, and saved conversations are reused. The app includes its runtime and builds automatically during installation.
+`varisdev` opens the current folder. Use `varisdev /path/to/project` to open another folder, or **Open folder** in the app. Existing model accounts, settings, plugins, and saved conversations are reused. Installation downloads the Electron desktop executable, includes the session runtime, and builds the app automatically. The first launch requires no additional runtime download.
 
 On macOS, `varisdev app install` also adds **VarisDev** to `~/Applications`, ready for Finder, Spotlight, and the Dock.
 
@@ -129,8 +129,8 @@ VarisDev can delegate work to background agents while the parent continues worki
 | `agent_spawn`  | Start an agent and immediately return its ID.                                                              |
 | `agent_list`   | List active agents and status counts; use `view: "history"` for finished agents or `view: "all"` for both. |
 | `agent_status` | Read one agent’s latest result, error, and transcript paths.                                               |
-| `agent_inbox`  | Read messages agents sent to the parent, newest first, or retrieve full text by message ID.               |
-| `agent_send`   | Steer active work or resume a completed agent. Agents can also message `"parent"`.                        |
+| `agent_inbox`  | Read messages agents sent to the parent, newest first, or retrieve full text by message ID.                |
+| `agent_send`   | Steer active work or resume a completed agent. Agents can also message `"parent"`.                         |
 | `agent_wait`   | Wait for any or all selected agents and collect their results.                                             |
 | `agent_cancel` | Cancel an agent and clear its steering messages.                                                           |
 

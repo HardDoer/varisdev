@@ -2,11 +2,17 @@
   "name": "varisdev-project-board-example",
   "version": "1.0.0",
   "type": "module",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
-    "extensions": ["./index.mjs"]
+    "extensions": [
+      "./index.mjs"
+    ]
   },
   "varisdev": {
-    "themes": ["./themes/ink.json"]
+    "themes": [
+      "./themes/ink.json"
+    ]
   }
 }

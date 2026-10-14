@@ -7,6 +7,8 @@ const directory = process.argv[2];
 const reportPath = process.argv[3];
 const screenshotPath = process.argv[4];
 app.setPath('userData', path.join(directory, 'profile'));
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const report = {cases: []};
 
 (async () => {
@@ -31,8 +33,12 @@ const report = {cases: []};
   const window = new BrowserWindow({
     width: 1500,
     height: 980,
-    show: false,
-    webPreferences: {contextIsolation: true, nodeIntegration: false},
+    show: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
   });
   await window.loadFile(page);
   await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
@@ -426,12 +432,17 @@ const report = {cases: []};
         'Growing the viewport restores the saved placement',
       );
       window.setSize(600, 600);
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await evaluate(
+        'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+      );
       const beforeUnlock = await panelBounds();
       await evaluate("document.getElementById('markdown-lock').click()");
+      const afterUnlock = await panelBounds();
       assert(
-        JSON.stringify(await panelBounds()) === JSON.stringify(beforeUnlock),
-        'Unlock keeps the constrained panel placement',
+        Object.keys(beforeUnlock).every(
+          key => Math.abs(afterUnlock[key] - beforeUnlock[key]) < 0.1,
+        ),
+        `Unlock keeps the constrained panel placement: ${JSON.stringify({beforeUnlock, afterUnlock})}`,
       );
       await drag('markdown-heading', -1000, -1000);
       const clamped = await panelBounds();

@@ -278,14 +278,9 @@ function applyPlacement(save = false, besideComposer = false) {
   const height = Math.max(1, window.innerHeight - 104);
   const editor = $('parent-prompt');
   const composer = editor?.getBoundingClientRect();
-  // Keep the default left placement beside the composer in narrow windows.
+  // Keep the initial placement beside the composer at every window size.
   const besideWidth = composer?.left - Math.max(margin, placement.x) - margin;
-  if (
-    besideComposer &&
-    window.innerWidth < 1000 &&
-    composer?.width &&
-    besideWidth >= 260
-  )
+  if (besideComposer && composer?.width && besideWidth >= 260)
     availableWidth = Math.min(availableWidth, besideWidth);
   const width = Math.min(
     availableWidth,

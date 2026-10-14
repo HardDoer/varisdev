@@ -611,7 +611,7 @@ void test('Stop during GUI credential setup prevents submission and configuratio
   source.ctx.model = undefined;
   await assert.rejects(
     Promise.resolve().then(() => desktop.callbacks.prompt('Needs a model')),
-    /No model selected/,
+    /Choose a model before sending a task\./,
   );
   assert.equal(source.messages.length, 0);
   assert.doesNotMatch(

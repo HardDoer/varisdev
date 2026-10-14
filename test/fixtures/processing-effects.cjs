@@ -14,6 +14,7 @@ const evaluate = (fn, arg) =>
     `(${fn.toString()})(${JSON.stringify(arg)})`,
   );
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const advance = ms => evaluate(ms => window.advance(ms), ms);
 async function main() {
   await app.whenReady();
   browser = new BrowserWindow({
@@ -30,6 +31,23 @@ async function main() {
   await evaluate(
     async url => {
       const {createProcessingEffects} = await import(url);
+      // Advance the production callbacks on a controlled clock. Native frame
+      // scheduling depends on Windows occlusion and the test machine's load.
+      let clock = 1000;
+      let nextFrame = 0;
+      const frames = new Map();
+      Object.defineProperty(window.performance, 'now', {value: () => clock});
+      window.requestAnimationFrame = callback => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      };
+      window.cancelAnimationFrame = id => frames.delete(id);
+      window.advance = ms => {
+        clock += ms;
+        const pending = [...frames.values()];
+        frames.clear();
+        for (const callback of pending) callback(clock);
+      };
       window.effects = createProcessingEffects(
         document.getElementById('scene'),
       );
@@ -120,20 +138,20 @@ async function main() {
   assert.equal(start.impact.x, start.scene.left + start.scene.width * 0.3);
   assert.equal(start.impact.y, start.scene.top + start.scene.height * 0.4);
   assert.equal(start.impact.opacity, 0);
-  await wait(300);
+  await advance(300);
   const middle = await evaluate(() => window.inspect());
   assert.ok(middle.head.x < start.head.x && middle.head.x > start.impact.x);
   assert.ok(middle.head.y < start.head.y && middle.head.y > start.impact.y);
   assert.equal(middle.arrived, false);
   assert.notEqual(middle.path, start.path);
-  await wait(600);
+  await advance(600);
   const arrival = await evaluate(() => window.inspect());
-  assert.equal(arrival.arrived, true);
+  assert.equal(arrival.arrived, true, JSON.stringify(arrival));
   assert.equal(arrival.head.x, arrival.impact.x);
   assert.equal(arrival.head.y, arrival.impact.y);
   assert.equal(arrival.head.opacity, 0);
   assert.ok(arrival.impact.opacity > 0);
-  await wait(420);
+  await advance(420);
   assert.equal(await evaluate(() => window.inspect().hidden), true);
   report.cases.push(
     'viewport flight starts at composer, travels with a short tail and pulses on arrival',
@@ -151,35 +169,32 @@ async function main() {
     expanded.composer.left + expanded.composer.width / 2,
   );
   assert.equal(expanded.head.y, expanded.composer.top + 18);
-  await wait(180);
+  await advance(180);
   const moved = await evaluate(() => {
     document.getElementById('scene').style.left = '70px';
     window.effects.layout([{id: 'parent', x: 0.7, y: 0.2, visible: true}]);
-    return new Promise(resolve =>
-      window.requestAnimationFrame(() => resolve(window.inspect())),
-    );
+    window.advance(16);
+    return window.inspect();
   });
   assert.equal(moved.impact.x, moved.scene.left + moved.scene.width * 0.7);
   assert.equal(moved.impact.y, moved.scene.top + moved.scene.height * 0.2);
   await browser.webContents.setZoomFactor(1.1);
   await wait(60);
+  await advance(60);
   const zoomed = await evaluate(() => window.inspect());
   assert.equal(zoomed.impact.x, zoomed.scene.left + zoomed.scene.width * 0.7);
   await browser.webContents.setZoomFactor(1);
   const fallback = await evaluate(() => {
     window.effects.layout([]);
-    return new Promise(resolve =>
-      window.requestAnimationFrame(() => {
-        const box = document
-          .querySelector('.fallback-station')
-          .getBoundingClientRect();
-        resolve({
-          effect: window.inspect(),
-          x: box.left + box.width / 2,
-          y: box.top + box.height * 0.35,
-        });
-      }),
-    );
+    window.advance(16);
+    const box = document
+      .querySelector('.fallback-station')
+      .getBoundingClientRect();
+    return {
+      effect: window.inspect(),
+      x: box.left + box.width / 2,
+      y: box.top + box.height * 0.35,
+    };
   });
   assert.equal(fallback.effect.impact.x, fallback.x);
   assert.equal(fallback.effect.impact.y, fallback.y);
@@ -245,7 +260,7 @@ async function main() {
   assert.equal(still.svgDisplay, 'none');
   assert.equal(still.impact.opacity, 0.7);
   assert.equal(still.arrived, true);
-  await wait(750);
+  await advance(750);
   assert.equal(await evaluate(() => window.inspect().hidden), true);
   await browser.webContents.debugger.attach('1.3');
   await browser.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {
@@ -265,7 +280,7 @@ async function main() {
 
   if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
     await evaluate(() => window.apply('Screenshot flight'));
-    await wait(300);
+    await advance(300);
     const image = await browser.webContents.capturePage();
     writeFileSync(
       join(process.env.DESKTOP_UI_SCREENSHOT_DIR, 'prompt-flight.png'),

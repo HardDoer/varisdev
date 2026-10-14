@@ -18,6 +18,10 @@ function run(args, cwd) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+// Electron 44 downloads lazily when required. Install its executable now so
+// first launch works offline and never blocks an extension host on a download.
+run([require.resolve('electron/install.js')], root);
+
 const desktop = fileURLToPath(new URL('../desktop/', import.meta.url));
 run(
   [

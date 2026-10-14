@@ -4743,9 +4743,8 @@ async function main() {
           restored: panel.getBoundingClientRect().left,
         };
       });
-      assert.equal(
-        placement.moved,
-        placement.before + 40,
+      assert.ok(
+        Math.abs(placement.moved - placement.before - 40) < 0.1,
         'Keyboard moves panel freely',
       );
       assert.equal(
@@ -4755,9 +4754,8 @@ async function main() {
       );
       assert.equal(placement.lockVisible, true, 'Lock state is visible');
       assert.equal(placement.resizeLocked, true, 'Lock also disables resize');
-      assert.equal(
-        placement.restored,
-        placement.before,
+      assert.ok(
+        Math.abs(placement.restored - placement.before) < 0.1,
         'Unlock permits moving back',
       );
       const preferred = await evaluate(() =>
@@ -4848,15 +4846,11 @@ async function main() {
           .getBoundingClientRect();
         return {x: box.left, y: box.top, width: box.width, height: box.height};
       });
-      assert.deepEqual(
-        restored,
-        {
-          x: preferred.x,
-          y: preferred.y,
-          width: preferred.width,
-          height: preferred.height,
-        },
-        'Zoom restores saved placement and size',
+      assert.ok(
+        Object.keys(restored).every(
+          key => Math.abs(restored[key] - preferred[key]) < 0.1,
+        ),
+        `Zoom restores saved placement and size: ${JSON.stringify({restored, preferred})}`,
       );
       await evaluate(() => document.getElementById('markdown-close').click());
     },

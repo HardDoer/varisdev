@@ -342,6 +342,13 @@ void test('workspace diff includes staged, unstaged and untracked files without 
   t.after(() => rm(directory, {recursive: true, force: true}));
   const cwd = join(directory, 'repo');
   await mkdir(cwd);
+  // A custom temporary directory may itself live inside a Git checkout.
+  const ceiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = directory;
+  t.after(() => {
+    if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+    else process.env.GIT_CEILING_DIRECTORIES = ceiling;
+  });
   assert.equal((await readWorkspaceDiff(cwd)).git, false);
   await execFile('git', ['init', cwd]);
   await writeFile(join(cwd, 'tracked.txt'), 'before\n');

@@ -418,6 +418,7 @@ main > .welcome {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(380px, 1fr) minmax(560px, 1.35fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: clamp(18px, 1.4vw, 34px);
   align-items: stretch;
 }
@@ -472,6 +473,15 @@ main > .welcome {
   white-space: nowrap;
 }
 .factory-heading .mono {
+  font-size: 0.75rem;
+}
+.factory-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.factory-file-actions .quiet-button {
+  padding: 5px 8px;
   font-size: 0.75rem;
 }
 .factory-state {
@@ -790,6 +800,7 @@ main > .welcome {
 }
 .inspector {
   min-width: 0;
+  min-height: 0;
   position: relative;
 }
 .inspector-heading {

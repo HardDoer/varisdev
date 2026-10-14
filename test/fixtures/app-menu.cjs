@@ -278,6 +278,14 @@ async function main() {
   ]) {
     browser.setContentSize(...size);
     await delay(100);
+    await evaluate(
+      () =>
+        new Promise(resolve =>
+          window.requestAnimationFrame(() =>
+            window.requestAnimationFrame(resolve),
+          ),
+        ),
+    );
     const geometry = await evaluate(() => {
       const main = document.querySelector('main');
       const workspace = document.getElementById('factory-workspace');

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {
@@ -196,6 +196,12 @@ export default function(pi) {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PI_CODING_AGENT_DIR: agentDir,
+      PI_TEST_CLI: pathToFileURL(
+        join(
+          packageRoot,
+          'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+        ),
+      ).href,
       PI_OFFLINE: '1',
       PIDEV_DESKTOP_DATA_DIR: join(directory, 'profile'),
       TMP: directory,
@@ -304,7 +310,14 @@ export default function(pi) {
       await delay(100);
     }
     assert.doesNotMatch(output, /Host-provided extension packages/);
-    assert.ok(result, `No desktop report. CLI output:\n${output}`);
+    const startupLog = await readFile(
+      join(directory, 'profile/startup.log'),
+      'utf8',
+    ).catch(() => 'No startup log.');
+    assert.ok(
+      result,
+      `No desktop report. Desktop log:\n${startupLog}\nCLI output:\n${output}`,
+    );
     assert.ifError(result.error);
     desktopPid = result.pid;
     assert.equal(exited, true, `The terminal did not exit:\n${output}`);
