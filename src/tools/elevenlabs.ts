@@ -11,6 +11,7 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import type {ReadableStream as NodeReadableStream} from 'node:stream/web';
 import {Type, type Static} from 'typebox';
+import {selectToolModel} from './model-selection.ts';
 
 const API_URL = 'https://api.elevenlabs.io';
 const API_KEY_ENV_VAR = 'ELEVENLABS_API_KEY';
@@ -78,7 +79,7 @@ const elevenLabsSchema = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        'Generation model. Defaults to eleven_multilingual_v2 for speech and eleven_text_to_sound_v2 for sound effects.',
+        'Generation model chosen by the user. Otherwise uses the saved choice or asks on first GUI use.',
     }),
   ),
   languageCode: Type.Optional(
@@ -239,9 +240,7 @@ function makeGenerationRequest(params: Params): {
       'WAV output is available for text_to_speech only. Use MP3 or PCM for sound_effects.',
     );
   }
-  const modelId =
-    params.modelId?.trim() ||
-    (speech ? 'eleven_multilingual_v2' : 'eleven_text_to_sound_v2');
+  const modelId = requiredText(params.modelId, 'modelId').trim();
   if (!speech && modelId !== 'eleven_text_to_sound_v2') {
     throw new Error('sound_effects requires modelId eleven_text_to_sound_v2.');
   }
@@ -502,6 +501,20 @@ export function registerElevenLabsTool(pi: ExtensionAPI): void {
         throw new Error(
           'Unknown elevenlabs action. Use list_voices, text_to_speech, or sound_effects.',
         );
+      }
+      if (params.action !== 'list_voices') {
+        requiredText(params.text, 'text');
+        const speech = params.action === 'text_to_speech';
+        if (speech) requiredText(params.voiceId, 'voiceId');
+        params = {
+          ...params,
+          modelId: await selectToolModel(
+            speech ? 'elevenlabs-speech' : 'elevenlabs-effects',
+            params.modelId,
+            ctx,
+            signal,
+          ),
+        };
       }
       const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       if (

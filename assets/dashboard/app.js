@@ -6,6 +6,7 @@ import {createProcessingEffects} from './processing-effects.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
 import {initUpdates} from './updates.js';
+import {initAccounts} from './accounts.js';
 import {initAppMenu} from './app-menu.js';
 import {initAgentControls} from './agent-controls.js';
 import {createConversationVisualizations} from './visualizations.js';
@@ -2103,6 +2104,7 @@ const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
   deferDiscovery: true,
 });
 const cleanupZoom = initZoom(api);
+const cleanupAccounts = initAccounts(api);
 const cleanupUpdates = initUpdates(api, {
   beforeRestart() {
     saveDraft();
@@ -2181,6 +2183,7 @@ window.addEventListener('unload', () => {
   cleanupThemes();
   cleanupZoom();
   cleanupUpdates();
+  cleanupAccounts();
   appMenu.dispose();
   cleanupSessionSelection?.();
   scene?.dispose();

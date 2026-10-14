@@ -310,7 +310,12 @@ function renderSettings() {
   const resource = features();
   if (!resource) return;
   const model = $('session-model');
+  const placeholder = node('option', '', 'Choose a model');
+  placeholder.value = '';
+  placeholder.disabled = true;
+  placeholder.selected = !resource.model;
   model.replaceChildren(
+    ...(!resource.model ? [placeholder] : []),
     ...resource.models.map(item => {
       const option = node(
         'option',
@@ -344,7 +349,7 @@ function canConfigureSession() {
 function renderSettingsControls() {
   const resource = features();
   const disabled = settingsBusy || !canConfigureSession() || !resource;
-  $('apply-session-settings').disabled = disabled;
+  $('apply-session-settings').disabled = disabled || !$('session-model').value;
   $('session-model').disabled = disabled || !resource?.models.length;
   $('session-thinking').disabled = disabled || !resource?.thinkingLevels.length;
   const idle = current?.session.status === 'idle';
@@ -566,6 +571,7 @@ export function initSessionFeatures(options) {
   $('close-session-settings').addEventListener('click', () =>
     $('session-settings-dialog').close(),
   );
+  $('session-model').addEventListener('change', renderSettingsControls);
   $('session-settings-form').addEventListener('submit', event => {
     event.preventDefault();
     const model = features()?.models.find(

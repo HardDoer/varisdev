@@ -574,8 +574,9 @@ void test('agent tools select registered models and effort without adding parent
     {provider: 'anthropic', id: 'claude-sonnet-4-5'},
     {provider: 'custom', id: 'organization/model'},
   ];
-  const fallbackModel = registeredModels[1];
-  let parentModel: (typeof registeredModels)[number] | undefined;
+  const selectedModel = registeredModels[1];
+  let parentModel: (typeof registeredModels)[number] | undefined =
+    selectedModel;
   let modelsAvailable = true;
   const ctx = {
     cwd: process.cwd(),
@@ -624,7 +625,7 @@ void test('agent tools select registered models and effort without adding parent
       cwd: ctx.cwd,
       name: 'Review',
       instructions: undefined,
-      model: fallbackModel,
+      model: selectedModel,
       modelRegistry: ctx.modelRegistry,
       thinkingLevel: 'high',
       parentSessionId: 'parent-session',
@@ -730,12 +731,14 @@ void test('agent tools select registered models and effort without adding parent
       /thinkingLevel must be off, minimal, low, medium, high, or xhigh/,
     );
     inheritedEffort = 'high';
-    modelsAvailable = false;
+    const beforeMissingModel = optionsSeen.length;
+    parentModel = undefined;
     await assert.rejects(
-      execute('agent_spawn', {name: 'missing fallback', task: 'test'}),
-      /model is unavailable: openai-codex\/gpt-5\.6-sol/,
+      execute('agent_spawn', {name: 'no selection', task: 'test'}),
+      /Choose a parent model or specify the agent model/,
     );
-    modelsAvailable = true;
+    assert.equal(optionsSeen.length, beforeMissingModel);
+    parentModel = selectedModel;
 
     const routine = await execute('agent_spawn', {
       name: 'Routine checks',
@@ -746,7 +749,7 @@ void test('agent tools select registered models and effort without adding parent
     });
     const routineId = (routine.details as {agents: AgentRecord[]}).agents[0].id;
     await until(() => controlled.runs.length === 3);
-    assert.equal(optionsSeen.at(-1)!.model, fallbackModel);
+    assert.equal(optionsSeen.at(-1)!.model, selectedModel);
     assert.equal(optionsSeen.at(-1)!.thinkingLevel, 'xhigh');
     controlled.runs[2].finish('Checks passed');
     const cleaned = await execute('agent_wait', {ids: [routineId]});
@@ -757,7 +760,7 @@ void test('agent tools select registered models and effort without adding parent
     for (const model of registeredModels) {
       const fullName = `${model.provider}/${model.id}`;
       for (const inherit of [false, true]) {
-        parentModel = inherit ? model : fallbackModel;
+        parentModel = inherit ? model : selectedModel;
         // Inherited models are already resolved by the parent session.
         modelsAvailable = !inherit;
         const beforeRuns = controlled.runs.length;

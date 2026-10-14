@@ -1,0 +1,65 @@
+#accounts-dialog {
+  width: min(540px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 70px #0009;
+}
+#accounts-dialog::backdrop {
+  background: #0008;
+}
+#accounts-dialog h2 {
+  margin: 0;
+}
+#accounts-dialog label {
+  display: block;
+  margin: 16px 0 8px;
+}
+#accounts-dialog input,
+#accounts-dialog select {
+  width: 100%;
+  min-width: 0;
+}
+#accounts-dialog p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+#accounts-status {
+  color: var(--muted);
+}
+.accounts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0;
+}
+#accounts-form button {
+  margin-top: 12px;
+}
+#accounts-device-code {
+  font-family: monospace;
+  font-size: 1.2em;
+}
+#accounts-cancel {
+  margin-top: 14px;
+}
+#settings-accounts {
+  margin-bottom: 12px;
+}
+#tool-models {
+  margin-top: 22px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+#tool-models summary {
+  cursor: pointer;
+}
+#tool-models small {
+  display: block;
+  color: var(--muted);
+  margin-top: 6px;
+}

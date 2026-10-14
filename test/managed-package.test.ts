@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
-import {mkdtemp, readFile, rm, access} from 'node:fs/promises';
+import {mkdtemp, readFile, rm, access, cp, mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
@@ -23,24 +23,23 @@ void test(
       'varisdev',
     );
     t.after(() => rm(temporary, {recursive: true, force: true}));
-    const npm = process.env.npm_execpath;
-    assert.ok(npm, 'Run this installation check through npm test.');
+    const npm =
+      process.env.npm_execpath ||
+      fileURLToPath(
+        new URL('../node_modules/npm/bin/npm-cli.js', import.meta.url),
+      );
     // Pack exactly the published files, then install globally into a temporary
     // prefix. This also checks that npm's inherited global setting cannot make
     // the nested runtime installer write to a global location.
     const packed = await run(
       process.execPath,
-      [
-        npm,
-        'pack',
-        '--json',
-        '--ignore-scripts',
-        '--pack-destination',
-        temporary,
-      ],
+      [npm, 'pack', '--json', '--pack-destination', temporary],
       {cwd: root},
     );
-    const [{filename}] = JSON.parse(packed.stdout) as Array<{filename: string}>;
+    const [{filename, files}] = JSON.parse(packed.stdout) as Array<{
+      filename: string;
+      files: {path: string}[];
+    }>;
     await run(
       process.execPath,
       [
@@ -63,6 +62,13 @@ void test(
     const manifest = JSON.parse(
       await readFile(join(directory, 'package.json'), 'utf8'),
     );
+    for (const name of Object.keys(manifest.dependencies))
+      await access(join(directory, 'node_modules', name, 'package.json'));
+    assert.match(
+      JSON.parse(await readFile(join(directory, 'build-info.json'), 'utf8'))
+        .revision,
+      /^[a-f0-9]{40}$/,
+    );
     for (const name of Object.keys(manifest.peerDependencies)) {
       assert.equal(manifest.peerDependencies[name], '*');
       assert.equal(manifest.dependencies[name], undefined);
@@ -84,6 +90,10 @@ void test(
     await access(join(directory, 'desktop/build/src/runtime/cli.js'));
     await access(join(directory, 'desktop/build/src/desktop/main.js'));
     for (const path of [
+      'assets/dashboard/accounts.js',
+      'assets/dashboard/accounts.css',
+      'desktop/build/src/desktop/accounts.js',
+      'desktop/build/src/tools/model-selection.js',
       'assets/dashboard/visualizations.js',
       'assets/dashboard/robot-whip.js',
       'examples/project-board/index.mjs',
@@ -106,7 +116,91 @@ void test(
       ],
       {cwd: directory},
     );
-    const env = {...process.env, PI_TEST_PACKAGE_DIR: directory};
+    const {RuntimeManager} = await import('../src/runtime/manager.ts');
+    const updateData = join(temporary, 'updates');
+    const repository = join(temporary, 'repository');
+    const hooksDirectory = join(temporary, 'empty-hooks');
+    await mkdir(hooksDirectory);
+    const git = async (args: string[]) =>
+      run('git', ['-c', `core.hooksPath=${hooksDirectory}`, ...args], {
+        cwd: temporary,
+      });
+    await git(['init', repository]);
+    for (const file of files) {
+      await mkdir(dirname(join(repository, file.path)), {recursive: true});
+      await cp(join(root, file.path), join(repository, file.path));
+    }
+    await git(['-C', repository, 'add', '.']);
+    await git([
+      '-C',
+      repository,
+      '-c',
+      'user.name=VarisDev Test',
+      '-c',
+      'user.email=test@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-m',
+      'Application update fixture',
+    ]);
+    const manager = new RuntimeManager({
+      installRoot: directory,
+      dataDir: updateData,
+      hooks: {
+        run: async (command, args, options) => {
+          const actualArgs =
+            command === 'git'
+              ? [
+                  '-c',
+                  `core.hooksPath=${hooksDirectory}`,
+                  ...args.map(arg =>
+                    [
+                      'ssh://git@github.com/HardDoer/varisdev.git',
+                      'https://github.com/HardDoer/varisdev.git',
+                    ].includes(arg)
+                      ? repository
+                      : arg,
+                  ),
+                ]
+              : args;
+          const result = await run(command, actualArgs, {
+            cwd: options.cwd,
+            env: options.env,
+            timeout: options.timeoutMs,
+            maxBuffer: 1024 * 1024,
+          });
+          return result.stdout;
+        },
+      },
+    });
+    const updated = await manager.update();
+    assert.equal(updated.phase, 'ready', updated.error);
+    const active = await manager.currentRoot();
+    assert.notEqual(active, directory);
+    for (const name of Object.keys(manifest.dependencies))
+      await access(join(active, 'node_modules', name, 'package.json'));
+    const updatedVersion = await run(
+      process.execPath,
+      [join(directory, 'bin/varisdev.mjs'), '--version'],
+      {
+        cwd: temporary,
+        env: {...process.env, VARISDEV_DATA_DIR: updateData},
+      },
+    );
+    assert.equal(updatedVersion.stdout.trim(), `VarisDev ${manifest.version}`);
+    assert.equal(
+      await new RuntimeManager({
+        installRoot: directory,
+        dataDir: updateData,
+      }).currentRoot(),
+      active,
+    );
+    const env = {
+      ...process.env,
+      PI_TEST_PACKAGE_DIR: active,
+      VARISDEV_TEST_PACKAGE_DIR: active,
+    };
     delete (env as NodeJS.ProcessEnv).NODE_TEST_CONTEXT;
     const result = await run(
       process.execPath,
@@ -115,6 +209,7 @@ void test(
         '--test-reporter=tap',
         join(root, 'test/desktop-startup.test.ts'),
         join(root, 'test/standalone.test.ts'),
+        join(root, 'test/desktop-accounts.test.ts'),
       ],
       {
         cwd: directory,

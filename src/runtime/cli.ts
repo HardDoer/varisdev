@@ -34,7 +34,10 @@ function childDone(child: ChildProcess): Promise<number> {
   });
 }
 
-function launchEnvironment(installRoot: string): NodeJS.ProcessEnv {
+function launchEnvironment(
+  installRoot: string,
+  runtimeRoot = installRoot,
+): NodeJS.ProcessEnv {
   const nodeExecutable =
     process.env.VARISDEV_NODE_EXECUTABLE ||
     (!process.versions.electron ? process.execPath : undefined);
@@ -44,7 +47,7 @@ function launchEnvironment(installRoot: string): NodeJS.ProcessEnv {
     ...(nodeExecutable ? {VARISDEV_NODE_EXECUTABLE: nodeExecutable} : {}),
     PATH: [
       dirname(process.env.VARISDEV_NODE_EXECUTABLE || process.execPath),
-      join(installRoot, 'node_modules/.bin'),
+      join(runtimeRoot, 'node_modules/.bin'),
       process.env.PATH,
     ]
       .filter(Boolean)
@@ -94,8 +97,8 @@ export async function openDesktop(
   mkdirSync(profile, {recursive: true});
   const logPath = join(profile, 'startup.log');
   const log = openSync(logPath, 'a');
-  const require = createRequire(join(installRoot, 'package.json'));
-  const env = launchEnvironment(installRoot);
+  const require = createRequire(join(runtimeRoot, 'package.json'));
+  const env = launchEnvironment(installRoot, runtimeRoot);
   delete env.ELECTRON_RUN_AS_NODE;
   let child: ChildProcess;
   try {
@@ -162,18 +165,19 @@ export async function runCli(
   installRoot: string,
 ): Promise<number> {
   const [command, ...rest] = args;
+  const manager = new RuntimeManager({installRoot});
+  const runtimeRoot = await manager.currentRoot();
   if (command === '--help' || command === '-h' || command === 'help') {
     console.log(help);
     return 0;
   }
   if (command === '--version' || command === '-v') {
     const manifest = JSON.parse(
-      readFileSync(join(installRoot, 'package.json'), 'utf8'),
+      readFileSync(join(runtimeRoot, 'package.json'), 'utf8'),
     ) as {version: string};
     console.log(`VarisDev ${manifest.version}`);
     return 0;
   }
-  const manager = new RuntimeManager({installRoot});
   if (command === 'update') {
     if (rest.length > 1 || (rest.length === 1 && rest[0] !== '--check'))
       throw new Error('Usage: varisdev update [--check]');
@@ -190,7 +194,6 @@ export async function runCli(
     );
     return 0;
   }
-  const runtimeRoot = await manager.currentRoot();
   if (command === 'login' || command === 'logout') {
     await runAccountCommand(runtimeRoot, command, rest);
     return 0;
@@ -211,10 +214,10 @@ export async function runCli(
     return childDone(
       spawn(
         process.execPath,
-        [join(installRoot, 'scripts/desktop-app.mjs'), 'install'],
+        [join(runtimeRoot, 'scripts/desktop-app.mjs'), 'install'],
         {
           stdio: 'inherit',
-          env: launchEnvironment(installRoot),
+          env: launchEnvironment(installRoot, runtimeRoot),
         },
       ),
     );
@@ -234,7 +237,7 @@ export async function runCli(
           join(runtimeRoot, 'extensions/varisdev.ts'),
           ...rest,
         ],
-        {stdio: 'inherit', env: launchEnvironment(installRoot)},
+        {stdio: 'inherit', env: launchEnvironment(installRoot, runtimeRoot)},
       ),
     );
   }

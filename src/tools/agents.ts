@@ -27,7 +27,6 @@ const allowedEfforts = [
   'high',
   'xhigh',
 ] as const;
-const defaultModel = 'openai-codex/gpt-5.6-sol';
 
 const idSchema = Type.String({
   description: 'Agent ID returned by agent_spawn.',
@@ -59,7 +58,7 @@ const spawnSchema = Type.Object({
     Type.String({
       pattern: '^[^/]+/.+$',
       description:
-        'Model in provider/model format from the parent model registry. Defaults to the parent model, or openai-codex/gpt-5.6-sol when no parent model is set.',
+        'Model in provider/model format from the parent model registry. Inherits the selected parent model when omitted. A model must be selected.',
     }),
   ),
   thinkingLevel: Type.Optional(
@@ -321,7 +320,7 @@ export function registerAgentTools(
     name: 'agent_spawn',
     label: 'Spawn agent',
     description:
-      'Start a background agent with its own conversation. Accepts any model from the parent model registry in provider/model format. Defaults to the parent model, or openai-codex/gpt-5.6-sol when no parent model is set. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
+      'Start a background agent with its own conversation. Accepts any model from the parent model registry in provider/model format. Inherits the selected parent model when omitted; requires a model choice when the parent has none. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
     promptSnippet:
       'Start a background agent with its own conversation and return its ID immediately.',
     parameters: spawnSchema,
@@ -333,7 +332,11 @@ export function registerAgentTools(
         throw new Error(`Agent cwd is not a directory: ${cwd}`);
       const inheritedModel =
         ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
-      const selectedModel = params.model ?? inheritedModel ?? defaultModel;
+      const selectedModel = params.model ?? inheritedModel;
+      if (selectedModel === undefined)
+        throw new Error(
+          'Choose a parent model or specify the agent model as provider/model.',
+        );
       const separator = selectedModel.indexOf('/');
       if (separator <= 0 || separator === selectedModel.length - 1)
         throw new Error('Agent model must use provider/model format.');

@@ -21,6 +21,24 @@ contextBridge.exposeInMainWorld('pidev', {
       throw new TypeError('Zoom must be between 25% and 500%.');
     webFrame.setZoomFactor(factor);
   },
+  getToolModels: () => invoke('varisdev:get-tool-models'),
+  saveToolModel: (tool, model) =>
+    invoke('varisdev:save-tool-model', tool, model),
+  getAccounts: () => invoke('varisdev:get-accounts'),
+  startAccount: (provider, method) =>
+    invoke('varisdev:account-start', provider, method),
+  respondAccount: (attempt, prompt, value) =>
+    invoke('varisdev:account-respond', attempt, prompt, value),
+  cancelAccount: attempt => invoke('varisdev:account-cancel', attempt),
+  openAccountLink: (attempt, index) =>
+    invoke('varisdev:account-link', attempt, index),
+  onAccounts(callback) {
+    if (typeof callback !== 'function')
+      throw new TypeError('An accounts callback is required.');
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('varisdev:accounts', listener);
+    return () => ipcRenderer.removeListener('varisdev:accounts', listener);
+  },
   getUpdateStatus: () => invoke('varisdev:get-update-status'),
   checkUpdates: () => invoke('varisdev:check-updates'),
   installUpdate: () => invoke('varisdev:install-update'),

@@ -120,6 +120,7 @@ void test('text_to_speech maps options and streams audio to a relative output di
       'speech',
       {
         action: 'text_to_speech',
+        modelId: 'eleven_multilingual_v2',
         text: 'Hyvää päivää',
         voiceId,
         languageCode: 'fi',
@@ -213,6 +214,7 @@ void test('sound_effects sends its defaults and retains zero and false options',
       'sound-effect',
       {
         action: 'sound_effects',
+        modelId: 'eleven_text_to_sound_v2',
         text: 'A short impact',
         durationSeconds: 0.5,
         promptInfluence: 0,
@@ -355,6 +357,7 @@ void test('generation errors include a bounded status message, redact the key, a
         'failed-speech',
         {
           action: 'text_to_speech',
+          modelId: 'eleven_multilingual_v2',
           text: 'This request fails',
           voiceId: 'voice-1',
           outputDir: 'failed-output',
@@ -402,17 +405,26 @@ void test('conditional fields and sound-effect WAV formats fail before fetch', a
       message: RegExp;
     }> = [
       {
-        params: {action: 'text_to_speech', voiceId: 'voice-1'},
+        params: {
+          action: 'text_to_speech',
+          modelId: 'eleven_multilingual_v2',
+          voiceId: 'voice-1',
+        },
         message: /text/i,
       },
       {
-        params: {action: 'text_to_speech', text: 'Hello'},
+        params: {
+          action: 'text_to_speech',
+          modelId: 'eleven_multilingual_v2',
+          text: 'Hello',
+        },
         message: /voiceId/i,
       },
       {params: {action: 'sound_effects'}, message: /text/i},
       {
         params: {
           action: 'sound_effects',
+          modelId: 'eleven_text_to_sound_v2',
           text: 'A bell',
           outputFormat: 'wav_44100',
         },
@@ -462,6 +474,7 @@ void test('audio codec prefixes select the generated file extension', async () =
         `format-${outputFormat}`,
         {
           action: 'text_to_speech',
+          modelId: 'eleven_multilingual_v2',
           text: 'Format test',
           voiceId: 'voice-1',
           outputFormat,
@@ -532,6 +545,7 @@ void test(
           'stream-timeout',
           {
             action: 'text_to_speech',
+            modelId: 'eleven_multilingual_v2',
             text: 'Timeout test',
             voiceId: 'voice-1',
             outputDir: 'timeout-output',
@@ -555,6 +569,7 @@ void test(
         'stream-cancel',
         {
           action: 'text_to_speech',
+          modelId: 'eleven_multilingual_v2',
           text: 'Cancellation test',
           voiceId: 'voice-1',
           outputDir: 'cancel-output',

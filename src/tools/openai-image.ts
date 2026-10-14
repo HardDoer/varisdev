@@ -4,14 +4,14 @@ import {
   formatSize,
   truncateHead,
   type ExtensionAPI,
+  type ExtensionContext,
   withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename, extname, join, resolve} from 'node:path';
 import {Type} from 'typebox';
-
-const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst-2026-09-08';
+import {selectToolModel} from './model-selection.ts';
 const DEFAULT_IMAGE_SIZE = '1024x1024';
 const DEFAULT_IMAGE_QUALITY = 'auto';
 const DEFAULT_OUTPUT_DIR = 'generated-images';
@@ -25,6 +25,13 @@ const API_KEY_ENV_VAR = 'OPENAI_API_KEY';
 const OPENAI_IMAGE_TOOL_NAME = 'openai_image';
 
 const openAIImageSchema = Type.Object({
+  model: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        'Image model chosen by the user. Otherwise uses OPENAI_IMAGE_MODEL or the saved choice; asks on first GUI use.',
+    }),
+  ),
   prompt: Type.String({
     description: 'Detailed prompt for the image to create or edit.',
   }),
@@ -148,7 +155,7 @@ type OpenAIImageToolDetails = {
     outputDir: string;
     outputFormat: string;
     timeoutMs: number;
-    apiKeyEnvVar: string;
+    apiKeyEnvVar?: string;
     baseURL?: string;
     inputImages?: InputImageDetails[];
   };
@@ -160,11 +167,15 @@ function trimEnv(name: string): string | undefined {
   return value ? value : undefined;
 }
 
-function getApiKey(): {apiKey: string; envVarName: string} {
+async function getApiKey(
+  ctx: ExtensionContext,
+): Promise<{apiKey: string; envVarName?: string}> {
   const apiKey = trimEnv(API_KEY_ENV_VAR);
   if (apiKey) return {apiKey, envVarName: API_KEY_ENV_VAR};
+  const saved = await ctx.modelRegistry?.getApiKeyForProvider('openai');
+  if (saved) return {apiKey: saved};
   throw new Error(
-    `Missing OpenAI API key. Set process.env.${API_KEY_ENV_VAR}.`,
+    'Connect OpenAI in Accounts or set OPENAI_API_KEY before generating images.',
   );
 }
 
@@ -457,12 +468,13 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
     name: OPENAI_IMAGE_TOOL_NAME,
     label: 'OpenAI Image',
     description:
-      'Create or edit one or more images with GPT Image 2.5 Sunburst through the OpenAI Images API and save them as files in the current project.',
+      "Create or edit images using the user's chosen OpenAI image model and save them in the current project.",
     promptSnippet:
       'Create or edit images with the OpenAI Images API and save them to project files.',
     promptGuidelines: [
       'Use openai_image when the user asks to generate, edit, transform, restyle, or use input images with OpenAI.',
-      'openai_image uses process.env.OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.',
+      'Use the image model selected by the user. If none is configured, the first GUI use asks for one. Never invent a model choice.',
+      'openai_image uses the saved OpenAI account or OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.',
       'When the user wants to use existing local images, pass their paths as inputImagePaths. Do not pass raw base64; the tool reads each path and builds the base64-backed OpenAI edit payloads internally.',
       'openai_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.',
       `Choose the quality parameter from the user's requested speed/detail/cost preference; use ${DEFAULT_IMAGE_QUALITY} when unspecified.`,
@@ -470,8 +482,13 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
     ],
     parameters: openAIImageSchema,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const {apiKey, envVarName} = getApiKey();
-      const model = DEFAULT_IMAGE_MODEL;
+      const {apiKey, envVarName} = await getApiKey(ctx);
+      const model = await selectToolModel(
+        'openai-image',
+        params.model,
+        ctx,
+        signal,
+      );
       const size =
         params.size?.trim() ||
         envOrDefault('OPENAI_IMAGE_SIZE', DEFAULT_IMAGE_SIZE);

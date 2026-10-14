@@ -2,27 +2,21 @@ import {spawn} from 'node:child_process';
 import {createHash, randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {
-  cp,
   mkdir,
   readFile,
   readdir,
   rename,
   rm,
   stat,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {refreshMacLauncher} from './mac-launcher.ts';
 
 const enginePackage = '@earendil-works/pi-coding-agent';
-const sdkPackages = [
-  enginePackage,
-  '@earendil-works/pi-ai',
-  '@earendil-works/pi-tui',
-];
 const sourceInputs = [
   'src',
   'assets',
@@ -40,6 +34,8 @@ const sourceInputs = [
 export interface UpdateStatus {
   phase: 'idle' | 'checking' | 'available' | 'updating' | 'ready' | 'error';
   currentVersion: string;
+  currentRevision?: string;
+  latestRevision?: string;
   latestVersion?: string;
   checkedAt?: string;
   error?: string;
@@ -53,12 +49,11 @@ export interface RuntimeCommandOptions {
 }
 
 export interface RuntimeHooks {
-  fetch?: typeof globalThis.fetch;
   run?: (
     command: string,
     args: string[],
     options: RuntimeCommandOptions,
-  ) => Promise<void>;
+  ) => Promise<string | void>;
   smokeImport?: (root: string) => Promise<void>;
   now?: () => Date;
 }
@@ -68,7 +63,6 @@ export interface RuntimeManagerOptions {
   dataDir?: string;
   /** The source tree captured when a desktop process started. */
   runningRoot?: string;
-  registryUrl?: string;
   requestTimeoutMs?: number;
   commandTimeoutMs?: number;
   lockTimeoutMs?: number;
@@ -80,11 +74,12 @@ interface ActiveRuntime {
   baseRoot: string;
   fingerprint: string;
   version: string;
+  revision?: string;
 }
 
-interface RegistryRelease {
-  version: string;
-  dependencies?: Record<string, string>;
+interface AppRelease {
+  revision: string;
+  source: string;
 }
 
 export function defaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -110,16 +105,6 @@ export function defaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
 
 function stableVersion(version: unknown): version is string {
   return typeof version === 'string' && /^\d+\.\d+\.\d+$/.test(version);
-}
-
-function compareVersions(a: string, b: string): number {
-  const left = a.split('.').map(Number);
-  const right = b.split('.').map(Number);
-  for (let index = 0; index < 3; index++) {
-    if (left[index] !== right[index])
-      return left[index] > right[index] ? 1 : -1;
-  }
-  return 0;
 }
 
 function installedVersion(root: string): string {
@@ -169,12 +154,12 @@ async function sourceFingerprint(root: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function runCommand(
+export async function runRuntimeCommand(
   command: string,
   args: string[],
   options: RuntimeCommandOptions,
-): Promise<void> {
-  await new Promise<void>((fulfill, reject) => {
+): Promise<string> {
+  return new Promise<string>((fulfill, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
@@ -183,11 +168,15 @@ async function runCommand(
       detached: process.platform !== 'win32',
     });
     let output = '';
+    let stdout = '';
     let timedOut = false;
     const append = (chunk: Buffer) => {
       output = (output + chunk.toString()).slice(-12_000);
     };
-    child.stdout.on('data', append);
+    child.stdout.on('data', chunk => {
+      stdout = (stdout + chunk.toString()).slice(-16384);
+      append(chunk);
+    });
     child.stderr.on('data', append);
     const timer = setTimeout(() => {
       timedOut = true;
@@ -215,20 +204,75 @@ async function runCommand(
     });
     child.on('close', code => {
       clearTimeout(timer);
-      if (timedOut)
-        reject(new Error('VarisDev runtime preparation timed out.'));
+      if (timedOut) reject(new Error('VarisDev update preparation timed out.'));
       else if (code !== 0)
         reject(
           new Error(
-            `VarisDev runtime preparation failed (${code}). ${output.trim()}`,
+            `VarisDev update preparation failed (${code}). ${output.trim()}`,
           ),
         );
-      else fulfill();
+      else fulfill(stdout);
     });
   });
 }
 
-/** Builds isolated runtime generations; only a fully verified generation becomes active. */
+const applicationSources = [
+  'ssh://git@github.com/HardDoer/varisdev.git',
+  'https://github.com/HardDoer/varisdev.git',
+];
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'Never',
+    ...(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH
+      ? {}
+      : {GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes'}),
+  };
+}
+
+function applicationSource(root: string): string | undefined {
+  try {
+    const info = JSON.parse(
+      readFileSync(join(root, 'build-info.json'), 'utf8'),
+    ) as {source?: string};
+    return info.source && applicationSources.includes(info.source)
+      ? info.source
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function applicationVersion(root: string): string {
+  const manifest = JSON.parse(
+    readFileSync(join(root, 'package.json'), 'utf8'),
+  ) as {name?: string; version?: string};
+  if (
+    manifest.name !== 'varisdev' ||
+    typeof manifest.version !== 'string' ||
+    !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(manifest.version)
+  )
+    throw new Error('The installed VarisDev application version is invalid.');
+  return manifest.version;
+}
+
+function applicationRevision(root: string): string | undefined {
+  try {
+    const info = JSON.parse(
+      readFileSync(join(root, 'build-info.json'), 'utf8'),
+    ) as {revision?: string};
+    return typeof info.revision === 'string' &&
+      /^[a-f0-9]{40}$/.test(info.revision)
+      ? info.revision
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Stages complete application installs and activates them after verification. */
 export class RuntimeManager {
   readonly installRoot: string;
   readonly dataDir: string;
@@ -244,13 +288,16 @@ export class RuntimeManager {
     this.dataDir = resolve(options.dataDir || defaultDataDir());
     let version = '';
     try {
-      version = installedVersion(options.runningRoot || this.installRoot);
+      version = applicationVersion(options.runningRoot || this.installRoot);
     } catch {
-      // check() exposes missing or malformed runtime metadata as an error.
+      /* check() reports missing application metadata. */
     }
     this.state = {
       phase: 'idle',
       currentVersion: version,
+      currentRevision: applicationRevision(
+        options.runningRoot || this.installRoot,
+      ),
       restartRequired: false,
     };
   }
@@ -258,19 +305,17 @@ export class RuntimeManager {
   status(): UpdateStatus {
     return {...this.state};
   }
-
   subscribe(listener: (status: UpdateStatus) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-
   private publish(patch: Partial<UpdateStatus>): UpdateStatus {
     this.state = {...this.state, ...patch};
     for (const listener of this.listeners) {
       try {
         listener(this.status());
       } catch {
-        // A disconnected UI must not interrupt activation or lock cleanup.
+        /* A disconnected UI must not interrupt activation. */
       }
     }
     return this.status();
@@ -295,18 +340,34 @@ export class RuntimeManager {
     if (
       !pointer ||
       typeof pointer.generation !== 'string' ||
-      !/^runtime-\d+\.\d+\.\d+-[a-f0-9-]+$/.test(pointer.generation) ||
+      !/^(?:runtime-\d+\.\d+\.\d+-[a-f0-9-]+|app-[a-f0-9]{16})$/.test(
+        pointer.generation,
+      ) ||
       pointer.baseRoot !== this.installRoot ||
-      !stableVersion(pointer.version) ||
+      typeof pointer.version !== 'string' ||
       pointer.fingerprint !== (await sourceFingerprint(this.installRoot))
     )
       return this.installRoot;
-    const root = join(this.dataDir, 'runtimes', pointer.generation);
+    const generation = join(this.dataDir, 'runtimes', pointer.generation);
+    const application = pointer.generation.startsWith('app-');
+    const root = application
+      ? join(
+          generation,
+          process.platform === 'win32' ? 'node_modules' : 'lib/node_modules',
+          'varisdev',
+        )
+      : generation;
     try {
-      if (installedVersion(root) !== pointer.version) return this.installRoot;
-      await stat(
-        join(root, 'desktop', 'build', 'src', 'dashboard', 'parent.js'),
-      );
+      if (application) {
+        if (
+          !pointer.revision ||
+          pointer.revision !== applicationRevision(root) ||
+          applicationVersion(root) !== pointer.version
+        )
+          return this.installRoot;
+      } else if (installedVersion(root) !== pointer.version)
+        return this.installRoot;
+      await stat(join(root, 'desktop/build/src/dashboard/parent.js'));
       return root;
     } catch {
       return this.installRoot;
@@ -314,9 +375,7 @@ export class RuntimeManager {
   }
 
   async currentPiVersion(): Promise<string> {
-    const version = installedVersion(await this.currentRoot());
-    this.state.currentVersion = version;
-    return version;
+    return installedVersion(await this.currentRoot());
   }
 
   check(): Promise<UpdateStatus> {
@@ -327,21 +386,24 @@ export class RuntimeManager {
     });
     return this.checking;
   }
-
   private async performCheck(): Promise<UpdateStatus> {
     this.publish({phase: 'checking', error: undefined});
     try {
-      const currentVersion = await this.currentPiVersion();
+      const root = await this.currentRoot();
+      const currentVersion = applicationVersion(root);
+      const currentRevision = applicationRevision(root);
       const release = await this.latest();
-      const available = compareVersions(release.version, currentVersion) > 0;
       return this.publish({
-        phase: available
-          ? 'available'
-          : this.state.restartRequired
-            ? 'ready'
-            : 'idle',
+        phase:
+          release.revision !== currentRevision
+            ? 'available'
+            : this.state.restartRequired
+              ? 'ready'
+              : 'idle',
         currentVersion,
-        latestVersion: release.version,
+        currentRevision,
+        latestVersion: undefined,
+        latestRevision: release.revision,
         checkedAt: this.now().toISOString(),
       });
     } catch (error) {
@@ -368,129 +430,142 @@ export class RuntimeManager {
     try {
       const previousRoot = await this.currentRoot();
       unlock = await this.acquireLock();
-      const currentVersion = await this.currentPiVersion();
+      const activeRoot = await this.currentRoot();
+      const currentVersion = applicationVersion(activeRoot);
+      const currentRevision = applicationRevision(activeRoot);
       const release = await this.latest();
       this.publish({
-        latestVersion: release.version,
+        currentVersion,
+        currentRevision,
+        latestVersion: undefined,
+        latestRevision: release.revision,
         checkedAt: this.now().toISOString(),
       });
-      if (compareVersions(release.version, currentVersion) <= 0) {
+      if (release.revision === currentRevision) {
         const restartRequired =
-          this.state.restartRequired ||
-          previousRoot !== (await this.currentRoot());
+          this.state.restartRequired || previousRoot !== activeRoot;
         return this.publish({
           phase: restartRequired ? 'ready' : 'idle',
           restartRequired,
         });
       }
       const fingerprint = await sourceFingerprint(this.installRoot);
-      const generation = `runtime-${release.version}-${randomUUID()}`;
+      // Keep nested npm lifecycle working directories below Windows path limits.
+      const generation = `app-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
       stage = join(this.dataDir, 'runtimes', generation);
       await mkdir(stage, {recursive: true});
-      for (const input of sourceInputs) {
-        // The SDK lock describes the old generation; npm resolves a new one.
-        if (input === 'desktop/package-lock.json') continue;
-        const from = join(this.installRoot, input);
-        try {
-          await stat(from);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-          throw error;
-        }
-        await cp(from, join(stage, input), {recursive: true});
-      }
-      await symlink(
-        join(this.installRoot, 'node_modules'),
-        join(stage, 'node_modules'),
-        process.platform === 'win32' ? 'junction' : 'dir',
-      );
-      const manifestPath = join(stage, 'desktop', 'package.json');
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-      manifest.dependencies ??= {};
-      for (const name of sdkPackages)
-        manifest.dependencies[name] = release.version;
-      if (release.dependencies?.typebox)
-        manifest.dependencies.typebox = release.dependencies.typebox;
-      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      const require = createRequire(join(this.installRoot, 'package.json'));
-      const env = {...process.env};
+      const require = createRequire(join(activeRoot, 'package.json'));
+      const env = gitEnvironment();
       const executable = env.VARISDEV_NODE_EXECUTABLE || process.execPath;
       if (process.versions.electron && executable === process.execPath)
         env.ELECTRON_RUN_AS_NODE = '1';
       else delete env.ELECTRON_RUN_AS_NODE;
-      env.npm_config_registry = await this.registry();
-      const run = this.options.hooks?.run || runCommand;
+      const run = this.options.hooks?.run || runRuntimeCommand;
       const commandOptions = {
         env,
         timeoutMs: this.options.commandTimeoutMs ?? 10 * 60_000,
       };
+      const source = join(stage, 'source');
+      await run('git', ['init', source], {...commandOptions, cwd: stage});
+      await run(
+        'git',
+        ['fetch', '--depth=1', release.source, release.revision],
+        {...commandOptions, cwd: source},
+      );
+      await run('git', ['checkout', '--detach', 'FETCH_HEAD'], {
+        ...commandOptions,
+        cwd: source,
+      });
+      const version = applicationVersion(source);
+      const npm = join(
+        dirname(require.resolve('npm/package.json')),
+        'bin/npm-cli.js',
+      );
+      await run(executable, [npm, 'pack', '--pack-destination', stage], {
+        ...commandOptions,
+        cwd: source,
+      });
+      const archive = join(stage, `varisdev-${version}.tgz`);
       await run(
         executable,
         [
-          join(
-            dirname(require.resolve('npm/package.json')),
-            'bin',
-            'npm-cli.js',
-          ),
+          npm,
           'install',
-          '--global=false',
+          '--global=true',
           '--prefix',
-          join(stage, 'desktop'),
+          stage,
           '--omit=dev',
           '--legacy-peer-deps',
           '--no-audit',
           '--no-fund',
-        ],
-        {...commandOptions, cwd: join(stage, 'desktop')},
-      );
-      if (installedVersion(stage) !== release.version)
-        throw new Error(
-          'The prepared VarisDev runtime has an unexpected version.',
-        );
-      await run(
-        executable,
-        [
-          require.resolve('typescript/bin/tsc'),
-          '--project',
-          join(stage, 'tsconfig.desktop.json'),
+          archive,
         ],
         {...commandOptions, cwd: stage},
       );
+      const root = join(
+        stage,
+        process.platform === 'win32' ? 'node_modules' : 'lib/node_modules',
+        'varisdev',
+      );
+      if (applicationVersion(root) !== version)
+        throw new Error(
+          'The prepared VarisDev application has an unexpected version.',
+        );
+      installedVersion(root);
+      for (const file of [
+        'bin/varisdev.mjs',
+        'assets/dashboard/index.html',
+        'assets/desktop/preload.cjs',
+        'desktop/build/src/runtime/cli.js',
+        'desktop/build/src/desktop/main.js',
+      ])
+        await stat(join(root, file));
       if (this.options.hooks?.smokeImport)
-        await this.options.hooks.smokeImport(stage);
+        await this.options.hooks.smokeImport(root);
       else
         await run(
           executable,
           [
             '--input-type=module',
             '--eval',
-            `await import(${JSON.stringify(pathToFileURL(join(stage, 'desktop', 'build', 'src', 'dashboard', 'parent.js')).href)})`,
+            `await import(${JSON.stringify(pathToFileURL(join(root, 'desktop/build/src/dashboard/parent.js')).href)}); await import(${JSON.stringify(pathToFileURL(join(root, 'desktop/build/src/runtime/cli.js')).href)});`,
           ],
-          {...commandOptions, cwd: stage},
+          {...commandOptions, cwd: root},
         );
-      // A package reinstall while preparing must not activate obsolete app sources.
+      await writeFile(
+        join(root, 'build-info.json'),
+        JSON.stringify({revision: release.revision, source: release.source}) +
+          '\n',
+      );
+      await rm(source, {recursive: true, force: true});
+      await rm(archive, {force: true});
       if (fingerprint !== (await sourceFingerprint(this.installRoot)))
         throw new Error(
           'VarisDev app files changed during the update. Please retry.',
         );
+      if (process.platform === 'darwin')
+        await refreshMacLauncher(this.installRoot, root);
       const pointer: ActiveRuntime = {
         generation,
         baseRoot: this.installRoot,
         fingerprint,
-        version: release.version,
+        version,
+        revision: release.revision,
       };
       await writeFile(
         join(stage, 'runtime.json'),
-        `${JSON.stringify(pointer, null, 2)}\n`,
+        JSON.stringify(pointer) + '\n',
       );
       pointerTemp = join(this.dataDir, `active-${randomUUID()}.tmp`);
-      await writeFile(pointerTemp, `${JSON.stringify(pointer, null, 2)}\n`);
+      await writeFile(pointerTemp, JSON.stringify(pointer) + '\n');
       await rename(pointerTemp, join(this.dataDir, 'active.json'));
       pointerTemp = undefined;
-      stage = undefined; // Generations may still be used by a running app.
+      stage = undefined;
       return this.publish({
         phase: 'ready',
-        currentVersion: release.version,
+        currentVersion: version,
+        latestVersion: version,
+        currentRevision: release.revision,
         restartRequired: true,
       });
     } catch (error) {
@@ -506,93 +581,57 @@ export class RuntimeManager {
   private now(): Date {
     return this.options.hooks?.now?.() || new Date();
   }
-
   private fail(error: unknown): UpdateStatus {
     return this.publish({
       phase: 'error',
-      error:
-        `VarisDev runtime: ${error instanceof Error ? error.message : String(error)}`.replace(
-          /(?<![\w./@:-])Pi(?![\w./-])/g,
-          'VarisDev',
-        ),
+      error: `VarisDev update: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
 
-  private async registry(): Promise<string> {
-    let registry = 'https://registry.npmjs.org/';
-    for (const path of [
-      process.env.npm_config_userconfig || join(homedir(), '.npmrc'),
-      join(this.installRoot, '.npmrc'),
-    ]) {
+  private async latest(): Promise<AppRelease> {
+    // Archive installs may have no Git metadata. Public HTTPS needs no SSH setup.
+    const preferred =
+      applicationSource(await this.currentRoot()) || applicationSources[1];
+    const sources = [
+      preferred,
+      ...applicationSources.filter(source => source !== preferred),
+    ];
+    const run = this.options.hooks?.run || runRuntimeCommand;
+    const deadline = Date.now() + (this.options.requestTimeoutMs ?? 15_000);
+    let failure: unknown;
+    for (const source of sources) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const contents = await readFile(path, 'utf8');
-        const entries = new Map(
-          contents.split(/\r?\n/).flatMap(line => {
-            const match =
-              /^\s*(registry|@earendil-works:registry)\s*=\s*(\S+)\s*$/.exec(
-                line,
-              );
-            return match ? [[match[1], match[2]] as [string, string]] : [];
+        const output = await Promise.race([
+          run('git', ['ls-remote', '--exit-code', source, 'HEAD'], {
+            cwd: this.installRoot,
+            env: gitEnvironment(),
+            timeoutMs: remaining,
           }),
-        );
-        registry =
-          entries.get('@earendil-works:registry') ||
-          entries.get('registry') ||
-          registry;
-      } catch {
-        // Missing npm configuration uses the public registry.
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(new Error('Checking for VarisDev updates timed out.')),
+              remaining,
+            );
+          }),
+        ]);
+        const revision =
+          typeof output === 'string'
+            ? /^([a-f0-9]{40})\s+HEAD\s*$/m.exec(output)?.[1]
+            : undefined;
+        if (!revision)
+          throw new Error('Git did not return a valid application revision.');
+        return {revision, source};
+      } catch (error) {
+        failure = error;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
-    registry =
-      this.options.registryUrl ||
-      process.env.npm_config_registry ||
-      process.env.NPM_CONFIG_REGISTRY ||
-      registry;
-    const url = new URL(registry);
-    if (!['https:', 'http:'].includes(url.protocol))
-      throw new Error(
-        'The configured app runtime registry must use HTTP or HTTPS.',
-      );
-    return url.href.endsWith('/') ? url.href : `${url.href}/`;
-  }
-
-  private async latest(): Promise<RegistryRelease> {
-    const controller = new AbortController();
-    const timeoutMs = this.options.requestTimeoutMs ?? 15_000;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const request = async () => {
-      const fetch = this.options.hooks?.fetch || globalThis.fetch;
-      const response = await fetch(
-        `${await this.registry()}${encodeURIComponent(enginePackage)}/latest`,
-        {
-          signal: controller.signal,
-          headers: {accept: 'application/json'},
-        },
-      );
-      if (!response.ok)
-        throw new Error(
-          `App runtime registry returned HTTP ${response.status}.`,
-        );
-      const release = (await response.json()) as RegistryRelease;
-      if (!stableVersion(release.version))
-        throw new Error(
-          'The app runtime registry did not return a stable version.',
-        );
-      return release;
-    };
-    try {
-      return await Promise.race([
-        request(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            controller.abort();
-            reject(new Error('Checking the VarisDev runtime timed out.'));
-          }, timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    throw failure || new Error('Checking for VarisDev updates timed out.');
   }
 
   private async lockIsStale(
@@ -650,7 +689,7 @@ export class RuntimeManager {
       }
       if (Date.now() - started >= (this.options.lockTimeoutMs ?? 15 * 60_000))
         throw new Error(
-          'Another VarisDev runtime update is still running. Please retry.',
+          'Another VarisDev update is still running. Please retry.',
         );
       try {
         const observed = await stat(lock);

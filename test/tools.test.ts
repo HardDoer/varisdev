@@ -478,6 +478,7 @@ void test('openai_image saves base64 output from the configured API', async () =
       'openai-image-test',
       {
         prompt: 'Create a test image',
+        model: 'user-chosen-image-model',
         outputDir: 'images',
         outputFormat: 'png',
         filenamePrefix: 'test-image',
@@ -503,6 +504,7 @@ void test('openai_image saves base64 output from the configured API', async () =
     assert.equal(requestPath, '/v1/images/generations');
     assert.equal(authorization, 'Bearer test-api-key');
     assert.equal(requestBody?.prompt, 'Create a test image');
+    assert.equal(requestBody?.model, 'user-chosen-image-model');
     assert.equal(requestBody?.output_format, 'png');
     assert.equal(details.request.operation, 'generate');
     assert.equal(details.request.outputDir, join(cwd, 'images'));

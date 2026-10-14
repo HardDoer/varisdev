@@ -4,6 +4,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  shell,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron';
@@ -38,6 +39,8 @@ import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopPreferences} from './preferences.ts';
 import {openSystemTerminal} from './terminal.ts';
+import {DesktopAccounts} from './accounts.ts';
+import {getToolModels, saveToolModel} from '../tools/model-selection.ts';
 import {
   hasConversationImage,
   readConversationImage,
@@ -106,6 +109,17 @@ const hub = new DashboardHub(
   launchCwd,
 );
 let mainWindow: BrowserWindow | undefined;
+const accounts = new DesktopAccounts({
+  openBrowser: url => shell.openExternal(url),
+  changed: state => {
+    if (
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      !mainWindow.webContents.isDestroyed()
+    )
+      mainWindow.webContents.send('varisdev:accounts', state);
+  },
+});
 let snapshotTimer: NodeJS.Timeout | undefined;
 let shuttingDown = false;
 let cleanupFinished = false;
@@ -201,6 +215,19 @@ function handle(
 }
 
 function installHandlers(): void {
+  handle('varisdev:get-tool-models', getToolModels);
+  handle('varisdev:save-tool-model', saveToolModel);
+  handle('varisdev:get-accounts', () => accounts.get());
+  handle('varisdev:account-start', (provider, method) =>
+    accounts.start(provider, method),
+  );
+  handle('varisdev:account-respond', (attempt, prompt, value) =>
+    accounts.respond(attempt, prompt, value),
+  );
+  handle('varisdev:account-cancel', attempt => accounts.cancel(attempt));
+  handle('varisdev:account-link', (attempt, index) =>
+    accounts.openLink(attempt, index),
+  );
   handle('varisdev:get-update-status', () =>
     publicUpdateStatus(runtime.status()),
   );
@@ -363,6 +390,12 @@ async function createWindow(): Promise<void> {
     },
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
+  mainWindow.webContents.on(
+    'did-start-navigation',
+    (_event, _url, _inPlace, isMainFrame) => {
+      if (isMainFrame) accounts.cancel(accounts.snapshot().attempt?.id);
+    },
+  );
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!isLocalPage(url)) event.preventDefault();
   });
@@ -402,6 +435,8 @@ async function restartForUpdate(selectedSessionId?: unknown): Promise<void> {
   )
     throw new DashboardInputError('Choose a valid parent session.');
   requireUpdateRestart(runtime.status(), snapshot, sessionOperations);
+  if (accounts.snapshot().attempt)
+    throw new Error('Finish or cancel account setup before restarting.');
   restarting = true;
   const selected = snapshot.sessions.find(
     item => item.session.id === selectedId,
@@ -649,6 +684,7 @@ async function shutdown(): Promise<void> {
   unsubscribe();
   unsubscribeUpdates();
   try {
+    await accounts.dispose();
     if (attachedSessionId) {
       try {
         await Promise.all([

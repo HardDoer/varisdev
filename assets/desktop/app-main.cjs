@@ -62,9 +62,11 @@ async function start() {
   );
   const runtime = new RuntimeManager({installRoot: config.installRoot});
   const root = await runtime.currentRoot();
-  await import(
-    pathToFileURL(join(root, 'desktop/build/src/desktop/main.js')).href
+  const {runCli} = await import(
+    pathToFileURL(join(root, 'desktop/build/src/runtime/cli.js')).href
   );
+  await runCli(['--overview'], config.installRoot);
+  app.quit();
 }
 
 app.setName('VarisDev');

@@ -121,14 +121,11 @@ export async function createDashboardParent(
   await loader.reload();
   for (const [name, value] of args?.unknownFlags ?? [])
     loader.getExtensions().runtime.flagValues.set(name, value);
-  const modelRuntime =
-    inherited || startup
-      ? await ModelRuntime.create({
-          authPath: join(agentDir, 'auth.json'),
-          modelsPath: join(agentDir, 'models.json'),
-          refreshOnCreate: !inherited,
-        })
-      : undefined;
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(agentDir, 'auth.json'),
+    modelsPath: join(agentDir, 'models.json'),
+    refreshOnCreate: !inherited,
+  });
   if (inherited && modelRuntime) {
     const delegated = await createWorkerModelRuntime(
       inherited.modelRegistry,
@@ -161,17 +158,36 @@ export async function createDashboardParent(
     );
   if (args?.apiKey && startupModel)
     await modelRuntime!.setRuntimeApiKey(startupModel.provider, args.apiKey);
-  const {session} = await createAgentSession({
-    cwd: request.cwd,
-    agentDir,
-    model: inherited?.model ?? startupModel,
-    modelRuntime,
-    thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
-    tools: startup?.tools,
-    settingsManager,
-    resourceLoader: loader,
-    sessionManager,
-  });
+  const savedProvider = settingsManager.getDefaultProvider();
+  const savedModelId = settingsManager.getDefaultModel();
+  const savedModel =
+    savedProvider && savedModelId
+      ? modelRuntime.getModel(savedProvider, savedModelId)
+      : undefined;
+  // Pi otherwise picks a provider's preset or its first authenticated model.
+  // Suppress that fallback only during creation; saved/user choices still work.
+  const availableModels = modelRuntime.getAvailableSnapshot;
+  modelRuntime.getAvailableSnapshot = () => [];
+  let created: Awaited<ReturnType<typeof createAgentSession>>;
+  try {
+    created = await createAgentSession({
+      cwd: request.cwd,
+      agentDir,
+      model: inherited?.model ?? startupModel ?? savedModel,
+      modelRuntime,
+      thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
+      tools: startup?.tools,
+      settingsManager,
+      resourceLoader: loader,
+      sessionManager,
+    });
+  } finally {
+    modelRuntime.getAvailableSnapshot = availableModels;
+  }
+  const {session} = created;
+  // Agent core supplies an unknown/unknown placeholder when no model was chosen.
+  if (session.model?.provider === 'unknown' && session.model.id === 'unknown')
+    Reflect.set(session.agent.state, 'model', undefined);
   // SDK initialization can append model metadata to an otherwise blank branch.
   if (startup?.leafId) sessionManager.branch(startup.leafId);
   // Deliver every desktop correction together at the next model turn.
@@ -339,7 +355,8 @@ export async function createDashboardParent(
       !levels.includes(options.thinkingLevel as (typeof levels)[number])
     )
       throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
-    if (model && model !== session.model) await session.setModel(model);
+    if (model && (options.modelId !== undefined || model !== session.model))
+      await session.setModel(model, {persist: true});
     requireOpen();
     if (options.thinkingLevel !== undefined)
       session.setThinkingLevel(
@@ -475,6 +492,10 @@ export async function createDashboardParent(
               await localCommand(name!, args);
               return;
             }
+            if (!session.model && !extension)
+              throw new Error(
+                'Choose a model in Menu → Model & settings before sending a prompt.',
+              );
             if (extension) {
               if (extensionPrompt)
                 throw new Error('An extension command is already running.');

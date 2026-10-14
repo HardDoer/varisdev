@@ -1,0 +1,244 @@
+/* global document */
+
+export function initAccounts(api) {
+  if (!api?.getAccounts || !api.onAccounts) return () => {};
+  const $ = id => document.getElementById(id);
+  const dialog = $('accounts-dialog');
+  const provider = $('accounts-provider');
+  const form = $('accounts-form');
+  const input = $('accounts-input');
+  const choice = $('accounts-choice');
+  let state = {revision: -1, providers: [], links: [], message: ''};
+  let busy = false;
+  let failure = '';
+  let promptId;
+  let providerSignature;
+  let linksSignature;
+  let disposed = false;
+
+  function render() {
+    const signature = JSON.stringify(state.providers);
+    if (providerSignature !== signature) {
+      providerSignature = signature;
+      const selected = provider.value;
+      provider.replaceChildren(
+        ...state.providers.map(item => {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.textContent = `${item.name} · ${item.status}`;
+          return option;
+        }),
+      );
+      if (state.providers.some(item => item.id === selected))
+        provider.value = selected;
+    }
+    if (state.attempt) provider.value = state.attempt.provider;
+    const selected = state.providers.find(item => item.id === provider.value);
+    const working = busy || Boolean(state.attempt);
+    provider.disabled = working || !state.providers.length;
+    $('accounts-status').textContent =
+      selected?.status ||
+      (busy ? 'Loading providers…' : 'No providers available.');
+    for (const [id, available] of [
+      ['accounts-oauth', selected?.oauth],
+      ['accounts-key', selected?.apiKey],
+      ['accounts-logout', selected?.stored],
+    ]) {
+      $(id).hidden = !available;
+      $(id).disabled = working;
+    }
+    $('accounts-key').textContent = selected?.stored
+      ? 'Replace with API key'
+      : 'Enter API key';
+    $('accounts-message').textContent = state.message;
+    $('accounts-error').textContent = failure || state.error || '';
+    $('accounts-error').hidden = !$('accounts-error').textContent;
+    $('accounts-device').hidden = !state.deviceCode;
+    $('accounts-device-code').value = state.deviceCode || '';
+    const linkKey = JSON.stringify([state.attempt?.id, state.links]);
+    if (linksSignature !== linkKey) {
+      linksSignature = linkKey;
+      $('accounts-links').replaceChildren(
+        ...state.links.map((link, index) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'quiet-button';
+          button.textContent = link.label;
+          const attempt = state.attempt?.id;
+          button.addEventListener(
+            'click',
+            () => void run(() => api.openAccountLink(attempt, index)),
+          );
+          return button;
+        }),
+      );
+    }
+    $('accounts-cancel').hidden = !state.attempt;
+    $('accounts-cancel').disabled = busy;
+    const request = state.prompt;
+    form.hidden = !request;
+    if (promptId !== request?.id) {
+      promptId = request?.id;
+      input.value = '';
+      choice.replaceChildren();
+      if (request) {
+        const selecting = request.type === 'select';
+        $('accounts-prompt-label').textContent = request.message;
+        $('accounts-prompt-label').htmlFor = selecting
+          ? 'accounts-choice'
+          : 'accounts-input';
+        input.hidden = selecting;
+        choice.hidden = !selecting;
+        input.required = !selecting;
+        input.type = ['secret', 'manual_code'].includes(request.type)
+          ? 'password'
+          : 'text';
+        input.placeholder = request.placeholder || '';
+        for (const item of request.options || []) {
+          const option = document.createElement('option');
+          option.value = item.id;
+          option.textContent = item.label;
+          choice.append(option);
+        }
+        if (dialog.open) (selecting ? choice : input).focus();
+      }
+    }
+    $('accounts-submit').disabled = busy;
+  }
+
+  function receive(next) {
+    if (disposed || next.revision < state.revision) return;
+    state = next;
+    failure = '';
+    render();
+  }
+  async function run(operation) {
+    if (busy || disposed) return;
+    busy = true;
+    failure = '';
+    render();
+    try {
+      const next = await operation();
+      if (next) receive(next);
+    } catch (error) {
+      failure = error.message || String(error);
+    } finally {
+      busy = false;
+      if (!disposed) render();
+    }
+  }
+  function open() {
+    const menu = $('app-menu-panel');
+    if (menu.matches(':popover-open')) menu.hidePopover();
+    $('session-settings-dialog').close();
+    if (!dialog.open) dialog.showModal();
+    void run(() => api.getAccounts());
+  }
+  async function close() {
+    if (busy) return;
+    input.value = '';
+    if (state.attempt) {
+      await run(() => api.cancelAccount(state.attempt.id));
+      if (failure) return;
+    }
+    dialog.close();
+  }
+  function cancel(event) {
+    event.preventDefault();
+    void close();
+  }
+  function submit(event) {
+    event.preventDefault();
+    if (!state.attempt || !state.prompt || busy) return;
+    const value = state.prompt.type === 'select' ? choice.value : input.value;
+    const attempt = state.attempt.id;
+    const prompt = state.prompt.id;
+    input.value = '';
+    void run(() => api.respondAccount(attempt, prompt, value));
+  }
+  const listeners = [];
+  function listen(id, event, callback) {
+    const element = $(id);
+    element.addEventListener(event, callback);
+    listeners.push(() => element.removeEventListener(event, callback));
+  }
+  for (const id of ['open-accounts', 'welcome-accounts', 'settings-accounts'])
+    listen(id, 'click', open);
+  listen('accounts-provider', 'change', render);
+  listen('accounts-close', 'click', () => void close());
+  listen('accounts-dialog', 'cancel', cancel);
+  listen('accounts-form', 'submit', submit);
+  listen('accounts-cancel', 'click', () => {
+    input.value = '';
+    if (state.attempt) void run(() => api.cancelAccount(state.attempt.id));
+  });
+  for (const [id, method] of [
+    ['accounts-oauth', 'oauth'],
+    ['accounts-key', 'api_key'],
+    ['accounts-logout', 'logout'],
+  ])
+    listen(
+      id,
+      'click',
+      () => void run(() => api.startAccount(provider.value, method)),
+    );
+  let toolsBusy = false;
+  async function toolModels(operation) {
+    if (toolsBusy || !api.getToolModels) return;
+    toolsBusy = true;
+    $('tool-models-save').disabled = true;
+    $('tool-models-error').hidden = true;
+    $('tool-models-status').textContent = '';
+    try {
+      await operation();
+    } catch (error) {
+      $('tool-models-error').textContent = error.message || String(error);
+      $('tool-models-error').hidden = false;
+    } finally {
+      toolsBusy = false;
+      $('tool-models-save').disabled = false;
+    }
+  }
+  listen('tool-models', 'toggle', () => {
+    if (!$('tool-models').open) return;
+    void toolModels(async () => {
+      const models = await api.getToolModels();
+      $('tool-models-fields').replaceChildren(
+        ...models.map(model => {
+          const label = document.createElement('label');
+          label.textContent = model.label;
+          const field = document.createElement('input');
+          field.type = 'text';
+          field.dataset.tool = model.id;
+          field.value = model.model;
+          field.maxLength = 256;
+          field.placeholder = model.environment || 'Choose on first use';
+          label.append(field);
+          if (model.environment) {
+            const note = document.createElement('small');
+            note.textContent = `Using ${model.environment}`;
+            label.append(note);
+          }
+          return label;
+        }),
+      );
+    });
+  });
+  listen('tool-models-form', 'submit', event => {
+    event.preventDefault();
+    void toolModels(async () => {
+      const values = [...$('tool-models-fields').querySelectorAll('input')].map(
+        field => [field.dataset.tool, field.value],
+      );
+      for (const [tool, model] of values) await api.saveToolModel(tool, model);
+      $('tool-models-status').textContent = 'Saved.';
+    });
+  });
+  const unsubscribe = api.onAccounts(receive);
+  return () => {
+    disposed = true;
+    input.value = '';
+    unsubscribe();
+    for (const remove of listeners) remove();
+  };
+}

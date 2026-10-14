@@ -17,7 +17,7 @@ Installation includes the session runtime and compiles the desktop and command. 
 
 ## Use isolated data
 
-For development and manual testing, point both `PI_CODING_AGENT_DIR` and `VARISDEV_DATA_DIR` at temporary directories. The first contains model accounts, settings, plugins, and conversations; the second contains desktop preferences and managed runtime updates. Set `PI_OFFLINE=1` when testing without model or update network requests.
+For development and manual testing, point both `PI_CODING_AGENT_DIR` and `VARISDEV_DATA_DIR` at temporary directories. The first contains model accounts, settings, plugins, and conversations; the second contains desktop preferences and staged application updates. Set `PI_OFFLINE=1` when testing without model or update network requests.
 
 Use test accounts and temporary projects. Keep your installed app's package registration separate from the checkout. The automated installation tests create their own temporary directories.
 
@@ -34,7 +34,7 @@ Electron tests require a graphical desktop. On a Linux machine without a display
 
 Add checks for behavior that can regress, especially installation, plugin loading, account persistence, updates, and conversation state. Verify changes to the interface at narrow window sizes, with zoom, with keyboard navigation, and with reduced motion where relevant.
 
-The production installation check uses an isolated package directory, production dependencies, and an automatically generated desktop build. Runtime update checks also cover a failed installation retaining the working runtime. Tests must not modify a contributor's installed app or accounts.
+The production installation check uses an isolated package directory, production dependencies, and an automatically generated desktop build. Update checks cover the full application, bundled dependencies, and failed installations retaining the working version. Tests must not modify a contributor's installed app or accounts.
 
 ## Changes and reports
 

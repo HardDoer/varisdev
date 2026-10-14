@@ -91,7 +91,7 @@ function install() {
       join(appDirectory, 'launch.json'),
       JSON.stringify(
         {
-          installRoot: root,
+          installRoot: process.env.VARISDEV_INSTALL_ROOT || root,
           nodeExecutable:
             process.env.VARISDEV_NODE_EXECUTABLE || process.execPath,
           dataDir: process.env.VARISDEV_DATA_DIR,

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {execFile, spawn} from 'node:child_process';
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
-  readlink,
   rm,
   stat,
   utimes,
@@ -19,141 +19,149 @@ import {promisify} from 'node:util';
 import {
   defaultDataDir,
   RuntimeManager,
+  runRuntimeCommand,
   type RuntimeHooks,
   type RuntimeManagerOptions,
 } from '../src/runtime/manager.ts';
 
 const sdk = '@earendil-works/pi-coding-agent';
 const execute = promisify(execFile);
-
+const initialRevision = 'a'.repeat(40);
+const nextRevision = 'b'.repeat(40);
 async function put(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), {recursive: true});
   await writeFile(path, contents);
 }
-
-async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
-  const temp = await mkdtemp(join(tmpdir(), 'varisdev-runtime-test-'));
-  t.after(() => rm(temp, {recursive: true, force: true}));
-  const installRoot = join(temp, 'package');
-  const dataDir = join(temp, 'data');
-  await put(join(installRoot, 'package.json'), '{"type":"module"}');
+async function appFiles(
+  root: string,
+  version: string,
+  sdkVersion: string,
+): Promise<void> {
   await put(
-    join(installRoot, 'src', 'dashboard', 'parent.ts'),
+    join(root, 'package.json'),
+    JSON.stringify({name: 'varisdev', type: 'module', version}),
+  );
+  await put(
+    join(root, 'src/dashboard/parent.ts'),
+    `export const version = '${version}';`,
+  );
+  await put(
+    join(root, 'desktop/node_modules', sdk, 'package.json'),
+    JSON.stringify({version: sdkVersion}),
+  );
+  await put(
+    join(root, 'node_modules/npm/package.json'),
+    '{"exports":{"./package.json":"./package.json"}}',
+  );
+  await put(join(root, 'node_modules/npm/bin/npm-cli.js'), '');
+  await put(
+    join(root, 'node_modules/app-dependency/package.json'),
+    JSON.stringify({version}),
+  );
+  for (const name of [
+    'bin/varisdev.mjs',
+    'assets/dashboard/index.html',
+    'assets/desktop/preload.cjs',
+    'desktop/build/src/desktop/main.js',
+  ])
+    await put(join(root, name), '');
+  await put(
+    join(root, 'desktop/build/src/dashboard/parent.js'),
     'export const ready = true;',
   );
   await put(
-    join(installRoot, 'assets', 'dashboard', 'index.html'),
-    '<main>VarisDev</main>',
+    join(root, 'desktop/build/src/runtime/cli.js'),
+    `export async function runCli() { console.log('VarisDev ${version}'); return 0; }`,
   );
-  await put(join(installRoot, 'tsconfig.desktop.json'), '{}');
+}
+async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
+  const temp = await mkdtemp(join(tmpdir(), 'varisdev-update-test-'));
+  t.after(() => rm(temp, {recursive: true, force: true}));
+  const installRoot = join(temp, 'package');
+  const dataDir = join(temp, 'data');
+  await appFiles(installRoot, '0.1.0', '0.85.1');
   await put(
-    join(installRoot, 'desktop', 'package.json'),
+    join(installRoot, 'build-info.json'),
     JSON.stringify({
-      type: 'module',
-      dependencies: {
-        [sdk]: '0.85.1',
-        '@earendil-works/pi-ai': '0.85.1',
-        '@earendil-works/pi-tui': '0.85.1',
-        typebox: '1.3.7',
-      },
+      revision: initialRevision,
+      source: 'ssh://git@github.com/HardDoer/varisdev.git',
     }),
   );
-  await put(join(installRoot, 'desktop', 'package-lock.json'), 'old SDK lock');
   await put(
-    join(installRoot, 'desktop', 'node_modules', sdk, 'package.json'),
-    '{"version":"0.85.1"}',
+    join(installRoot, 'bin/varisdev.mjs'),
+    await readFile(new URL('../bin/varisdev.mjs', import.meta.url), 'utf8'),
   );
   await put(
-    join(installRoot, 'node_modules', 'npm', 'package.json'),
-    '{"exports":{"./package.json":"./package.json"}}',
+    join(installRoot, 'desktop/build/src/runtime/manager.js'),
+    `export {RuntimeManager} from ${JSON.stringify(new URL('../src/runtime/manager.ts', import.meta.url).href)};`,
   );
-  await put(join(installRoot, 'node_modules', 'npm', 'bin', 'npm-cli.js'), '');
-  await put(
-    join(installRoot, 'node_modules', 'typescript', 'package.json'),
-    '{}',
-  );
-  await put(join(installRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '');
-
-  let latest = '0.86.0';
+  let latest = '0.2.0';
+  let revision = nextRevision;
   let offline = false;
   let failure = '';
   let installs = 0;
   let smokeImports = 0;
-  let networkUrl = '';
+  const urls: string[] = [];
   const hooks: RuntimeHooks = {
     now: () => new Date('2026-10-14T12:00:00.000Z'),
-    fetch: async url => {
-      networkUrl = String(url);
-      if (offline) throw new Error('Network unavailable');
-      return Response.json({
-        version: latest,
-        dependencies: {typebox: '^1.4.0'},
-      });
-    },
     run: async (command, args, options) => {
+      if (command === 'git') {
+        if (args[0] === 'ls-remote') {
+          urls.push(args[2]);
+          if (offline) throw new Error('Network unavailable');
+          return `${revision}\tHEAD\n`;
+        }
+        if (args[0] === 'fetch' && failure === 'git')
+          throw new Error('Git fetch failed');
+        if (args[0] === 'init') await appFiles(args[1], latest, '0.86.0');
+        return;
+      }
       assert.equal(command, process.execPath);
       if (args[0].endsWith('npm-cli.js')) {
+        if (args[1] === 'pack') return;
         installs++;
         assert.deepEqual(args.slice(1), [
           'install',
-          '--global=false',
+          '--global=true',
           '--prefix',
           options.cwd,
           '--omit=dev',
           '--legacy-peer-deps',
           '--no-audit',
           '--no-fund',
+          join(options.cwd, `varisdev-${latest}.tgz`),
         ]);
-        await assert.rejects(stat(join(options.cwd, 'package-lock.json')));
         if (failure === 'npm') throw new Error('Package installation failed');
-        const manifest = JSON.parse(
-          await readFile(join(options.cwd, 'package.json'), 'utf8'),
-        );
-        for (const name of [
-          sdk,
-          '@earendil-works/pi-ai',
-          '@earendil-works/pi-tui',
-        ])
-          assert.equal(manifest.dependencies[name], latest);
-        assert.equal(manifest.dependencies.typebox, '^1.4.0');
         await delay(30);
-        await put(
-          join(options.cwd, 'node_modules', sdk, 'package.json'),
-          JSON.stringify({version: latest}),
+        const root = join(
+          options.cwd,
+          process.platform === 'win32'
+            ? 'node_modules/varisdev'
+            : 'lib/node_modules/varisdev',
         );
-      } else if (args[0].endsWith('tsc')) {
-        if (failure === 'compile') throw new Error('App compilation failed');
-        await put(
-          join(
-            options.cwd,
-            'desktop',
-            'build',
-            'src',
-            'dashboard',
-            'parent.js',
-          ),
-          failure === 'import'
-            ? "throw new Error('App import failed');"
-            : 'export const ready = true;',
-        );
+        await appFiles(root, latest, '0.86.0');
+        if (failure === 'compile')
+          await rm(join(root, 'desktop/build'), {recursive: true});
+        if (failure === 'import')
+          await put(
+            join(root, 'desktop/build/src/dashboard/parent.js'),
+            "throw new Error('App import failed');",
+          );
       } else {
         smokeImports++;
         await execute(command, args, {cwd: options.cwd, env: options.env});
       }
+      return;
     },
   };
-  const options: RuntimeManagerOptions = {
-    installRoot,
-    dataDir,
-    hooks,
-    registryUrl: 'https://registry.example/npm/',
-  };
+  const options: RuntimeManagerOptions = {installRoot, dataDir, hooks};
   return {
     installRoot,
     dataDir,
     temp,
     hooks,
     options,
+    urls,
     manager: new RuntimeManager(options),
     get installs() {
       return installs;
@@ -161,11 +169,11 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
     get smokeImports() {
       return smokeImports;
     },
-    get networkUrl() {
-      return networkUrl;
-    },
     set latest(value: string) {
       latest = value;
+    },
+    set revision(value: string) {
+      revision = value;
     },
     set offline(value: boolean) {
       offline = value;
@@ -176,71 +184,60 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
   };
 }
 
-void test('successful staging activates a complete source generation and preserves installed package', async t => {
+void test('full application update installs new code, dependencies and runtime and dispatches the updated CLI', async t => {
   const f = await fixture(t);
-  const phases: string[] = [];
-  const unsubscribe = f.manager.subscribe(status => phases.push(status.phase));
-  assert.equal(await f.manager.currentRoot(), f.installRoot);
-  assert.equal(await f.manager.currentPiVersion(), '0.85.1');
   const checked = await f.manager.check();
   assert.equal(checked.phase, 'available');
-  assert.equal(checked.checkedAt, '2026-10-14T12:00:00.000Z');
-  assert.equal(
-    f.networkUrl,
-    'https://registry.example/npm/%40earendil-works%2Fpi-coding-agent/latest',
-  );
+  assert.equal(checked.currentVersion, '0.1.0');
+  assert.equal(checked.latestRevision, nextRevision);
+  assert.deepEqual(f.urls, ['ssh://git@github.com/HardDoer/varisdev.git']);
   const updated = await f.manager.update();
   assert.equal(updated.phase, 'ready', updated.error);
+  assert.equal(updated.currentVersion, '0.2.0');
   assert.equal(updated.restartRequired, true);
-  assert.equal(updated.currentVersion, '0.86.0');
   const active = await f.manager.currentRoot();
   assert.notEqual(active, f.installRoot);
-  assert.equal(await f.manager.currentPiVersion(), '0.86.0');
-  assert.equal(await new RuntimeManager(f.options).currentRoot(), active);
-  assert.equal(
-    await readlink(join(active, 'node_modules')),
-    join(f.installRoot, 'node_modules'),
-  );
-  assert.equal(
-    await readFile(join(active, 'src', 'dashboard', 'parent.ts'), 'utf8'),
-    'export const ready = true;',
+  assert.match(
+    await readFile(join(active, 'src/dashboard/parent.ts'), 'utf8'),
+    /0.2.0/,
   );
   assert.equal(
     JSON.parse(
       await readFile(
-        join(f.installRoot, 'desktop', 'node_modules', sdk, 'package.json'),
+        join(active, 'node_modules/app-dependency/package.json'),
         'utf8',
       ),
     ).version,
-    '0.85.1',
+    '0.2.0',
   );
+  assert.equal(await f.manager.currentPiVersion(), '0.86.0');
+  assert.equal(await new RuntimeManager(f.options).currentRoot(), active);
   assert.equal(
-    await readFile(join(f.installRoot, 'desktop', 'package-lock.json'), 'utf8'),
-    'old SDK lock',
+    JSON.parse(await readFile(join(f.installRoot, 'package.json'), 'utf8'))
+      .version,
+    '0.1.0',
   );
   assert.equal(f.installs, 1);
   assert.equal(f.smokeImports, 1);
-  assert.ok(phases.includes('checking'));
-  assert.ok(phases.includes('updating'));
-  assert.equal(phases.at(-1), 'ready');
-  unsubscribe();
-  const count = phases.length;
-  await f.manager.check();
-  assert.equal(phases.length, count);
+  const cli = await execute(
+    process.execPath,
+    [join(f.installRoot, 'bin/varisdev.mjs'), '--version'],
+    {env: {...process.env, VARISDEV_DATA_DIR: f.dataDir}},
+  );
+  assert.equal(cli.stdout.trim(), 'VarisDev 0.2.0');
   await assert.rejects(stat(join(f.dataDir, 'update.lock')));
 });
 
-for (const failure of ['npm', 'compile', 'import']) {
-  void test(`failed ${failure} preserves the previous active generation and cleans staging`, async t => {
+for (const failure of ['git', 'npm', 'compile', 'import']) {
+  void test(`failed ${failure} preserves the active application and removes its partial install`, async t => {
     const f = await fixture(t);
     assert.equal((await f.manager.update()).phase, 'ready');
     const previous = await f.manager.currentRoot();
     const pointer = await readFile(join(f.dataDir, 'active.json'), 'utf8');
-    f.latest = '0.87.0';
+    f.revision = 'c'.repeat(40);
     f.failure = failure;
     const result = await f.manager.update();
     assert.equal(result.phase, 'error');
-    assert.equal(result.currentVersion, '0.86.0');
     assert.equal(await f.manager.currentRoot(), previous);
     assert.equal(
       await readFile(join(f.dataDir, 'active.json'), 'utf8'),
@@ -253,41 +250,70 @@ for (const failure of ['npm', 'compile', 'import']) {
   });
 }
 
-void test('checking retains known availability offline and refuses older or prerelease latest versions', async t => {
+void test('checks compare Git revisions even without a version bump and retain known availability offline', async t => {
   const f = await fixture(t);
+  f.latest = '0.1.0';
   assert.equal((await f.manager.check()).phase, 'available');
+  assert.equal((await f.manager.update()).phase, 'ready');
+  const relaunched = new RuntimeManager({
+    ...f.options,
+    runningRoot: await f.manager.currentRoot(),
+  });
+  assert.equal((await relaunched.check()).phase, 'idle');
   f.offline = true;
-  const offline = await f.manager.check();
+  const offline = await relaunched.check();
   assert.equal(offline.phase, 'error');
-  assert.match(offline.error || '', /VarisDev runtime.*Network unavailable/);
-  assert.equal(offline.latestVersion, '0.86.0');
-  assert.equal(offline.checkedAt, '2026-10-14T12:00:00.000Z');
+  assert.match(offline.error || '', /Network unavailable/);
+  assert.equal(offline.latestRevision, nextRevision);
   f.offline = false;
-  f.latest = '0.84.9';
-  assert.equal((await f.manager.check()).phase, 'idle');
-  assert.equal((await f.manager.update()).phase, 'idle');
-  assert.equal(f.installs, 0);
-  f.latest = '0.87.0-beta.1';
-  assert.equal((await f.manager.update()).phase, 'error');
-  assert.equal(f.installs, 0);
+  f.revision = '../malformed';
+  assert.equal((await relaunched.update()).phase, 'error');
+  assert.equal(f.installs, 1);
 });
 
-void test('registry check has a bounded timeout even when a fetch hook ignores abort', async t => {
+void test('archive installations can check public updates without SSH configuration', async t => {
   const f = await fixture(t);
-  const manager = new RuntimeManager({
+  await rm(join(f.installRoot, 'build-info.json'));
+  assert.equal((await f.manager.check()).phase, 'available');
+  assert.deepEqual(f.urls, ['https://github.com/HardDoer/varisdev.git']);
+});
+
+void test('updates remember Git access and fall back to HTTPS when SSH is unavailable', async t => {
+  const f = await fixture(t);
+  const sources: string[] = [];
+  const hooks: RuntimeHooks = {
+    ...f.hooks,
+    run: async (command, args, options) => {
+      if (command === 'git' && args[0] === 'ls-remote') {
+        sources.push(args[2]);
+        if (args[2].startsWith('ssh:')) throw new Error('SSH unavailable');
+      }
+      return f.hooks.run!(command, args, options);
+    },
+  };
+  const manager = new RuntimeManager({...f.options, hooks});
+  assert.equal((await manager.update()).phase, 'ready');
+  assert.deepEqual(sources, [
+    'ssh://git@github.com/HardDoer/varisdev.git',
+    'https://github.com/HardDoer/varisdev.git',
+  ]);
+  sources.length = 0;
+  await new RuntimeManager({...f.options, hooks}).check();
+  assert.deepEqual(sources, ['https://github.com/HardDoer/varisdev.git']);
+});
+
+void test('Git check times out even when a command hook ignores its timeout', async t => {
+  const f = await fixture(t);
+  const result = await new RuntimeManager({
     ...f.options,
     requestTimeoutMs: 20,
-    hooks: {
-      ...f.hooks,
-      fetch: () => new Promise(() => {}),
-    },
-  });
-  const result = await manager.check();
+    hooks: {...f.hooks, run: () => new Promise(() => {})},
+  }).check();
   assert.equal(result.phase, 'error');
   assert.match(result.error || '', /timed out/);
 });
 
-void test('same-process concurrent updates install once and select the same generation', async t => {
+void test('concurrent updates install once and activate the same application', async t => {
   const f = await fixture(t);
   const other = new RuntimeManager(f.options);
   const results = await Promise.all([
@@ -301,92 +327,111 @@ void test('same-process concurrent updates install once and select the same gene
   assert.equal(await other.currentRoot(), await f.manager.currentRoot());
 });
 
-void test('cross-process updates serialize installation and both use the active generation', async t => {
+void test('cross-process updates serialize full application installation', async t => {
   const f = await fixture(t);
   const log = join(f.temp, 'install.log');
-  const childCode = `
+  const template = join(f.temp, 'candidate');
+  await appFiles(template, '0.2.0', '0.86.0');
+  const code = `
     import {RuntimeManager} from ${JSON.stringify(new URL('../src/runtime/manager.ts', import.meta.url).href)};
-    import {mkdir,writeFile,readFile,appendFile} from 'node:fs/promises';
-    import {dirname,join} from 'node:path';
-    const put=async(p,s)=>{await mkdir(dirname(p),{recursive:true});await writeFile(p,s)};
+    import {cp,appendFile} from 'node:fs/promises'; import {join} from 'node:path';
     const manager=new RuntimeManager({installRoot:${JSON.stringify(f.installRoot)},dataDir:${JSON.stringify(f.dataDir)},hooks:{
-      fetch:async()=>Response.json({version:'0.86.0'}),
       run:async(command,args,options)=>{
-        if(args[0].endsWith('npm-cli.js')){
-          await appendFile(${JSON.stringify(log)},'install\\n');
-          await new Promise(r=>setTimeout(r,150));
-          await put(join(options.cwd,'node_modules',${JSON.stringify(sdk)},'package.json'),'{"version":"0.86.0"}');
-        }else if(args[0].endsWith('tsc')){
-          await put(join(options.cwd,'desktop/build/src/dashboard/parent.js'),'export const ready=true');
+        if(command==='git'){
+          if(args[0]==='ls-remote') return ${JSON.stringify(nextRevision + '\tHEAD\n')};
+          if(args[0]==='init') await cp(${JSON.stringify(template)},args[1],{recursive:true});
+          return;
         }
-      },smokeImport:async()=>{}
+        if(args[1]==='pack') return;
+        await appendFile(${JSON.stringify(log)},'install\\n');await new Promise(r=>setTimeout(r,150));await cp(${JSON.stringify(template)},join(options.cwd,process.platform==='win32'?'node_modules/varisdev':'lib/node_modules/varisdev'),{recursive:true});
+      },
+      smokeImport:async()=>{}
     }});
-    const result=await manager.update();
-    if(result.phase==='error')throw new Error(result.error);
-    console.log(await manager.currentRoot());
+    const status=await manager.update();if(status.error)throw new Error(status.error);console.log(await manager.currentRoot());
   `;
   const results = await Promise.all([
-    execute(process.execPath, ['--input-type=module', '--eval', childCode]),
-    execute(process.execPath, ['--input-type=module', '--eval', childCode]),
+    execute(process.execPath, ['--input-type=module', '--eval', code]),
+    execute(process.execPath, ['--input-type=module', '--eval', code]),
   ]);
   assert.equal(results[0].stdout.trim(), results[1].stdout.trim());
   assert.equal(await readFile(log, 'utf8'), 'install\n');
 });
 
-void test('live update lock times out and a dead owner lock is recovered', async t => {
+void test('live locks time out, and dead or incomplete owners are recovered', async t => {
   const f = await fixture(t);
+  const lock = join(f.dataDir, 'update.lock');
   await put(
-    join(f.dataDir, 'update.lock', 'owner.json'),
+    join(lock, 'owner.json'),
     JSON.stringify({pid: process.pid, token: 'live'}),
   );
-  const manager = new RuntimeManager({...f.options, lockTimeoutMs: 20});
-  const blocked = await manager.update();
+  const blocked = await new RuntimeManager({
+    ...f.options,
+    lockTimeoutMs: 20,
+  }).update();
   assert.equal(blocked.phase, 'error');
   assert.match(blocked.error || '', /still running/);
-  assert.equal(f.installs, 0);
   const child = spawn(process.execPath, ['--eval', 'process.exit(0)']);
   const pid = child.pid;
-  await new Promise<void>((fulfill, reject) => {
+  await new Promise<void>((resolve, reject) => {
     child.on('error', reject);
-    child.on('close', () => fulfill());
+    child.on('close', () => resolve());
   });
   await writeFile(
-    join(f.dataDir, 'update.lock', 'owner.json'),
+    join(lock, 'owner.json'),
     JSON.stringify({pid, token: 'dead'}),
   );
-  const recovered = await new RuntimeManager(f.options).update();
+  const recovered = await f.manager.update();
   assert.equal(recovered.phase, 'ready', recovered.error);
-  assert.equal(f.installs, 1);
+  f.revision = 'c'.repeat(40);
+  await put(join(lock, 'owner.json'), '{partial');
+  const old = new Date(Date.now() - 60000);
+  await utimes(lock, old, old);
+  assert.equal((await f.manager.update()).phase, 'ready');
 });
 
-void test('corrupt or traversing pointers fall back; source changes invalidate an otherwise valid generation', async t => {
+void test('invalid pointers and changed base installations fall back safely; legacy runtime pointers still load', async t => {
   const f = await fixture(t);
   await put(join(f.dataDir, 'active.json'), '{bad json');
   assert.equal(await f.manager.currentRoot(), f.installRoot);
-  await writeFile(
+  await put(
     join(f.dataDir, 'active.json'),
     JSON.stringify({
       generation: '../../package',
       baseRoot: f.installRoot,
-      version: '0.86.0',
+      version: '0.2.0',
     }),
   );
   assert.equal(await f.manager.currentRoot(), f.installRoot);
   assert.equal((await f.manager.update()).phase, 'ready');
   const active = await f.manager.currentRoot();
-  await put(join(f.installRoot, 'test', 'ignored.test.ts'), 'irrelevant');
-  await put(join(f.installRoot, 'README.md'), 'irrelevant');
-  assert.equal(await f.manager.currentRoot(), active);
+  const pointer = JSON.parse(
+    await readFile(join(f.dataDir, 'active.json'), 'utf8'),
+  );
+  const generation = 'runtime-0.86.0-12345678';
+  const legacy = join(f.dataDir, 'runtimes', generation);
+  await cp(active, legacy, {recursive: true});
   await writeFile(
-    join(f.installRoot, 'src', 'dashboard', 'parent.ts'),
-    'export const changed = true;',
+    join(f.dataDir, 'active.json'),
+    JSON.stringify({
+      ...pointer,
+      generation,
+      version: '0.86.0',
+      revision: undefined,
+    }),
+  );
+  assert.equal(await f.manager.currentRoot(), legacy);
+  await writeFile(join(f.dataDir, 'active.json'), JSON.stringify(pointer));
+  await put(join(f.installRoot, 'README.md'), 'Documentation only');
+  assert.equal(await f.manager.currentRoot(), active);
+  await put(
+    join(f.installRoot, 'src/dashboard/parent.ts'),
+    'Changed base application',
   );
   assert.equal(await f.manager.currentRoot(), f.installRoot);
-  assert.equal(await f.manager.currentPiVersion(), '0.85.1');
-  await stat(active); // Live processes may still need the old tree.
+  await stat(active);
 });
 
-void test('a running desktop notices an externally installed generation and clears restart after relaunch', async t => {
+void test('a running app detects external updates and clears restart status after relaunch', async t => {
   const f = await fixture(t);
   const desktop = new RuntimeManager({
     ...f.options,
@@ -394,52 +439,77 @@ void test('a running desktop notices an externally installed generation and clea
   });
   assert.equal((await desktop.check()).restartRequired, false);
   assert.equal((await f.manager.update()).phase, 'ready');
-  const status = await desktop.check();
-  assert.equal(status.phase, 'ready');
-  assert.equal(status.restartRequired, true);
+  assert.equal((await desktop.check()).restartRequired, true);
   const relaunched = new RuntimeManager({
     ...f.options,
     runningRoot: await f.manager.currentRoot(),
   });
-  assert.equal(relaunched.status().currentVersion, '0.86.0');
+  assert.equal(relaunched.status().currentVersion, '0.2.0');
   assert.equal((await relaunched.check()).restartRequired, false);
 });
 
-void test('an abandoned lock without complete owner metadata is recovered', async t => {
-  const f = await fixture(t);
-  const lock = join(f.dataDir, 'update.lock');
-  await put(join(lock, 'owner.json'), '{partial');
-  const old = new Date(Date.now() - 60_000);
-  await utimes(lock, old, old);
-  const manager = new RuntimeManager({...f.options, lockTimeoutMs: 1_000});
-  const result = await manager.update();
-  assert.equal(result.phase, 'ready', result.error);
-});
-
-void test('a timed out installer terminates its process tree and cleans its partial generation', async t => {
+void test('a timed-out installer terminates its process tree and removes staging', async t => {
   const f = await fixture(t);
   const marker = join(f.temp, 'descendant-ran');
   const childCode = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran'), 300)`;
   await writeFile(
-    join(f.installRoot, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(f.installRoot, 'node_modules/npm/bin/npm-cli.js'),
     `require('node:child_process').spawn(process.execPath, ['--eval', ${JSON.stringify(childCode)}]); setTimeout(() => {}, 1000);`,
   );
-  const manager = new RuntimeManager({
+  const result = await new RuntimeManager({
     ...f.options,
     commandTimeoutMs: 100,
-    hooks: {...f.hooks, run: undefined},
-  });
-  const result = await manager.update();
+    hooks: {
+      ...f.hooks,
+      run: async (command, args, options) => {
+        if (command === 'git') return f.hooks.run!(command, args, options);
+        return runRuntimeCommand(command, args, options);
+      },
+    },
+  }).update();
   assert.equal(result.phase, 'error');
   assert.match(result.error || '', /timed out/);
   assert.deepEqual(await readdir(join(f.dataDir, 'runtimes')), []);
   await assert.rejects(stat(join(f.dataDir, 'active.json')));
-  await assert.rejects(stat(join(f.dataDir, 'update.lock')));
   await delay(350);
   await assert.rejects(stat(marker));
 });
 
-void test('data directory override is separate from normal agent settings', () => {
+void test('data directory override is separate from agent settings', () => {
   const directory = join(tmpdir(), 'varisdev-isolated');
   assert.equal(defaultDataDir({VARISDEV_DATA_DIR: directory}), directory);
+});
+
+void test('application updates refresh only the Finder launcher belonging to that installation', async t => {
+  const {refreshMacLauncher} = await import('../src/runtime/mac-launcher.ts');
+  const f = await fixture(t);
+  const bundle = join(f.temp, 'VarisDev.app');
+  const directory = join(bundle, 'Contents/Resources/app');
+  await put(
+    join(directory, 'launch.json'),
+    JSON.stringify({installRoot: '/another-install'}),
+  );
+  await put(join(directory, 'main.cjs'), 'other launcher');
+  await put(
+    join(f.installRoot, 'assets/desktop/app-main.cjs'),
+    'updated launcher',
+  );
+  await refreshMacLauncher(f.installRoot, f.installRoot, bundle);
+  assert.equal(
+    await readFile(join(directory, 'main.cjs'), 'utf8'),
+    'other launcher',
+  );
+  await put(
+    join(directory, 'launch.json'),
+    JSON.stringify({installRoot: f.installRoot}),
+  );
+  await refreshMacLauncher(f.installRoot, f.installRoot, bundle);
+  assert.equal(
+    await readFile(join(directory, 'main.cjs'), 'utf8'),
+    'updated launcher',
+  );
+  assert.deepEqual((await readdir(directory)).sort(), [
+    'launch.json',
+    'main.cjs',
+  ]);
 });

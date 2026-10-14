@@ -1,5 +1,34 @@
 # Current requests
 
+## Accounts in the GUI
+
+- [x] Add Accounts controls accessible from the welcome screen and app menu, with provider selection, browser sign-in, API key entry, and sign-out.
+- [x] Handle provider prompts, device codes, cancellation, errors, and saved credential status through the GUI using the bundled runtime.
+- [x] Make credentials available to open parent sessions and update installation instructions to start directly in the GUI.
+- [x] Verify authentication, cancellation and credential reuse, real Electron interactions, TypeScript/lint, and the isolated production package; remove temporary verification files.
+
+## Complete application updates
+
+- [x] Make the GUI and `varisdev update` install the latest VarisDev application from GitHub, including its bundled dependencies and runtime.
+- [x] Track application revisions, verify staged installs before activation, preserve user data and existing runtime pointers, and launch the updated app after restart.
+- [x] Verify update detection, successful activation, failed-install recovery, launcher behavior, and isolated production installation.
+
+## User-selected models
+
+- [x] Remove hardcoded agent and commit model choices; inherit the selected parent model or require an explicit choice.
+- [x] Prevent the desktop from silently choosing a model when the user has no saved selection.
+- [x] Remove the pinned image model and provide a first-use GUI setup prompt that explains and remembers the user's choice.
+- [x] Update documentation and verify selection, inheritance, missing configuration, and saved choices.
+
+## README cleanup and upstream credit
+
+- [x] Remove redundant UI narration and animation descriptions; keep installation and everyday GUI use clear.
+- [x] Describe VarisDev as a visualization layer built on Pi (pi.dev), credit the upstream project, and link its verified repository.
+- [x] Keep useful technical reference material in linked documentation and check the resulting links.
+- [x] State the vision: a minimal visual layer over Pi, intact prompts, and the feel of an early-2000s game.
+
+Checks: TypeScript and focused lint passed. Account, model, tool, parent, agent, and Electron checks passed, including the corrected model selector. All 17 updater checks passed. An isolated production install and update used real Git fetches, automatic builds, and packaged standalone and extension entry points. A live SSH update check passed. Temporary packages, profiles, caches, and verification files were removed.
+
 ## Parent Stop and agent cancellation
 
 - [x] Make Esc and Stop abort only the parent session, preserving its agents and queued agent work.

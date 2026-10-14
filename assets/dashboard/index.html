@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="markdown-files.css" />
     <link rel="stylesheet" href="visualizations.css" />
     <link rel="stylesheet" href="updates.css" />
+    <link rel="stylesheet" href="accounts.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link
       rel="stylesheet"
@@ -49,6 +50,66 @@
           Update VarisDev
         </button>
       </div>
+    </dialog>
+    <dialog id="accounts-dialog" aria-labelledby="accounts-title">
+      <div class="dialog-heading">
+        <h2 id="accounts-title">Accounts</h2>
+        <button id="accounts-close" class="quiet-button" type="button">
+          Close
+        </button>
+      </div>
+      <label for="accounts-provider">Provider</label>
+      <select id="accounts-provider"></select>
+      <p id="accounts-status"></p>
+      <div class="accounts-actions">
+        <button id="accounts-oauth" class="primary-button" type="button">
+          Sign in with browser
+        </button>
+        <button id="accounts-key" class="quiet-button" type="button">
+          Enter API key
+        </button>
+        <button id="accounts-logout" class="quiet-button" type="button">
+          Sign out
+        </button>
+      </div>
+      <p id="accounts-message" role="status" aria-live="polite"></p>
+      <div id="accounts-device" hidden>
+        <label for="accounts-device-code">Sign-in code</label>
+        <input id="accounts-device-code" type="text" readonly />
+      </div>
+      <div id="accounts-links" class="accounts-actions"></div>
+      <form id="accounts-form" hidden>
+        <label id="accounts-prompt-label" for="accounts-input"></label>
+        <input
+          id="accounts-input"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <select
+          id="accounts-choice"
+          aria-labelledby="accounts-prompt-label"
+          hidden
+        ></select>
+        <button id="accounts-submit" class="primary-button" type="submit">
+          Continue
+        </button>
+      </form>
+      <p id="accounts-error" class="form-error" role="alert" hidden></p>
+      <button id="accounts-cancel" class="quiet-button" type="button" hidden>
+        Cancel sign-in
+      </button>
+      <details id="tool-models">
+        <summary>Tool models</summary>
+        <form id="tool-models-form">
+          <div id="tool-models-fields"></div>
+          <button id="tool-models-save" class="quiet-button" type="submit">
+            Save models
+          </button>
+        </form>
+        <p id="tool-models-status" role="status"></p>
+        <p id="tool-models-error" class="form-error" role="alert" hidden></p>
+      </details>
     </dialog>
     <main>
       <section
@@ -114,6 +175,15 @@
                 Motion on
               </button>
               <button
+                id="open-accounts"
+                class="quiet-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="accounts-dialog"
+              >
+                Accounts
+              </button>
+              <button
                 id="open-session-settings"
                 aria-label="Model and settings"
                 title="Model and settings"
@@ -138,6 +208,15 @@
           <p>Select a folder to start a conversation.</p>
           <button id="welcome-create" class="primary-button" type="button">
             Open folder
+          </button>
+          <button
+            id="welcome-accounts"
+            class="quiet-button"
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls="accounts-dialog"
+          >
+            Accounts
           </button>
         </div>
       </section>
@@ -862,6 +941,15 @@
           ✕
         </button>
       </div>
+      <button
+        id="settings-accounts"
+        class="quiet-button"
+        type="button"
+        aria-haspopup="dialog"
+        aria-controls="accounts-dialog"
+      >
+        Accounts
+      </button>
       <form id="session-settings-form">
         <label for="session-model">Model</label
         ><select id="session-model"></select>
