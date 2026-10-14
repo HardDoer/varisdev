@@ -295,7 +295,6 @@ a:focus-visible {
   box-shadow: inset 0 0 0 1px var(--mint);
 }
 
-.parent-card-footer,
 .worker-card-activity {
   border-color: var(--line);
 }
@@ -381,13 +380,8 @@ a:focus-visible {
 }
 
 .scene-label-name,
-.scene-label-task,
 .inspector-heading > p:last-child {
   color: var(--text);
-}
-
-.scene-label-activity {
-  color: var(--mint);
 }
 
 .master-summary,

@@ -737,6 +737,23 @@ async function main() {
             session(`extra-${index}`, `Additional factory ${index}`),
           ),
         );
+        hub.sessions[0].agents = Array.from({length: 16}, (_, index) => ({
+          id: `layout-worker-${index}`,
+          name: `Worker ${index}`,
+          task: `Inspect the project and report detailed findings ${index}`,
+          activity: 'Checking files and running the relevant tests',
+          model: 'fixture/small',
+          status: index < 8 ? 'running' : 'completed',
+          createdAt: at,
+          startedAt: at,
+          ...(index >= 8 ? {finishedAt: at} : {}),
+        }));
+        hub.sessions[0].totalAgents = 16;
+        hub.sessions[0].session.context = {
+          percent: 25,
+          tokens: 32000,
+          window: 128000,
+        };
         hub.sessions[0].conversation = Array.from({length: 30}, (_, index) => ({
           id: `layout-message-${index}`,
           role: index % 2 ? 'assistant' : 'user',
@@ -850,12 +867,24 @@ async function main() {
           const column = document.querySelector('.factory-column');
           const conversation = document.getElementById('panel-conversation');
           column.scrollTop = 200;
+          const lists = ['parents', 'active-workers', 'history-workers'].map(
+            id => {
+              const list = document.getElementById(id);
+              list.scrollTop = 120;
+              return {id, top: list.scrollTop};
+            },
+          );
           conversation.scrollTop = 120;
           conversation.dispatchEvent(new Event('scroll'));
           return {
             before,
             after: controls.getBoundingClientRect().top,
             factory: column.scrollTop,
+            factoryOverflow: column.scrollHeight - column.clientHeight,
+            mainOverflow:
+              document.querySelector('main').scrollHeight -
+              document.querySelector('main').clientHeight,
+            lists,
             conversation: conversation.scrollTop,
             body: document.body.scrollTop,
             document: document.scrollingElement.scrollTop,
@@ -867,14 +896,19 @@ async function main() {
               .getBoundingClientRect().bottom,
           };
         });
-        assert.ok(
-          scroll.factory > 0 && scroll.conversation > 0,
-          JSON.stringify(scroll),
-        );
+        assert.equal(scroll.factory, 0, 'The factory column must not scroll');
+        assert.ok(scroll.factoryOverflow <= 1, JSON.stringify(scroll));
+        assert.ok(scroll.mainOverflow <= 1, JSON.stringify(scroll));
+        assert.ok(scroll.conversation > 0, JSON.stringify(scroll));
+        for (const list of scroll.lists)
+          assert.ok(
+            list.top > 0,
+            `${list.id} must keep overflowing entries accessible`,
+          );
         assert.equal(
           scroll.after,
           scroll.before,
-          'App controls must remain visible while both columns scroll',
+          'App controls must remain visible while lists and conversation scroll',
         );
         assert.equal(scroll.body, 0);
         assert.equal(scroll.document, 0);
@@ -882,6 +916,86 @@ async function main() {
         assert.equal(scroll.bodyOverflow, 'hidden');
         assert.equal(scroll.htmlOverflow, 'hidden');
         assert.ok(scroll.composerBottom <= height, JSON.stringify(scroll));
+        const factoryGeometry = async () =>
+          evaluate(() => {
+            const selectors = [
+              '#overview-title',
+              '#factory-title',
+              '#scene',
+              '#inspect-parent',
+              '#workers-title',
+              '#active-workers',
+              '#history-title',
+              '#history-search',
+              '#history-workers',
+            ];
+            return selectors.map(selector => {
+              const element = document.querySelector(selector);
+              const rect = element.getBoundingClientRect();
+              return {
+                selector,
+                height: rect.height,
+                visible:
+                  rect.top >= 0 &&
+                  rect.bottom <= innerHeight &&
+                  rect.left >= 0 &&
+                  rect.right <= innerWidth &&
+                  element.contains(
+                    document.elementFromPoint(
+                      rect.left + rect.width / 2,
+                      rect.top + rect.height / 2,
+                    ),
+                  ),
+              };
+            });
+          });
+        for (const item of await factoryGeometry()) {
+          assert.equal(item.visible, true, JSON.stringify(item));
+          assert.ok(item.height > 0, JSON.stringify(item));
+          if (item.selector === '#scene')
+            assert.ok(item.height >= 90, JSON.stringify(item));
+        }
+        await evaluate(() => {
+          const search = document.getElementById('history-search');
+          search.value = 'Worker 15';
+          search.dispatchEvent(new Event('input', {bubbles: true}));
+          document.querySelector('#history-workers button').click();
+        });
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('inspector-title').textContent,
+          ),
+          'Worker 15',
+        );
+        await evaluate(() => document.getElementById('inspect-parent').click());
+        await settle();
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`factory-populated-${width}x${height}`);
+        window.webContents.setZoomFactor(1.25);
+        await settle();
+        for (const item of await factoryGeometry())
+          assert.equal(
+            item.visible,
+            true,
+            `At 125% zoom: ${JSON.stringify(item)}`,
+          );
+        assert.equal(
+          await evaluate(() => {
+            const button = document.getElementById('send-prompt');
+            const rect = button.getBoundingClientRect();
+            return (
+              rect.bottom <= innerHeight &&
+              document.elementFromPoint(
+                rect.left + rect.width / 2,
+                rect.top + rect.height / 2,
+              ) === button
+            );
+          }),
+          true,
+          'Steer must remain visible after zooming with a resized editor',
+        );
+        window.webContents.setZoomFactor(1);
+        await settle();
         await evaluate(() => document.getElementById('tab-changes').click());
         await settle();
         assert.equal(
@@ -1116,10 +1230,12 @@ async function main() {
           activityIndicator: getComputedStyle(
             document.querySelector('#conversation-activity .activity-dot'),
           ).animationName,
-          burst: !document.getElementById('stop-burst').hidden,
+          yellowBurst: !!document.getElementById('stop-burst'),
           effect: document
-            .getElementById('stop-burst')
-            .classList.contains('braking'),
+            .getElementById('scene')
+            .classList.contains('is-startled'),
+          alert: getComputedStyle(document.getElementById('scene'), '::before')
+            .animationName,
         })),
         {
           processing: false,
@@ -1129,12 +1245,14 @@ async function main() {
           paused: true,
           indicator: 'none',
           activityIndicator: 'none',
-          burst: true,
+          yellowBurst: false,
           effect: true,
+          alert: 'factory-alert',
         },
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('stopping-1600x1000');
+        await screenshot('startled-robot');
+      // A fast cancellation must still let the reaction finish.
       Object.assign(hub.sessions[0].session, {
         status: 'idle',
         activity: 'Ready',
@@ -1145,6 +1263,59 @@ async function main() {
         finishedAt: at,
       });
       await publish();
+      const sceneBounds = await evaluate(() => {
+        const scene = document.getElementById('scene');
+        // Compare the robot itself without the CSS alert tint changing pixels.
+        scene.classList.remove('is-startled');
+        const gl = document
+          .getElementById('factory-canvas')
+          .getContext('webgl');
+        const bufferData = gl.bufferData.bind(gl);
+        window.fixtureGeometry = new Map();
+        gl.bufferData = (target, data, usage) => {
+          if (usage === gl.DYNAMIC_DRAW)
+            window.fixtureGeometry.set(
+              gl.getParameter(gl.ARRAY_BUFFER_BINDING),
+              new Float32Array(data),
+            );
+          bufferData(target, data, usage);
+        };
+        const rect = scene.getBoundingClientRect();
+        return {
+          x: Math.ceil(rect.x),
+          y: Math.ceil(rect.y),
+          width: Math.floor(rect.width),
+          height: Math.floor(rect.height),
+        };
+      });
+      const frame = async () =>
+        (await window.webContents.capturePage(sceneBounds)).toBitmap();
+      const airborne = await frame();
+      await new Promise(resolve => setTimeout(resolve, 180));
+      assert.equal(
+        airborne.equals(await frame()),
+        false,
+        'The stopped robot must jump while normal activity is paused',
+      );
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      const geometry = () =>
+        evaluate(() =>
+          [...window.fixtureGeometry.values()].map(data => {
+            const bytes = new Uint8Array(data.buffer);
+            let hash = 2166136261;
+            for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619);
+            return {length: data.length, hash: hash >>> 0};
+          }),
+        );
+      // Idle camera movement changes pixels, but the landed robot must be still.
+      const landed = await geometry();
+      assert.ok(landed.some(buffer => buffer.length > 0));
+      await new Promise(resolve => setTimeout(resolve, 180));
+      assert.deepEqual(
+        await geometry(),
+        landed,
+        'The startled robot must settle back to a still pose',
+      );
       assert.equal(
         await evaluate(
           () => document.getElementById('processing-state').hidden,
@@ -1184,6 +1355,40 @@ async function main() {
       );
       assert.deepEqual(await evaluate(draft), expectedDraft);
       assert.equal(calls.length, 1);
+      await evaluate(() => {
+        document.getElementById('motion-toggle').click();
+        document.getElementById('abort-parent').click();
+      });
+      await settle();
+      assert.equal(
+        await evaluate(
+          () =>
+            getComputedStyle(document.getElementById('scene'), '::before')
+              .animationName,
+        ),
+        'none',
+        'Motion off must use a static alert',
+      );
+      const stillStartle = await frame();
+      await new Promise(resolve => setTimeout(resolve, 180));
+      assert.equal(
+        stillStartle.equals(await frame()),
+        true,
+        'Motion off must keep the robot still during Stop',
+      );
+      assert.equal(calls.filter(call => call.method === 'abort').length, 2);
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() =>
+          document.getElementById('scene').classList.contains('is-startled'),
+        ),
+        false,
+        'Stopping one parent must not flash another parent’s factory',
+      );
     },
   );
 
@@ -2138,6 +2343,15 @@ async function main() {
       await evaluate(() => document.getElementById('tab-conversation').click());
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('conversation-actions');
+      hub.sessions[0].conversation.push({
+        id: 'final-response',
+        role: 'assistant',
+        at,
+        text: 'The changes are ready.\n\nAssistant replies now have a clear accent, a brighter background, and more space around the text.\n\nThe robot jumps in surprise when you stop it, with a brief red alert across the factory.',
+      });
+      await publish();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('assistant-response');
     },
   );
 
@@ -2285,8 +2499,14 @@ async function main() {
   );
 
   await run(
-    'queued steering stays visible until delivery or Stop and belongs to its parent',
+    'steering stays visible until delivery or Stop and belongs to its parent',
     async () => {
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('send-prompt').textContent,
+        ),
+        'Steer',
+      );
       for (let index = 0; index < 2; index++) {
         await evaluate(() => {
           const editor = document.getElementById('parent-prompt');
@@ -2303,15 +2523,32 @@ async function main() {
       }
       assert.deepEqual(
         await evaluate(() =>
-          [...document.querySelectorAll('#queued-message-list pre')].map(
+          [...document.querySelectorAll('#steering-message-list pre')].map(
             item => item.textContent,
           ),
         ),
         ['Please inspect the tests first.', 'Please inspect the tests first.'],
       );
       assert.equal(
-        await evaluate(() => document.getElementById('queued-messages').hidden),
+        await evaluate(
+          () => document.getElementById('steering-messages').hidden,
+        ),
         false,
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'prompt'),
+        [
+          {
+            method: 'prompt',
+            sessionId: 'alpha',
+            request: {prompt: 'Please inspect the tests first.'},
+          },
+          {
+            method: 'prompt',
+            sessionId: 'alpha',
+            request: {prompt: 'Please inspect the tests first.'},
+          },
+        ],
       );
       await evaluate(() =>
         [...document.querySelectorAll('#parents button')]
@@ -2319,7 +2556,9 @@ async function main() {
           .click(),
       );
       assert.equal(
-        await evaluate(() => document.getElementById('queued-messages').hidden),
+        await evaluate(
+          () => document.getElementById('steering-messages').hidden,
+        ),
         true,
       );
       await evaluate(() =>
@@ -2330,7 +2569,7 @@ async function main() {
       await reloadPage();
       assert.equal(
         await evaluate(
-          () => document.querySelectorAll('#queued-message-list li').length,
+          () => document.querySelectorAll('#steering-message-list li').length,
         ),
         2,
       );
@@ -2344,13 +2583,12 @@ async function main() {
       await publish();
       assert.equal(
         await evaluate(
-          () => document.querySelectorAll('#queued-message-list li').length,
+          () => document.querySelectorAll('#steering-message-list li').length,
         ),
         1,
       );
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('queued-steering');
-      hub.sessions[0].queue.steering = Array(6).fill('Queued instruction');
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) await screenshot('steering');
+      hub.sessions[0].queue.steering = Array(6).fill('Steering instruction');
       await publish();
       window.webContents.setZoomFactor(1.5);
       await settle();
@@ -2359,18 +2597,18 @@ async function main() {
           const send = document
             .getElementById('send-prompt')
             .getBoundingClientRect();
-          const queue = document.getElementById('queued-messages');
+          const queue = document.getElementById('steering-messages');
           return (
             send.bottom <= innerHeight &&
             queue.scrollHeight > queue.clientHeight
           );
         }),
         true,
-        'Large queues must scroll without hiding Send at 150% zoom',
+        'Steering messages must stay accessible without hiding Steer at 150% zoom',
       );
       await evaluate(() => document.getElementById('abort-parent').click());
       await until(
-        () => document.getElementById('queued-messages').hidden,
+        () => document.getElementById('steering-messages').hidden,
         'Stop did not clear pending steering',
       );
       assert.equal(
@@ -2381,6 +2619,14 @@ async function main() {
             ).length,
         ),
         1,
+      );
+      hub.sessions[0].session.status = 'idle';
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('send-prompt').textContent,
+        ),
+        'Send',
       );
     },
   );

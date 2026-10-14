@@ -38,10 +38,11 @@ const parentNodes = new Map();
 const workerNodes = new Map();
 const historyNodes = new Map();
 const labelNodes = new Map();
+const fallbackNodes = new Map();
 const feedNodes = new Map();
 const changeNodes = new Map();
 const conversationNodes = new Map();
-const queueNodes = new Map();
+const steeringNodes = new Map();
 const disclosures = new Map();
 const disclosureStorage = 'varisdev.factory.disclosures';
 try {
@@ -65,6 +66,7 @@ const sending = new Set();
 const stopping = new Set();
 const pausedActivity = new Set();
 let stopEffectTimer;
+let stopEffectSession;
 let scene;
 let sceneMotion;
 let unsubscribe;
@@ -420,10 +422,9 @@ function createParentCard(data) {
   header.append(robot(), name, status);
   const path = node('span', 'project-path mono');
   const activity = node('span', 'parent-card-activity');
-  const footer = node('span', 'parent-card-footer');
-  element.append(header, path, activity, footer);
+  element.append(header, path, activity);
   element.addEventListener('click', () => selectSession(data.session.id));
-  return {element, name, status, path, activity, footer};
+  return {element, name, status, path, activity};
 }
 function renderOverview() {
   const parents = [...state.hub.sessions].sort((a, b) => {
@@ -468,20 +469,7 @@ function renderOverview() {
             ? session.error
             : session.activity || 'Standing by for a mission',
       );
-      entry.footer.replaceChildren(
-        node('span', '', `${tally.working} working · ${tally.queued} queued`),
-        node('span', '', `${data.totalAgents} drones`),
-        node(
-          'span',
-          '',
-          session.owned
-            ? 'Desktop parent'
-            : canControl(session)
-              ? 'Connected pidev'
-              : 'Disconnected pidev',
-        ),
-      );
-      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}${session.error ? `\n${session.error}` : ''}`;
+      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${tally.working} working · ${tally.queued} queued · ${data.totalAgents} drones${session.error ? `\n${session.error}` : ''}`;
     },
   );
   const workingParents = parents.filter(item =>
@@ -505,12 +493,10 @@ function createSceneLabel(id) {
   );
   element.type = 'button';
   const name = node('span', 'scene-label-name');
-  const task = node('span', 'scene-label-task');
-  const activity = node('span', 'scene-label-activity');
-  element.append(name, task, activity);
+  element.append(name);
   element.addEventListener('click', () => selectUnit(id));
   $('scene-labels').append(element);
-  return {element, name, task, activity};
+  return {element, name};
 }
 function layoutLabels(layout) {
   lastLayout = layout;
@@ -536,11 +522,6 @@ function layoutLabels(layout) {
     }
 
     text(entry.name, unit.name);
-    text(
-      entry.task,
-      anchor.id === 'parent' ? unit.prompt || 'Parent session' : unit.task,
-    );
-    text(entry.activity, unit.activity || statusName(unit.status));
     entry.element.classList.toggle('selected', state.unitId === anchor.id);
     entry.element.setAttribute(
       'aria-pressed',
@@ -562,53 +543,49 @@ function sceneAgents(data) {
 }
 function renderFallback(data) {
   const units = [{...data.session, id: 'parent'}, ...sceneAgents(data)];
-  $('fallback-units').replaceChildren(
-    ...units.map(unit => {
-      const parent = unit.id === 'parent';
-      const element = node(
-        'button',
-        `fallback-station ${parent ? 'master' : 'drone'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`,
-      );
+  reconcile(
+    $('fallback-units'),
+    fallbackNodes,
+    units,
+    unit => unit.id,
+    unit => {
+      const element = node('button');
       element.type = 'button';
-      element.setAttribute('aria-pressed', String(state.unitId === unit.id));
-      element.title = `${unit.name}\n${parent ? unit.prompt || 'Master command' : unit.task}\n${unit.activity || statusName(unit.status)}`;
       const status = node('span');
-      badge(status, unit.status);
-      element.append(
-        robot(!parent),
-        status,
-        node('strong', '', unit.name),
-        node('p', '', parent ? unit.prompt || 'Master command' : unit.task),
-        node('p', 'muted', unit.activity || statusName(unit.status)),
-      );
+      const name = node('strong');
+      const task = node('p');
+      const activity = node('p', 'muted');
+      element.append(robot(unit.id !== 'parent'), status, name, task, activity);
       element.addEventListener('click', () => selectUnit(unit.id));
-      return element;
-    }),
+      return {element, status, name, task, activity};
+    },
+    (entry, unit) => {
+      const parent = unit.id === 'parent';
+      const task = parent ? unit.prompt || 'Master command' : unit.task;
+      const activity = unit.activity || statusName(unit.status);
+      entry.element.className = `fallback-station ${parent ? 'master' : 'drone'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
+      entry.element.setAttribute(
+        'aria-pressed',
+        String(state.unitId === unit.id),
+      );
+      entry.element.title = `${unit.name}\n${task}\n${activity}`;
+      badge(entry.status, unit.status);
+      text(entry.name, unit.name);
+      text(entry.task, task);
+      text(entry.activity, activity);
+    },
   );
 }
 function sizeInspector() {
   if (!snapshot() || $('factory-workspace').hidden) return;
   const element = $('inspector');
-  const available = Math.max(
-    300,
-    window.innerWidth > 950
-      ? $('factory-workspace').clientHeight
-      : window.innerHeight * 0.8,
-  );
+  const available = Math.max(300, $('factory-workspace').clientHeight);
   element.style.maxHeight = `${Math.round(available)}px`;
   element.style.setProperty('--inspector-space', `${Math.round(available)}px`);
 }
 function sizeScene() {
-  if (!snapshot()) return;
   const element = $('scene');
-  const top = element.getBoundingClientRect().top + window.scrollY;
-  const height = Math.max(
-    300,
-    Math.min(720, window.innerHeight - Math.max(top, 0) - 36),
-  );
-  const value = `${Math.round(height)}px`;
-  if (element.style.height !== value) element.style.height = value;
-  element.classList.toggle('compact-scene', height < 360);
+  element.classList.toggle('compact-scene', element.clientHeight < 360);
 }
 function resizeFactory() {
   sizeScene();
@@ -652,29 +629,44 @@ function renderProcessing(data) {
   $('processing-state').classList.toggle('paused', !processing);
   text($('processing-state-text'), phase);
   setSceneMotion(
-    state.motion && !motionPreference.matches && phase !== 'Stopping',
+    state.motion &&
+      !motionPreference.matches &&
+      phase !== 'Stopping' &&
+      stopEffectSession !== data.session.id,
   );
 }
-function stopEffect() {
+function clearStopEffect() {
   clearTimeout(stopEffectTimer);
-  const burst = $('stop-burst');
-  burst.hidden = false;
-  burst.classList.remove('braking');
-  // Restart the small effect when another run is stopped later.
-  void burst.offsetWidth;
-  burst.classList.add('braking');
-  stopEffectTimer = setTimeout(() => {
-    burst.hidden = true;
-  }, 1100);
+  const session = stopEffectSession;
+  stopEffectSession = undefined;
+  $('scene').classList.remove('is-startled');
+  scene?.clearStartle();
+  const data = snapshot();
+  if (!state.disposed && session && data?.session.id === session)
+    renderProcessing(data);
+}
+function stopEffect() {
+  clearStopEffect();
+  stopEffectSession = state.sessionId;
+  const element = $('scene');
+  // Restart the alert and fallback robot animation for each stop.
+  void element.offsetWidth;
+  element.classList.add('is-startled');
+  scene?.startle(state.motion && !motionPreference.matches);
+  stopEffectTimer = setTimeout(clearStopEffect, 1100);
 }
 function renderFactory() {
   const data = snapshot();
   if (!data) return;
   const session = data.session;
+  if (stopEffectSession && stopEffectSession !== session.id) clearStopEffect();
   const tally = counts(data);
   text($('factory-title'), session.name);
+  $('factory-title').title = session.name;
   text($('factory-path'), session.cwd);
+  $('factory-path').title = session.cwd;
   text($('factory-model'), session.model);
+  $('factory-model').title = session.model;
   text($('factory-effort'), `Effort: ${session.thinkingLevel ?? ''}`);
   $('factory-effort').hidden = !session.thinkingLevel;
   parentBadge($('parent-status'), session);
@@ -693,6 +685,7 @@ function renderFactory() {
   );
   $('context-meter').hidden = !context;
   text($('master-activity'), session.activity || 'Standing by for a mission');
+  $('master-activity').title = $('master-activity').textContent;
   sizeScene();
   renderProcessing(data);
   if (scene) {
@@ -753,8 +746,10 @@ function renderWorkers() {
       text(entry.activity, agent.activity || 'Waiting for activity');
       text(entry.model, agent.model);
       text(entry.time, duration(agent));
+      entry.element.title = `${agent.name}\n${agent.task}\n${agent.activity || ''}\n${agent.model}`;
     },
   );
+  $('no-workers').hidden = active.length > 0;
   const filtered = history.filter(
     item =>
       !state.historyQuery ||
@@ -777,6 +772,7 @@ function renderWorkers() {
       text(entry.name, agent.name);
       text(entry.task, agent.task);
       badge(entry.status, agent.status);
+      entry.element.title = `${agent.name}\n${agent.task}`;
     },
   );
   text($('active-count'), active.length);
@@ -1259,38 +1255,26 @@ function renderConversation(data) {
     if (saved) body.scrollTop = saved.top;
   }
 }
-function renderQueue(data) {
-  const messages = [
-    ...(data.queue?.steering || []).map((text, index) => ({
-      index,
-      kind: 'Steering',
-      text,
-    })),
-    ...(data.queue?.followUp || []).map((text, index) => ({
-      index,
-      kind: 'Follow-up',
-      text,
-    })),
-  ];
-  $('queued-messages').hidden = messages.length === 0;
-  text($('queued-messages-title'), `Queued messages · ${messages.length}`);
-  // Retain rows while snapshots arrive so queued text remains selectable.
+function renderSteering(data) {
+  const messages = (data.queue?.steering || []).map((text, index) => ({
+    index,
+    text,
+  }));
+  $('steering-messages').hidden = messages.length === 0;
+  text($('steering-messages-title'), `Steering · ${messages.length}`);
+  // Retain rows while snapshots arrive so steering text remains selectable.
   reconcile(
-    $('queued-message-list'),
-    queueNodes,
+    $('steering-message-list'),
+    steeringNodes,
     messages,
-    item => `${data.session.id}:${item.kind}:${item.index}:${item.text}`,
+    item => `${data.session.id}:${item.index}:${item.text}`,
     () => {
       const element = node('li');
-      const kind = node('span', 'queue-kind');
       const content = node('pre');
-      element.append(kind, content);
-      return {element, kind, content};
+      element.append(content);
+      return {element, content};
     },
-    (entry, message) => {
-      text(entry.kind, message.kind);
-      text(entry.content, message.text);
-    },
+    (entry, message) => text(entry.content, message.text),
   );
 }
 function renderInspector() {
@@ -1359,7 +1343,7 @@ function renderInspector() {
   renderFeed(data);
   renderChanges(data);
   renderConversation(data);
-  renderQueue(data);
+  renderSteering(data);
   renderUsage(data);
   renderSessionFeatures(data);
   if (
@@ -1396,7 +1380,18 @@ function renderInspector() {
     sending.has(state.sessionId) ||
     stopping.has(state.sessionId) ||
     data.session.status === 'closed';
-  text($('send-prompt'), sending.has(state.sessionId) ? 'Sending…' : 'Send');
+  const steering = data.session.status === 'running';
+  text($('prompt-action'), steering ? 'Steer' : 'Message');
+  text(
+    $('send-prompt'),
+    sending.has(state.sessionId) ? 'Sending…' : steering ? 'Steer' : 'Send',
+  );
+  $('send-prompt').title = steering
+    ? 'Steer this session at its next model turn'
+    : 'Send a message';
+  $('parent-prompt').placeholder = steering
+    ? 'Guide the current task…'
+    : 'Describe the next task…';
   renderWorkspace();
   sizeInspector();
 }
@@ -1500,7 +1495,12 @@ function applyMotion() {
   $('motion-toggle').title = motionPreference.matches
     ? 'Reduced motion is enabled in system settings'
     : 'Toggle factory animation';
-  setSceneMotion(enabled && !pausedActivity.has(state.sessionId));
+  setSceneMotion(
+    enabled &&
+      !pausedActivity.has(state.sessionId) &&
+      stopEffectSession !== state.sessionId,
+  );
+  if (!enabled && stopEffectSession) scene?.startle(false);
 }
 async function openFolder() {
   if (creating || !api) return;
@@ -1551,6 +1551,7 @@ async function sendPrompt(event) {
   try {
     await api.promptSession(id, {prompt});
     pausedActivity.delete(id);
+    if (stopEffectSession === id) clearStopEffect();
     clearSubmittedDraft(id, submitted);
   } catch (error) {
     if (id === state.sessionId) showError(error, $('prompt-error'));
@@ -1575,12 +1576,13 @@ async function abortParent() {
   stopping.add(id);
   pausedActivity.add(id);
   $('app-error').hidden = true;
-  stopEffect();
   renderFactory();
   renderInspector();
+  stopEffect();
   try {
     await api.abortSession(id);
   } catch (error) {
+    if (stopEffectSession === id) clearStopEffect();
     pausedActivity.delete(id);
     showError(error);
   } finally {
@@ -1701,7 +1703,8 @@ $('follow-feed').addEventListener('change', () => {
 });
 motionPreference.addEventListener('change', applyMotion);
 window.addEventListener('resize', resizeFactory);
-window.addEventListener('scroll', sizeInspector, {passive: true});
+const sceneResize = new window.ResizeObserver(sizeScene);
+sceneResize.observe($('scene'));
 try {
   state.motion = localStorage.getItem('varisdev-factory-motion') !== 'false';
 } catch {
@@ -1750,10 +1753,10 @@ window.addEventListener('unload', () => {
   state.disposed = true;
   unsubscribe?.();
   clearInterval(clock);
-  clearTimeout(stopEffectTimer);
+  clearStopEffect();
   motionPreference.removeEventListener('change', applyMotion);
   window.removeEventListener('resize', resizeFactory);
-  window.removeEventListener('scroll', sizeInspector);
+  sceneResize.disconnect();
   cleanupThemes();
   cleanupZoom();
   scene?.dispose();

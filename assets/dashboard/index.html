@@ -112,15 +112,6 @@
                 <span class="processing-dots"><i></i><i></i><i></i></span
                 ><strong id="processing-bubble-text">Thinking</strong>
               </div>
-              <div
-                id="stop-burst"
-                class="stop-burst"
-                hidden
-                role="status"
-                aria-label="Stopping work"
-              >
-                Stopping
-              </div>
               <canvas
                 id="factory-canvas"
                 aria-label="Factory view with a parent and workers"
@@ -150,36 +141,43 @@
               </button>
             </div>
           </section>
-          <section class="workers-section" aria-labelledby="workers-title">
-            <div class="section-heading compact">
-              <h2 id="workers-title">
-                On the floor <span id="active-count" class="count-tag">0</span>
-              </h2>
-            </div>
-            <div id="active-workers" class="worker-grid"></div>
-          </section>
-          <section
-            class="history-section panel"
-            aria-labelledby="history-title"
-          >
-            <div class="section-heading compact">
-              <h2 id="history-title">
-                Drone history
-                <span id="history-count" class="count-tag">0</span>
-              </h2>
-              <label class="history-search"
-                ><span class="sr-only">Search drone history</span
-                ><input
-                  id="history-search"
-                  type="search"
-                  placeholder="Search history"
-              /></label>
-            </div>
-            <div id="history-workers" class="history-list"></div>
-            <p id="no-history" class="empty-state">
-              Completed drones appear here.
-            </p>
-          </section>
+          <div class="worker-panels">
+            <section
+              class="workers-section panel"
+              aria-labelledby="workers-title"
+            >
+              <div class="section-heading compact">
+                <h2 id="workers-title">
+                  On the floor
+                  <span id="active-count" class="count-tag">0</span>
+                </h2>
+              </div>
+              <div id="active-workers" class="worker-grid"></div>
+              <p id="no-workers" class="empty-state">No active drones.</p>
+            </section>
+            <section
+              class="history-section panel"
+              aria-labelledby="history-title"
+            >
+              <div class="section-heading compact">
+                <h2 id="history-title">
+                  Drone history
+                  <span id="history-count" class="count-tag">0</span>
+                </h2>
+                <label class="history-search"
+                  ><span class="sr-only">Search drone history</span
+                  ><input
+                    id="history-search"
+                    type="search"
+                    placeholder="Search history"
+                /></label>
+              </div>
+              <div id="history-workers" class="history-list"></div>
+              <p id="no-history" class="empty-state">
+                Completed drones appear here.
+              </p>
+            </section>
+          </div>
         </div>
         <aside
           id="inspector"
@@ -539,13 +537,14 @@
           <p id="attached-note" class="attached-note" hidden>Connected pidev</p>
           <div id="composer-slot">
             <section
-              id="queued-messages"
-              class="queued-messages"
+              id="steering-messages"
+              class="steering-messages"
               hidden
-              aria-labelledby="queued-messages-title"
+              aria-labelledby="steering-messages-title"
             >
-              <h3 id="queued-messages-title">Queued messages</h3>
-              <ol id="queued-message-list"></ol>
+              <h3 id="steering-messages-title">Steering</h3>
+              <p class="muted">Applies at the next model turn.</p>
+              <ol id="steering-message-list"></ol>
             </section>
             <div
               id="command-suggestions"
@@ -562,7 +561,8 @@
               <form id="prompt-form">
                 <div class="composer-heading">
                   <label id="parent-editor-label" for="parent-prompt"
-                    >Message <strong id="prompt-recipient"></strong
+                    ><span id="prompt-action">Message</span>
+                    <strong id="prompt-recipient"></strong
                   ></label>
                   <button id="open-commands" class="quiet-button" type="button">
                     Skills &amp; commands

@@ -2,6 +2,7 @@
 /* A small, dependency-free WebGL scene. Coordinates and lighting are real 3D;
  * the dashboard owns the accessible labels, session data and motion preference. */
 const TAU = Math.PI * 2;
+const STARTLE_DURATION = 1.1;
 const COLORS = {
   floor: [0.095, 0.14, 0.16],
   edge: [0.14, 0.21, 0.23],
@@ -561,6 +562,7 @@ export function createFactoryScene(
     particles = [],
     dispatches = [],
     flashes = [];
+  let reaction = null;
   let lastFrame = 0,
     time = 0,
     width = 1,
@@ -671,6 +673,22 @@ export function createFactoryScene(
     firstSnapshot = false;
   }
 
+  function startlePose() {
+    if (!reaction) return {surprise: 0, jump: 0, squash: 0, wobble: 0};
+    if (!reaction.animated) return {surprise: 1, jump: 0, squash: 0, wobble: 0};
+    const p = reaction.age / STARTLE_DURATION;
+    const surprise = Math.min(1, p / 0.1) * Math.min(1, (1 - p) / 0.42);
+    const flight = Math.max(0, Math.min(1, (p - 0.06) / 0.58));
+    const jump = Math.sin(flight * Math.PI) * 1.65;
+    const squash =
+      p >= 0.64 && p < 0.8
+        ? -Math.sin(((p - 0.64) / 0.16) * Math.PI) * 0.25
+        : p >= 0.8
+          ? Math.sin(((p - 0.8) / 0.2) * Math.PI) * 0.1
+          : -Math.sin(Math.min(1, p / 0.06) * Math.PI) * 0.12;
+    return {surprise, jump, squash, wobble: Math.sin(p * TAU * 4) * surprise};
+  }
+
   function master(g, fx) {
     const state = snapshot?.session?.status || 'idle';
     const active = state === 'running' || state === 'compacting';
@@ -684,15 +702,30 @@ export function createFactoryScene(
     const t = active ? time : 0;
     const x = -6.25,
       bob = active ? Math.sin(t * (writing ? 5 : 2.5)) * 0.09 : 0;
-    const y = 0.4 + bob;
-    g.cylinder([x, 0.38, 0], [2.25, 0.045, 1.5], [0.026, 0.055, 0.06]);
-    // Two planted feet, visible knee joints and a segmented waist.
-    for (const z of [-0.54, 0.54]) {
-      g.box([x + 0.12, 0.59, z], [1.08, 0.35, 0.66], C.metal);
-      g.box([x + 0.5, 0.65, z], [0.12, 0.15, 0.55], C.shell);
-      g.rod([x - 0.15, 0.7, z], [x - 0.25, 1.15 + bob, z], 0.2, C.dark);
-      g.octagon([x - 0.23, 1.03 + bob, z], [0.52, 0.25, 0.52], C.metal);
-      g.box([x - 0.1, 1.2 + bob, z], [0.52, 0.45, 0.44], C.shell);
+    const {surprise, jump, squash, wobble} = startlePose();
+    const lift = bob + jump + squash;
+    const y = 0.4 + lift;
+    g.cylinder(
+      [x, 0.38, 0],
+      [2.25 - jump * 0.35, 0.045, 1.5 - jump * 0.2],
+      [0.026, 0.055, 0.06],
+    );
+    // The feet leave the dais, kick outward, then plant for the landing squash.
+    for (const side of [-1, 1]) {
+      const z = side * 0.54;
+      const footZ = z + side * jump * 0.17;
+      const footX = x + jump * 0.18;
+      const footY = jump * 1.12;
+      g.box([footX + 0.12, 0.59 + footY, footZ], [1.08, 0.35, 0.66], C.metal);
+      g.box([footX + 0.5, 0.65 + footY, footZ], [0.12, 0.15, 0.55], C.shell);
+      g.rod(
+        [footX - 0.15, 0.7 + footY, footZ],
+        [x - 0.25, 1.15 + lift, z],
+        0.2,
+        C.dark,
+      );
+      g.octagon([x - 0.23, 1.03 + lift, z], [0.52, 0.25, 0.52], C.metal);
+      g.box([x - 0.1, 1.2 + lift, z], [0.52, 0.45, 0.44], C.shell);
     }
     g.octagon([x, y + 1, 0], [1.2, 0.3, 1.24], C.dark);
     g.box([x, y + 1.55, 0], [1.45, 1.12, 1.52], C.shell);
@@ -708,17 +741,36 @@ export function createFactoryScene(
     g.box([x + 0.84, y + 2.61, 0], [0.095, 0.47, 1.45], C.dark);
     g.box([x + 0.9, y + 2.58, 0], [0.035, 0.05, 1.23], color, 0.7);
     for (const z of [-0.4, 0.4]) {
-      g.box([x + 0.91, y + 2.67, z], [0.04, 0.16, 0.29], color, 1);
+      g.box(
+        [x + 0.91, y + 2.67, z],
+        [0.04, 0.16 + surprise * 0.23, 0.29 + surprise * 0.08],
+        surprise ? C.white : color,
+        1,
+      );
+      if (surprise > 0)
+        g.box(
+          [x + 0.935, y + 2.69, z],
+          [0.015, surprise * 0.14, surprise * 0.12],
+          C.dark,
+        );
       g.box([x - 0.08, y + 2.64, z * 2.23], [0.56, 0.5, 0.14], C.metal);
       g.box([x + 0.01, y + 2.66, z * 2.43], [0.21, 0.22, 0.03], color, 0.8);
     }
-    g.rod(
-      [x - 0.43, y + 3.05, -0.48],
-      [x - 0.53, y + 3.68, -0.48],
-      0.037,
-      C.metal,
+    if (surprise > 0)
+      g.box(
+        [x + 0.92, y + 2.43, 0],
+        [0.04, surprise * 0.15, surprise * 0.19],
+        C.white,
+        0.85,
+      );
+    const antenna = [x - 0.53 + wobble * 0.4, y + 3.68, -0.48 + wobble * 0.18];
+    g.rod([x - 0.43, y + 3.05, -0.48], antenna, 0.037, C.metal);
+    g.octagon(
+      [antenna[0], antenna[1] + 0.04, antenna[2]],
+      [0.19, 0.16, 0.19],
+      color,
+      0.95,
     );
-    g.octagon([x - 0.53, y + 3.72, -0.48], [0.19, 0.16, 0.19], color, 0.95);
     for (const side of [-1, 1]) {
       const shoulder = [x, y + 1.94, side * 0.96];
       const stroke = Math.sin(
@@ -744,6 +796,13 @@ export function createFactoryScene(
                       : 0),
               side * (thinking ? 1.18 : 1.52),
             ];
+      // Blend from the frozen work pose into a broad, overhead flail.
+      const raisedElbow = [x - 0.15, y + 2.6, side * 1.65];
+      const raisedHand = [x + 0.25 + wobble * 0.12, y + 3.55, side * 1.95];
+      for (let axis = 0; axis < 3; axis++) {
+        elbow[axis] += (raisedElbow[axis] - elbow[axis]) * surprise;
+        hand[axis] += (raisedHand[axis] - hand[axis]) * surprise;
+      }
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
       g.octagon(elbow, [0.4, 0.36, 0.4], C.dark);
@@ -777,7 +836,7 @@ export function createFactoryScene(
           g.octagon(
             [
               x + Math.cos(angle) * 1.05,
-              y + 3.55 + Math.sin(angle) * 0.16,
+              0.4 + bob + 3.55 + Math.sin(angle) * 0.16,
               Math.sin(angle) * 1.05,
             ],
             [pulse, pulse, pulse],
@@ -785,7 +844,7 @@ export function createFactoryScene(
             1,
           );
         }
-        g.ring([x, y + 3.5, 0], 1.08, 0.025, C.cyan, 0.7, 32, 0.72, t * 1.8);
+        g.ring([x, 3.9 + bob, 0], 1.08, 0.025, C.cyan, 0.7, 32, 0.72, t * 1.8);
       } else if (writing) {
         for (let row = 0; row < 5; row++) {
           const length = 0.3 + ((t * 0.8 + row * 0.19) % 1) * 0.7;
@@ -823,7 +882,7 @@ export function createFactoryScene(
         );
       g.rod([x + 1.65, 1.3, 0], [x + 1.65, 2.27, 0], 0.016, color, 0.75);
     }
-    return [x, y + 4.0, 0];
+    return {p: [x, y + 4.0, 0], body: [x, y + 1.6, 0]};
   }
 
   function drone(unit, g, fx, index) {
@@ -1006,7 +1065,7 @@ export function createFactoryScene(
     const matrix = cameraMatrix(eye, target, aspect);
     const g = new Geometry(),
       fx = new Geometry();
-    const positions = [{id: 'parent', p: master(g, fx), body: [-6.25, 2, 0]}];
+    const positions = [{id: 'parent', ...master(g, fx)}];
     units.forEach((unit, i) =>
       positions.push({
         id: unit.id,
@@ -1109,7 +1168,13 @@ export function createFactoryScene(
     }
   }
   function canAnimate() {
-    return motion && !document.hidden && inView && !disposed && !contextLost;
+    return (
+      (motion || reaction?.animated) &&
+      !document.hidden &&
+      inView &&
+      !disposed &&
+      !contextLost
+    );
   }
   function tick(now) {
     frame = 0;
@@ -1117,28 +1182,38 @@ export function createFactoryScene(
       lastFrame = 0;
       return;
     }
-    const dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 0;
+    const elapsed = lastFrame ? (now - lastFrame) / 1000 : 0;
     lastFrame = now;
-    time += dt;
-    cameraOffset = cameraOffset.map(
-      (v, i) => v + (pointer[i] - v) * Math.min(1, dt * 4),
-    );
-    for (const p of particles) {
-      p.age += dt;
-      p.v[1] -= dt * 5;
-      p.p = p.p.map((v, i) => v + p.v[i] * dt);
+    if (reaction?.animated) {
+      reaction.age += elapsed;
+      if (reaction.age >= STARTLE_DURATION) reaction = null;
     }
-    particles = particles.filter(p => p.age < p.life && p.p[1] > 0.05);
-    dispatches.forEach(b => {
-      b.age += dt;
-    });
-    dispatches = dispatches.filter(b => b.age < b.life);
-    flashes.forEach(f => {
-      f.age += dt;
-    });
-    flashes = flashes.filter(f => f.age < f.life);
+    // A Stop reaction has its own finite clock. Work, sparks and camera
+    // movement stay frozen even while its geometry is being redrawn.
+    if (motion) {
+      const dt = Math.min(elapsed, 0.05);
+      time += dt;
+      cameraOffset = cameraOffset.map(
+        (v, i) => v + (pointer[i] - v) * Math.min(1, dt * 4),
+      );
+      for (const p of particles) {
+        p.age += dt;
+        p.v[1] -= dt * 5;
+        p.p = p.p.map((v, i) => v + p.v[i] * dt);
+      }
+      particles = particles.filter(p => p.age < p.life && p.p[1] > 0.05);
+      dispatches.forEach(b => {
+        b.age += dt;
+      });
+      dispatches = dispatches.filter(b => b.age < b.life);
+      flashes.forEach(f => {
+        f.age += dt;
+      });
+      flashes = flashes.filter(f => f.age < f.life);
+    }
     render();
-    frame = requestAnimationFrame(tick);
+    if (canAnimate()) schedule();
+    else lastFrame = 0;
   }
   function schedule() {
     if (canAnimate() && !frame) frame = requestAnimationFrame(tick);
@@ -1198,6 +1273,7 @@ export function createFactoryScene(
   function onContextLost(event) {
     event.preventDefault();
     contextLost = true;
+    reaction = null;
     stop();
   }
   function onContextRestored() {
@@ -1243,6 +1319,8 @@ export function createFactoryScene(
       if (disposed) return;
       const id = data?.session?.id;
       if (id !== sessionId) {
+        reaction = null;
+        stop();
         sessionId = id;
         firstSnapshot = true;
         previous = new Map();
@@ -1288,20 +1366,29 @@ export function createFactoryScene(
     setMotion(enabled) {
       if (disposed) return;
       motion = Boolean(enabled);
-      if (!motion) {
-        stop();
-        particles = [];
-        dispatches = [];
-        flashes = [];
-        pointer = [0, 0];
-        cameraOffset = [0, 0];
-      }
+      if (motion) reaction = null;
+      if (!canAnimate()) stop();
+      render();
+      schedule();
+    },
+    startle(animate = true) {
+      if (disposed || contextLost) return;
+      stop();
+      reaction = {age: 0, animated: Boolean(animate)};
+      render();
+      if (animate) schedule();
+    },
+    clearStartle() {
+      if (disposed || !reaction) return;
+      reaction = null;
+      if (!canAnimate()) stop();
       render();
       schedule();
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      reaction = null;
       stop();
       resizeObserver?.disconnect();
       intersectionObserver?.disconnect();

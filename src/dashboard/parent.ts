@@ -157,6 +157,9 @@ export async function createDashboardParent(
     resourceLoader: loader,
     sessionManager,
   });
+  // Deliver every desktop correction together at the next model turn.
+  // Keep this policy local to the session rather than changing Pi settings.
+  session.agent.steeringMode = 'all';
   const refreshAutocomplete = () =>
     ui.configureBaseAutocomplete(
       request.cwd,
@@ -166,6 +169,7 @@ export async function createDashboardParent(
     diagnostics.length = 0;
     await session.reload({
       beforeSessionStart: async () => {
+        session.agent.steeringMode = 'all';
         ui.resetExtensions();
         refreshAutocomplete();
       },

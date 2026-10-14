@@ -512,6 +512,7 @@ void test(
     assert.deepEqual(other.state.snapshot().agents, []);
     assert.deepEqual(other.state.snapshot().changes, []);
 
+    await parent.reload();
     const steeredRun = parent.prompt(
       'steer-held-parent: begin a task with a tool call.',
     );
@@ -522,8 +523,15 @@ void test(
     await parent.prompt(
       'steering-parent: change approach before the task finishes.',
     );
+    await parent.prompt(
+      'steering-parent: also include this correction in the next model turn.',
+    );
+    const steeringMessages = [
+      'steering-parent: change approach before the task finishes.',
+      'steering-parent: also include this correction in the next model turn.',
+    ];
     assert.deepEqual(parent.state.snapshot().queue, {
-      steering: ['steering-parent: change approach before the task finishes.'],
+      steering: steeringMessages,
       followUp: [],
     });
     assert.deepEqual(other.state.snapshot().queue, {
@@ -532,7 +540,8 @@ void test(
     });
     const queueCopy = parent.state.snapshot().queue!;
     queueCopy.steering.length = 0;
-    assert.equal(parent.state.snapshot().queue!.steering.length, 1);
+    assert.equal(parent.state.snapshot().queue!.steering.length, 2);
+    const nextTurnIndex = requests.length;
     reply(steeringResponse!, {
       name: 'write',
       arguments: {
@@ -541,6 +550,16 @@ void test(
       },
     });
     await steeredRun;
+    const nextTurn = requests[nextTurnIndex].body.messages;
+    assert.deepEqual(
+      nextTurn
+        .filter(message => message.role === 'user')
+        .slice(-2)
+        .map(message => message.content),
+      steeringMessages.map(text => [{type: 'text', text}]),
+      'Every pending steering message reaches the very next model call',
+    );
+    assert.equal(requests.length, nextTurnIndex + 1);
     assert.deepEqual(parent.state.snapshot().queue, {
       steering: [],
       followUp: [],
@@ -609,10 +628,18 @@ void test(
     await other.close();
     assert.equal(other.state.snapshot().session.status, 'closed');
 
-    for (const action of ['abort', 'close'] as const) {
+    for (const action of ['abort', 'close', 'steer'] as const) {
       await t.test(
-        `${action} during credential preflight prevents provider requests`,
+        `${action} during credential preflight`,
         async cancellation => {
+          if (action === 'steer') {
+            const prompts = join(otherCwd, '.pi', 'prompts');
+            await mkdir(prompts, {recursive: true});
+            await writeFile(
+              join(prompts, 'preflight-steer.md'),
+              'independent-parent: TEMPLATE $@',
+            );
+          }
           const cancelled = await createDashboardParent(
             {cwd: otherCwd, name: `Cancelled during ${action}`},
             inherited,
@@ -650,13 +677,52 @@ void test(
             },
           );
           const requestCount = requests.length;
-          const prompting = cancelled.prompt(
-            'Write files after resolving credentials.',
-          );
+          const initialPrompt =
+            'independent-parent: initial request before credentials resolve.';
+          const prompting = cancelled.prompt(initialPrompt);
           await waitFor(
             () => checkingCredentials,
             'SDK prompt waits for credentials',
           );
+          if (action === 'steer') {
+            await cancelled.prompt(
+              'independent-parent: first correction during preflight.',
+            );
+            await cancelled.prompt(
+              '/preflight-steer second correction during preflight.',
+            );
+            const corrections = [
+              'independent-parent: first correction during preflight.',
+              'independent-parent: TEMPLATE second correction during preflight.',
+            ];
+            assert.deepEqual(cancelled.state.snapshot().queue, {
+              steering: corrections,
+              followUp: [],
+            });
+            assert.equal(requests.length, requestCount);
+            releaseCredentials();
+            await prompting;
+            assert.equal(
+              requests.length,
+              requestCount + 1,
+              'Preflight steering uses the initial run without starting extra turns',
+            );
+            assert.deepEqual(
+              requests[requestCount].body.messages
+                .filter(message => message.role === 'user')
+                .map(message => message.content),
+              [initialPrompt, ...corrections].map(text => [
+                {type: 'text', text},
+              ]),
+              'The initial prompt and all preflight corrections reach the first model call in order',
+            );
+            assert.deepEqual(cancelled.state.snapshot().queue, {
+              steering: [],
+              followUp: [],
+            });
+            await cancelled.close();
+            return;
+          }
           let stopped = false;
           const stopping = cancelled[action]().then(() => {
             stopped = true;
@@ -706,6 +772,13 @@ void test(
         },
       );
     }
+
+    assert.equal(
+      JSON.parse(await readFile(join(agentDir, 'settings.json'), 'utf8'))
+        .steeringMode,
+      undefined,
+      'Desktop steering policy does not change the saved Pi settings',
+    );
 
     // Standalone desktop parents select the user's configured model and auth.
     await writeFile(

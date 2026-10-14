@@ -17,8 +17,9 @@ void test(
     // Outside the checkout: Node and TypeScript cannot find its node_modules.
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-package-'));
     t.after(() => rm(directory, {recursive: true, force: true}));
+    // Copy tracked package inputs only. The Git package must not depend on an
+    // untracked local .npmrc from this checkout.
     for (const name of [
-      '.npmrc',
       'package.json',
       'package-lock.json',
       'tsconfig.desktop.json',
