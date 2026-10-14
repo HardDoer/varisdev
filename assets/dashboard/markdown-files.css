@@ -1,0 +1,245 @@
+#markdown-launcher {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+#markdown-panel {
+  position: fixed;
+  top: 88px;
+  left: 20px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  width: 520px;
+  height: calc(100vh - 155px);
+  min-width: min(340px, calc(40vw - 30px));
+  min-height: 280px;
+  max-width: calc(40vw - 30px);
+  max-height: calc(100vh - 108px);
+  resize: both;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 15px 65px #0009;
+}
+#markdown-panel[data-side='right'] {
+  left: auto;
+  right: 20px;
+  max-width: calc(100vw - 40px);
+}
+.markdown-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.markdown-heading-actions button {
+  white-space: nowrap;
+  font-size: 12px;
+}
+.markdown-heading,
+#markdown-path-form,
+.markdown-toolbar,
+#markdown-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.markdown-heading {
+  justify-content: space-between;
+}
+.markdown-heading h2 {
+  margin: 0;
+  font-size: 19px;
+}
+#markdown-panel button {
+  padding: 6px 10px;
+}
+#markdown-panel p {
+  margin: 8px 0;
+}
+#markdown-session {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+#markdown-path-form {
+  margin: 8px 0;
+}
+#markdown-path-form input {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+}
+#markdown-open-path {
+  white-space: nowrap;
+  font-size: 13px;
+}
+#markdown-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 6px 2px;
+}
+#markdown-tabs button {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+#markdown-tabs [aria-selected='true'] {
+  border-color: var(--mint);
+  color: var(--mint);
+}
+#markdown-document {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#markdown-file-path {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.markdown-toolbar {
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+#markdown-status {
+  color: var(--muted);
+}
+#markdown-progress {
+  flex-shrink: 0;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--mint);
+}
+#markdown-progress progress {
+  width: 95px;
+  height: 8px;
+  accent-color: var(--mint);
+}
+#markdown-disk-status,
+#markdown-error,
+#markdown-storage-status {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+#markdown-disk-status {
+  color: var(--amber);
+}
+#markdown-disk-status:empty,
+#markdown-storage-status:empty {
+  display: none;
+}
+#markdown-preview,
+#markdown-editor {
+  flex: 1;
+  min-height: 100px;
+  overflow: auto;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg);
+}
+#markdown-editor {
+  width: 100%;
+  resize: none;
+  font:
+    13px/1.6 Menlo,
+    Consolas,
+    monospace;
+  tab-size: 2;
+}
+#markdown-preview {
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+#markdown-preview h1,
+#markdown-preview h2,
+#markdown-preview h3,
+#markdown-preview h4,
+#markdown-preview h5,
+#markdown-preview h6 {
+  margin: 18px 0 8px;
+  line-height: 1.35;
+}
+#markdown-preview > :first-child {
+  margin-top: 0;
+}
+#markdown-preview h1 {
+  font-size: 24px;
+}
+#markdown-preview h2 {
+  font-size: 20px;
+}
+#markdown-preview h3 {
+  font-size: 17px;
+}
+#markdown-preview p {
+  white-space: pre-wrap;
+}
+#markdown-preview ul,
+#markdown-preview ol {
+  padding-left: 24px;
+  margin: 10px 0;
+}
+#markdown-preview li {
+  margin: 5px 0;
+}
+#markdown-preview .markdown-task {
+  list-style: none;
+  margin-left: -19px;
+}
+#markdown-preview .markdown-task input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0 8px 0 0;
+  accent-color: var(--mint);
+  opacity: 1;
+}
+#markdown-preview code {
+  font:
+    12px/1.6 Menlo,
+    Consolas,
+    monospace;
+  color: var(--cyan);
+}
+#markdown-preview pre {
+  overflow-x: auto;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--panel-raised);
+  white-space: pre;
+}
+#markdown-preview blockquote {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--mint);
+  color: var(--muted);
+}
+#markdown-preview hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.markdown-link {
+  color: var(--cyan);
+}
+@media (max-width: 600px) {
+  #markdown-panel {
+    top: 65px;
+    left: 8px;
+    width: calc(100vw - 16px);
+    min-width: 240px;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 80px);
+  }
+  #markdown-panel[data-side='right'] {
+    right: 8px;
+    max-width: calc(100vw - 16px);
+  }
+}

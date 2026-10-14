@@ -4,6 +4,7 @@ import {EventEmitter} from 'node:events';
 import {test} from 'node:test';
 import {setImmediate as tick} from 'node:timers/promises';
 import type {
+  BuildSystemPromptOptions,
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
@@ -85,6 +86,7 @@ void test('desktop IPC controls only the attached session and rejects stale or i
     },
     abort: () => {
       aborts++;
+      return {steering: ['Queued correction'], followUp: []};
     },
   });
   bridge.ready();
@@ -100,7 +102,10 @@ void test('desktop IPC controls only the attached session and rejects stale or i
   };
   await requests.request('prompt', 'primary', '  Continue the conversation  ');
   assert.deepEqual(prompts, ['Continue the conversation']);
-  await requests.request('abort', 'primary');
+  assert.deepEqual(await requests.request('abort', 'primary'), {
+    steering: ['Queued correction'],
+    followUp: [],
+  });
   assert.equal(aborts, 1);
   await assert.rejects(
     requests.request('prompt', 'previous-session', 'Do not run'),
@@ -142,6 +147,7 @@ void test('desktop IPC controls only the attached session and rejects stale or i
     },
     abort: () => {
       aborts++;
+      return {steering: [], followUp: []};
     },
   });
   bridge.detach(current);
@@ -282,7 +288,15 @@ function extensionFixture(
       messages.push({prompt, options});
     },
   };
+  let systemPromptOptions: BuildSystemPromptOptions = {
+    cwd: process.cwd(),
+    contextFiles: [
+      {path: '/fixture/AGENTS.md', content: 'ATTACHED INSTRUCTIONS'},
+    ],
+    skills: [],
+  };
   const ctx = {
+    getSystemPromptOptions: () => systemPromptOptions,
     mode,
     cwd: process.cwd(),
     model: models[0],
@@ -311,6 +325,7 @@ function extensionFixture(
       getSessionFile: () => undefined,
       getHeader: () => undefined,
       getBranch: () => [],
+      buildContextEntries: () => [],
     },
   } as unknown as ExtensionContext;
   registerFactory(
@@ -335,6 +350,9 @@ function extensionFixture(
     },
     setIdle(value: boolean) {
       idle = value;
+    },
+    setSystemPromptOptions(options: BuildSystemPromptOptions) {
+      systemPromptOptions = options;
     },
     async emit(event: string, payload: unknown = {}) {
       for (const handler of handlers.get(event) ?? [])
@@ -389,6 +407,42 @@ function fakeWindow() {
     },
   };
 }
+
+void test('attached context reads live command options and resource metadata through factory controls', async () => {
+  const desktop = fakeWindow();
+  const launcher = new FactoryLauncher(async () => desktop.window);
+  const source = extensionFixture('tui', 'context', launcher);
+  await source.emit('session_start');
+  await source.show();
+  const files = (await desktop.callbacks.features()).contextFiles!;
+  assert.equal(
+    files.find(file => file.path === '/fixture/AGENTS.md')?.content,
+    'ATTACHED INSTRUCTIONS',
+  );
+  assert.equal(
+    files.find(file => file.path === '/fixture/SKILL.md')?.status,
+    'available',
+  );
+  assert.equal(
+    files.find(file => file.path === '/fixture/SKILL.md')?.content,
+    undefined,
+  );
+  assert.equal(
+    files.find(file => file.path === '/fixture/prompt.md')?.kind,
+    'template',
+  );
+  source.setSystemPromptOptions({
+    cwd: source.ctx.cwd,
+    contextFiles: [{path: '/fixture/NEW.md', content: 'NEW LOADED CONTENT'}],
+    skills: [],
+  });
+  const refreshed = (await desktop.callbacks.features()).contextFiles!;
+  assert.ok(!refreshed.some(file => file.path === '/fixture/AGENTS.md'));
+  assert.equal(
+    refreshed.find(file => file.path === '/fixture/NEW.md')?.content,
+    'NEW LOADED CONTENT',
+  );
+});
 
 void test('the explicit factory command attaches the existing conversation, controls it and reuses one GUI across reloads', async () => {
   const desktop = fakeWindow();
@@ -553,7 +607,7 @@ void test('source IPC snapshots preserve public conversation without queue paylo
   bridge.attach(current, {
     ...featureControls,
     prompt: () => {},
-    abort: () => {},
+    abort: () => ({steering: [], followUp: []}),
   });
   bridge.ready();
   assert.deepEqual(child.sent.at(-1)?.snapshot, current.snapshot());

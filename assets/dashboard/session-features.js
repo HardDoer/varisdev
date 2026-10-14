@@ -1,7 +1,14 @@
-/* global document, window */
+/* global document, window, setTimeout, clearTimeout */
+import {openMarkdownFile} from './markdown-files.js';
 const $ = id => document.getElementById(id);
 const cache = new Map();
 const loading = new Map();
+const contextErrors = new Map();
+const contextDisclosures = new Map();
+let parentView = true;
+let contextSignature;
+let contextConversation;
+let contextRefreshTimer;
 const dismissed = new Set();
 const seenEditor = new Map();
 const sourceName = {
@@ -81,14 +88,15 @@ function error(target, value) {
 function features() {
   return cache.get(current?.session.id);
 }
-async function load(force = false) {
-  const id = current?.session.id;
+async function load(force = false, id = current?.session.id) {
   if (!id || !api?.sessionFeatures) return;
   if (!force && cache.has(id)) return cache.get(id);
-  if (loading.has(id)) return loading.get(id);
+  if (!force && loading.has(id)) return loading.get(id);
+  contextErrors.delete(id);
   const operation = api
     .sessionFeatures(id)
     .then(result => {
+      if (loading.get(id) !== operation) return result;
       cache.set(id, result);
       if (selected()?.session.id === id) {
         renderCatalog();
@@ -98,14 +106,109 @@ async function load(force = false) {
       return result;
     })
     .catch(cause => {
+      if (loading.get(id) !== operation) return;
+      contextErrors.set(id, cause);
       if (selected()?.session.id === id) {
         $('commands-status').textContent = cause.message;
-        error($('session-settings-error'), cause);
+        if ($('session-settings-dialog').open)
+          error($('session-settings-error'), cause);
       }
     })
-    .finally(() => loading.delete(id));
+    .finally(() => {
+      if (loading.get(id) !== operation) return;
+      loading.delete(id);
+      if (selected()?.session.id === id) renderContext();
+    });
   loading.set(id, operation);
+  renderContext();
   return operation;
+}
+export function refreshContext() {
+  renderContext();
+  void load(true);
+}
+function renderContext() {
+  if (!current) return;
+  const id = current.session.id;
+  const resource = features();
+  const files = resource?.contextFiles || [];
+  const cause = contextErrors.get(id);
+  $('context-recipient').textContent =
+    `${current.session.name} · parent session`;
+  $('refresh-context').disabled = !api?.sessionFeatures || loading.has(id);
+  $('context-status').textContent = loading.has(id)
+    ? 'Refreshing context files…'
+    : files.length
+      ? ''
+      : cause
+        ? ''
+        : 'No context files reported for this parent session.';
+  $('context-error').hidden = !cause;
+  if (cause) error($('context-error'), cause);
+  const signature = JSON.stringify([id, files]);
+  if (signature === contextSignature) return;
+  for (const preview of $('context-files').querySelectorAll('details'))
+    contextDisclosures.set(preview.dataset.key, preview.open);
+  contextSignature = signature;
+  $('context-files').replaceChildren(
+    ...['included', 'available'].flatMap(status => {
+      const entries = files.filter(file => file.status === status);
+      if (!entries.length) return [];
+      const section = node('section', 'context-section');
+      section.append(
+        node(
+          'h3',
+          '',
+          status === 'included' ? 'Included in context' : 'Available resources',
+        ),
+      );
+      for (const file of entries) {
+        const card = node('article', 'context-file');
+        const title = node('div', 'context-file-heading');
+        const kind = {
+          document: 'Read document',
+          instructions: 'Project instructions',
+          system: 'System prompt',
+          append: 'Appended instructions',
+          skill: 'Skill',
+          template: 'Prompt template',
+        }[file.kind];
+        title.append(
+          node('strong', '', file.name),
+          node('span', 'muted', kind),
+        );
+        card.append(title, node('p', 'context-file-path mono', file.path));
+        if (file.description) card.append(node('p', '', file.description));
+        if (/\.md$/i.test(file.path)) {
+          const actions = node('div', 'file-actions');
+          for (const [label, options] of [
+            ['Open', {edit: true}],
+            ['Pin', {pin: true}],
+          ]) {
+            const button = node('button', 'quiet-button', label);
+            button.type = 'button';
+            button.addEventListener('click', () =>
+              openMarkdownFile(file.path, options),
+            );
+            actions.append(button);
+          }
+          card.append(actions);
+        }
+        if (file.content !== undefined) {
+          const preview = node('details', 'context-preview');
+          preview.dataset.key = `${id}:${file.kind}:${file.status}:${file.path}`;
+          preview.open = contextDisclosures.get(preview.dataset.key) ?? false;
+          preview.append(
+            node('summary', '', 'Content preview'),
+            node('pre', 'prose', file.content),
+          );
+          card.append(preview);
+        }
+        section.append(card);
+      }
+      return [section];
+    }),
+  );
 }
 function commands(query = '') {
   const needle = query.toLocaleLowerCase().replace(/^\//, '');
@@ -232,7 +335,11 @@ function renderSettings() {
   renderSettingsControls();
 }
 function canConfigureSession() {
-  return current && ['idle', 'running'].includes(current.session.status);
+  return (
+    parentView &&
+    current &&
+    ['idle', 'running'].includes(current.session.status)
+  );
 }
 function renderSettingsControls() {
   const resource = features();
@@ -261,7 +368,7 @@ async function updateSettings(action, requiresIdle = false) {
   renderSettings();
   try {
     await action(id);
-    if (selected()?.session.id === id) await load(true);
+    await load(true, id);
   } catch (cause) {
     error($('session-settings-error'), cause);
   } finally {
@@ -411,6 +518,7 @@ export function initSessionFeatures(options) {
   api = options.api;
   selected = options.selected;
   draftChanged = options.draftChanged;
+  $('refresh-context').addEventListener('click', refreshContext);
   $('extension-editor').addEventListener('click', () => {
     const data = selected();
     if (!data?.ui?.extensionEditor) return;
@@ -423,6 +531,7 @@ export function initSessionFeatures(options) {
       .catch(cause => error($('prompt-error'), cause));
   });
   $('open-commands').addEventListener('click', () => {
+    if (!parentView) return;
     const dialog = $('commands-dialog');
     if (!dialog.open) {
       if ($('parent-controls').matches(':popover-open')) {
@@ -448,6 +557,7 @@ export function initSessionFeatures(options) {
   });
   $('command-search').addEventListener('input', renderCatalog);
   $('open-session-settings').addEventListener('click', () => {
+    if (!parentView) return;
     $('session-settings-error').hidden = true;
     $('session-settings-dialog').showModal();
     renderSettings();
@@ -537,8 +647,38 @@ export function initSessionFeatures(options) {
   });
   window.addEventListener('unload', disposeTerminal);
 }
-export function renderSessionFeatures(data) {
+export function renderSessionFeatures(data, options = {parent: true}) {
+  parentView = options.parent;
+  if (!parentView) {
+    for (const id of [
+      'commands-dialog',
+      'session-settings-dialog',
+      'extension-dialog',
+    ])
+      if ($(id).open) $(id).close();
+    disposeTerminal();
+    activeDialog = undefined;
+  }
+  const changedSession = current?.session.id !== data.session.id;
   current = data;
+  const conversation = JSON.stringify([
+    data.session.id,
+    (data.conversation || [])
+      .filter(item => !item.streaming && item.status !== 'running')
+      .map(item => [item.id, item.status, item.text?.length]),
+  ]);
+  if (contextConversation !== conversation) {
+    contextConversation = conversation;
+    clearTimeout(contextRefreshTimer);
+    if (!changedSession && !$('panel-context').hidden)
+      contextRefreshTimer = setTimeout(() => {
+        if (
+          current.session.id === data.session.id &&
+          !$('panel-context').hidden
+        )
+          refreshContext();
+      }, 200);
+  }
   if (
     previousId !== data.session.id ||
     previousModel !== data.session.model ||
@@ -554,5 +694,6 @@ export function renderSessionFeatures(data) {
   $('open-commands').disabled = !available;
   $('open-session-settings').disabled = !available;
   if ($('session-settings-dialog').open) renderSettingsControls();
-  renderExtensionUI(data);
+  renderContext();
+  if (parentView) renderExtensionUI(data);
 }

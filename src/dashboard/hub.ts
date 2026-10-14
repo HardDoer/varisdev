@@ -7,17 +7,24 @@ import {DashboardInputError} from './errors.ts';
 import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
 import type {SessionFeatures, SessionConfiguration} from './features.ts';
 import type {DesktopExtensionUI, DesktopUIState} from './extension-ui.ts';
+import {
+  readMarkdownFile,
+  saveMarkdownFile,
+  type MarkdownFile,
+} from './markdown-files.ts';
 
 export interface ParentRequest {
   cwd: string;
   name?: string;
 }
 
+export type StoppedMessages = NonNullable<DashboardSnapshot['queue']>;
+
 export interface DashboardParent {
   state: DashboardState;
   ui?: DesktopExtensionUI;
   prompt(text: string, images?: ImageContent[]): Promise<void>;
-  abort(): Promise<void>;
+  abort(): Promise<StoppedMessages>;
   close(): Promise<void>;
   features(): Promise<SessionFeatures>;
   configure(input: SessionConfiguration): Promise<void>;
@@ -31,7 +38,7 @@ export type ParentFactory = (
 
 export interface ExternalSessionControl {
   prompt(id: string, prompt: string): Promise<void>;
-  abort(id: string): Promise<void>;
+  abort(id: string): Promise<StoppedMessages>;
   features(id: string): Promise<SessionFeatures>;
   configure(id: string, input: SessionConfiguration): Promise<void>;
   compact(id: string, instructions?: string): Promise<void>;
@@ -262,6 +269,29 @@ export class DashboardHub {
     return readWorkspaceDiff(entry.state.snapshot().session.cwd);
   }
 
+  private markdownCwd(id: string): string {
+    this.ensureOpen();
+    if (typeof id !== 'string' || !id || id.length > 256)
+      throw new DashboardInputError('Choose a valid parent session.');
+    if (this.external?.session.id === id) return this.external.session.cwd;
+    const entry = this.sessions.get(id);
+    if (!entry) throw new DashboardInputError('Unknown parent session.');
+    return entry.state.snapshot().session.cwd;
+  }
+
+  async readMarkdown(id: string, path: unknown): Promise<MarkdownFile> {
+    return readMarkdownFile(this.markdownCwd(id), path);
+  }
+
+  async saveMarkdown(
+    id: string,
+    path: unknown,
+    content: unknown,
+    version: unknown,
+  ): Promise<MarkdownFile> {
+    return saveMarkdownFile(this.markdownCwd(id), path, content, version);
+  }
+
   private ensureOpen(): void {
     if (this.closed) throw new DashboardInputError('The dashboard has closed.');
   }
@@ -480,17 +510,18 @@ export class DashboardHub {
     return operation;
   }
 
-  async abortSession(id: string): Promise<void> {
+  async abortSession(id: string): Promise<StoppedMessages> {
     const attached = this.attached(id);
     if (attached) return attached.abort(id);
     const entry = this.owned(id);
     entry.stopping = true;
     entry.state.updateSession({activity: 'Stopping'});
     try {
-      await entry.parent.abort();
+      const queued = await entry.parent.abort();
       await Promise.allSettled(entry.running);
       entry.state.updateSession({status: 'idle', activity: 'Stopped'});
       entry.state.record('session', 'Parent stopped');
+      return queued;
     } finally {
       entry.stopping = false;
       this.changed();

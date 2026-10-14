@@ -73,8 +73,8 @@ async function advance(frames = 1) {
   return evaluate(frames => window.fixture.advance(frames), frames);
 }
 // Production WebGL integrates at most 50ms per frame, including long rests.
-const REST_MIN_FRAMES = 800;
-const REST_MAX_FRAMES = 2400;
+const REST_MIN_FRAMES = 300;
+const REST_MAX_FRAMES = 1200;
 const REST_STILL_FRAMES = REST_MIN_FRAMES - 20;
 async function until(mode, maximum = REST_MAX_FRAMES + 220) {
   const pose = await evaluate(
@@ -101,7 +101,7 @@ async function stillRest(pose, frames = REST_STILL_FRAMES) {
   await advance(frames);
   const rested = await inspect();
   finiteRendered(rested);
-  assert.equal(rested.mode, 'rest', 'Rest must last at least 40 seconds');
+  assert.equal(rested.mode, 'rest', 'Rest must last at least 15 seconds');
   assert.equal(
     rested.hash,
     pose.hash,
@@ -116,11 +116,11 @@ async function restThenWalk(pose) {
   const frames = REST_STILL_FRAMES + walk.frames;
   assert.ok(
     frames >= REST_MIN_FRAMES - 1,
-    'Rest must last at least 40 seconds',
+    'Rest must last at least 15 seconds',
   );
   assert.ok(
     frames <= REST_MAX_FRAMES + 2,
-    'Rest must finish within 120 seconds',
+    'Rest must finish within 60 seconds',
   );
   return walk;
 }
@@ -445,7 +445,7 @@ async function main() {
   );
 
   await run(
-    'initial rest waits 40–120 seconds, then roaming and activities pause still in the aisle',
+    'initial rest waits 15–60 seconds, then roaming and activities pause still in the aisle',
     async () => {
       const home = await reset();
       finiteRendered(home);
@@ -501,7 +501,7 @@ async function main() {
     'every idle activity produces finite animated robot poses and prop geometry',
     async () => {
       // Exercise the shared production activity geometry separately from its
-      // 12 long rests. The preceding case checks its actual WebGL rendering.
+      // 12 rests. The preceding case checks its actual WebGL rendering.
       const captures = await evaluate(
         activities => window.fixture.activityGeometry(activities),
         activities,
@@ -600,7 +600,7 @@ async function main() {
   );
 
   await run(
-    'motion off freezes geometry, and reenable and prompt cancellation enter long rests',
+    'motion off freezes geometry, and reenable and prompt cancellation enter rest',
     async () => {
       await reset('motion-parent');
       await until('walk');
@@ -727,11 +727,11 @@ async function main() {
           return window.fixture.fallbackPose();
         };
         const home = window.fixture.fallbackPose();
-        const idle = until('idle', 2620);
+        const idle = until('idle', 1420);
         window.fixture.advance(10);
         const active = window.fixture.fallbackPose();
         const rest = until('rest', 165);
-        window.fixture.advance(780);
+        window.fixture.advance(280);
         const still = window.fixture.fallbackPose();
         window.fixture.fallbackPrompt('other-parent');
         const unrelated = window.fixture.fallbackPose();

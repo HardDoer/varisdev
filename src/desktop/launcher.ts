@@ -6,6 +6,7 @@ import type {DashboardState} from '../dashboard/state.ts';
 import {
   sessionConfiguration,
   compactionInstructions,
+  type StoppedMessages,
 } from '../dashboard/hub.ts';
 import type {
   SessionFeatures,
@@ -19,7 +20,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 
 export interface FactoryControl {
   prompt(text: string): void | Promise<void>;
-  abort(): void | Promise<void>;
+  abort(): StoppedMessages | Promise<StoppedMessages>;
   features(): Promise<SessionFeatures>;
   configure(input: SessionConfiguration): Promise<void>;
   compact(instructions?: string): Promise<void>;
@@ -176,7 +177,7 @@ export function createFactoryBridge(
         else if (request.action === 'compact')
           await current.control.compact(request.input as string | undefined);
         else if (request.action === 'reload') await current.control.reload();
-        else await current.control.abort();
+        else value = await current.control.abort();
         if (attachment !== current)
           throw new Error('The attached Pi session changed.');
         reply(true, undefined, value);

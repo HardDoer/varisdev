@@ -1,6 +1,9 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  sessionEntryToContextMessages,
+  type BuildSystemPromptOptions,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionController} from '../agents/team.ts';
 import {isAgentFinished} from '../agents/orchestrator.ts';
@@ -15,6 +18,7 @@ import {observeDashboardSession} from './observe.ts';
 import type {DashboardState} from './state.ts';
 import {sessionConfiguration, compactionInstructions} from './hub.ts';
 import {supportedThinkingLevels, type SessionFeatures} from './features.ts';
+import {attachedContextFiles} from './context-files.ts';
 
 interface FactoryConnection {
   isOpen(): boolean;
@@ -28,6 +32,8 @@ interface FactoryConnection {
 interface FactoryBinding {
   state: DashboardState;
   ctx: ExtensionContext;
+  getSystemPromptOptions?: ExtensionCommandContext['getSystemPromptOptions'];
+  systemPromptOptions?: BuildSystemPromptOptions;
   control: FactoryControl;
   submissions: number;
   stopping: boolean;
@@ -106,6 +112,11 @@ export function registerFactory(
     const current: FactoryBinding = {
       state,
       ctx,
+      getSystemPromptOptions:
+        binding?.ctx.sessionManager.getSessionId() ===
+        ctx.sessionManager.getSessionId()
+          ? binding?.getSystemPromptOptions
+          : undefined,
       submissions: 0,
       stopping: false,
       maintaining: false,
@@ -114,13 +125,23 @@ export function registerFactory(
         async features(): Promise<SessionFeatures> {
           ensureAttached(current);
           const registryError = ctx.modelRegistry.getError();
+          const commands = pi.getCommands().map(command => ({
+            name: command.name,
+            description: command.description ?? '',
+            source: command.source,
+            path: command.sourceInfo.path,
+          }));
+          const contextFiles = attachedContextFiles(
+            current.getSystemPromptOptions?.() ?? current.systemPromptOptions,
+            commands,
+            ctx.sessionManager
+              .buildContextEntries?.()
+              .flatMap(sessionEntryToContextMessages),
+            ctx.cwd,
+          );
           return {
-            commands: pi.getCommands().map(command => ({
-              name: command.name,
-              description: command.description ?? '',
-              source: command.source,
-              path: command.sourceInfo.path,
-            })),
+            ...(contextFiles ? {contextFiles} : {}),
+            commands,
             models: ctx.modelRegistry.getAvailable().map(model => ({
               id: model.id,
               provider: model.provider,
@@ -281,6 +302,7 @@ export function registerFactory(
           current.stopping = true;
           cancelBeforeStart = true;
           state.record('session', 'Stopping');
+          const queued = state.snapshot().queue ?? {steering: [], followUp: []};
           const manager = cancelWorkers(ctx);
           ctx.abort();
           try {
@@ -308,6 +330,7 @@ export function registerFactory(
             if (current.configuration)
               await Promise.allSettled([current.configuration]);
             if (binding === current) cancelWorkers(ctx);
+            return queued;
           } finally {
             current.stopping = false;
             if (binding === current)
@@ -326,6 +349,13 @@ export function registerFactory(
           );
       });
     }
+  });
+  pi.on('before_agent_start', (event, ctx) => {
+    if (
+      binding?.ctx.sessionManager.getSessionId() ===
+      ctx.sessionManager.getSessionId()
+    )
+      binding.systemPromptOptions = event.systemPromptOptions;
   });
   pi.on('input', event => {
     if (event.source === 'interactive' || event.source === 'rpc')
@@ -361,6 +391,11 @@ export function registerFactory(
         return;
       }
       const version = generation;
+      if (binding) {
+        binding.getSystemPromptOptions = ctx.getSystemPromptOptions
+          ? () => ctx.getSystemPromptOptions()
+          : undefined;
+      }
       try {
         await open(true);
       } catch (error) {

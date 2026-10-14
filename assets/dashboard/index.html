@@ -12,6 +12,8 @@
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="themes.css" />
     <link rel="stylesheet" href="parent-fallback.css" />
+    <link rel="stylesheet" href="processing-effects.css" />
+    <link rel="stylesheet" href="markdown-files.css" />
     <link
       rel="stylesheet"
       href="../../node_modules/@xterm/xterm/css/xterm.css"
@@ -103,7 +105,14 @@
               ><span><strong id="metric-queued">0</strong> queued</span
               ><span><strong id="metric-completed">0</strong> completed</span
               ><span><strong id="metric-attention">0</strong> failed</span
-              ><span id="context-meter" class="context-meter"></span>
+              ><button
+                id="open-context"
+                class="quiet-button context-meter"
+                type="button"
+                aria-controls="panel-context"
+              >
+                Context files <span id="context-meter" hidden></span>
+              </button>
             </div>
             <div id="scene" class="scene">
               <div
@@ -191,6 +200,14 @@
             <div>
               <h2 id="inspector-title">Inspector</h2>
               <button
+                id="back-to-parent"
+                class="quiet-button"
+                type="button"
+                hidden
+              >
+                Back to parent session
+              </button>
+              <button
                 id="open-session-settings"
                 class="quiet-button"
                 type="button"
@@ -261,6 +278,16 @@
               tabindex="-1"
             >
               Tokens
+            </button>
+            <button
+              id="tab-context"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-context"
+              tabindex="-1"
+            >
+              Context
             </button>
           </div>
           <div
@@ -371,8 +398,8 @@
             hidden
           >
             <p class="changes-note">
-              Exact edit and write diffs recorded for the selected parent session
-              or agent, including files outside Git.
+              Exact edit and write diffs recorded for the selected parent
+              session or agent, including files outside Git.
             </p>
             <div id="unit-changes" class="unit-changes"></div>
             <p id="changes-empty" class="empty-state">
@@ -398,6 +425,23 @@
                 </p>
               </div>
             </section>
+          </div>
+          <div
+            id="panel-context"
+            class="inspector-body context-body"
+            role="tabpanel"
+            aria-labelledby="tab-context"
+            hidden
+          >
+            <div class="context-toolbar">
+              <p id="context-recipient" class="muted"></p>
+              <button id="refresh-context" class="quiet-button" type="button">
+                Refresh
+              </button>
+            </div>
+            <p id="context-status" class="muted" role="status"></p>
+            <p id="context-error" class="form-error" role="alert" hidden></p>
+            <div id="context-files"></div>
           </div>
           <div
             id="panel-tokens"
@@ -742,5 +786,81 @@
         </div>
       </form>
     </dialog>
+    <button
+      id="markdown-launcher"
+      class="quiet-button"
+      type="button"
+      aria-controls="markdown-panel"
+      aria-expanded="false"
+    >
+      Markdown files
+    </button>
+    <section id="markdown-panel" aria-labelledby="markdown-title" hidden>
+      <header class="markdown-heading">
+        <h2 id="markdown-title">Markdown files</h2>
+        <div class="markdown-heading-actions">
+          <button id="markdown-position" type="button">Move right</button>
+          <button
+            id="markdown-close"
+            type="button"
+            aria-label="Close Markdown panel"
+          >
+            Close
+          </button>
+        </div>
+      </header>
+      <p id="markdown-session" class="mono muted"></p>
+      <form id="markdown-path-form">
+        <label class="sr-only" for="markdown-path">Markdown file path</label>
+        <input
+          id="markdown-path"
+          type="text"
+          placeholder="Path to a .md file"
+          autocomplete="off"
+        />
+        <button id="markdown-open-path" type="submit">Open &amp; pin</button>
+      </form>
+      <div id="markdown-tabs" role="tablist" aria-label="Markdown files"></div>
+      <p id="markdown-empty" class="muted">
+        Open a Markdown file to view or edit it.
+      </p>
+      <div
+        id="markdown-document"
+        role="tabpanel"
+        aria-label="Markdown document"
+        hidden
+      >
+        <p id="markdown-file-path" class="mono" tabindex="-1"></p>
+        <div class="markdown-toolbar">
+          <button id="markdown-pin" type="button" aria-pressed="false">
+            Pin
+          </button>
+          <button id="markdown-edit" type="button">Edit</button>
+          <button id="markdown-save" type="button" hidden>Save</button>
+          <button id="markdown-cancel" type="button" hidden>Cancel</button>
+          <button id="markdown-reload" type="button" hidden>Reload disk</button>
+          <span id="markdown-status" role="status" aria-live="polite"></span>
+        </div>
+        <div id="markdown-progress" hidden>
+          <progress
+            id="markdown-progress-bar"
+            aria-labelledby="markdown-progress-text"
+          ></progress>
+          <span id="markdown-progress-text"></span>
+        </div>
+        <p id="markdown-disk-status" role="status"></p>
+        <p id="markdown-error" class="form-error" role="alert" hidden></p>
+        <div
+          id="markdown-preview"
+          tabindex="0"
+          aria-label="Markdown preview"
+        ></div>
+        <label class="sr-only" for="markdown-editor"
+          >Markdown file contents</label
+        >
+        <textarea id="markdown-editor" spellcheck="false" hidden></textarea>
+      </div>
+      <p id="markdown-storage-status" class="form-error" role="status"></p>
+    </section>
   </body>
 </html>

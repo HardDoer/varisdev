@@ -1528,6 +1528,8 @@ dialog::backdrop {
 }
 .tool-input,
 .tool-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   max-height: 320px;
   overflow: auto;
   padding: 10px;
@@ -2479,4 +2481,64 @@ select:focus-visible {
 }
 .usage-summary .usage-breakdown {
   margin: 8px 0;
+}
+
+.context-toolbar,
+.context-file-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.context-toolbar p {
+  margin: 0;
+}
+.context-section {
+  margin-top: 20px;
+}
+.context-section h3 {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+}
+.context-file {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+.context-file-heading {
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.context-file p {
+  margin: 8px 0;
+}
+.context-file-path {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.file-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+.conversation-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.context-preview summary {
+  cursor: pointer;
+  color: var(--mint);
+}
+.context-preview pre {
+  max-height: 320px;
+  margin-top: 10px;
+  overflow: auto;
+  font-size: 0.75rem;
+}
+#open-context {
+  padding: 2px 6px;
+  font-size: inherit;
+}
+#open-context span {
+  margin-left: 6px;
 }

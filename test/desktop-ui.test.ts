@@ -51,7 +51,7 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      23,
+      30,
       'All renderer scenarios must execute',
     );
     for (const result of report.cases) {

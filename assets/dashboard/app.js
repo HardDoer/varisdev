@@ -1,18 +1,38 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createFactoryScene} from './factory-scene.js';
 import {createParentFallback} from './parent-fallback.js';
+import {createProcessingEffects} from './processing-effects.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
 import {initUsage, renderUsage} from './usage.js';
 import {
+  formatToolInput,
+  formatToolResult,
+  toolInputPreview,
+} from './tool-display.js';
+import {
+  initMarkdownFiles,
+  updateMarkdownFiles,
+  openMarkdownFile,
+} from './markdown-files.js';
+import {
   initSessionFeatures,
   renderSessionFeatures,
+  refreshContext,
 } from './session-features.js';
 
 const $ = id => document.getElementById(id);
+const processingEffects = createProcessingEffects($('scene'));
 const LIVE = new Set(['queued', 'running', 'cancelling']);
 const WORKING = new Set(['running', 'cancelling']);
-const TABS = ['conversation', 'details', 'feed', 'changes', 'tokens'];
+const TABS = [
+  'conversation',
+  'details',
+  'feed',
+  'changes',
+  'tokens',
+  'context',
+];
 const STATUS = {
   idle: 'Ready',
   running: 'Working',
@@ -409,8 +429,12 @@ function selectSession(id) {
 function selectUnit(id) {
   if (id !== 'parent' && !snapshot()?.agents.some(item => item.id === id))
     return;
-  if (state.unitId !== id) setTab(id === 'parent' ? 'conversation' : 'details');
-  state.unitId = id;
+  if (state.unitId !== id) {
+    saveConversationPosition();
+    saveDraft();
+    state.unitId = id;
+  }
+  setTab('conversation');
   renderFactory();
   renderWorkers();
   renderInspector();
@@ -502,6 +526,7 @@ function createSceneLabel(id) {
 }
 function layoutLabels(layout) {
   lastLayout = layout;
+  processingEffects.layout(layout);
   const data = snapshot();
   if (!data || !scene) return;
   const ids = new Set(layout.map(item => item.id));
@@ -687,7 +712,7 @@ function renderFactory() {
   text(
     $('context-meter'),
     context
-      ? `Context ${context.percent === null ? '—' : `${Math.round(context.percent)}%`} · ${context.tokens === null ? '—' : context.tokens.toLocaleString()} / ${context.window.toLocaleString()} tokens`
+      ? `${context.percent === null ? '—' : `${Math.round(context.percent)}%`} · ${context.tokens === null ? '—' : context.tokens.toLocaleString()} / ${context.window.toLocaleString()} tokens`
       : '',
   );
   $('context-meter').hidden = !context;
@@ -695,6 +720,10 @@ function renderFactory() {
   $('parent-activity').title = $('parent-activity').textContent;
   sizeScene();
   renderProcessing(data);
+  processingEffects.update(data, {
+    motion: state.motion && !motionPreference.matches,
+    stopping: stopping.has(session.id) || pausedActivity.has(session.id),
+  });
   if (scene) {
     scene.update({...data, agents: sceneAgents(data)}, state.unitId);
     layoutLabels(lastLayout);
@@ -829,12 +858,14 @@ function renderDiff(target, value) {
 }
 function detailValue(value) {
   if (value === undefined || value === null || value === '') return undefined;
-  return typeof value === 'object' ? JSON.stringify(value, null, 2) : value;
+  return formatToolResult(value);
 }
 function findEventTool(event, data) {
-  if (event.conversationId)
-    return data.conversation?.find(item => item.id === event.conversationId);
-  return undefined;
+  const messages =
+    event.sourceId === 'parent'
+      ? data.conversation
+      : data.agents.find(item => item.id === event.sourceId)?.conversation;
+  return messages?.find(item => item.id === event.conversationId);
 }
 function renderFeedDetails(entry, event, data) {
   const tool = findEventTool(event, data);
@@ -853,7 +884,7 @@ function renderFeedDetails(entry, event, data) {
       ? {
           Tool: tool.toolName,
           Status: statusName(tool.status),
-          Input: tool.input,
+          Input: formatToolInput(tool.toolName, tool.input),
           Output:
             tool.text ||
             (tool.status === 'running'
@@ -869,7 +900,12 @@ function renderFeedDetails(entry, event, data) {
   if (fields.Status && STATUS[fields.Status])
     fields.Status = statusName(fields.Status);
   const values = Object.entries(fields)
-    .map(([label, value]) => [label, detailValue(value)])
+    .map(([label, value]) => [
+      label,
+      label === 'Input' && !tool && value !== undefined
+        ? formatToolInput(fields.Tool, value)
+        : detailValue(value),
+    ])
     .filter(([, value]) => value !== undefined);
   const selection = window.getSelection();
   reconcile(
@@ -950,10 +986,7 @@ function renderFeed(data) {
       const [kind, label] =
         event.kind === 'tool'
           ? toolAction(
-              event.details?.Tool ||
-                data.conversation?.find(
-                  item => item.id === event.conversationId,
-                )?.toolName,
+              event.details?.Tool || findEventTool(event, data)?.toolName,
             )
           : [
               event.kind,
@@ -1007,11 +1040,27 @@ function renderChanges(data) {
       const meta = node('span', 'change-meta');
       const description = node('p', 'change-summary');
       const diff = node('pre', 'diff');
+      const actions = node('div', 'file-actions');
+      for (const [label, options] of [
+        ['Open', {edit: true}],
+        ['Pin', {pin: true}],
+      ]) {
+        const button = node('button', 'quiet-button', label);
+        button.type = 'button';
+        button.addEventListener('click', () =>
+          openMarkdownFile(element.dataset.path, options),
+        );
+        actions.append(button);
+      }
       summary.append(path, meta);
-      element.append(summary, description, diff);
+      element.append(summary, actions, description, diff);
       return {element, path, meta, description, diff, previousDiff: null};
     },
     (entry, change) => {
+      entry.element.dataset.path = change.path;
+      entry.element.querySelector('.file-actions').hidden = !/\.md$/i.test(
+        change.path,
+      );
       text(entry.path, change.path);
       text(
         entry.meta,
@@ -1028,9 +1077,28 @@ function renderChanges(data) {
   text($('changes-count'), changes.length);
   $('changes-empty').hidden = changes.length > 0;
 }
+function conversationScope() {
+  return `${state.sessionId}:${state.unitId}`;
+}
+function conversationData(data = snapshot()) {
+  if (!data || state.unitId === 'parent') return data;
+  const agent = data.agents.find(item => item.id === state.unitId);
+  return (
+    agent && {
+      session: agent,
+      conversation: agent.conversation || [],
+      conversationTruncated: agent.conversationTruncated,
+    }
+  );
+}
 function saveConversationPosition() {
-  if (!state.sessionId || conversationKey !== state.sessionId) return;
-  conversationPositions.set(state.sessionId, {
+  const key = conversationScope();
+  if (!state.sessionId || conversationKey !== key) return;
+  for (const details of $('conversation').querySelectorAll(
+    'details[data-disclosure-key]',
+  ))
+    disclosures.set(details.dataset.disclosureKey, details.open);
+  conversationPositions.set(key, {
     top: $('panel-conversation').scrollTop,
     follow: $('follow-conversation').checked,
   });
@@ -1055,6 +1123,7 @@ function updateStreamText(textNode, value, selection) {
   return true;
 }
 function preserveDisclosure(details, key) {
+  details.dataset.disclosureKey = key;
   details.open = disclosures.get(key) ?? true;
   details.addEventListener('toggle', () => {
     if (!details.isConnected || disclosures.get(key) === details.open) return;
@@ -1070,6 +1139,7 @@ function preserveDisclosure(details, key) {
   });
 }
 function toolAction(name = '') {
+  name = name.split('.').at(-1);
   if (name === 'bash') return ['command', 'Command'];
   if (['write', 'edit'].includes(name)) return ['edit', 'File change'];
   if (name === 'read') return ['read', 'Read file'];
@@ -1113,7 +1183,7 @@ function conversationEntry(message) {
   let outputLabel;
   if (tool) {
     const details = node('details');
-    const key = `${state.sessionId}:${message.id}`;
+    const key = `${conversationScope()}:${message.id}`;
     preserveDisclosure(details, `tool:${key}`);
     const summary = node('summary');
     inputPreview = node('code', 'tool-input-preview');
@@ -1151,14 +1221,17 @@ function conversationEntry(message) {
     status: undefined,
   };
 }
-function renderConversation(data) {
+function renderConversation(snapshot) {
+  const data = conversationData(snapshot);
+  const parent = state.unitId === 'parent';
+  const key = conversationScope();
   const body = $('panel-conversation');
-  const sessionChanged = conversationKey !== state.sessionId;
+  const sessionChanged = conversationKey !== key;
   if (sessionChanged) {
     conversationNodes.clear();
     $('conversation').replaceChildren();
-    conversationKey = state.sessionId;
-    const saved = conversationPositions.get(state.sessionId);
+    conversationKey = key;
+    const saved = conversationPositions.get(key);
     $('follow-conversation').checked = saved?.follow ?? true;
     body.scrollTop = saved?.top || 0;
   }
@@ -1171,7 +1244,12 @@ function renderConversation(data) {
     $('conversation').contains(selection.anchorNode);
   const messages = data.conversation || [];
   let changed = sessionChanged || messages.length !== conversationNodes.size;
-  text($('conversation-recipient'), `Conversation with ${data.session.name}`);
+  text(
+    $('conversation-recipient'),
+    parent
+      ? `Parent session · ${data.session.name}`
+      : `Agent conversation · ${data.session.name}`,
+  );
   $('conversation-truncated').hidden = !data.conversationTruncated;
   $('conversation-session-file').hidden =
     !data.conversationTruncated || !data.session.sessionFile;
@@ -1180,14 +1258,20 @@ function renderConversation(data) {
     $('conversation'),
     conversationNodes,
     messages,
-    item => item.id,
+    item => `${key}:${item.id}`,
     conversationEntry,
     (entry, message) => {
       const tool = message.role === 'tool';
       entry.element.classList.toggle('user', message.role === 'user');
       text(
         entry.role,
-        tool ? message.toolName : message.role === 'user' ? 'You' : 'Assistant',
+        tool
+          ? message.toolName
+          : message.role === 'user'
+            ? parent
+              ? 'You'
+              : 'User'
+            : 'Assistant',
       );
       text(
         entry.time,
@@ -1210,11 +1294,14 @@ function renderConversation(data) {
         entry.streaming.hidden = false;
         text(
           entry.inputPreview,
-          (message.input || '').split('\n')[0] || 'No input',
+          toolInputPreview(message.toolName, message.input),
         );
         changed =
-          updateStreamText(entry.inputNode, message.input, selection) ||
-          changed;
+          updateStreamText(
+            entry.inputNode,
+            formatToolInput(message.toolName, message.input),
+            selection,
+          ) || changed;
         text(
           entry.outputLabel,
           message.text
@@ -1234,7 +1321,7 @@ function renderConversation(data) {
         40;
       const outputChanged = updateStreamText(
         entry.textNode,
-        message.text,
+        tool ? formatToolResult(message.text) : message.text,
         selection,
       );
       changed = outputChanged || changed;
@@ -1246,8 +1333,14 @@ function renderConversation(data) {
       text(entry.error, message.error);
     },
   );
-  const active = ['running', 'compacting'].includes(data.session.status);
-  const phase = activityPhase(data);
+  const active = (
+    parent ? ['running', 'compacting'] : ['running', 'cancelling']
+  ).includes(data.session.status);
+  const phase = parent
+    ? activityPhase(data)
+    : data.session.status === 'cancelling'
+      ? 'Stopping'
+      : '';
   const activity = $('conversation-activity');
   const activityText = $('conversation-activity-text');
   changed =
@@ -1264,6 +1357,14 @@ function renderConversation(data) {
     phase === 'Stopping' ? 'Stopping…' : data.session.activity || 'Working',
   );
   $('conversation-empty').hidden = messages.length > 0 || active;
+  text(
+    $('conversation-empty'),
+    parent
+      ? 'Messages and tool activity appear here as work happens.'
+      : data.session.status === 'queued'
+        ? 'Waiting for this agent to start.'
+        : 'No conversation recorded for this agent.',
+  );
   if (
     state.tab === 'conversation' &&
     $('follow-conversation').checked &&
@@ -1273,7 +1374,7 @@ function renderConversation(data) {
   )
     body.scrollTop = body.scrollHeight;
   if (sessionChanged) {
-    const saved = conversationPositions.get(state.sessionId);
+    const saved = conversationPositions.get(key);
     if (saved) body.scrollTop = saved.top;
   }
 }
@@ -1313,7 +1414,26 @@ function renderInspector() {
   text($('inspector-title'), unit.name);
   if (parent) parentBadge($('inspector-status'), unit);
   else badge($('inspector-status'), unit.status);
-  text($('inspector-activity'), unit.activity || 'No current activity');
+  text(
+    $('inspector-activity'),
+    unit.activity || (parent ? 'No current activity' : statusName(unit.status)),
+  );
+  $('back-to-parent').hidden = parent;
+  $('open-session-settings').hidden = !parent;
+  $('tab-context').hidden = !parent;
+  $('open-context').hidden = !parent;
+  if (!parent) {
+    const active = WORKING.has(unit.status);
+    $('processing-state').hidden = !active;
+    $('processing-state').classList.toggle(
+      'paused',
+      unit.status === 'cancelling',
+    );
+    text(
+      $('processing-state-text'),
+      unit.status === 'cancelling' ? 'Stopping' : 'Agent working',
+    );
+  }
   facts($('unit-facts'), [
     [
       'Status',
@@ -1367,16 +1487,27 @@ function renderInspector() {
   renderConversation(data);
   renderSteering(data);
   renderUsage(data);
-  renderSessionFeatures(data);
+  renderSessionFeatures(data, {parent});
+  updateMarkdownFiles();
+  if (!parent) {
+    $('extension-notifications').hidden = true;
+    $('extension-statuses').hidden = true;
+    $('steering-messages').hidden = true;
+    $('command-suggestions').hidden = true;
+  }
   if (
-    !canControl(data.session) &&
+    (!parent || !canControl(data.session)) &&
     expandedEditor?.textarea === $('parent-prompt')
   )
     collapseEditor(false);
-  $('parent-controls').hidden = !canControl(data.session);
-  $('inspector').classList.toggle('has-composer', canControl(data.session));
+  $('composer-slot').hidden = !parent;
+  $('parent-controls').hidden = !parent || !canControl(data.session);
+  $('inspector').classList.toggle(
+    'has-composer',
+    parent && canControl(data.session),
+  );
   text($('prompt-recipient'), data.session.name);
-  $('attached-note').hidden = data.session.owned;
+  $('attached-note').hidden = !parent || data.session.owned;
   text(
     $('attached-note'),
     canControl(data.session)
@@ -1385,6 +1516,7 @@ function renderInspector() {
   );
   if (
     pendingDraftPosition?.id === state.sessionId &&
+    parent &&
     canControl(data.session)
   ) {
     restorePosition($('parent-prompt'), pendingDraftPosition.position);
@@ -1462,6 +1594,7 @@ function setTab(tab) {
     $(`tab-${name}`).tabIndex = selected ? 0 : -1;
     $(`panel-${name}`).hidden = !selected;
   }
+  if (tab === 'context') refreshContext();
   if (tab === 'conversation' && $('follow-conversation').checked)
     $('panel-conversation').scrollTop = $('panel-conversation').scrollHeight;
   if (tab === 'feed' && $('follow-feed').checked)
@@ -1523,6 +1656,13 @@ function applyMotion() {
       stopEffectSession !== state.sessionId,
   );
   if (!enabled && stopEffectSession) (scene || fallbackScene)?.startle(false);
+  const data = snapshot();
+  if (data)
+    processingEffects.update(data, {
+      motion: enabled,
+      stopping:
+        stopping.has(data.session.id) || pausedActivity.has(data.session.id),
+    });
 }
 async function openFolder() {
   if (creating || !api) return;
@@ -1556,6 +1696,7 @@ async function sendPrompt(event) {
   const session = snapshot()?.session;
   if (
     !api ||
+    state.unitId !== 'parent' ||
     !session ||
     !canControl(session) ||
     session.status === 'closed' ||
@@ -1594,6 +1735,7 @@ async function abortParent() {
   const session = data?.session;
   if (
     !api ||
+    state.unitId !== 'parent' ||
     !session ||
     !canControl(session) ||
     !parentHasWork(data) ||
@@ -1607,7 +1749,33 @@ async function abortParent() {
   renderInspector();
   stopEffect();
   try {
-    await api.abortSession(id);
+    const queued = await api.abortSession(id);
+    const recovered = [
+      ...(queued?.steering || []),
+      ...(queued?.followUp || []),
+    ];
+    if (recovered.length) {
+      if (id === state.sessionId) saveDraft();
+      const draft = promptDrafts.get(id) || {value: '', revision: 0};
+      // A submitted draft can still be awaiting its acknowledgement when Stop wins.
+      const submitted =
+        sending.has(id) && recovered.includes(draft.value.trim());
+      const existing = submitted ? '' : draft.value;
+      const prefix = recovered.join('\n\n') + (existing ? '\n\n' : '');
+      const value = prefix + existing;
+      promptDrafts.set(id, {
+        ...draft,
+        value,
+        revision: draft.revision + 1,
+        start: existing ? prefix.length + (draft.start || 0) : value.length,
+        end: existing ? prefix.length + (draft.end || 0) : value.length,
+        direction: draft.direction || 'none',
+      });
+      if (id === state.sessionId) {
+        restoreDraft(id);
+        if (state.unitId === 'parent') $('parent-prompt').focus();
+      }
+    }
   } catch (error) {
     if (stopEffectSession === id) clearStopEffect();
     pausedActivity.delete(id);
@@ -1640,6 +1808,7 @@ async function loadWorkspace() {
 $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
+$('back-to-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', sendPrompt);
 initTextareaResize($('parent-prompt-resize'), $('parent-prompt'));
 for (const event of ['input', 'select', 'keyup', 'pointerup', 'scroll', 'blur'])
@@ -1667,6 +1836,7 @@ $('expand-parent-editor').addEventListener('click', () =>
   ),
 );
 document.addEventListener('keydown', event => {
+  if (event.target.closest?.('#markdown-panel')) return;
   if (
     event.key !== 'Escape' ||
     event.defaultPrevented ||
@@ -1677,7 +1847,12 @@ document.addEventListener('keydown', event => {
     return;
   if (document.querySelector('dialog[open]')) return;
   const data = snapshot();
-  if (data && canControl(data.session) && parentHasWork(data)) {
+  if (
+    state.unitId === 'parent' &&
+    data &&
+    canControl(data.session) &&
+    parentHasWork(data)
+  ) {
     event.preventDefault();
     void abortParent();
   } else if (expandedEditor) {
@@ -1701,12 +1876,18 @@ $('motion-toggle').addEventListener('click', () => {
   }
   applyMotion();
 });
-for (const [index, tab] of TABS.entries()) {
+$('open-context').addEventListener('click', () => {
+  selectUnit('parent');
+  setTab('context');
+  $('tab-context').focus();
+});
+for (const tab of TABS) {
   $(`tab-${tab}`).addEventListener('click', () => setTab(tab));
   $(`tab-${tab}`).addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const tabs = TABS;
+    const tabs = TABS.filter(name => !$(`tab-${name}`).hidden);
+    const index = tabs.indexOf(tab);
     const next =
       event.key === 'Home'
         ? 0
@@ -1752,15 +1933,25 @@ $('fallback').hidden = Boolean(scene);
 $('factory-canvas').hidden = !scene;
 $('scene-labels').hidden = !scene;
 applyMotion();
-initSessionFeatures({api, selected: snapshot, draftChanged: saveDraft});
+initMarkdownFiles({api, selected: snapshot});
+initSessionFeatures({
+  api,
+  selected: () => (state.unitId === 'parent' ? snapshot() : undefined),
+  draftChanged: saveDraft,
+});
 initUsage(call => {
-  const data = snapshot();
+  const unitId = $('usage-unit').value;
+  const snapshotData = snapshot();
+  const messages =
+    unitId === 'parent'
+      ? snapshotData?.conversation
+      : snapshotData?.agents.find(item => item.id === unitId)?.conversation;
   const message =
-    data?.conversation.find(item => item.id === call.id) ||
-    data?.conversation.find(
-      item => item.at === call.at && item.role !== 'user',
-    );
-  const entry = message && conversationNodes.get(message.id);
+    messages?.find(item => item.id === call.id) ||
+    messages?.find(item => item.at === call.at && item.role !== 'user');
+  if (message) selectUnit(unitId);
+  const entry =
+    message && conversationNodes.get(`${conversationScope()}:${message.id}`);
   if (!entry) {
     showError(
       'This call is outside the recent conversation preview. Its token counts remain in this view.',
@@ -1789,6 +1980,7 @@ window.addEventListener('unload', () => {
   cleanupZoom();
   scene?.dispose();
   fallbackScene?.dispose();
+  processingEffects.dispose();
 });
 if (api) {
   unsubscribe = api.onSnapshot(receive);
@@ -1805,9 +1997,11 @@ if (api) {
       const agent = snapshot()?.agents.find(item => item.id === id);
       if (agent) text(entry.time, duration(agent));
     }
-    for (const message of snapshot()?.conversation || []) {
+    for (const message of conversationData()?.conversation || []) {
       if (message.role !== 'tool' || message.status !== 'running') continue;
-      const entry = conversationNodes.get(message.id);
+      const entry = conversationNodes.get(
+        `${conversationScope()}:${message.id}`,
+      );
       if (entry) text(entry.time, duration({startedAt: message.at}));
     }
     const unit = selectedUnit();

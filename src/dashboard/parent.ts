@@ -18,7 +18,7 @@ import type {AgentSessionController} from '../agents/team.ts';
 import {registerCommitCommand} from '../commit.ts';
 import {registerAgentTools} from '../tools/agents.ts';
 import {registerProjectTools} from '../tools/index.ts';
-import type {DashboardParent, ParentRequest} from './hub.ts';
+import type {DashboardParent, ParentRequest, StoppedMessages} from './hub.ts';
 import {
   desktopCommands,
   sessionFeatures,
@@ -229,7 +229,8 @@ export async function createDashboardParent(
   }
   let closed = false;
   let closing: Promise<void> | undefined;
-  let stopping: Promise<void> | undefined;
+  let stopping: Promise<StoppedMessages> | undefined;
+  let stoppedMessages: StoppedMessages | undefined;
   interface PromptRun {
     cancelled: boolean;
     operation: Promise<void>;
@@ -259,9 +260,14 @@ export async function createDashboardParent(
     const manager = control!.getTeam(context!).getManager();
     for (const agent of manager.list()) manager.cancel(agent.id);
   };
+  const preserveQueue = () => {
+    const queued = session.clearQueue();
+    stoppedMessages?.steering.push(...queued.steering);
+    stoppedMessages?.followUp.push(...queued.followUp);
+  };
   const stop = () => {
     ui.cancelDialogs();
-    session.clearQueue();
+    preserveQueue();
     session.abortRetry();
     session.abortCompaction();
     session.abortBash();
@@ -271,6 +277,8 @@ export async function createDashboardParent(
   const abort = () => {
     if (stopping) return stopping;
     const running = [...activePrompts];
+    const recovered: StoppedMessages = {steering: [], followUp: []};
+    stoppedMessages = recovered;
     for (const prompt of running) prompt.cancelled = true;
     stopping = Promise.resolve()
       .then(async () => {
@@ -279,12 +287,16 @@ export async function createDashboardParent(
         } finally {
           // SDK preflight and model changes may still be waiting for credentials.
           await Promise.allSettled(running.map(prompt => prompt.operation));
+          // Preserve anything queued during prompt preflight before stopping settled.
+          preserveQueue();
           // A tool may have spawned a worker just before the parent's abort settled.
           cancelWorkers();
         }
+        return recovered;
       })
       .finally(() => {
         stopping = undefined;
+        stoppedMessages = undefined;
       });
     return stopping;
   };

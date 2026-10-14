@@ -985,11 +985,17 @@ export function createFactoryScene(
   function drawAgent(unit, g, fx, index) {
     const slot = slots.get(unit.id),
       [baseX, baseY, z] = positionFor(unit);
-    const active = WORKING.has(unit.status),
+    const active = unit.status === 'running',
       failed = unit.status === 'failed';
     const t = active ? time + index * 1.7 : 0;
-    const y = baseY + (active ? Math.sin(t * 2.8) * 0.1 : 0);
-    const x = baseX + (active ? Math.sin(t * 1.35) * 0.045 : 0);
+    const y = baseY + (active ? Math.sin(t * 3.4) * 0.24 : 0);
+    const x = baseX + (active ? Math.sin(t * 1.7) * 0.1 : 0);
+    if (active) {
+      const pulse = 0.75 + Math.sin(t * 4) * 0.2;
+      g.ring([baseX, 0.26, z], 0.94, 0.065, C.running, 1, 36);
+      fx.ring([baseX, 0.28, z], 1.02, 0.12, C.running, pulse * 0.28, 36);
+      g.ring([baseX, 0.3, z], 1.09, 0.04, C.running, 1, 32, 0.28, t * 1.8);
+    }
     const color = statusColor(unit.status);
     g.cylinder([x, 0.225, z], [1.22, 0.018, 0.86], [0.025, 0.055, 0.06]);
     // A compact flying machine: four nacelles, fins, armored central hull.
@@ -1015,7 +1021,7 @@ export function createFactoryScene(
       );
       g.box([x - 0.48, y + 0.18, z + side * 0.71], [0.1, 0.3, 0.36], C.shell);
       if (active) {
-        const flame = 0.18 + (1 + Math.sin(t * 17 + side)) * 0.035;
+        const flame = 0.3 + (1 + Math.sin(t * 12 + side)) * 0.07;
         fx.octagon(
           [x - 0.2, y - 0.25 - flame / 2, z + side * 0.71],
           [0.12, flame, 0.12],
@@ -1040,7 +1046,7 @@ export function createFactoryScene(
     const elbow = [x + 0.47, y - 0.38, z + 0.29];
     const hand = [
       x + 0.83,
-      y - 0.32 + (active ? Math.sin(t * 4) * 0.12 : 0),
+      y - 0.32 + (active ? Math.sin(t * 4) * 0.3 : 0),
       z + 0.12,
     ];
     g.rod([x + 0.1, y - 0.2, z + 0.27], elbow, 0.066, C.dark);
@@ -1049,14 +1055,14 @@ export function createFactoryScene(
     g.box(hand, [0.18, 0.16, 0.16], C.dark);
     if (slot < 6 && active) {
       const bx = BAYS[slot][0],
-        target = [bx + 1, 1.25, z + Math.sin(t * 2.5) * 0.16];
+        target = [bx + 1, 1.25, z + Math.sin(t * 2.5) * 0.32];
       const welding = unit.status === 'running';
       if (welding) {
         const beltPosition = ((t * 0.35) % 1) * 1.4 - 0.7;
         g.box([bx + 1, 1.08, z + beltPosition], [0.31, 0.16, 0.25], C.metal);
         g.box([bx + 1, 1.17, z + beltPosition], [0.2, 0.025, 0.15], color, 0.9);
-        g.rod(hand, target, 0.012, C.cyan, 1);
-        fx.rod(hand, target, 0.055, C.cyan, 0.1);
+        g.rod(hand, target, 0.022, C.cyan, 1);
+        fx.rod(hand, target, 0.085, C.cyan, 0.22);
         g.octagon(target, [0.12, 0.09, 0.12], C.white, 1);
         // Deliberate welding sparks derive from an actually running agent.
         for (let j = 0; j < 7; j++) {

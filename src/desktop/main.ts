@@ -14,7 +14,7 @@ import type {DesktopStartup} from './startup.ts';
 import {desktopInitialPrompts} from '../dashboard/startup.ts';
 import {fileURLToPath} from 'node:url';
 import {DashboardInputError} from '../dashboard/errors.ts';
-import {DashboardHub} from '../dashboard/hub.ts';
+import {DashboardHub, type StoppedMessages} from '../dashboard/hub.ts';
 import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
@@ -84,7 +84,8 @@ const requests = new ExternalSessionRequests(
 const externalControl = {
   prompt: (sessionId: string, prompt: string) =>
     requests.request('prompt', sessionId, prompt),
-  abort: (sessionId: string) => requests.request('abort', sessionId),
+  abort: (sessionId: string) =>
+    requests.request<StoppedMessages>('abort', sessionId),
   features: (sessionId: string) =>
     requests.request<SessionFeatures>('features', sessionId),
   configure: (sessionId: string, input: SessionConfiguration) =>
@@ -171,6 +172,12 @@ function installHandlers(): void {
   );
   handle('pidev:reload-session', sessionId => hub.reloadSession(id(sessionId)));
   handle('pidev:workspace', sessionId => hub.workspace(id(sessionId)));
+  handle('pidev:read-markdown', (sessionId, path) =>
+    hub.readMarkdown(id(sessionId), path),
+  );
+  handle('pidev:save-markdown', (sessionId, path, content, version) =>
+    hub.saveMarkdown(id(sessionId), path, content, version),
+  );
   handle('pidev:choose-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: 'Choose a project folder',

@@ -1,5 +1,5 @@
 /* global process, __dirname, document, requestAnimationFrame, setTimeout,
-   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle */
+   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -13,8 +13,12 @@ let window;
 let calls = [];
 let rendererErrors = [];
 let resources;
+let featureRequests;
+let featureDelays;
+let featureErrors;
 let editorSubmission;
 let chosenFolder;
+let abortDelay = 0;
 
 function features() {
   return {
@@ -118,16 +122,20 @@ function reset() {
   rendererErrors = [];
   editorSubmission = undefined;
   chosenFolder = undefined;
+  abortDelay = 0;
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
   ]);
+  featureRequests = [];
+  featureDelays = new Map();
+  featureErrors = new Map();
 }
 
 ipcMain.handle('fixture:state', () => hub);
 ipcMain.on('fixture:error', (_event, error) => rendererErrors.push(error));
 for (const method of ['prompt', 'abort', 'workspace']) {
-  ipcMain.handle(`fixture:${method}`, (_event, sessionId, request) => {
+  ipcMain.handle(`fixture:${method}`, async (_event, sessionId, request) => {
     calls.push({method, sessionId, request});
     const target = hub.sessions.find(item => item.session.id === sessionId);
     if (method === 'prompt' && target.session.status === 'running') {
@@ -135,8 +143,12 @@ for (const method of ['prompt', 'abort', 'workspace']) {
       window.webContents.send('fixture:snapshot', hub);
     }
     if (method === 'abort') {
+      const cleared = structuredClone(target.queue);
       target.queue = {steering: [], followUp: []};
       window.webContents.send('fixture:snapshot', hub);
+      if (abortDelay)
+        await new Promise(resolve => setTimeout(resolve, abortDelay));
+      return cleared;
     }
     return method === 'workspace'
       ? {cwd: directory, files: [], diff: '', truncated: false}
@@ -161,9 +173,25 @@ ipcMain.handle('fixture:create-session', (_event, input) => {
   return {id: parent.session.id};
 });
 
-ipcMain.handle('fixture:features', (_event, sessionId) => {
+ipcMain.handle('fixture:read-markdown', (_event, sessionId, path) => {
+  assert.ok(hub.sessions.some(item => item.session.id === sessionId));
+  return {
+    path,
+    content: '# Agent tasks\n- [x] Read project files\n- [ ] Finish UI\n',
+    version: 'fixture-v1',
+    truncated: false,
+  };
+});
+
+ipcMain.handle('fixture:features', async (_event, sessionId) => {
   assert.ok(resources.has(sessionId), `Unknown feature session ${sessionId}`);
-  return resources.get(sessionId);
+  featureRequests.push(sessionId);
+  const result = JSON.parse(JSON.stringify(resources.get(sessionId)));
+  const failure = featureErrors.get(sessionId);
+  const delay = featureDelays.get(sessionId);
+  if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+  if (failure) throw new Error(failure);
+  return result;
 });
 ipcMain.handle('fixture:configure', (_event, sessionId, request) => {
   calls.push({method: 'configureSession', sessionId, request});
@@ -2348,6 +2376,853 @@ async function main() {
   );
 
   await run(
+    'agent conversations isolate messages, tools, disclosures, scroll, drafts and parent controls',
+    async () => {
+      const parent = hub.sessions[0];
+      parent.conversation[2].id = 'shared-tool';
+      const agent = (id, name) => ({
+        id,
+        name,
+        cwd: directory,
+        task: `Task for ${name}`,
+        status: 'running',
+        activity: `Working on ${name}`,
+        createdAt: at,
+        startedAt: at,
+        conversationTruncated: true,
+        sessionFile: `/fixture/${id}.jsonl`,
+        conversation: [
+          {id: 'shared-user', role: 'user', at, text: `Task for ${name}`},
+          {
+            id: 'shared-answer',
+            role: 'assistant',
+            at,
+            text: `${name} answer`,
+            streaming: true,
+          },
+          {
+            id: 'shared-tool',
+            role: 'tool',
+            toolName: 'bash',
+            at,
+            status: 'running',
+            streaming: true,
+            input: JSON.stringify({command: `printf '${name}\\n'\npwd`}),
+            text: `${name} output\n`,
+          },
+        ],
+      });
+      parent.agents = [
+        agent('agent-one', 'First agent'),
+        agent('agent-two', 'Second agent'),
+      ];
+      parent.totalAgents = 2;
+      parent.queue.steering = ['Parent steering'];
+      parent.ui = {
+        notifications: [{id: 'notice', type: 'info', message: 'Parent notice'}],
+        statuses: [{key: 'parent', text: 'Parent status'}],
+      };
+      await publish();
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Unsent parent draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.querySelector('#conversation details summary').click();
+        document.querySelector('#active-workers button').click();
+      });
+      await settle();
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('inspector-title').textContent,
+          recipient: document.getElementById('conversation-recipient')
+            .textContent,
+          messages: [
+            ...document.querySelectorAll('#conversation .conversation-text'),
+          ].map(item => item.textContent),
+          tool: document.querySelector('#conversation .tool-output')
+            .textContent,
+          input: document.querySelector('#conversation .tool-input')
+            .textContent,
+          open: document.querySelector('#conversation details').open,
+          composer: document.getElementById('composer-slot').hidden,
+          settings: document.getElementById('open-session-settings').hidden,
+          context: document.getElementById('tab-context').hidden,
+          meter: document.getElementById('open-context').hidden,
+          steering: document.getElementById('steering-messages').hidden,
+          notifications: document.getElementById('extension-notifications')
+            .hidden,
+          statuses: document.getElementById('extension-statuses').hidden,
+          back: document.getElementById('back-to-parent').textContent.trim(),
+          preview: !document.getElementById('conversation-truncated').hidden,
+          activity: document.getElementById('conversation-activity-text')
+            .textContent,
+        })),
+        {
+          title: 'First agent',
+          recipient: 'Agent conversation · First agent',
+          messages: ['Task for First agent', 'First agent answer'],
+          tool: 'First agent output\n',
+          input: "Run command\n\nCommand:\nprintf 'First agent\\n'\npwd",
+          open: true,
+          composer: true,
+          settings: true,
+          context: true,
+          meter: true,
+          steering: true,
+          notifications: true,
+          statuses: true,
+          back: 'Back to parent session',
+          preview: true,
+          activity: 'Working on First agent',
+        },
+      );
+      parent.agents[0].conversation[1].text += '\nAgent progress line'.repeat(
+        60,
+      );
+      await publish();
+      await evaluate(() => {
+        document.getElementById('panel-conversation').scrollTop = 180;
+        document
+          .getElementById('panel-conversation')
+          .dispatchEvent(new Event('scroll'));
+        const text = document.querySelector(
+          '#conversation .tool-output',
+        ).firstChild;
+        const range = document.createRange();
+        range.setStart(text, 0);
+        range.setEnd(text, 11);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        window.fixtureAgent = {
+          text,
+          row: document.querySelector('#conversation .conversation-tool'),
+        };
+        document.getElementById('follow-conversation').checked = false;
+        document
+          .getElementById('follow-conversation')
+          .dispatchEvent(new Event('change'));
+      });
+      // Extension edits belong to the parent and must wait until its view is opened.
+      parent.ui.editor = {id: 'parent-editor', text: 'Returned parent draft'};
+      parent.agents[0].conversation[2].input = JSON.stringify({
+        command: "printf 'First agent\\n'\npwd\ngit status",
+      });
+      parent.agents[0].conversation[2].text += 'More streamed output';
+      parent.conversation[2].text = 'Parent changed output';
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          selection: window.getSelection().toString(),
+          text:
+            document.querySelector('#conversation .tool-output').firstChild ===
+            window.fixtureAgent.text,
+          row:
+            document.querySelector('#conversation .conversation-tool') ===
+            window.fixtureAgent.row,
+          output: document.querySelector('#conversation .tool-output')
+            .textContent,
+          input: document.querySelector('#conversation .tool-input')
+            .textContent,
+          draft: document.getElementById('parent-prompt').value,
+        })),
+        {
+          selection: 'First agent',
+          text: true,
+          row: true,
+          output: 'First agent output\nMore streamed output',
+          input:
+            "Run command\n\nCommand:\nprintf 'First agent\\n'\npwd\ngit status",
+          draft: 'Unsent parent draft',
+        },
+      );
+      await evaluate(() => {
+        document.getElementById('parent-prompt').dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            ctrlKey: true,
+            bubbles: true,
+          }),
+        );
+        document.getElementById('prompt-form').requestSubmit();
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}),
+        );
+        document.getElementById('open-session-settings').click();
+        document.getElementById('open-commands').click();
+        document.querySelector('#conversation details summary').click();
+        [...document.querySelectorAll('#active-workers button')]
+          .find(button => button.textContent.includes('Second agent'))
+          .click();
+      });
+      await settle();
+      assert.deepEqual(
+        calls,
+        [],
+        'Agent view shortcuts cannot act on the parent',
+      );
+      assert.equal(
+        await evaluate(() => !!document.querySelector('dialog[open]')),
+        false,
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .tool-output').textContent,
+        ),
+        'Second agent output\n',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#conversation details').open,
+        ),
+        true,
+      );
+      // Factory robot selections also open the agent conversation.
+      await evaluate(() =>
+        [...document.querySelectorAll('.scene-label, #fallback-units button')]
+          .find(item => item.textContent.includes('First agent'))
+          .click(),
+      );
+      await settle();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('inspector-title').textContent,
+        ),
+        'First agent',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#conversation details').open,
+        ),
+        false,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('follow-conversation').checked,
+        ),
+        false,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        ),
+        180,
+      );
+      parent.agents[0].status = 'failed';
+      parent.agents[0].conversation[2].status = 'failed';
+      parent.agents[0].conversation[2].text = JSON.stringify({
+        stdout: 'Agent output\nDetails',
+        stderr: 'Agent execution failed\nCheck command',
+        exitCode: 1,
+      });
+      parent.agents[0].conversation[2].error =
+        'Agent execution failed\nCheck command';
+      parent.agents[0].conversation[2].streaming = false;
+      await publish();
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector(
+              '#conversation .conversation-error:not([hidden])',
+            ).textContent,
+        ),
+        'Agent execution failed\nCheck command',
+      );
+      assert.match(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .tool-output').textContent,
+        ),
+        /Standard output:\nAgent output\nDetails/,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await evaluate(() => {
+          document.querySelector('#conversation details summary').click();
+          document.getElementById('panel-conversation').scrollTop =
+            document.getElementById('panel-conversation').scrollHeight;
+        });
+        await screenshot('agent-conversation');
+      }
+      // Restore the original local draft when there is no queued editor update.
+      delete parent.ui.editor;
+      await publish();
+      await evaluate(() => document.getElementById('back-to-parent').click());
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('inspector-title').textContent,
+          draft: document.getElementById('parent-prompt').value,
+          tool: document.querySelector('#conversation .tool-output')
+            .textContent,
+          open: document.querySelector('#conversation details').open,
+          composer: document.getElementById('composer-slot').hidden,
+          context: document.getElementById('tab-context').hidden,
+          follow: document.getElementById('follow-conversation').checked,
+        })),
+        {
+          title: 'Alpha factory',
+          draft: 'Unsent parent draft',
+          tool: 'Parent changed output',
+          open: false,
+          composer: false,
+          context: false,
+          follow: true,
+        },
+      );
+    },
+  );
+
+  await run(
+    'readable operations decode compact JSON fields and results, preserve selection and keep HTML inert',
+    async () => {
+      const html = '<script>window.operationInjected = true</script>';
+      const operations = [
+        ['read', {path: '/fixture/file.md', offset: 4, limit: 10}],
+        [
+          'write',
+          {path: '/fixture/file.md', content: `# Header\n${html}\n- [ ] Task`},
+        ],
+        [
+          'edit',
+          {
+            path: '/fixture/file.md',
+            edits: [{oldText: 'first\nsecond', newText: 'third\nfourth'}],
+          },
+        ],
+        ['bash', {command: 'printf "hello\\n"\npwd', timeout: 3}],
+        ['agent_send', {id: 'worker', message: 'Read files\nThen report'}],
+        [
+          'browse',
+          {url: 'https://example.com', method: 'POST', body: 'first\nsecond'},
+        ],
+        [
+          'json_query',
+          {
+            path: 'data.json',
+            select: ['name', 'status'],
+            where: {status: 'ready'},
+          },
+        ],
+        [
+          'custom_tool',
+          {data: {nested: [1, 2]}, literal: 'backslash\\n stays literal'},
+        ],
+      ];
+      hub.sessions[0].conversation = operations.map(
+        ([toolName, input], index) => ({
+          id: `readable-${index}`,
+          role: 'tool',
+          toolName,
+          at,
+          input: JSON.stringify(input),
+          status: 'completed',
+          text: JSON.stringify({
+            stdout: `first line\n${html}`,
+            stderr: 'warning\nmore detail',
+            exitCode: 1,
+          }),
+          ...(index === 3
+            ? {error: 'Execution failed\nExit code 1', status: 'failed'}
+            : {}),
+        }),
+      );
+      hub.sessions[0].events = [
+        {
+          id: 'readable-event',
+          sourceId: 'parent',
+          sourceName: 'Parent',
+          kind: 'tool',
+          at,
+          message: 'Writing file',
+          conversationId: 'readable-1',
+          details: {Tool: 'write'},
+        },
+      ];
+      await publish();
+      const view = await evaluate(() => ({
+        inputs: [...document.querySelectorAll('#conversation .tool-input')].map(
+          item => item.textContent,
+        ),
+        outputs: [
+          ...document.querySelectorAll('#conversation .tool-output'),
+        ].map(item => item.textContent),
+        injected: !!window.operationInjected,
+        scripts: document.querySelectorAll('#conversation script').length,
+        error: document.querySelector(
+          '#conversation .conversation-error:not([hidden])',
+        ).textContent,
+      }));
+      assert.match(
+        view.inputs[0],
+        /Read file\n\nPath: \/fixture\/file.md\n\nStart line: 4\n\nLine limit: 10/,
+      );
+      assert.ok(view.inputs[1].includes(`# Header\n${html}\n- [ ] Task`));
+      assert.match(view.inputs[2], /Original text:\nfirst\nsecond/);
+      assert.match(view.inputs[2], /Replacement text:\nthird\nfourth/);
+      assert.ok(view.inputs[3].includes('Command:\nprintf "hello\\n"\npwd'));
+      assert.ok(view.inputs[4].includes('Message:\nRead files\nThen report'));
+      assert.ok(view.inputs[5].includes('Body:\nfirst\nsecond'));
+      assert.match(view.inputs[6], /Select:\n/);
+      assert.match(view.inputs[7], /backslash\\n stays literal/);
+      assert.ok(
+        view.outputs.every(
+          output =>
+            output.includes(`Standard output:\nfirst line\n${html}`) &&
+            output.includes('Standard error:\nwarning\nmore detail') &&
+            output.includes('Exit code: 1'),
+        ),
+      );
+      assert.equal(view.injected, false);
+      assert.equal(view.scripts, 0);
+      assert.equal(view.error, 'Execution failed\nExit code 1');
+      await evaluate(() => {
+        const text = document.querySelector(
+          '#conversation .tool-input',
+        ).firstChild;
+        const start = text.data.indexOf('/fixture/file.md');
+        const range = document.createRange();
+        range.setStart(text, start);
+        range.setEnd(text, start + 16);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        window.fixtureInput = text;
+      });
+      hub.sessions[0].conversation[0].input = JSON.stringify({
+        path: '/fixture/file.md',
+        offset: 4,
+        limit: 20,
+      });
+      await publish();
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .tool-input').firstChild ===
+            window.fixtureInput,
+        ),
+        true,
+      );
+      assert.equal(
+        await evaluate(() => window.getSelection().toString()),
+        '/fixture/file.md',
+      );
+      await evaluate(() => document.getElementById('tab-feed').click());
+      const feed = await evaluate(
+        () => document.getElementById('live-feed').textContent,
+      );
+      assert.ok(feed.includes(`# Header\n${html}\n- [ ] Task`));
+      assert.ok(feed.includes(`Standard output:\nfirst line\n${html}`));
+      assert.equal(await evaluate(() => !!window.operationInjected), false);
+      hub.sessions[0].conversation[0].text = JSON.stringify(
+        'decoded line\nsecond line',
+      );
+      hub.sessions[0].conversation[1].text = 'x'.repeat(100_000);
+      await publish();
+      await evaluate(() => document.getElementById('tab-conversation').click());
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .tool-output').textContent,
+        ),
+        'decoded line\nsecond line',
+      );
+      assert.match(
+        await evaluate(
+          () =>
+            document.querySelectorAll('#conversation .tool-output')[1]
+              .textContent,
+        ),
+        /\n\[Display truncated\]$/,
+      );
+    },
+  );
+
+  await run(
+    'Context explains included Markdown and available resources with safe previews and parent scope',
+    async () => {
+      const preview =
+        '# Project rules\nUse <script>window.contextInjected = true</script> & keep paths.';
+      resources.get('alpha').contextFiles = [
+        {
+          path: '/fixture/project/AGENTS.md',
+          name: 'AGENTS.md',
+          kind: 'instructions',
+          status: 'included',
+          description: 'Project instructions loaded into the system prompt.',
+          content: preview,
+        },
+        {
+          path: '/fixture/prompts/SYSTEM.md',
+          name: 'SYSTEM.md',
+          kind: 'system',
+          status: 'included',
+          description: 'Replaces the default system prompt.',
+          content: 'You help maintain this project.',
+        },
+        {
+          path: '/fixture/project/docs/design.md',
+          name: 'design.md',
+          kind: 'document',
+          status: 'included',
+          description:
+            'Read tool excerpt, lines 10–20, retained in the conversation.',
+          content: '## Design excerpt\nA small desktop inspector.',
+        },
+        {
+          path: '/fixture/skills/inspect/SKILL.md',
+          name: 'inspect',
+          kind: 'skill',
+          status: 'available',
+          description:
+            'Name and description advertised in the system prompt; full body read on demand.',
+        },
+        {
+          path: '/fixture/prompts/review.md',
+          name: 'review',
+          kind: 'template',
+          status: 'available',
+          description:
+            'Review the current diff. Template content enters the user message when /review is invoked.',
+        },
+      ];
+      hub.sessions[0].session.context = {
+        tokens: 3200,
+        window: 64000,
+        percent: 5,
+      };
+      hub.sessions[0].agents = [
+        {
+          id: 'context-agent',
+          name: 'Context agent',
+          task: 'Inspect the project',
+          cwd: directory,
+          status: 'running',
+          createdAt: at,
+          startedAt: at,
+          updatedAt: at,
+        },
+      ];
+      hub.sessions[0].totalAgents = 1;
+      await publish();
+      await evaluate(() => {
+        document.querySelector('#active-workers button').click();
+        document.getElementById('open-context').click();
+      });
+      await until(
+        () => document.querySelectorAll('.context-file').length === 5,
+        'Context files did not load',
+      );
+      const display = await evaluate(() => ({
+        parent: document.getElementById('context-recipient').textContent,
+        selectedAgent: document.getElementById('inspector-title').textContent,
+        selected: document
+          .getElementById('tab-context')
+          .getAttribute('aria-selected'),
+        focused: document.activeElement.id,
+        panels: [...document.querySelectorAll('[role="tabpanel"]')]
+          .filter(item => !item.hidden)
+          .map(item => item.id),
+        headings: [...document.querySelectorAll('.context-section h3')].map(
+          item => item.textContent,
+        ),
+        paths: [...document.querySelectorAll('.context-file-path')].map(
+          item => item.textContent,
+        ),
+        labels: [
+          ...document.querySelectorAll('.context-file-heading span'),
+        ].map(item => item.textContent),
+        available: document.querySelectorAll('.context-section')[1].textContent,
+        previews: document.querySelectorAll('.context-preview').length,
+        injected: !!window.contextInjected,
+        scripts: document.querySelectorAll('#context-files script').length,
+        preview: document.querySelector('.context-preview pre').textContent,
+      }));
+      assert.equal(display.parent, 'Alpha factory · parent session');
+      assert.equal(display.selectedAgent, 'Alpha factory');
+      assert.equal(display.selected, 'true');
+      assert.equal(display.focused, 'tab-context');
+      assert.deepEqual(display.panels, ['panel-context']);
+      assert.deepEqual(display.headings, [
+        'Included in context',
+        'Available resources',
+      ]);
+      assert.deepEqual(
+        display.paths,
+        resources.get('alpha').contextFiles.map(file => file.path),
+      );
+      assert.deepEqual(display.labels, [
+        'Project instructions',
+        'System prompt',
+        'Read document',
+        'Skill',
+        'Prompt template',
+      ]);
+      assert.match(
+        display.available,
+        /Name and description advertised in the system prompt; full body read on demand/,
+      );
+      assert.match(
+        display.available,
+        /Template content enters the user message when \/review is invoked/,
+      );
+      assert.equal(display.previews, 3);
+      assert.equal(display.injected, false);
+      assert.equal(display.scripts, 0);
+      assert.equal(display.preview, preview);
+      await evaluate(() =>
+        document.querySelector('.context-preview summary').click(),
+      );
+      assert.equal(
+        await evaluate(() => document.querySelector('.context-preview').open),
+        true,
+      );
+      resources.get('alpha').contextFiles[0].description += ' Updated.';
+      await evaluate(() => document.getElementById('refresh-context').click());
+      await until(
+        () =>
+          document
+            .querySelector('.context-file')
+            .textContent.includes('Updated.'),
+        'Updated file description did not arrive',
+      );
+      await publish();
+      assert.equal(
+        await evaluate(() => document.querySelector('.context-preview').open),
+        true,
+        'Snapshot updates must preserve an expanded preview',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        window.setContentSize(1600, 1400);
+        await screenshot('context-files');
+        window.setContentSize(1600, 1000);
+        await settle();
+      }
+      await evaluate(() => document.getElementById('tab-context').focus());
+      await press('Left');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'tab-tokens',
+      );
+      await press('Right');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'tab-context',
+      );
+      await press('Home');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'tab-conversation',
+      );
+      await press('End');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'tab-context',
+      );
+    },
+  );
+
+  await run(
+    'Context session switching rejects delayed results and recovers from errors and empty metadata',
+    async () => {
+      const doc = name => ({
+        path: `/fixture/${name}.md`,
+        name: `${name}.md`,
+        kind: 'instructions',
+        status: 'included',
+        description: 'Loaded project instructions',
+      });
+      resources.get('alpha').contextFiles = [doc('alpha')];
+      resources.get('beta').contextFiles = [doc('beta')];
+      featureDelays.set('alpha', 350);
+      await evaluate(() => document.getElementById('tab-context').click());
+      await evaluate(() => {
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click();
+        document.getElementById('tab-context').click();
+      });
+      await until(
+        () =>
+          document.querySelector('.context-file-path')?.textContent ===
+          '/fixture/beta.md',
+        'Beta context did not load',
+      );
+      await new Promise(resolve => setTimeout(resolve, 450));
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('.context-file-path').textContent,
+        ),
+        '/fixture/beta.md',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('context-recipient').textContent,
+        ),
+        'Beta factory · parent session',
+      );
+      featureErrors.set('beta', 'Context loader unavailable');
+      await evaluate(() => document.getElementById('refresh-context').click());
+      await until(
+        () => !document.getElementById('context-error').hidden,
+        'Context error was not shown',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('context-error').textContent,
+        ),
+        /Context loader unavailable/,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('refresh-context').disabled,
+        ),
+        false,
+      );
+      featureErrors.delete('beta');
+      resources.get('beta').contextFiles = [];
+      await evaluate(() => document.getElementById('refresh-context').click());
+      await until(
+        () =>
+          document.getElementById('context-error').hidden &&
+          document.querySelectorAll('.context-file').length === 0 &&
+          !document.getElementById('refresh-context').disabled,
+        'Context refresh did not recover',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('context-status').textContent,
+        ),
+        /No context files reported/,
+      );
+      delete resources.get('beta').contextFiles;
+      await evaluate(() => document.getElementById('refresh-context').click());
+      await until(
+        () => !document.getElementById('refresh-context').disabled,
+        'Optional metadata did not finish loading',
+      );
+      assert.equal(
+        await evaluate(() => document.querySelectorAll('.context-file').length),
+        0,
+      );
+      // Two requests for one parent complete out of order; the later request wins.
+      featureDelays.set('alpha', 350);
+      await evaluate(() => {
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Alpha factory'))
+          .click();
+        document.getElementById('tab-context').click();
+      });
+      featureDelays.delete('alpha');
+      resources.get('alpha').contextFiles = [doc('fresh-alpha')];
+      await evaluate(() => {
+        document.getElementById('tab-conversation').click();
+        document.getElementById('tab-context').click();
+      });
+      await until(
+        () =>
+          document.querySelector('.context-file-path')?.textContent ===
+          '/fixture/fresh-alpha.md',
+        'Fresh Alpha context did not load',
+      );
+      await new Promise(resolve => setTimeout(resolve, 450));
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('.context-file-path').textContent,
+        ),
+        '/fixture/fresh-alpha.md',
+      );
+    },
+  );
+
+  await run(
+    'Context refreshes on tab entry reload completed tool reads and compaction',
+    async () => {
+      const doc = name => ({
+        path: `/fixture/${name}.md`,
+        name: `${name}.md`,
+        kind: 'document',
+        status: 'included',
+        description: 'Read excerpt retained in conversation',
+        content: `# ${name}`,
+      });
+      resources.get('alpha').contextFiles = [doc('original')];
+      await evaluate(() => document.getElementById('tab-context').click());
+      await until(
+        () =>
+          document.querySelector('.context-file-path')?.textContent ===
+          '/fixture/original.md',
+        'Initial document did not load',
+      );
+      resources.get('alpha').contextFiles = [doc('on-open')];
+      await evaluate(() => {
+        document.getElementById('tab-conversation').click();
+        document.getElementById('tab-context').click();
+      });
+      await until(
+        () =>
+          document.querySelector('.context-file-path')?.textContent ===
+          '/fixture/on-open.md',
+        'Tab entry did not refresh context',
+      );
+      const before = featureRequests.length;
+      resources.get('alpha').contextFiles.push(doc('read-result'));
+      hub.sessions[0].conversation.push({
+        id: 'markdown-read',
+        role: 'tool',
+        toolName: 'read',
+        status: 'completed',
+        streaming: false,
+        text: '# read-result',
+        at,
+      });
+      await publish();
+      await until(
+        () => document.querySelectorAll('.context-file').length === 2,
+        'Completed read did not refresh visible context',
+      );
+      assert.ok(featureRequests.length > before);
+      resources.get('alpha').contextFiles.pop();
+      hub.sessions[0].conversation = hub.sessions[0].conversation.filter(
+        item => item.id !== 'markdown-read',
+      );
+      hub.sessions[0].conversation.push({
+        id: 'context-compaction',
+        role: 'assistant',
+        text: 'Earlier work summarized.',
+        at,
+      });
+      await publish();
+      await until(
+        () => document.querySelectorAll('.context-file').length === 1,
+        'Context retained a read removed during compaction',
+      );
+      hub.sessions[0].session.status = 'idle';
+      await publish();
+      await evaluate(() =>
+        document.getElementById('open-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('reload-session').disabled,
+        'Settings did not load',
+      );
+      resources.get('alpha').contextFiles = [doc('after-reload')];
+      await evaluate(() => document.getElementById('reload-session').click());
+      await until(
+        () =>
+          document.querySelector('.context-file-path')?.textContent ===
+          '/fixture/after-reload.md',
+        'Reload did not refresh context',
+      );
+      assert.ok(
+        calls.some(
+          call => call.method === 'reloadSession' && call.sessionId === 'alpha',
+        ),
+      );
+      await evaluate(() =>
+        document.getElementById('close-session-settings').click(),
+      );
+    },
+  );
+
+  await run(
     'Tokens shows measured input output cache cost zero usage and a visual budget',
     async () => {
       hub.sessions[0].session.context = {
@@ -3031,6 +3906,204 @@ async function main() {
         ),
         'Send',
       );
+    },
+  );
+
+  await run(
+    'Stop and Escape restore queued steering in order with drafts and isolate delayed parent switches',
+    async () => {
+      const parent = hub.sessions[0];
+      parent.queue.steering = [
+        'First steering',
+        'Second steering\nwith details',
+      ];
+      await publish();
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Existing draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('abort-parent').click();
+      });
+      await until(
+        () =>
+          !document.getElementById('abort-parent').disabled ||
+          document
+            .getElementById('parent-prompt')
+            .value.includes('First steering'),
+        'Stop did not restore queued messages',
+      );
+      const restored =
+        'First steering\n\nSecond steering\nwith details\n\nExisting draft';
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        restored,
+      );
+      assert.deepEqual(parent.queue.steering, []);
+      await publish();
+      await publish();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        restored,
+        'Repeated cleared snapshots cannot duplicate restored steering',
+      );
+      parent.queue.steering = ['Escape steering'];
+      await publish();
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'New draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.focus();
+      });
+      await press('Escape');
+      await until(
+        () =>
+          document.getElementById('parent-prompt').value ===
+          'Escape steering\n\nNew draft',
+        'Escape did not restore queued messages',
+      );
+      parent.queue.steering = ['Delayed steering'];
+      abortDelay = 150;
+      await publish();
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Alpha before delay';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('abort-parent').click();
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta'))
+          .click();
+        editor.value = 'Beta draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await new Promise(resolve => setTimeout(resolve, 220));
+      await settle();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Beta draft',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Alpha'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Delayed steering\n\nAlpha before delay',
+      );
+      assert.equal(calls.filter(call => call.method === 'abort').length, 3);
+    },
+  );
+
+  await run(
+    'pinned Markdown stays beside a reachable parent composer and can move between sides',
+    async () => {
+      await evaluate(async () => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Draft while following agents';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        const {openMarkdownFile} = await import('./markdown-files.js');
+        await openMarkdownFile('/fixture/PLAN.md', {pin: true});
+      });
+      await until(
+        () =>
+          document
+            .getElementById('markdown-preview')
+            .textContent.includes('Finish UI'),
+        'Pinned task file did not load',
+      );
+      const geometry = await evaluate(() => {
+        const panel = document
+          .getElementById('markdown-panel')
+          .getBoundingClientRect();
+        const editor = document.getElementById('parent-prompt');
+        const rect = editor.getBoundingClientRect();
+        const button = document.getElementById('send-prompt');
+        const send = button.getBoundingClientRect();
+        return {
+          panelHidden: document.getElementById('markdown-panel').hidden,
+          panelEndsBeforeComposer: panel.right < rect.left,
+          editorReachable:
+            document.elementFromPoint(
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+            ) === editor,
+          sendReachable:
+            document.elementFromPoint(
+              send.left + send.width / 2,
+              send.top + send.height / 2,
+            ) === button,
+          draft: editor.value,
+          tasks: document.querySelectorAll(
+            '#markdown-preview input[type="checkbox"]',
+          ).length,
+        };
+      });
+      assert.deepEqual(geometry, {
+        panelHidden: false,
+        panelEndsBeforeComposer: true,
+        editorReachable: true,
+        sendReachable: true,
+        draft: 'Draft while following agents',
+        tasks: 2,
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('markdown-beside-parent');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.focus();
+        editor.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            ctrlKey: true,
+            bubbles: true,
+          }),
+        );
+      });
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Parent composer cannot send while pinned file is visible',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'prompt'),
+        [
+          {
+            method: 'prompt',
+            sessionId: 'alpha',
+            request: {prompt: 'Draft while following agents'},
+          },
+        ],
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('markdown-position').textContent,
+        ),
+        'Move right',
+      );
+      await evaluate(() =>
+        document.getElementById('markdown-position').click(),
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('markdown-panel').dataset.side,
+        ),
+        'right',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('markdown-position').textContent,
+        ),
+        'Move left',
+      );
+      await evaluate(() =>
+        document.getElementById('markdown-position').click(),
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('markdown-panel').dataset.side,
+        ),
+        'left',
+      );
+      await evaluate(() => document.getElementById('markdown-close').click());
     },
   );
 

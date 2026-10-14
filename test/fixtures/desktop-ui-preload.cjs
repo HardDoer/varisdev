@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('pidev', {
     ipcRenderer.invoke('fixture:prompt', sessionId, request),
   abortSession: sessionId => ipcRenderer.invoke('fixture:abort', sessionId),
   workspace: sessionId => ipcRenderer.invoke('fixture:workspace', sessionId),
+  readMarkdown: (sessionId, path) =>
+    ipcRenderer.invoke('fixture:read-markdown', sessionId, path),
   sessionFeatures: sessionId =>
     ipcRenderer.invoke('fixture:features', sessionId),
   configureSession: (sessionId, input) =>

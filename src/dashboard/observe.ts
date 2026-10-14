@@ -7,107 +7,12 @@ import type {AgentSessionController} from '../agents/team.ts';
 import {DashboardState, type ConversationMessage} from './state.ts';
 import {observeFileChanges} from './changes.ts';
 import {modelUsage, compactionUsage, type ModelUsageCall} from '../usage.ts';
-
-const outputLimit = 16000;
-const inputLimit = 8000;
-
-function publicText(text: string): string {
-  return text.replace(
-    /data:image\/[^;\s]+;base64,[a-z0-9+/=]+/gi,
-    '[Image omitted]',
-  );
-}
-
-/** Read only public text blocks, with no thinking, images or result details. */
-function messageText(message: {content?: unknown}): string {
-  if (typeof message.content === 'string')
-    return publicText(message.content).slice(0, outputLimit + 1);
-  if (!Array.isArray(message.content)) return '';
-  let text = '';
-  for (const part of message.content) {
-    if (part?.type !== 'text' || typeof part.text !== 'string') continue;
-    text +=
-      (text ? '\n' : '') + publicText(part.text).slice(0, outputLimit + 1);
-    if (text.length > outputLimit) return text.slice(0, outputLimit + 1);
-  }
-  return text;
-}
-
-/** Put the useful command, path or URL on the summary's first line. */
-function toolInput(args: unknown): string {
-  let remaining = inputLimit + 1;
-  let nodes = 0;
-  function clean(value: unknown, depth = 0): unknown {
-    if (remaining <= 0 || ++nodes > 100 || depth > 6)
-      return '[Arguments truncated]';
-    if (typeof value === 'string') {
-      const text = publicText(value).slice(0, remaining);
-      remaining -= text.length;
-      return text;
-    }
-    if (!value || typeof value !== 'object') return value;
-    if (Array.isArray(value))
-      return value.slice(0, 30).map(item => clean(item, depth + 1));
-    const record = value as Record<string, unknown>;
-    if (
-      record.type === 'image' ||
-      (typeof record.mimeType === 'string' &&
-        record.mimeType.startsWith('image/'))
-    )
-      return '[Image omitted]';
-    if (record.type === 'thinking') return '[Thinking omitted]';
-    return Object.fromEntries(
-      Object.entries(record)
-        .slice(0, 40)
-        .map(([key, item]) => [
-          key.slice(0, 200),
-          /^(?:base64|thinking|thoughtSignature|signature|providerMetadata)$/i.test(
-            key,
-          )
-            ? '[Omitted]'
-            : clean(item, depth + 1),
-        ]),
-    );
-  }
-  try {
-    const record =
-      args && typeof args === 'object' && !Array.isArray(args)
-        ? (args as Record<string, unknown>)
-        : undefined;
-    const key = ['command', 'path', 'file_path', 'url'].find(
-      key => typeof record?.[key] === 'string' && record[key],
-    );
-    const summary = key
-      ? publicText(record![key] as string).slice(0, inputLimit + 1)
-      : '';
-    remaining -= summary.length;
-    const rest = key
-      ? Object.fromEntries(
-          Object.entries(record!).filter(([name]) => name !== key),
-        )
-      : args;
-    const details = JSON.stringify(clean(rest), null, 2) ?? '';
-    return (
-      summary +
-      (summary && details !== '{}' ? '\n' : '') +
-      (summary && details === '{}' ? '' : details)
-    ).slice(0, inputLimit + 1);
-  } catch {
-    return '[Arguments unavailable]';
-  }
-}
-
-function resultStatus(
-  isError: boolean,
-  text: string,
-): ConversationMessage['status'] {
-  if (!isError) return 'completed';
-  return /^(?:Operation|Tool execution) (?:aborted|cancelled)\.?$/i.test(
-    text.trim(),
-  )
-    ? 'cancelled'
-    : 'failed';
-}
+import {
+  messageText,
+  publicText,
+  resultStatus,
+  toolInput,
+} from '../conversation.ts';
 
 function toolId(toolCallId: string): string {
   return `tool-${toolCallId}`;

@@ -14,12 +14,14 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {
   ModelRegistry,
   ModelRuntime,
+  SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
   type SessionShutdownEvent,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {createSessionWorker} from '../src/agents/session.ts';
+import {WorkerConversation} from '../src/agents/conversation.ts';
 import {
   AgentOrchestrator,
   type AgentRecord,
@@ -332,6 +334,28 @@ void test(
     assert.equal(await readFile(worker.resultFile!, 'utf8'), 'Final answer 6');
     assert.equal(worker.usage?.calls.length, 6);
     assert.equal(worker.usage?.totalTokens, 120560);
+    const restoredConversation = new WorkerConversation(
+      SessionManager.open(worker.sessionFile!).getBranch(),
+    ).snapshot();
+    assert.deepEqual(
+      restoredConversation.conversation.map(message => [
+        message.id,
+        message.role,
+        message.text,
+        message.input,
+        message.status,
+        message.at,
+      ]),
+      worker.conversation!.conversation.map(message => [
+        message.id,
+        message.role,
+        message.text,
+        message.input,
+        message.status,
+        message.at,
+      ]),
+      'Serialized SDK history restores the same public message identities and tool inputs',
+    );
   },
 );
 
@@ -1015,6 +1039,21 @@ void test(
     assert.ok(Math.abs(aUsage.cost - 0.000473) < 1e-12);
     const b = spawn('worker-b', true);
     await partial.promise;
+    const conversationDeadline = Date.now() + 5000;
+    while (
+      !manager
+        .conversation(b.id)
+        .conversation.some(
+          message => message.text === 'Partial measured response',
+        ) &&
+      Date.now() < conversationDeadline
+    )
+      await delay(5);
+    const partialMessage = manager
+      .conversation(b.id)
+      .conversation.find(message => message.role === 'assistant')!;
+    assert.equal(partialMessage.text, 'Partial measured response');
+    assert.equal(partialMessage.streaming, true);
     assert.equal(
       manager.get(b.id).usage?.calls.length,
       0,
@@ -1033,6 +1072,19 @@ void test(
     assert.deepEqual(
       completed.map(record => record.status),
       ['cancelled', 'completed'],
+    );
+    const bConversation = manager.conversation(b.id);
+    const cancelledMessage = bConversation.conversation.find(
+      message => message.role === 'assistant',
+    )!;
+    assert.equal(cancelledMessage.id, partialMessage.id);
+    assert.equal(cancelledMessage.text, 'Partial measured response');
+    assert.equal(cancelledMessage.streaming, false);
+    assert.equal(manager.conversation(c.id).conversation[0].text, 'worker-c');
+    assert.deepEqual(
+      workers.get('worker-b')!.conversation,
+      bConversation,
+      'Cancelled text survives SDK disposal',
     );
     const bUsage = completed[0].usage!;
     assert.equal(bUsage.calls.length, 1);

@@ -1,0 +1,152 @@
+.processing-effects,
+.prompt-jolt,
+.prompt-jolt svg,
+.agent-work-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.processing-effects {
+  z-index: 3;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.prompt-jolt svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.prompt-jolt path {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.prompt-jolt-glow {
+  stroke: var(--mint, #74f3c0);
+  stroke-width: 13px;
+  opacity: 0.35;
+  filter: blur(4px);
+}
+.prompt-jolt-wire {
+  stroke: #e9fffa;
+  stroke-width: 3px;
+  stroke-dasharray: 20 80;
+  filter: drop-shadow(0 0 5px var(--mint, #74f3c0));
+}
+.prompt-jolt.is-active path {
+  animation: prompt-data-flow 1.2s ease-out both;
+}
+.prompt-jolt-impact {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  border: 3px solid var(--mint, #74f3c0);
+  border-radius: 50%;
+  box-shadow:
+    0 0 25px #74f3c080,
+    inset 0 0 18px #74f3c040;
+  transform: translate(-50%, -50%);
+}
+.prompt-jolt.is-active .prompt-jolt-impact {
+  animation: prompt-impact 1.2s ease-out both;
+}
+.prompt-jolt-caption {
+  position: absolute;
+  transform: translate(-50%, -160%);
+  padding: 5px 9px;
+  border: 1px solid var(--mint, #74f3c0);
+  border-radius: 6px;
+  background: var(--panel, #101c27);
+  color: var(--text, #edf4f6);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.agent-work-marker {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -120%);
+  padding: 4px 7px;
+  border: 1px solid var(--mint, #74f3c0);
+  border-radius: 5px;
+  background: var(--panel, #101c27);
+  color: var(--text, #edf4f6);
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 12px #74f3c050;
+}
+.agent-work-marker::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mint, #74f3c0);
+  box-shadow: 0 0 6px var(--mint, #74f3c0);
+  animation: working-beacon 1.25s ease-in-out infinite;
+}
+.fallback-station.agent.running {
+  border: 2px solid var(--mint, #74f3c0);
+  box-shadow: 0 0 22px #74f3c040;
+}
+.fallback-station.agent.running::after {
+  border-width: 3px;
+  border-color: var(--mint, #74f3c0);
+}
+.processing-effects.motion-off .agent-work-marker::before,
+.processing-effects.motion-off .prompt-jolt.is-active path,
+.processing-effects.motion-off .prompt-jolt.is-active .prompt-jolt-impact {
+  animation: none;
+}
+.processing-effects.motion-off .prompt-jolt-wire {
+  stroke-dasharray: none;
+  opacity: 0.7;
+}
+@keyframes prompt-data-flow {
+  0% {
+    stroke-dashoffset: 20;
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: -100;
+    opacity: 0;
+  }
+}
+@keyframes prompt-impact {
+  0%,
+  30% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25);
+  }
+  48% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.6);
+  }
+}
+@keyframes working-beacon {
+  50% {
+    box-shadow: 0 0 12px 3px #74f3c090;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-work-marker::before,
+  .prompt-jolt.is-active path,
+  .prompt-jolt.is-active .prompt-jolt-impact {
+    animation: none;
+  }
+  .prompt-jolt-wire {
+    stroke-dasharray: none;
+  }
+}

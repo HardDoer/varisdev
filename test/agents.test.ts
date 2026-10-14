@@ -309,6 +309,15 @@ void test('startup failures and timeouts release slots and preserve errors', asy
     ['failed', 'failed'],
   );
   assert.equal(results[0].error, 'Missing credentials');
+  assert.deepEqual(
+    manager
+      .conversation(broken.id)
+      .conversation.map(message => [message.role, message.text, message.error]),
+    [
+      ['user', spec.task, undefined],
+      ['assistant', '', 'Missing credentials'],
+    ],
+  );
   assert.match(results[1].error ?? '', /Timed out after 20 milliseconds/);
   assert.match(results[1].activity, /Timed out after 20 milliseconds/);
   assert.equal(slow.disposed, 1);
@@ -482,6 +491,10 @@ void test('session workers save the final answer, track tools, and detect API fa
     /Provider failed/,
   );
   assert.equal(fake.listeners.size, 0);
+  assert.equal(
+    worker.conversation?.conversation.at(-1)?.error,
+    'Provider failed',
+  );
   fake.session.prompt = async () => {
     fake.session.messages.push(assistant('Incomplete response', 'length'));
   };
@@ -1310,4 +1323,147 @@ void test('controller observes activity and inbox with copied state and resets w
     .execute('agent_send', {id: 'parent', message: 'Fresh'});
   assert.equal(observed.length, count);
   assert.equal(parent.control.snapshot()!.messages[0].message, 'Fresh');
+});
+
+void test('session callbacks publish pending tool output and settle cancellation and prompt failures before rejecting', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-agent-live-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  for (const outcome of ['cancelled', 'failed'] as const) {
+    await t.test(outcome, async () => {
+      const fake = fakeSession();
+      const gate = deferred<void>();
+      const worker = sessionWorker(
+        fake.session as unknown as AgentSession,
+        join(directory, 'result.txt'),
+      );
+      const updates: Array<NonNullable<AgentWorker['conversation']>> = [];
+      fake.session.prompt = async () => {
+        fake.emit({
+          type: 'tool_execution_start',
+          toolCallId: 'pending',
+          toolName: 'bash',
+          args: {command: 'sleep 60'},
+        });
+        fake.emit({
+          type: 'tool_execution_update',
+          toolCallId: 'pending',
+          toolName: 'bash',
+          args: {},
+          partialResult: {
+            content: [{type: 'text', text: 'Working output'}],
+            details: {},
+          },
+        });
+        await gate.promise;
+        throw new Error('Prompt execution failed');
+      };
+      const controller = new AbortController();
+      const running = worker.run(
+        'Run the task',
+        controller.signal,
+        () => {},
+        undefined,
+        snapshot => updates.push(snapshot),
+      );
+      assert.equal(updates.at(-1)?.conversation[0].text, 'Working output');
+      assert.equal(updates.at(-1)?.conversation[0].status, 'running');
+      updates.at(-1)!.conversation[0].text = 'Mutated callback';
+      assert.equal(worker.conversation?.conversation[0].text, 'Working output');
+      if (outcome === 'cancelled')
+        controller.abort(new Error('Cancel pending work'));
+      gate.resolve();
+      await assert.rejects(running, /Prompt execution failed/);
+      const last = updates.at(-1)!;
+      assert.equal(last.conversation[0].status, outcome);
+      assert.equal(last.conversation[0].streaming, false);
+      assert.ok(last.conversation[0].finishedAt);
+      assert.ok(last.conversation.every(message => !message.streaming));
+      if (outcome === 'failed')
+        assert.equal(
+          last.conversation.at(-1)?.error,
+          'Prompt execution failed',
+        );
+      assert.equal(fake.listeners.size, 0);
+      worker.dispose();
+      assert.deepEqual(worker.conversation, last);
+    });
+  }
+});
+
+void test('simultaneous worker callbacks keep separate histories after cleanup and ignore caller mutations', async t => {
+  const manager = new AgentOrchestrator(2);
+  t.after(() => manager.close());
+  const callbacks: Array<
+    (snapshot: NonNullable<AgentWorker['conversation']>) => void
+  > = [];
+  const finishes = [deferred<string>(), deferred<string>()];
+  const records = finishes.map((finish, index) =>
+    manager.spawn(
+      {
+        ...spec,
+        name: `Worker ${index}`,
+        task: `Task ${index}`,
+        autoCleanup: true,
+      },
+      async () => ({
+        async steer() {
+          return true;
+        },
+        async run(_message, _signal, onActivity, _usage, onConversation) {
+          callbacks[index] = onConversation!;
+          onActivity('Responding');
+          return finish.promise;
+        },
+        dispose() {},
+      }),
+    ),
+  );
+  await until(() => callbacks.filter(Boolean).length === 2);
+  let notifications = 0;
+  manager.subscribe(() => notifications++);
+  const snapshot = (text: string) => ({
+    conversation: [
+      {
+        id: 'same-message-id',
+        role: 'assistant' as const,
+        text,
+        at: new Date().toISOString(),
+        streaming: true,
+      },
+    ],
+    conversationTruncated: false,
+  });
+  const source = snapshot('Agent A partial');
+  callbacks[0](source);
+  callbacks[1](snapshot('Agent B partial'));
+  callbacks[0](snapshot('Agent A updated'));
+  source.conversation[0].text = 'Mutated callback input';
+  assert.equal(notifications, 3);
+  assert.equal(
+    manager.conversation(records[0].id).conversation[0].text,
+    'Agent A updated',
+  );
+  assert.equal(
+    manager.conversation(records[1].id).conversation[0].text,
+    'Agent B partial',
+  );
+  manager.conversation(records[0].id).conversation[0].text = 'Mutated accessor';
+  finishes[0].resolve('A final');
+  finishes[1].resolve('B final');
+  await manager.wait(records.map(record => record.id));
+  assert.equal(
+    manager.conversation(records[0].id).conversation[0].text,
+    'Agent A updated',
+  );
+  assert.equal(
+    manager.conversation(records[1].id).conversation[0].text,
+    'Agent B partial',
+  );
+  assert.ok(
+    records.every(record =>
+      manager
+        .conversation(record.id)
+        .conversation.every(message => !message.streaming),
+    ),
+  );
 });

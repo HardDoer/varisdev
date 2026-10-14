@@ -101,6 +101,22 @@ export default function(pi) {
 }
 `,
   );
+  const contextPaths = {
+    user: join(agentDir, 'AGENTS.md'),
+    ancestor: join(root, 'AGENTS.md'),
+    project: join(cwd, 'AGENTS.md'),
+    system: join(agentDir, 'SYSTEM.md'),
+    append: join(agentDir, 'APPEND_SYSTEM.md'),
+    unrelated: join(cwd, 'notes.md'),
+  };
+  await Promise.all([
+    writeFile(contextPaths.user, 'USER AUTOMATIC INSTRUCTIONS marker.'),
+    writeFile(contextPaths.ancestor, 'ANCESTOR AUTOMATIC INSTRUCTIONS marker.'),
+    writeFile(contextPaths.project, 'PROJECT AUTOMATIC INSTRUCTIONS marker.'),
+    writeFile(contextPaths.system, 'CUSTOM SYSTEM PROMPT marker.'),
+    writeFile(contextPaths.append, 'APPENDED SYSTEM PROMPT marker.'),
+    writeFile(contextPaths.unrelated, 'UNRELATED MARKDOWN marker.'),
+  ]);
   const settingsPath = join(agentDir, 'settings.json');
   const settings = {
     retry: {enabled: false},
@@ -220,8 +236,95 @@ export default function(pi) {
     skillPath,
     promptPath,
     extensionPath,
+    contextPaths,
   };
 }
+
+void test(
+  'desktop context catalog follows loaded instruction sources and refreshes cached content on reload',
+  {timeout: 15000},
+  async t => {
+    const {parent, contextPaths, skillPath, promptPath, requests} =
+      await fixture(t);
+    const files = (await parent.features()).contextFiles!;
+    assert.ok(Array.isArray(files));
+    for (const path of [
+      contextPaths.user,
+      contextPaths.ancestor,
+      contextPaths.project,
+    ]) {
+      const file = files.find(file => file.path === path);
+      assert.equal(file?.kind, 'instructions');
+      assert.equal(file?.status, 'included');
+      assert.equal(file?.content, await readFile(path, 'utf8'));
+    }
+    for (const [path, kind] of [
+      [contextPaths.system, 'system'],
+      [contextPaths.append, 'append'],
+    ]) {
+      const file = files.find(file => file.path === path);
+      assert.equal(file?.kind, kind);
+      assert.equal(file?.status, 'included');
+      assert.equal(file?.content, await readFile(path, 'utf8'));
+    }
+    assert.ok(!files.some(file => file.path === contextPaths.unrelated));
+    const skill = files.find(file => file.path === skillPath);
+    assert.equal(skill?.kind, 'skill');
+    assert.equal(skill?.status, 'available');
+    assert.equal(skill?.content, undefined);
+    assert.match(
+      skill!.description,
+      /Project fixture skill.*advertised.*only when read or invoked/,
+    );
+    const template = files.find(file => file.path === promptPath);
+    assert.equal(template?.kind, 'template');
+    assert.equal(template?.status, 'available');
+    assert.equal(template?.content, undefined);
+    assert.match(template!.description, /when \/project-template is invoked/);
+    await parent.prompt('Verify the automatic context');
+    const request = JSON.stringify(requests.at(-1)?.messages);
+    for (const marker of [
+      'USER AUTOMATIC',
+      'ANCESTOR AUTOMATIC',
+      'PROJECT AUTOMATIC',
+      'CUSTOM SYSTEM',
+      'APPENDED SYSTEM',
+    ])
+      assert.ok(request.includes(marker), marker);
+    assert.ok(!request.includes('PROJECT SKILL BODY'));
+    assert.ok(!request.includes('USER TEMPLATE'));
+    assert.ok(!request.includes('UNRELATED MARKDOWN'));
+    await writeFile(
+      contextPaths.project,
+      'UPDATED PROJECT INSTRUCTIONS marker.',
+    );
+    await writeFile(contextPaths.append, 'UPDATED APPEND marker.');
+    assert.equal(
+      (await parent.features()).contextFiles!.find(
+        file => file.path === contextPaths.project,
+      )?.content,
+      'PROJECT AUTOMATIC INSTRUCTIONS marker.',
+    );
+    await parent.reload();
+    const reloaded = (await parent.features()).contextFiles!;
+    assert.equal(
+      reloaded.find(file => file.path === contextPaths.project)?.content,
+      'UPDATED PROJECT INSTRUCTIONS marker.',
+    );
+    assert.equal(
+      reloaded.find(file => file.path === contextPaths.append)?.content,
+      'UPDATED APPEND marker.',
+    );
+    await parent.prompt('/skill:project-skill');
+    const invoked = (await parent.features()).contextFiles!.filter(
+      file => file.path === skillPath,
+    );
+    assert.equal(invoked.length, 1);
+    assert.equal(invoked[0].status, 'included');
+    assert.ok(invoked[0].content?.includes('PROJECT SKILL BODY marker.'));
+    assert.match(invoked[0].description, /Invoked skill body retained/);
+  },
+);
 
 void test(
   'desktop catalog loads configured user and project resources and reloads without duplicate VarisDev registrations',
@@ -309,6 +412,12 @@ void test(
       'Reloaded template description',
     );
     assert.ok(!reloaded.commands.some(command => command.source === 'skill'));
+    const reloadedSkill = reloaded.contextFiles!.find(
+      file => file.path === skillPath,
+    );
+    assert.equal(reloadedSkill?.status, 'available');
+    assert.match(reloadedSkill!.description, /advertised/);
+    assert.equal(reloadedSkill?.content, undefined);
     assert.equal(
       reloaded.commands.filter(command => command.name === 'commit').length,
       1,

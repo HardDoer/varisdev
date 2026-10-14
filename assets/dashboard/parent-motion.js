@@ -16,8 +16,8 @@ export const IDLE_ACTIVITIES = Object.freeze([
 
 const HOME = -6.25;
 const STARTLE_SECONDS = 0.7;
-const REST_MIN_SECONDS = 40;
-const REST_MAX_SECONDS = 120;
+const REST_MIN_SECONDS = 15;
+const REST_MAX_SECONDS = 60;
 const TAU = Math.PI * 2;
 const active = status => status === 'running' || status === 'compacting';
 const smoothstep = value => {

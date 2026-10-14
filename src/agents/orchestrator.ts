@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {ConversationState, type ConversationSnapshot} from '../conversation.ts';
 import {copyModelUsage, type ModelUsage} from '../usage.ts';
 
 export type AgentStatus =
@@ -31,11 +32,13 @@ export interface AgentWorker {
   sessionFile?: string;
   resultFile?: string;
   readonly usage?: ModelUsage;
+  readonly conversation?: ConversationSnapshot;
   run(
     message: string,
     signal: AbortSignal,
     onActivity: (activity: string) => void,
     onUsage?: (usage: ModelUsage) => void,
+    onConversation?: (conversation: ConversationSnapshot) => void,
   ): Promise<string>;
   steer(message: string, starting: boolean): Promise<boolean>;
   dispose(): void;
@@ -49,6 +52,7 @@ export interface AgentMessageSender {
 
 interface Job {
   record: AgentRecord;
+  conversation: ConversationState;
   createWorker?: (id: string) => Promise<AgentWorker>;
   worker?: AgentWorker;
   initializing?: Promise<AgentWorker>;
@@ -122,6 +126,11 @@ export class AgentOrchestrator {
     return copyRecord(this.job(id).record);
   }
 
+  /** Conversation stays separate from public tool records and survives worker cleanup. */
+  conversation(id: string): ConversationSnapshot {
+    return this.job(id).conversation.snapshot();
+  }
+
   list(): AgentRecord[] {
     return [...this.jobs.values()].map(job => copyRecord(job.record));
   }
@@ -147,13 +156,22 @@ export class AgentOrchestrator {
       throw new Error('This session has reached its limit of 64 agents.');
     }
     const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    const conversation = new ConversationState();
+    conversation.update({
+      id: `task-${id}`,
+      role: 'user',
+      text: spec.task,
+      at: createdAt,
+    });
     this.jobs.set(id, {
+      conversation,
       record: {
         ...spec,
         id,
         status: 'queued',
         activity: 'Waiting for a worker slot',
-        createdAt: new Date().toISOString(),
+        createdAt,
       },
       createWorker,
       input: spec.task,
@@ -177,6 +195,7 @@ export class AgentOrchestrator {
       job.record.sessionFile = worker.sessionFile;
       job.record.resultFile = worker.resultFile;
       this.captureUsage(job);
+      this.captureConversation(job);
       return worker;
     });
     return job.initializing;
@@ -242,12 +261,49 @@ export class AgentOrchestrator {
     if (usage) job.record.usage = copyModelUsage(usage);
   }
 
+  private captureConversation(
+    job: Job,
+    snapshot = job.worker?.conversation,
+  ): void {
+    if (
+      !snapshot ||
+      (!snapshot.conversation.length && !snapshot.conversationTruncated)
+    )
+      return;
+    job.conversation.replace(
+      snapshot.conversation,
+      snapshot.conversationTruncated,
+    );
+  }
+
   private dispose(job: Job): void {
     this.captureUsage(job);
+    this.captureConversation(job);
     const worker = job.worker;
     job.worker = undefined;
     job.createWorker = undefined;
     worker?.dispose();
+    this.settleConversation(job);
+  }
+
+  private settleConversation(job: Job): void {
+    job.conversation.settle(
+      job.record.status === 'failed' ? 'failed' : 'cancelled',
+      job.record.error,
+    );
+    if (
+      job.record.status === 'failed' &&
+      job.record.error &&
+      !job.conversation.snapshot().conversation.some(message => message.error)
+    ) {
+      job.conversation.update({
+        id: `error-${job.record.id}`,
+        role: 'assistant',
+        text: '',
+        error: job.record.error,
+        at: new Date().toISOString(),
+      });
+    }
   }
 
   cancel(id: string): AgentRecord {
@@ -316,6 +372,10 @@ export class AgentOrchestrator {
           job.record.usage = copyModelUsage(usage);
           this.changed();
         },
+        conversation => {
+          this.captureConversation(job, conversation);
+          this.changed();
+        },
       );
       signal.throwIfAborted();
       job.record.output =
@@ -337,9 +397,11 @@ export class AgentOrchestrator {
     } finally {
       clearTimeout(timer);
       this.captureUsage(job);
+      this.captureConversation(job);
       if (job.record.autoCleanup || job.record.status !== 'completed') {
         this.dispose(job);
       }
+      this.settleConversation(job);
       job.record.finishedAt = new Date().toISOString();
       job.controller = undefined;
       job.operation = undefined;

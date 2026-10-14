@@ -10,6 +10,7 @@ import {
 } from './orchestrator.ts';
 
 import type {UnitChange} from '../dashboard/changes.ts';
+import type {ConversationSnapshot} from '../conversation.ts';
 
 export interface AgentMessage {
   from: {id: string; name: string};
@@ -23,7 +24,7 @@ export interface ParentMessage extends AgentMessage {
 
 export interface AgentSessionSnapshot {
   sessionId: string;
-  agents: AgentRecord[];
+  agents: (AgentRecord & ConversationSnapshot)[];
   messages: ParentMessage[];
   changes: UnitChange[];
 }
@@ -150,7 +151,10 @@ class AgentTeam {
   snapshot(): AgentSessionSnapshot {
     return {
       sessionId: this.sessionId,
-      agents: this.manager.list(),
+      agents: this.manager.list().map(agent => ({
+        ...agent,
+        ...this.manager.conversation(agent.id),
+      })),
       messages: this.messages.map(copyMessage),
       changes: this.changes.map(change => ({...change})),
     };

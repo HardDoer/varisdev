@@ -41,5 +41,9 @@ contextBridge.exposeInMainWorld('pidev', {
     invoke('pidev:compact-session', id, instructions),
   reloadSession: id => invoke('pidev:reload-session', id),
   workspace: id => invoke('pidev:workspace', id),
+  readMarkdown: (sessionId, path) =>
+    invoke('pidev:read-markdown', sessionId, path),
+  saveMarkdown: (sessionId, path, content, version) =>
+    invoke('pidev:save-markdown', sessionId, path, content, version),
   chooseFolder: () => invoke('pidev:choose-folder'),
 });

@@ -5,6 +5,7 @@ import type {
   ResourceLoader,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
+import {loaderContextFiles} from './context-files.ts';
 
 // Use the public entry so Pi can supply its API through the extension loader.
 export function supportedThinkingLevels(
@@ -14,6 +15,15 @@ export function supportedThinkingLevels(
 }
 
 export interface SessionFeatures {
+  contextFiles?: Array<{
+    path: string;
+    name: string;
+    kind:
+      'instructions' | 'system' | 'append' | 'skill' | 'template' | 'document';
+    status: 'included' | 'available';
+    description: string;
+    content?: string;
+  }>;
   commands: Array<{
     name: string;
     description: string;
@@ -70,6 +80,12 @@ export function sessionFeatures(
   const extensions = loader.getExtensions();
   const runner = session.extensionRunner;
   return {
+    contextFiles: loaderContextFiles(
+      loader,
+      session.getActiveToolNames(),
+      session.sessionManager.buildSessionContext().messages,
+      session.sessionManager.getCwd(),
+    ),
     commands: [
       ...desktopCommands.map(command => ({...command})),
       ...runner

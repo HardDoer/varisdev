@@ -1,6 +1,7 @@
 # Project notes for coding agents
 
 - This repository is an ongoing personal development tool for the user.
+- When the user gives several requests, create or update `PLAN.md` with a checklist of the requested work and verification. Keep it current as requests change and work is completed.
 - Use GPT-6.1-Sol (`openai-codex/gpt-6.1-sol`) for delegated agents. Do not use Astra agents or inherit an Astra model when spawning agents.
 - The user installs and runs this tool as a Pi package downloaded from GitHub (`pi install git:github.com/HardDoer/varisdev`), not from this development checkout. Implement and verify changes for Pi's managed package installation, including runtime dependencies, packaged assets, and automatic desktop builds. User update instructions are `pi update` followed by restarting Pi; do not assume local checkout changes affect the installed tool or ask the user to run development npm commands.
 - Keep the user's Pi package registration pointed at GitHub. Never replace it with this checkout for development or testing; use a temporary agent directory and an isolated package installation for verification.

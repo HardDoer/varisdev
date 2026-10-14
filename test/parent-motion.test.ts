@@ -15,7 +15,7 @@ function advance(controller: Controller, seconds: number) {
 function until(
   controller: Controller,
   condition: () => boolean,
-  maximumSeconds = 130,
+  maximumSeconds = 70,
 ) {
   for (let frame = 0; frame < maximumSeconds * 60; frame++) {
     if (condition()) return;
@@ -38,12 +38,12 @@ function waitAtRest(controller: Controller) {
   assert.equal(pose.mode, 'rest');
   assert.equal(pose.activity, null);
   assert.equal(pose.stride, 0);
-  advance(controller, 39.9);
+  advance(controller, 14.9);
   assert.deepEqual({...controller.pose(), elapsed: pose.elapsed}, pose);
-  until(controller, () => controller.pose().mode === 'walk', 80.2);
+  until(controller, () => controller.pose().mode === 'walk', 45.2);
 }
 
-void test('idle visits all twelve activities with long stationary pauses between walks', () => {
+void test('idle visits all twelve activities with 15–60 second pauses between walks', () => {
   assert.deepEqual(IDLE_ACTIVITIES, [
     'coffee',
     'jump-rope',
@@ -96,7 +96,7 @@ void test('standing in the aisle stays still through updates and wakes immediate
   until(controller, () => controller.pose().mode === 'rest', 9);
   const standing = controller.pose();
   assert.notEqual(standing.x, HOME);
-  for (let second = 0; second < 39; second++) {
+  for (let second = 0; second < 14; second++) {
     advance(controller, 1);
     controller.update({id: 'parent-one', status: 'idle'});
     assert.deepEqual(

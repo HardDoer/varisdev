@@ -581,8 +581,15 @@ void test(
     const cancelledSteerRun = parent.prompt('steer-held-parent: cancellation');
     await waitFor(() => !!steeringResponse, 'parent waits before cancellation');
     await parent.prompt('Do not deliver this queued steering message.');
-    assert.equal(parent.state.snapshot().queue!.steering.length, 1);
-    await parent.abort();
+    await parent.prompt('Keep this second correction for the next prompt.');
+    assert.equal(parent.state.snapshot().queue!.steering.length, 2);
+    assert.deepEqual(await parent.abort(), {
+      steering: [
+        'Do not deliver this queued steering message.',
+        'Keep this second correction for the next prompt.',
+      ],
+      followUp: [],
+    });
     await cancelledSteerRun;
     assert.deepEqual(parent.state.snapshot().queue, {
       steering: [],

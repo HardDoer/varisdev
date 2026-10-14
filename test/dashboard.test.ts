@@ -84,6 +84,7 @@ function controlledParent(id: string, cwd: string) {
     },
     async abort() {
       for (const run of runs) run.resolve();
+      return {steering: [], followUp: []};
     },
     async close() {
       await parent.abort();
@@ -213,6 +214,7 @@ void test('attached Pi conversations accept GUI prompts and aborts while ownersh
     },
     async abort(id) {
       actions.push(`abort:${id}`);
+      return {steering: [], followUp: []};
     },
   });
   const attached = hub.snapshot().sessions[0].session;

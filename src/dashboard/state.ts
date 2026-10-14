@@ -1,3 +1,8 @@
+import {
+  ConversationState,
+  type ConversationMessage,
+  type ConversationSnapshot,
+} from '../conversation.ts';
 import type {AgentRecord} from '../agents/orchestrator.ts';
 import {isAgentFinished} from '../agents/orchestrator.ts';
 import type {ParentMessage} from '../agents/team.ts';
@@ -42,25 +47,12 @@ interface EventContext {
   conversationId?: string;
 }
 
-export interface DashboardAgent extends AgentRecord {
+export interface DashboardAgent extends AgentRecord, ConversationSnapshot {
   taskTruncated: boolean;
   outputTruncated: boolean;
 }
 
-export interface ConversationMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'tool';
-  text: string;
-  at: string;
-  streaming?: boolean;
-  truncated?: boolean;
-  error?: string;
-  toolName?: string;
-  toolCallId?: string;
-  input?: string;
-  status?: 'running' | 'completed' | 'failed' | 'cancelled';
-  finishedAt?: string;
-}
+export type {ConversationMessage} from '../conversation.ts';
 
 export interface DashboardSnapshot {
   session: DashboardSession;
@@ -84,9 +76,24 @@ function preview(text: string, limit = textLimit): string {
     : text;
 }
 
-function projectAgent(agent: AgentRecord): DashboardAgent {
+function projectAgent(
+  agent: AgentRecord & Partial<ConversationSnapshot>,
+): DashboardAgent {
+  const conversation = new ConversationState();
+  conversation.replace(
+    agent.conversation ?? [
+      {
+        id: `task-${agent.id}`,
+        role: 'user',
+        text: agent.task,
+        at: agent.createdAt,
+      },
+    ],
+    agent.conversationTruncated,
+  );
   return {
     ...agent,
+    ...conversation.snapshot(),
     usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
     task: preview(agent.task),
     activity: preview(agent.activity, 2000),
@@ -99,34 +106,6 @@ function projectAgent(agent: AgentRecord): DashboardAgent {
   };
 }
 
-function projectMessage(message: ConversationMessage): ConversationMessage {
-  return {
-    ...message,
-    text: preview(message.text),
-    input:
-      message.input === undefined ? undefined : preview(message.input, 8000),
-    error:
-      message.error === undefined ? undefined : preview(message.error, 4000),
-    toolName:
-      message.toolName === undefined
-        ? undefined
-        : preview(message.toolName, 200),
-    truncated:
-      !!message.truncated ||
-      message.text.length > textLimit ||
-      (message.input?.length ?? 0) > 8000 ||
-      (message.error?.length ?? 0) > 4000,
-  };
-}
-
-function messageSize(message: ConversationMessage): number {
-  return (
-    message.text.length +
-    (message.input?.length ?? 0) +
-    (message.error?.length ?? 0)
-  );
-}
-
 /** A bounded view of the live session and public conversation text. */
 export class DashboardState {
   private session: DashboardSession;
@@ -134,8 +113,7 @@ export class DashboardState {
   private totalAgents = 0;
   private readonly events: DashboardEvent[] = [];
   private readonly changes: UnitChange[] = [];
-  private conversation: ConversationMessage[] = [];
-  private conversationTruncated = false;
+  private readonly conversation = new ConversationState();
   private queue: DashboardSnapshot['queue'];
   private readonly usage = new ModelUsageTracker();
   private previousAgents = new Map<string, DashboardAgent>();
@@ -233,7 +211,10 @@ export class DashboardState {
     this.changed();
   }
 
-  updateTeam(records: AgentRecord[], messages: ParentMessage[]): void {
+  updateTeam(
+    records: (AgentRecord & Partial<ConversationSnapshot>)[],
+    messages: ParentMessage[],
+  ): void {
     this.totalAgents = records.length;
     const active = records.filter(agent => !isAgentFinished(agent.status));
     const history = records
@@ -300,58 +281,22 @@ export class DashboardState {
     this.changed();
   }
 
-  private trimConversation(): void {
-    let size = this.conversation.reduce(
-      (total, message) => total + messageSize(message),
-      0,
-    );
-    while (this.conversation.length > 100 || size > 160000) {
-      size -= messageSize(this.conversation.shift()!);
-      this.conversationTruncated = true;
-    }
-  }
-
   replaceConversation(messages: Iterable<ConversationMessage>): void {
-    this.conversation = [];
-    this.conversationTruncated = false;
-    for (const message of messages) {
-      const index = this.conversation.findIndex(item => item.id === message.id);
-      const previous = this.conversation[index];
-      const entry = projectMessage({
-        ...previous,
-        ...message,
-        at: previous?.at ?? message.at,
-      });
-      if (index < 0) this.conversation.push(entry);
-      else this.conversation[index] = entry;
-      this.trimConversation();
-    }
+    this.conversation.replace(messages);
     this.changed();
   }
 
   updateConversation(message: ConversationMessage): void {
-    const entry = projectMessage(message);
-    const index = this.conversation.findIndex(item => item.id === entry.id);
-    if (index < 0) this.conversation.push(entry);
-    else this.conversation[index] = entry;
-    this.trimConversation();
+    this.conversation.update(message);
     this.changed();
   }
 
   conversationMessage(id: string): ConversationMessage | undefined {
-    const message = this.conversation.find(item => item.id === id);
-    return message ? {...message} : undefined;
+    return this.conversation.get(id);
   }
 
   settleConversation(): void {
-    const now = new Date().toISOString();
-    for (const message of this.conversation) {
-      if (message.streaming) message.streaming = false;
-      if (message.role === 'tool' && message.status === 'running') {
-        message.status = 'cancelled';
-        message.finishedAt = now;
-      }
-    }
+    this.conversation.settle();
     this.changed();
   }
 
@@ -395,6 +340,7 @@ export class DashboardState {
       },
       agents: this.agents.map(agent => ({
         ...agent,
+        conversation: agent.conversation.map(message => ({...message})),
         usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
       })),
       totalAgents: this.totalAgents,
@@ -403,8 +349,7 @@ export class DashboardState {
         details: {...event.details},
       })),
       changes: this.changes.map(change => ({...change})),
-      conversation: this.conversation.map(message => ({...message})),
-      conversationTruncated: this.conversationTruncated,
+      ...this.conversation.snapshot(),
       queue: this.queue
         ? {
             steering: [...this.queue.steering],

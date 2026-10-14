@@ -125,7 +125,10 @@ void test('conversation streams parallel tools in call order and reconciles thei
   assert.equal(partial.text, 'M src/a.ts');
   assert.equal(partial.status, 'running');
   assert.equal(partial.streaming, true);
-  assert.equal(partial.input?.split('\n')[0], 'git status --short');
+  assert.deepEqual(JSON.parse(partial.input!), {
+    command: 'git status --short',
+    timeout: 10,
+  });
   await fixture.emit('tool_execution_update', {
     toolCallId: 'a',
     toolName: 'bash',
@@ -383,7 +386,7 @@ void test('restores tool results without calls and cancels unfinished history ca
   );
 });
 
-void test('public conversation omits thinking, provider details and images while inputs start with useful args', async () => {
+void test('public conversation omits thinking, provider details and images while inputs preserve argument keys', async () => {
   const fixture = observer();
   await fixture.emit('session_start');
   const assistant = message('assistant', 1, [
@@ -398,19 +401,19 @@ void test('public conversation omits thinking, provider details and images while
   await fixture.emit('message_start', {message: assistant});
   await fixture.emit('message_update', {message: assistant});
   await fixture.emit('message_end', {message: assistant});
-  for (const [id, args, firstLine] of [
-    ['command', {timeout: 5, command: 'pwd'}, 'pwd'],
-    ['path', {content: 'new file', path: 'src/file.ts'}, 'src/file.ts'],
-    ['url', {method: 'GET', url: 'https://example.com'}, 'https://example.com'],
+  for (const [id, args] of [
+    ['command', {timeout: 5, command: 'pwd'}],
+    ['path', {content: 'new file', path: 'src/file.ts'}],
+    ['url', {method: 'GET', url: 'https://example.com'}],
   ] as const) {
     await fixture.emit('tool_execution_start', {
       toolCallId: id,
       toolName: 'fixture',
       args,
     });
-    assert.equal(
-      fixture.state.conversationMessage(`tool-${id}`)?.input?.split('\n')[0],
-      firstLine,
+    assert.deepEqual(
+      JSON.parse(fixture.state.conversationMessage(`tool-${id}`)!.input!),
+      args,
     );
   }
   await fixture.emit('tool_execution_start', {
@@ -608,4 +611,78 @@ void test('conversation bounds stored input, output, errors and total history an
   assert.ok(
     state.snapshot().conversation.every(item => item.status !== 'running'),
   );
+});
+
+void test('agent conversations project separate bounded copies and preserve history truncation across team updates', () => {
+  const state = new DashboardState({
+    id: 'agent-parent',
+    name: 'Parent',
+    cwd: '/fixture',
+    status: 'idle',
+    activity: 'Ready',
+    startedAt: at(0),
+    updatedAt: at(0),
+  });
+  state.updateConversation({
+    id: 'parent-user',
+    role: 'user',
+    text: 'Parent task',
+    at: at(0),
+  });
+  const conversation = [
+    {
+      id: 'agent-tool',
+      role: 'tool' as const,
+      toolName: 'bash',
+      text: 'Agent output\n'.repeat(2000),
+      input: 'Agent input\n'.repeat(1000),
+      error: 'Agent error\n'.repeat(1000),
+      status: 'failed' as const,
+      at: at(1),
+    },
+  ];
+  const agent = {
+    id: 'agent-a',
+    name: 'Agent A',
+    task: 'Agent task',
+    cwd: '/fixture',
+    model: 'test/model',
+    status: 'failed' as const,
+    activity: 'Failed',
+    createdAt: at(0),
+    conversation,
+    conversationTruncated: true,
+  };
+  state.updateTeam(
+    [
+      agent,
+      {
+        ...agent,
+        id: 'agent-b',
+        name: 'Agent B',
+        task: 'Other task',
+        conversation: undefined,
+        conversationTruncated: undefined,
+      },
+    ],
+    [],
+  );
+  conversation[0].text = 'Mutated source';
+  const projected = state.snapshot();
+  assert.equal(projected.agents[0].conversationTruncated, true);
+  assert.ok(projected.agents[0].conversation[0].truncated);
+  assert.ok(projected.agents[0].conversation[0].text.length < 16100);
+  assert.ok(projected.agents[0].conversation[0].input!.length < 8100);
+  assert.ok(projected.agents[0].conversation[0].error!.length < 4100);
+  projected.agents[0].conversation[0].text = 'Mutated snapshot';
+  projected.agents[0].conversation.length = 0;
+  assert.match(
+    state.snapshot().agents[0].conversation[0].text,
+    /^Agent output/,
+  );
+  assert.equal(projected.agents[1].conversation[0].text, 'Other task');
+  assert.equal(projected.agents[1].conversationTruncated, false);
+  assert.equal(state.snapshot().conversation[0].text, 'Parent task');
+  state.updateTeam([state.snapshot().agents[0]], []);
+  assert.equal(state.snapshot().agents[0].conversationTruncated, true);
 });

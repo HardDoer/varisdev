@@ -14,6 +14,7 @@ import {join} from 'node:path';
 import {registerProjectTools} from '../tools/index.ts';
 import type {AgentWorker} from './orchestrator.ts';
 import {createWorkerModelRuntime} from './model-runtime.ts';
+import {WorkerConversation} from './conversation.ts';
 import {
   modelUsage,
   compactionUsage,
@@ -39,6 +40,9 @@ export function sessionWorker(
   resultFile: string,
 ): AgentWorker {
   const usage = new ModelUsageTracker();
+  const conversation = new WorkerConversation(
+    session.sessionManager.getBranch?.() ?? [],
+  );
   let finishing = false;
   function restoreUsage(): void {
     const branch = session.sessionManager.getBranch?.();
@@ -77,14 +81,18 @@ export function sessionWorker(
     get usage() {
       return usage.snapshot();
     },
+    get conversation() {
+      return conversation.snapshot();
+    },
     async steer(message, starting) {
       if (finishing && !starting) return false;
       await session.steer(message);
       return true;
     },
-    async run(message, signal, onActivity, onUsage) {
+    async run(message, signal, onActivity, onUsage, onConversation) {
       signal.throwIfAborted();
       finishing = false;
+      conversation.begin();
       let aborting: Promise<void> | undefined;
       const abort = () => {
         session.clearQueue();
@@ -93,6 +101,8 @@ export function sessionWorker(
         aborting = session.abort().catch(() => {});
       };
       const unsubscribe = session.subscribe(event => {
+        if (conversation.record(event))
+          onConversation?.(conversation.snapshot());
         if (
           event.type === 'message_end' &&
           event.message.role === 'assistant'
@@ -146,6 +156,7 @@ export function sessionWorker(
         }
       });
       signal.addEventListener('abort', abort, {once: true});
+      let failure: unknown;
       try {
         await session.prompt(message, {expandPromptTemplates: false});
         finishing = true;
@@ -170,11 +181,24 @@ export function sessionWorker(
           .join('\n');
         await writeFile(resultFile, output, 'utf8');
         return output;
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
         finishing = true;
         signal.removeEventListener('abort', abort);
         try {
           await aborting;
+          const cause = signal.aborted ? signal.reason : failure;
+          conversation.settle(
+            signal.aborted,
+            cause instanceof Error
+              ? cause.message
+              : cause === undefined
+                ? undefined
+                : String(cause),
+          );
+          onConversation?.(conversation.snapshot());
           restoreUsage();
           onUsage?.(usage.snapshot());
         } finally {
