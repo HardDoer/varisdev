@@ -10,19 +10,18 @@ A minimal visual layer over Pi that preserves its capabilities and keeps your pr
 
 ## Install
 
-Requires [Node.js 24+](https://nodejs.org/) and Git.
+Requires [Node.js](https://nodejs.org/) 24.15+ on the 24.x line or 26+, Git, and npm 12.
 
-SSH:
+Upgrade npm if needed:
 
 ```sh
-npm install -g git+ssh://git@github.com/HardDoer/varisdev.git
-varisdev
+npm install -g npm@12
 ```
 
-HTTPS:
+npm 12 fixes a global Git installation bug in npm 11 that can cause `Cannot find module 'npm/package.json'`. The options below enable Git installation and VarisDev's automatic setup.
 
 ```sh
-npm install -g git+https://github.com/HardDoer/varisdev.git
+npm install -g --allow-git=root --allow-scripts=github:HardDoer/varisdev git+https://github.com/HardDoer/varisdev.git
 varisdev
 ```
 

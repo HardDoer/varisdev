@@ -52,7 +52,7 @@
     "desktop:dev": "npm run desktop:build && electron desktop/build/src/desktop/main.js",
     "desktop:install": "npm run desktop:build && node scripts/desktop-app.mjs install",
     "desktop:open": "npm run desktop:build && node scripts/desktop-app.mjs open",
-    "prepack": "node scripts/write-build-info.mjs",
+    "prepare": "node scripts/write-build-info.mjs",
     "postinstall": "node scripts/install-desktop.mjs"
   },
   "dependencies": {

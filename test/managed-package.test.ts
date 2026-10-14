@@ -11,8 +11,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const run = promisify(execFile);
 
 void test(
-  'production install builds and launches standalone and extension entry points without checkout dependencies',
-  {timeout: 240_000},
+  'global Git install and packaged updates build and launch standalone and extension entry points without checkout dependencies',
+  {timeout: 360_000},
   async t => {
     // Outside the checkout: Node and TypeScript cannot find its node_modules.
     const temporary = await mkdtemp(join(tmpdir(), 'varisdev-package-'));
@@ -23,23 +23,65 @@ void test(
       'varisdev',
     );
     t.after(() => rm(temporary, {recursive: true, force: true}));
-    const npm =
-      process.env.npm_execpath ||
-      fileURLToPath(
-        new URL('../node_modules/npm/bin/npm-cli.js', import.meta.url),
-      );
-    // Pack exactly the published files, then install globally into a temporary
-    // prefix. This also checks that npm's inherited global setting cannot make
-    // the nested runtime installer write to a global location.
+    const npm = process.env.npm_execpath;
+    assert.ok(
+      npm,
+      'Run this installation check with npm test using npm 12 or newer.',
+    );
+    const npmVersion = await run(process.execPath, [npm, '--version']);
+    assert.ok(
+      Number.parseInt(npmVersion.stdout, 10) >= 12,
+      'Global Git installation requires npm 12 or newer.',
+    );
+    // Use the published files plus the repository lockfile for a Git source.
+    // Installing a tarball alone misses npm's temporary Git preparation step,
+    // which can inherit the outer install's global setting.
     const packed = await run(
       process.execPath,
       [npm, 'pack', '--json', '--pack-destination', temporary],
       {cwd: root},
     );
-    const [{filename, files}] = JSON.parse(packed.stdout) as Array<{
-      filename: string;
-      files: {path: string}[];
-    }>;
+    // npm 12 keys pack's JSON output by package name.
+    const {
+      varisdev: {files},
+    } = JSON.parse(packed.stdout) as {
+      varisdev: {files: {path: string}[]};
+    };
+    const repository = join(temporary, 'repository');
+    const hooksDirectory = join(temporary, 'empty-hooks');
+    await mkdir(hooksDirectory);
+    const git = async (args: string[]) =>
+      run('git', ['-c', `core.hooksPath=${hooksDirectory}`, ...args], {
+        cwd: temporary,
+      });
+    await git(['init', repository]);
+    for (const file of [...files, {path: 'package-lock.json'}]) {
+      // Git preparation must generate the revision from its own clone.
+      if (file.path === 'build-info.json') continue;
+      await mkdir(dirname(join(repository, file.path)), {recursive: true});
+      await cp(join(root, file.path), join(repository, file.path));
+    }
+    await git(['-C', repository, 'add', '.']);
+    const commit = (message: string) =>
+      git([
+        '-C',
+        repository,
+        '-c',
+        'user.name=VarisDev Test',
+        '-c',
+        'user.email=test@example.invalid',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-m',
+        message,
+      ]);
+    await commit('Application installation fixture');
+    const revision = (
+      await git(['-C', repository, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+    const source = `git+${pathToFileURL(repository).href}`;
     await run(
       process.execPath,
       [
@@ -48,7 +90,9 @@ void test(
         '--global',
         '--prefix',
         prefix,
-        join(temporary, filename),
+        '--allow-git=root',
+        `--allow-scripts=${source}`,
+        source,
         '--omit=dev',
         '--no-audit',
         '--no-fund',
@@ -64,10 +108,10 @@ void test(
     );
     for (const name of Object.keys(manifest.dependencies))
       await access(join(directory, 'node_modules', name, 'package.json'));
-    assert.match(
+    assert.equal(
       JSON.parse(await readFile(join(directory, 'build-info.json'), 'utf8'))
         .revision,
-      /^[a-f0-9]{40}$/,
+      revision,
     );
     for (const name of Object.keys(manifest.peerDependencies)) {
       assert.equal(manifest.peerDependencies[name], '*');
@@ -118,32 +162,7 @@ void test(
     );
     const {RuntimeManager} = await import('../src/runtime/manager.ts');
     const updateData = join(temporary, 'updates');
-    const repository = join(temporary, 'repository');
-    const hooksDirectory = join(temporary, 'empty-hooks');
-    await mkdir(hooksDirectory);
-    const git = async (args: string[]) =>
-      run('git', ['-c', `core.hooksPath=${hooksDirectory}`, ...args], {
-        cwd: temporary,
-      });
-    await git(['init', repository]);
-    for (const file of files) {
-      await mkdir(dirname(join(repository, file.path)), {recursive: true});
-      await cp(join(root, file.path), join(repository, file.path));
-    }
-    await git(['-C', repository, 'add', '.']);
-    await git([
-      '-C',
-      repository,
-      '-c',
-      'user.name=VarisDev Test',
-      '-c',
-      'user.email=test@example.invalid',
-      '-c',
-      'commit.gpgsign=false',
-      'commit',
-      '-m',
-      'Application update fixture',
-    ]);
+    await commit('Application update fixture');
     const manager = new RuntimeManager({
       installRoot: directory,
       dataDir: updateData,

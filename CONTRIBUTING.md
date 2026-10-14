@@ -4,11 +4,9 @@ VarisDev is a desktop application distributed from this repository. Changes need
 
 ## Development setup
 
-Install Node.js 24 or newer and Git, then:
+Use Node.js 24.15+ on the 24.x line or 26+, npm 12, and Git. Clone this repository, then run from its directory:
 
 ```sh
-git clone https://github.com/HardDoer/varisdev.git
-cd varisdev
 npm ci
 npm run desktop:dev
 ```
@@ -34,7 +32,7 @@ Electron tests require a graphical desktop. On a Linux machine without a display
 
 Add checks for behavior that can regress, especially installation, plugin loading, account persistence, updates, and conversation state. Verify changes to the interface at narrow window sizes, with zoom, with keyboard navigation, and with reduced motion where relevant.
 
-The production installation check uses an isolated package directory, production dependencies, and an automatically generated desktop build. Update checks cover the full application, bundled dependencies, and failed installations retaining the working version. Tests must not modify a contributor's installed app or accounts.
+Run the production installation check through `npm test` so it uses your npm 12 executable. It installs from a Git repository into an isolated directory with production dependencies and an automatically generated desktop build. Update checks cover the full application, bundled dependencies, and failed installations retaining the working version. Tests must not modify a contributor's installed app or accounts.
 
 ## Changes and reports
 

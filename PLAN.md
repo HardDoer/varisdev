@@ -1,5 +1,16 @@
 # Current requests
 
+## Global Git installation failure
+
+- [x] Trace the missing npm dependency to npm's global Git preparation step.
+- [x] Identify npm 12's upstream fix and document its installation requirements and command options.
+- [x] Generate build revision metadata during Git preparation as well as packing.
+- [x] Check npm's SSH URL handling and remove the SSH installation example from the guide as requested; keep HTTPS only.
+- [x] Shorten the contributor setup to “Clone this repository” and the development commands.
+- [x] Verify a real global Git install, packaged updates, and standalone and extension startup in isolation; run relevant checks and remove temporary files.
+
+Verification: reproduced the reported failure with npm 11.12.1 on Windows and Node.js 24.15.0. The updated installation check passed with npm 12.2.0, including production dependencies, revision metadata, Electron, packaged assets, automatic compilation, updates, and standalone/extension startup. Project lint (`gts lint`), TypeScript, and whitespace checks passed. Removed the temporary installations, caches, test runner, generated metadata, and temporary drive mapping.
+
 ## Accounts in the GUI
 
 - [x] Add Accounts controls accessible from the welcome screen and app menu, with provider selection, browser sign-in, API key entry, and sign-out.
