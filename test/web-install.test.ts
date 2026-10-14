@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import {exec} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {access, mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
+import {fileURLToPath} from 'node:url';
+import {promisify} from 'node:util';
 import {
   downloadRelease,
   install,
@@ -81,3 +84,80 @@ void test('installer rejects missing values and unknown options before doing any
   await assert.rejects(install(['--prefix']), /Missing value/);
   await assert.rejects(install(['--unknown', 'value']), /Unknown option/);
 });
+
+void test(
+  'CMD installer forwards quoted arguments and propagates failures',
+  {skip: process.platform !== 'win32'},
+  async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'cmd-installer-'));
+    t.after(() => rm(directory, {recursive: true, force: true}));
+    let status = 200;
+    let exitCode = 0;
+    let requests = 0;
+    const server = createServer((_request, response) => {
+      requests++;
+      response.writeHead(status);
+      response.end(
+        `export function install(args) { console.log(JSON.stringify(args)); process.exitCode = ${exitCode}; }`,
+      );
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(
+      () =>
+        new Promise<void>(resolve => {
+          server.close(() => resolve());
+          server.closeAllConnections();
+        }),
+    );
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const script = fileURLToPath(
+      new URL('../scripts/install.cmd', import.meta.url),
+    );
+    const prefix = join(directory, 'app space');
+    const command = `"${script}" --prefix "${prefix}" --no-path`;
+    const env = {
+      ...process.env,
+      VARISDEV_INSTALLER_URL: `http://127.0.0.1:${address.port}/install.mjs`,
+    };
+    const options = {
+      cwd: directory,
+      env,
+      shell: process.env.ComSpec,
+      timeout: 10000,
+    };
+    const run = promisify(exec);
+    const result = await run(command, options);
+    assert.deepEqual(JSON.parse(result.stdout), [
+      '--prefix',
+      prefix,
+      '--no-path',
+    ]);
+    exitCode = 7;
+    await assert.rejects(run(command, options), {code: 7});
+    status = 503;
+    await assert.rejects(run(command, options), error => {
+      assert.equal((error as {code?: number}).code, 1);
+      assert.match(
+        (error as {stderr: string}).stderr,
+        /download failed \(503\)/,
+      );
+      return true;
+    });
+    const missingNode: NodeJS.ProcessEnv = {...env};
+    for (const key of Object.keys(missingNode))
+      if (key.toLowerCase() === 'path') delete missingNode[key];
+    missingNode.PATH = directory;
+    const requested = requests;
+    await assert.rejects(
+      run(command, {...options, env: missingNode}),
+      error => {
+        assert.equal((error as {code?: number}).code, 1);
+        assert.match((error as {stderr: string}).stderr, /requires Node.js 24/);
+        return true;
+      },
+    );
+    assert.equal(requests, requested);
+    assert.deepEqual(await readdir(directory), []);
+  },
+);
