@@ -674,11 +674,24 @@ void test('feature catalogs and configuration results cross source IPC with sess
     /\/reload in its terminal/,
   );
   source.setIdle(false);
+  await source.emit('agent_start');
   await requests.request('prompt', 'features-primary', '/skill:fixture');
-  await assert.rejects(
-    requests.request('configure', 'features-primary', {thinkingLevel: 'off'}),
-    /idle/,
+  await requests.request('configure', 'features-primary', {
+    provider: 'fixture',
+    modelId: 'model',
+    thinkingLevel: 'high',
+  });
+  await requests.request('configure', 'features-primary', {
+    thinkingLevel: 'low',
+  });
+  const live = await requests.request<SessionFeatures>(
+    'features',
+    'features-primary',
   );
+  assert.equal(live.model?.id, 'model');
+  assert.equal(live.thinkingLevel, 'low');
+  assert.equal(desktop.current!.snapshot().session.status, 'running');
+  await assert.rejects(requests.request('compact', 'features-primary'), /idle/);
   source.setIdle(true);
   await source.emit('agent_settled');
   assert.deepEqual(source.messages.at(-1), {

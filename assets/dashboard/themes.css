@@ -315,7 +315,7 @@ a:focus-visible {
   box-shadow: 0 0 10px color-mix(in srgb, var(--mint) 40%, transparent);
 }
 
-.robot-glyph.drone {
+.robot-glyph.agent {
   box-shadow:
     -7px 6px 0 -3px var(--muted),
     7px 6px 0 -3px var(--muted);
@@ -384,7 +384,7 @@ a:focus-visible {
   color: var(--text);
 }
 
-.master-summary,
+.parent-summary,
 .parent-controls,
 .attached-note {
   background: var(--panel-raised);
@@ -457,7 +457,7 @@ a:focus-visible {
 }
 
 .fallback-station,
-.fallback-station.master {
+.fallback-station.parent-session {
   border-color: var(--line);
   background: var(--panel-raised);
   box-shadow:

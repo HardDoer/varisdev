@@ -238,7 +238,11 @@ export function observeDashboardSession(
   }
 
   observeFileChanges(pi, change => {
-    state?.recordChange({...change, unitId: 'parent', unitName: 'Mastermind'});
+    state?.recordChange({
+      ...change,
+      unitId: 'parent',
+      unitName: 'Parent session',
+    });
   });
 
   function metadata(ctx: ExtensionContext) {
@@ -488,7 +492,7 @@ export function observeDashboardSession(
       status: 'running',
       activity: 'Working',
     });
-    state?.record('session', 'Mastermind started working');
+    state?.record('session', 'Parent session started working');
   });
   pi.on('message_start', (event, ctx) => {
     if (event.message.role === 'custom') {
@@ -647,7 +651,7 @@ export function observeDashboardSession(
     });
     state?.record(
       'session',
-      lastError ? 'Run ended with an error' : 'Mastermind finished',
+      lastError ? 'Run ended with an error' : 'Parent session finished',
     );
   });
   pi.on('session_before_compact', () => {

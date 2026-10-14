@@ -32,6 +32,7 @@ interface FactoryBinding {
   submissions: number;
   stopping: boolean;
   maintaining: boolean;
+  configuration?: Promise<void>;
   epoch: number;
 }
 
@@ -61,20 +62,32 @@ export function registerFactory(
   const maintain = async (
     current: FactoryBinding,
     action: () => Promise<void>,
+    allowRunning = false,
   ) => {
     ensureAttached(current);
+    const status = current.state.snapshot().session.status;
     if (
       current.maintaining ||
       current.stopping ||
-      current.submissions ||
-      !current.ctx.isIdle()
+      status === 'compacting' ||
+      status === 'closed' ||
+      (!allowRunning && (current.submissions || !current.ctx.isIdle()))
     )
       throw new Error('Wait until this session is idle.');
     current.maintaining = true;
+    const epoch = current.epoch;
+    const operation = Promise.resolve().then(() => {
+      ensureAttached(current);
+      if (current.stopping || current.epoch !== epoch)
+        throw new Error('This session is stopping.');
+      return action();
+    });
+    if (allowRunning) current.configuration = operation;
     try {
-      await action();
+      await operation;
       ensureAttached(current);
     } finally {
+      if (allowRunning) current.configuration = undefined;
       current.maintaining = false;
     }
   };
@@ -135,53 +148,60 @@ export function registerFactory(
         },
         async configure(input) {
           const configuration = sessionConfiguration(input);
-          await maintain(current, async () => {
-            if (
-              configuration.thinkingLevel &&
-              !['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(
-                configuration.thinkingLevel,
+          const epoch = current.epoch;
+          await maintain(
+            current,
+            async () => {
+              if (
+                configuration.thinkingLevel &&
+                !['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(
+                  configuration.thinkingLevel,
+                )
               )
-            )
-              throw new Error('Choose a valid thinking level.');
-            let model = ctx.model;
-            if (configuration.provider && configuration.modelId) {
-              model = ctx.modelRegistry
-                .getAvailable()
-                .find(
-                  model =>
-                    model.provider === configuration.provider &&
-                    model.id === configuration.modelId,
-                );
-              if (!model)
-                throw new Error(
-                  'This model is unavailable. Configure its provider credentials first.',
-                );
-            }
-            if (
-              configuration.thinkingLevel &&
-              model &&
-              !supportedThinkingLevels(model).includes(
-                configuration.thinkingLevel,
+                throw new Error('Choose a valid thinking level.');
+              let model = ctx.model;
+              if (configuration.provider && configuration.modelId) {
+                model = ctx.modelRegistry
+                  .getAvailable()
+                  .find(
+                    model =>
+                      model.provider === configuration.provider &&
+                      model.id === configuration.modelId,
+                  );
+                if (!model)
+                  throw new Error(
+                    'This model is unavailable. Configure its provider credentials first.',
+                  );
+              }
+              if (
+                configuration.thinkingLevel &&
+                model &&
+                !supportedThinkingLevels(model).includes(
+                  configuration.thinkingLevel,
+                )
               )
-            )
-              throw new Error(
-                'This thinking level is unavailable for the selected model.',
-              );
-            if (configuration.provider && model) {
-              if (!(await pi.setModel(model)))
                 throw new Error(
-                  'Authentication is not configured for this model.',
+                  'This thinking level is unavailable for the selected model.',
                 );
-              ensureAttached(current);
-            }
-            if (configuration.thinkingLevel)
-              pi.setThinkingLevel(
-                configuration.thinkingLevel as Parameters<
-                  ExtensionAPI['setThinkingLevel']
-                >[0],
-              );
-            state.record('session', 'Session configuration updated');
-          });
+              if (configuration.provider && model) {
+                if (!(await pi.setModel(model)))
+                  throw new Error(
+                    'Authentication is not configured for this model.',
+                  );
+                ensureAttached(current);
+                if (current.stopping || current.epoch !== epoch)
+                  throw new Error('This session is stopping.');
+              }
+              if (configuration.thinkingLevel)
+                pi.setThinkingLevel(
+                  configuration.thinkingLevel as Parameters<
+                    ExtensionAPI['setThinkingLevel']
+                  >[0],
+                );
+              state.record('session', 'Session configuration updated');
+            },
+            true,
+          );
         },
         async compact(input) {
           const instructions = compactionInstructions(input);
@@ -285,6 +305,8 @@ export function registerFactory(
                 }
               });
             }
+            if (current.configuration)
+              await Promise.allSettled([current.configuration]);
             if (binding === current) cancelWorkers(ctx);
           } finally {
             current.stopping = false;

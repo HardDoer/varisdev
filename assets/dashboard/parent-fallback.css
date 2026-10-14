@@ -1,0 +1,34 @@
+.fallback-station.parent-session .robot-glyph.parent-fallback-glyph {
+  display: none !important;
+}
+
+.fallback-station.parent-session .parent-fallback-robot {
+  display: block;
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+  max-height: 180px;
+  min-height: 0;
+  flex: 0 1 auto;
+  margin: 0 0 8px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.compact-scene .fallback-station.parent-session .parent-fallback-robot {
+  max-height: 76px;
+  margin-bottom: 4px;
+}
+
+@media (max-width: 900px) {
+  .fallback-station.parent-session .parent-fallback-robot {
+    max-height: 112px;
+    margin-bottom: 4px;
+  }
+}
+
+@media (max-width: 900px) {
+  .compact-scene .fallback-station.parent-session .parent-fallback-robot {
+    max-height: 68px;
+  }
+}

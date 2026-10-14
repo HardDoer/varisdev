@@ -271,8 +271,8 @@ void test('closing during parent initialization disposes it before any prompt ru
 void test('dashboard snapshots keep transitions, cap history and never mutate source records', () => {
   const view = state('terminal');
   const record: AgentRecord = {
-    id: 'drone',
-    name: 'Drone',
+    id: 'agent',
+    name: 'Agent',
     cwd: '/project',
     model: 'test/model',
     task: 'x'.repeat(20000),
@@ -300,8 +300,8 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
   assert.equal(snapshot.agents[0].taskTruncated, true);
   snapshot.agents[0].name = 'Mutated';
   snapshot.session.name = 'Mutated';
-  assert.equal(view.snapshot().agents[0].name, 'Drone');
-  assert.equal(record.name, 'Drone');
+  assert.equal(view.snapshot().agents[0].name, 'Agent');
+  assert.equal(record.name, 'Agent');
   for (let count = 0; count < 200; count++) view.record('tool', String(count));
   assert.equal(view.snapshot().events.length, 160);
   assert.equal(view.snapshot().events.at(-1)?.message, '199');
@@ -350,7 +350,7 @@ void test('workspace diff includes staged, unstaged and untracked files without 
   assert.equal(await readFile(join(cwd, 'tracked.txt'), 'utf8'), 'working\n');
 });
 
-void test('native feature controls preserve catalog isolation and reject changes during running work', async t => {
+void test('native feature controls allow live configuration and keep maintenance idle-only', async t => {
   const current = controlledParent('features', process.cwd());
   const catalog = features();
   catalog.commands.push({
@@ -388,10 +388,10 @@ void test('native feature controls preserve catalog isolation and reject changes
     (await hub.sessionFeatures('features')).commands[0].name,
     'skill:build',
   );
-  await assert.rejects(
-    hub.configureSession('features', {thinkingLevel: 'high'}),
-    /idle/,
-  );
+  await hub.configureSession('features', {thinkingLevel: 'high'});
+  await assert.rejects(hub.compactSession('features'), /idle/);
+  await assert.rejects(hub.reloadSession('features'), /idle/);
+  assert.equal(hub.snapshot().sessions[0].session.status, 'running');
   current.runs[0].resolve();
   await until(() => hub.snapshot().sessions[0].session.status === 'idle');
   await nextTick();
@@ -414,10 +414,15 @@ void test('native feature controls preserve catalog isolation and reject changes
     /updating/,
   );
   await assert.rejects(hub.reloadSession('features'), /idle/);
+  await assert.rejects(
+    hub.configureSession('features', {thinkingLevel: 'high'}),
+    /idle/,
+  );
   compacting.resolve();
   await compact;
   await hub.reloadSession('features');
   assert.deepEqual(actions, [
+    {thinkingLevel: 'high'},
     {provider: 'fixture', modelId: 'model', thinkingLevel: 'high'},
     'Keep decisions',
     'reload',

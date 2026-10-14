@@ -229,6 +229,7 @@ export async function createDashboardParent(
   }
   let closed = false;
   let closing: Promise<void> | undefined;
+  let stopping: Promise<void> | undefined;
   interface PromptRun {
     cancelled: boolean;
     operation: Promise<void>;
@@ -267,20 +268,32 @@ export async function createDashboardParent(
     cancelWorkers();
     return session.abort();
   };
-  const abort = async () => {
+  const abort = () => {
+    if (stopping) return stopping;
     const running = [...activePrompts];
     for (const prompt of running) prompt.cancelled = true;
-    try {
-      await stop();
-    } finally {
-      // SDK preflight can still be waiting for credentials before agent_start.
-      await Promise.allSettled(running.map(prompt => prompt.operation));
-      // A tool may have spawned a worker just before the parent's abort settled.
-      cancelWorkers();
-    }
+    stopping = Promise.resolve()
+      .then(async () => {
+        try {
+          await stop();
+        } finally {
+          // SDK preflight and model changes may still be waiting for credentials.
+          await Promise.allSettled(running.map(prompt => prompt.operation));
+          // A tool may have spawned a worker just before the parent's abort settled.
+          cancelWorkers();
+        }
+      })
+      .finally(() => {
+        stopping = undefined;
+      });
+    return stopping;
+  };
+  const requireOpen = () => {
+    if (closed) throw new Error('This parent session has closed.');
+    if (stopping) throw new Error('This parent session is stopping.');
   };
   const requireIdle = () => {
-    if (closed) throw new Error('This parent session has closed.');
+    requireOpen();
     if (activePrompts.size || session.isStreaming || session.isCompacting)
       throw new Error('This parent session is already working.');
   };
@@ -306,6 +319,7 @@ export async function createDashboardParent(
     )
       throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
     if (model && model !== session.model) await session.setModel(model);
+    requireOpen();
     if (options.thinkingLevel !== undefined)
       session.setThinkingLevel(
         options.thinkingLevel as Parameters<typeof session.setThinkingLevel>[0],
@@ -329,14 +343,14 @@ export async function createDashboardParent(
         const slash = args.indexOf('/');
         if (slash < 1 || slash === args.length - 1)
           throw new Error('Use /model provider/model.');
-        await configure({
+        await configurationAction({
           provider: args.slice(0, slash),
           modelId: args.slice(slash + 1),
         });
         break;
       }
       case 'thinking':
-        await configure({thinkingLevel: args});
+        await configurationAction({thinkingLevel: args});
         break;
       case 'name':
         if (!args)
@@ -362,8 +376,14 @@ export async function createDashboardParent(
       }
     }
   };
-  const idleAction = async (action: () => Promise<unknown>) => {
-    requireIdle();
+  const sessionAction = async (
+    action: () => Promise<unknown>,
+    allowRunning = false,
+  ) => {
+    requireOpen();
+    if (maintaining || session.isCompacting)
+      throw new Error('This session is updating. Try again when it is idle.');
+    if (!allowRunning) requireIdle();
     const running = {
       cancelled: false,
       operation: Promise.resolve(),
@@ -382,16 +402,20 @@ export async function createDashboardParent(
       });
     await running.operation;
   };
+  // Pi refreshes model and effort before the next assistant turn. Its setters
+  // leave an active provider request alone and persist the new session settings.
+  const configurationAction = (options: SessionConfiguration) =>
+    sessionAction(() => configure(options), true);
   return {
     state,
     ui,
     features: async () =>
       sessionFeatures(session, loader, settingsManager, diagnostics),
-    configure: options => idleAction(() => configure(options)),
-    compact: instructions => idleAction(() => session.compact(instructions)),
-    reload: () => idleAction(reload),
+    configure: configurationAction,
+    compact: instructions => sessionAction(() => session.compact(instructions)),
+    reload: () => sessionAction(reload),
     async prompt(text, images) {
-      if (closed) throw new Error('This parent session has closed.');
+      requireOpen();
       if (maintaining || session.isCompacting)
         throw new Error('This session is updating. Try again when it is idle.');
       const steering = activePrompts.size > 0;
@@ -423,7 +447,7 @@ export async function createDashboardParent(
               name && desktopCommands.some(command => command.name === name);
             const extension = name && session.extensionRunner.getCommand(name);
             if (local) {
-              if (steering)
+              if (steering && name !== 'model' && name !== 'thinking')
                 throw new Error(
                   'Wait until this session is idle to run this command.',
                 );

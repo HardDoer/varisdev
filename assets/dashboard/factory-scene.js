@@ -1,6 +1,9 @@
 /* global window, document, requestAnimationFrame, cancelAnimationFrame, ResizeObserver, IntersectionObserver */
 /* A small, dependency-free WebGL scene. Coordinates and lighting are real 3D;
  * the dashboard owns the accessible labels, session data and motion preference. */
+import {createParentMotion} from './parent-motion.js';
+import {idleActivityPose, drawIdleActivity} from './parent-activities.js';
+
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
 const COLORS = {
@@ -199,6 +202,27 @@ class Geometry {
   constructor() {
     this.data = [];
   }
+  append(geometry, position, yaw = 0, originX = 0) {
+    const c = Math.cos(yaw),
+      s = Math.sin(yaw);
+    for (let i = 0; i < geometry.data.length; i += 10) {
+      const d = geometry.data,
+        x = d[i] - originX,
+        z = d[i + 2];
+      this.data.push(
+        position[0] + x * c + z * s,
+        position[1] + d[i + 1],
+        position[2] + z * c - x * s,
+        d[i + 3] * c + d[i + 5] * s,
+        d[i + 4],
+        d[i + 5] * c - d[i + 3] * s,
+        d[i + 6],
+        d[i + 7],
+        d[i + 8],
+        d[i + 9],
+      );
+    }
+  }
   shape(mesh, p, s, color, emission = 0, yaw = 0, basis = null) {
     const c = Math.cos(yaw),
       q = Math.sin(yaw);
@@ -359,7 +383,7 @@ function buildFactory(C) {
     g.cylinder([x, 0.35, -3.7], [0.9, 0.13, 0.9], C.dark);
     g.box([x, 1.06, -3.24], [0.12, 0.65, 0.05], C.mint, 0.8);
   }
-  // Master dais, radial tracks and two physical control consoles.
+  // Parent session dais, radial tracks and two physical control consoles.
   g.octagon([-6.25, 0.12, 0], [5.5, 0.28, 5.5], C.edge);
   g.octagon([-6.25, 0.28, 0], [4.85, 0.12, 4.85], C.dark);
   g.ring([-6.25, 0.36, 0], 2.2, 0.032, C.mint, 0.6);
@@ -563,6 +587,8 @@ export function createFactoryScene(
     dispatches = [],
     flashes = [];
   let reaction = null;
+  const parentMotion = createParentMotion();
+  let cameraTarget = [-5.6, 1.6, 0];
   let lastFrame = 0,
     time = 0,
     width = 1,
@@ -630,7 +656,7 @@ export function createFactoryScene(
     ].slice(0, 8);
     const nextSlots = new Map(),
       taken = new Set();
-    // Working drones claim work bays before queued/history units, even when
+    // Working agents claim work bays before queued/history units, even when
     // a selected historical unit previously occupied a station.
     for (const unit of units) {
       const prefs =
@@ -689,9 +715,28 @@ export function createFactoryScene(
     return {surprise, jump, squash, wobble: Math.sin(p * TAU * 4) * surprise};
   }
 
-  function master(g, fx) {
+  function drawParentSession(sceneGeometry, sceneEffects) {
+    const pose = parentMotion.pose();
+    const idle = pose.activity
+      ? idleActivityPose(pose.activity, pose.elapsed)
+      : null;
+    const blend = idle
+      ? Math.max(
+          0,
+          Math.min(
+            1,
+            pose.elapsed / 0.35,
+            (pose.duration - pose.elapsed) / 0.35,
+          ),
+        )
+      : 0;
+    const g = new Geometry(),
+      fx = new Geometry();
     const state = snapshot?.session?.status || 'idle';
-    const active = state === 'running' || state === 'compacting';
+    const active =
+      pose.mode === 'work' && (state === 'running' || state === 'compacting');
+    const moving = pose.mode === 'walk' || pose.mode === 'return';
+    const running = pose.mode === 'return';
     const activity = snapshot?.session?.activity || '';
     const tools =
       active &&
@@ -701,9 +746,16 @@ export function createFactoryScene(
     const color = tools ? C.amber : thinking ? C.cyan : statusColor(state);
     const t = active ? time : 0;
     const x = -6.25,
-      bob = active ? Math.sin(t * (writing ? 5 : 2.5)) * 0.09 : 0;
-    const {surprise, jump, squash, wobble} = startlePose();
-    const lift = bob + jump + squash;
+      bob = active
+        ? Math.sin(t * (writing ? 5 : 2.5)) * 0.09
+        : moving
+          ? Math.abs(Math.sin(pose.stride)) * (running ? 0.13 : 0.06)
+          : 0;
+    const reactionPose = startlePose();
+    const surprise = Math.max(reactionPose.surprise, pose.surprise);
+    const jump = reactionPose.jump + pose.jump;
+    const {squash, wobble} = reactionPose;
+    const lift = bob + jump + squash + (idle?.lift || 0) * blend;
     const y = 0.4 + lift;
     g.cylinder(
       [x, 0.38, 0],
@@ -713,9 +765,18 @@ export function createFactoryScene(
     // The feet leave the dais, kick outward, then plant for the landing squash.
     for (const side of [-1, 1]) {
       const z = side * 0.54;
-      const footZ = z + side * jump * 0.17;
-      const footX = x + jump * 0.18;
-      const footY = jump * 1.12;
+      const step = Math.sin(pose.stride + (side === 1 ? Math.PI : 0));
+      const foot = idle?.feet[side === -1 ? 0 : 1];
+      const footZ = z + side * jump * 0.17 + (foot?.z || 0) * blend;
+      const footX =
+        x +
+        jump * 0.18 +
+        (moving ? step * (running ? 0.7 : 0.42) : 0) +
+        (foot?.x || 0) * blend;
+      const footY =
+        jump * 1.12 +
+        (moving ? Math.max(0, step) * (running ? 0.34 : 0.2) : 0) +
+        (foot?.y || 0) * blend;
       g.box([footX + 0.12, 0.59 + footY, footZ], [1.08, 0.35, 0.66], C.metal);
       g.box([footX + 0.5, 0.65 + footY, footZ], [0.12, 0.15, 0.55], C.shell);
       g.rod(
@@ -796,6 +857,21 @@ export function createFactoryScene(
                       : 0),
               side * (thinking ? 1.18 : 1.52),
             ];
+      const idleArm = idle?.arms[side === -1 ? 0 : 1];
+      if (idleArm) {
+        for (let axis = 0; axis < 3; axis++) {
+          const origin = axis === 0 ? x : axis === 1 ? y : 0;
+          elbow[axis] += (origin + idleArm.elbow[axis] - elbow[axis]) * blend;
+          hand[axis] += (origin + idleArm.hand[axis] - hand[axis]) * blend;
+        }
+      } else if (moving) {
+        const swing = Math.sin(pose.stride + (side === 1 ? Math.PI : 0));
+        elbow[0] = x - swing * (running ? 0.65 : 0.4);
+        elbow[1] = y + 1.25;
+        hand[0] = x - swing * (running ? 0.85 : 0.55) + (running ? 0.65 : 0.1);
+        hand[1] = y + (running ? 1.7 : 0.75);
+        hand[2] = side * 1.1;
+      }
       // Blend from the frozen work pose into a broad, overhead flail.
       const raisedElbow = [x - 0.15, y + 2.6, side * 1.65];
       const raisedHand = [x + 0.25 + wobble * 0.12, y + 3.55, side * 1.95];
@@ -882,10 +958,33 @@ export function createFactoryScene(
         );
       g.rod([x + 1.65, 1.3, 0], [x + 1.65, 2.27, 0], 0.016, color, 0.75);
     }
-    return {p: [x, y + 4.0, 0], body: [x, y + 1.6, 0]};
+    if (idle && blend > 0.5) {
+      const props = new Geometry(),
+        propEffects = new Geometry();
+      drawIdleActivity(
+        props,
+        propEffects,
+        C,
+        pose.activity,
+        pose.elapsed,
+        idle,
+      );
+      g.append(props, [x, 0, 0]);
+      fx.append(propEffects, [x, 0, 0]);
+    }
+    const position = [pose.x, pose.ground, pose.z];
+    const yaw = pose.yaw + (idle?.yaw || 0) * blend;
+    sceneGeometry.append(g, position, yaw, x);
+    sceneEffects.append(fx, position, yaw, x);
+    canvas.dataset.parentMode = pose.mode;
+    canvas.dataset.parentActivity = pose.activity || '';
+    return {
+      p: [pose.x, pose.ground + y + 4.0, pose.z],
+      body: [pose.x, pose.ground + y + 1.6, pose.z],
+    };
   }
 
-  function drone(unit, g, fx, index) {
+  function drawAgent(unit, g, fx, index) {
     const slot = slots.get(unit.id),
       [baseX, baseY, z] = positionFor(unit);
     const active = WORKING.has(unit.status),
@@ -961,7 +1060,7 @@ export function createFactoryScene(
         g.rod(hand, target, 0.012, C.cyan, 1);
         fx.rod(hand, target, 0.055, C.cyan, 0.1);
         g.octagon(target, [0.12, 0.09, 0.12], C.white, 1);
-        // Deliberate welding sparks derive from an actually running drone.
+        // Deliberate welding sparks derive from an actually running agent.
         for (let j = 0; j < 7; j++) {
           const cycle = (t * 1.8 + j / 7) % 1,
             a = j * 2.399;
@@ -1056,7 +1155,10 @@ export function createFactoryScene(
     // Move back on narrow canvases so the entire factory remains inside frame.
     const solo = units.length === 0;
     const distance = (solo ? 0.44 : 0.82) * Math.max(1, 1.6 / aspect);
-    const target = solo ? [-5.6, 1.6, 0] : [-0.5, 0.6, 0];
+    const pose = parentMotion.pose();
+    const wantedTarget = solo ? [pose.x + 0.65, 1.6, pose.z] : [-0.5, 0.6, 0];
+    if (!motion) cameraTarget = wantedTarget;
+    const target = cameraTarget;
     const eye = [
       target[0] + 23 * distance + cameraOffset[0],
       target[1] + 24 * distance + cameraOffset[1],
@@ -1065,11 +1167,11 @@ export function createFactoryScene(
     const matrix = cameraMatrix(eye, target, aspect);
     const g = new Geometry(),
       fx = new Geometry();
-    const positions = [{id: 'parent', ...master(g, fx)}];
+    const positions = [{id: 'parent', ...drawParentSession(g, fx)}];
     units.forEach((unit, i) =>
       positions.push({
         id: unit.id,
-        p: drone(unit, g, fx, i),
+        p: drawAgent(unit, g, fx, i),
         body: positionFor(unit),
       }),
     );
@@ -1193,6 +1295,13 @@ export function createFactoryScene(
     if (motion) {
       const dt = Math.min(elapsed, 0.05);
       time += dt;
+      parentMotion.tick(dt);
+      const pose = parentMotion.pose();
+      const target =
+        units.length === 0 ? [pose.x + 0.65, 1.6, pose.z] : [-0.5, 0.6, 0];
+      cameraTarget = cameraTarget.map(
+        (v, i) => v + (target[i] - v) * Math.min(1, dt * 5),
+      );
       cameraOffset = cameraOffset.map(
         (v, i) => v + (pointer[i] - v) * Math.min(1, dt * 4),
       );
@@ -1330,9 +1439,15 @@ export function createFactoryScene(
         flashes = [];
         time = 0;
       }
+      parentMotion.update(data?.session);
       snapshot = data;
       selected = selectedId;
       reconcile(data);
+      if (time === 0) {
+        const pose = parentMotion.pose();
+        cameraTarget =
+          units.length === 0 ? [pose.x + 0.65, 1.6, pose.z] : [-0.5, 0.6, 0];
+      }
       render();
       schedule();
     },
@@ -1366,14 +1481,28 @@ export function createFactoryScene(
     setMotion(enabled) {
       if (disposed) return;
       motion = Boolean(enabled);
+      parentMotion.setMotion(motion);
       if (motion) reaction = null;
       if (!canAnimate()) stop();
+      render();
+      schedule();
+    },
+    prompt(id) {
+      if (disposed || id !== sessionId) return;
+      parentMotion.prompt();
+      render();
+      schedule();
+    },
+    cancelPrompt(id) {
+      if (disposed || id !== sessionId) return;
+      parentMotion.cancelPrompt();
       render();
       schedule();
     },
     startle(animate = true) {
       if (disposed || contextLost) return;
       stop();
+      parentMotion.stop();
       reaction = {age: 0, animated: Boolean(animate)};
       render();
       if (animate) schedule();
@@ -1389,6 +1518,7 @@ export function createFactoryScene(
       if (disposed) return;
       disposed = true;
       reaction = null;
+      parentMotion.dispose();
       stop();
       resizeObserver?.disconnect();
       intersectionObserver?.disconnect();

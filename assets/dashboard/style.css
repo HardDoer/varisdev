@@ -374,7 +374,7 @@ main > .welcome {
   );
   box-shadow: 0 0 10px #74f3c080;
 }
-.robot-glyph.drone {
+.robot-glyph.agent {
   width: 28px;
   height: 22px;
   border-radius: 50% 50% 6px 6px;
@@ -382,15 +382,15 @@ main > .welcome {
     -7px 6px 0 -3px #5f8190,
     7px 6px 0 -3px #5f8190;
 }
-.robot-glyph.drone::before {
+.robot-glyph.agent::before {
   left: 11px;
   height: 4px;
   top: -5px;
 }
-.robot-glyph.drone::after {
+.robot-glyph.agent::after {
   inset: 6px 2px;
 }
-.robot-glyph.drone i {
+.robot-glyph.agent i {
   left: 5px;
   right: 5px;
   top: 9px;
@@ -618,7 +618,7 @@ main > .welcome {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.master-summary {
+.parent-summary {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -626,22 +626,22 @@ main > .welcome {
   padding: 6px 12px;
   background: #14252c;
 }
-.master-summary > div {
+.parent-summary > div {
   flex: 1;
   min-width: 0;
 }
-.master-summary p {
+.parent-summary p {
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.master-summary .quiet-button {
+.parent-summary .quiet-button {
   flex: 0 0 auto;
   padding: 5px 8px;
   font-size: 0.75rem;
 }
-.master-summary .robot-glyph {
+.parent-summary .robot-glyph {
   transform: scale(0.8);
 }
 .worker-panels {
@@ -1218,7 +1218,7 @@ main > .welcome {
     0 10px 0 -4px #081820,
     0 11px 0 -3px #34616b;
 }
-.fallback-station.master {
+.fallback-station.parent-session {
   grid-row: 1 / 3;
   background: radial-gradient(ellipse, #74f3c028, #142934);
 }
@@ -1226,7 +1226,7 @@ main > .welcome {
   transform: scale(1.7);
   margin-bottom: 32px;
 }
-.fallback-station.master .robot-glyph {
+.fallback-station.parent-session .robot-glyph {
   transform: scale(2.6);
   margin-bottom: 65px;
 }
@@ -1251,7 +1251,7 @@ main > .welcome {
   inset: 12px;
   border: 1px solid #74f3c077;
   border-radius: 50%;
-  animation: drone-pulse 2s ease-in-out infinite;
+  animation: agent-pulse 2s ease-in-out infinite;
   pointer-events: none;
 }
 .compact-scene .fallback-units {
@@ -1265,7 +1265,7 @@ main > .welcome {
 .compact-scene .fallback-station p {
   display: none;
 }
-.compact-scene .fallback-station.master .robot-glyph {
+.compact-scene .fallback-station.parent-session .robot-glyph {
   display: block;
   transform: scale(1);
   margin-bottom: 8px;
@@ -1285,7 +1285,7 @@ main > .welcome {
   padding: 0 8px;
   font-size: 0.75rem;
 }
-@keyframes drone-pulse {
+@keyframes agent-pulse {
   50% {
     opacity: 0.3;
     transform: scale(0.93);
@@ -1556,7 +1556,7 @@ dialog::backdrop {
   height: 7px;
   border-radius: 50%;
   background: currentColor;
-  animation: drone-pulse 1.5s ease-in-out infinite;
+  animation: agent-pulse 1.5s ease-in-out infinite;
 }
 /* Keep the current conversation above the editor at the bottom of the window. */
 .inspector {
@@ -1842,10 +1842,10 @@ dialog::backdrop {
   .worker-grid {
     grid-template-columns: 1fr;
   }
-  .master-summary {
+  .parent-summary {
     gap: 8px;
   }
-  .master-summary .quiet-button {
+  .parent-summary .quiet-button {
     font-size: 0.75rem;
   }
   .welcome {
@@ -1863,10 +1863,10 @@ dialog::backdrop {
     gap: 10px;
     padding: 45px 18px;
   }
-  .fallback-station.master {
+  .fallback-station.parent-session {
     grid-row: auto;
   }
-  .fallback-station.master .robot-glyph {
+  .fallback-station.parent-session .robot-glyph {
     transform: scale(1.7);
     margin-bottom: 32px;
   }
@@ -1899,7 +1899,7 @@ dialog::backdrop {
   .scene-labels {
     padding: 4px 10px;
   }
-  .master-summary {
+  .parent-summary {
     padding: 4px 10px;
   }
 }
@@ -2042,9 +2042,6 @@ dialog::backdrop {
   border: 1px solid var(--line);
   color: var(--text);
   background: var(--input, var(--panel));
-}
-#session-settings-note {
-  margin: 12px 0;
 }
 .session-maintenance {
   margin-top: 18px;
@@ -2386,10 +2383,10 @@ select:focus-visible {
   box-shadow: inset 0 0 60px color-mix(in srgb, var(--red) 60%, transparent);
   animation: factory-alert 1.1s ease-out both;
 }
-.scene.is-startled .fallback-station.master .robot-glyph {
+.scene.is-startled .fallback-station.parent-session .robot-glyph {
   animation: robot-startle 1.1s ease-out both;
 }
-.scene.is-startled .fallback-station.master .robot-glyph i {
+.scene.is-startled .fallback-station.parent-session .robot-glyph i {
   height: 7px;
   top: 8px;
   background: linear-gradient(

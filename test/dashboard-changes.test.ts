@@ -166,7 +166,7 @@ void test('worker hooks attribute changes and team snapshots retain bounded copi
     .get('agent_spawn')!
     .execute(
       'spawn',
-      {name: 'Drone', task: 'Work'},
+      {name: 'Agent', task: 'Work'},
       undefined,
       undefined,
       parent.ctx,
@@ -193,8 +193,8 @@ void test('worker hooks attribute changes and team snapshots retain bounded copi
       change.tool,
     ]),
     [
-      [id, 'Drone', 'edit'],
-      [id, 'Drone', 'write'],
+      [id, 'Agent', 'edit'],
+      [id, 'Agent', 'write'],
     ],
   );
   snapshot.changes[0].diff = 'mutated';

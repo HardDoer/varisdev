@@ -400,12 +400,15 @@ export class DashboardHub {
   private async maintain(
     id: string,
     action: (parent: DashboardParent) => Promise<void>,
+    allowRunning = false,
   ): Promise<void> {
     const entry = this.owned(id);
+    const status = entry.state.snapshot().session.status;
     if (
       entry.maintaining ||
-      entry.running.size ||
-      entry.state.snapshot().session.status !== 'idle'
+      status === 'compacting' ||
+      status === 'closed' ||
+      (!allowRunning && (entry.running.size || status !== 'idle'))
     )
       throw new DashboardInputError('Wait until this session is idle.');
     entry.maintaining = true;
@@ -422,7 +425,7 @@ export class DashboardHub {
     const configuration = sessionConfiguration(input);
     const attached = this.attached(id);
     if (attached) return attached.configure(id, configuration);
-    await this.maintain(id, parent => parent.configure(configuration));
+    await this.maintain(id, parent => parent.configure(configuration), true);
   }
 
   async compactSession(id: string, input?: unknown): Promise<void> {

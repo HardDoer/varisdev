@@ -16,6 +16,7 @@ let draftChanged;
 let current;
 let previousId;
 let previousModel;
+let previousThinkingLevel;
 let activeDialog;
 let dialogBusy = false;
 let settingsBusy = false;
@@ -228,37 +229,39 @@ function renderSettings() {
       return option;
     }),
   );
-  const running = !current || current.session.status !== 'idle';
-  $('session-settings-note').textContent = running
-    ? 'Model changes, compaction and reload are available when this session is idle.'
-    : 'Uses the same models and credentials as Pi.';
-  for (const id of [
-    'apply-session-settings',
-    'compact-session',
-    'reload-session',
-  ])
-    $(id).disabled = settingsBusy || running;
-  $('session-model').disabled =
-    settingsBusy || running || !resource.models.length;
-  $('session-thinking').disabled = settingsBusy || running;
+  renderSettingsControls();
+}
+function canConfigureSession() {
+  return current && ['idle', 'running'].includes(current.session.status);
+}
+function renderSettingsControls() {
+  const resource = features();
+  const disabled = settingsBusy || !canConfigureSession() || !resource;
+  $('apply-session-settings').disabled = disabled;
+  $('session-model').disabled = disabled || !resource?.models.length;
+  $('session-thinking').disabled = disabled || !resource?.thinkingLevels.length;
+  const idle = current?.session.status === 'idle';
+  $('compact-session').disabled = settingsBusy || !idle;
   $('reload-session').disabled =
-    settingsBusy || running || !current?.session.owned;
+    settingsBusy || !idle || !current?.session.owned;
   $('reload-session').title = current?.session.owned
     ? ''
     : 'Use /reload in the attached terminal session.';
 }
-async function maintain(action) {
-  if (settingsBusy || !current || current.session.status !== 'idle') return;
+async function updateSettings(action, requiresIdle = false) {
+  if (
+    settingsBusy ||
+    !canConfigureSession() ||
+    (requiresIdle && current.session.status !== 'idle')
+  )
+    return;
   const id = current.session.id;
   settingsBusy = true;
   $('session-settings-error').hidden = true;
   renderSettings();
   try {
     await action(id);
-    if (selected()?.session.id === id) {
-      await load(true);
-      $('session-settings-note').textContent = 'Updated.';
-    }
+    if (selected()?.session.id === id) await load(true);
   } catch (cause) {
     error($('session-settings-error'), cause);
   } finally {
@@ -460,7 +463,7 @@ export function initSessionFeatures(options) {
     );
     if (!model) return;
     const thinkingLevel = $('session-thinking').value;
-    void maintain(id =>
+    void updateSettings(id =>
       api.configureSession(id, {
         provider: model.provider,
         modelId: model.id,
@@ -471,16 +474,18 @@ export function initSessionFeatures(options) {
   $('compact-session').addEventListener(
     'click',
     () =>
-      void maintain(id =>
-        api.compactSession(
-          id,
-          $('compact-instructions').value.trim() || undefined,
-        ),
+      void updateSettings(
+        id =>
+          api.compactSession(
+            id,
+            $('compact-instructions').value.trim() || undefined,
+          ),
+        true,
       ),
   );
   $('reload-session').addEventListener(
     'click',
-    () => void maintain(id => api.reloadSession(id)),
+    () => void updateSettings(id => api.reloadSession(id), true),
   );
   $('parent-prompt').addEventListener('input', () => {
     suggestionIndex = 0;
@@ -534,28 +539,20 @@ export function initSessionFeatures(options) {
 }
 export function renderSessionFeatures(data) {
   current = data;
-  if (previousId !== data.session.id || previousModel !== data.session.model) {
+  if (
+    previousId !== data.session.id ||
+    previousModel !== data.session.model ||
+    previousThinkingLevel !== data.session.thinkingLevel
+  ) {
     previousId = data.session.id;
     previousModel = data.session.model;
+    previousThinkingLevel = data.session.thinkingLevel;
     $('command-suggestions').hidden = true;
     void load(true);
   }
   const available = !!api?.sessionFeatures && data.session.status !== 'closed';
   $('open-commands').disabled = !available;
   $('open-session-settings').disabled = !available;
-  if ($('session-settings-dialog').open) {
-    const running = data.session.status !== 'idle';
-    for (const id of [
-      'apply-session-settings',
-      'compact-session',
-      'reload-session',
-    ])
-      $(id).disabled = settingsBusy || running;
-    $('session-model').disabled =
-      settingsBusy || running || !features()?.models.length;
-    $('session-thinking').disabled = settingsBusy || running;
-    $('reload-session').disabled =
-      settingsBusy || running || !data.session.owned;
-  }
+  if ($('session-settings-dialog').open) renderSettingsControls();
   renderExtensionUI(data);
 }

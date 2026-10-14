@@ -164,7 +164,7 @@ export class DashboardState {
     kind: DashboardEvent['kind'],
     message: string,
     sourceId = 'parent',
-    sourceName = 'Mastermind',
+    sourceName = 'Parent session',
     context: EventContext = {},
   ): void {
     const details: Record<string, string> = {};
@@ -290,7 +290,7 @@ export class DashboardState {
       if (!this.seenMessages.has(message.id)) {
         this.append(
           'message',
-          `To mastermind: ${message.message}`,
+          `To parent session: ${message.message}`,
           message.from.id,
           message.from.name,
         );

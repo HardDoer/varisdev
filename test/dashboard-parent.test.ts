@@ -418,7 +418,7 @@ void test(
     );
     assert.ok(
       parentChange,
-      'native parent write is attributed to the mastermind',
+      'native parent write is attributed to the parent session',
     );
     assert.equal(parentChange.path, join(cwd, 'parent.txt'));
     assert.equal(parentChange.tool, 'write');

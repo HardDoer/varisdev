@@ -1,5 +1,6 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createFactoryScene} from './factory-scene.js';
+import {createParentFallback} from './parent-fallback.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
 import {initUsage, renderUsage} from './usage.js';
@@ -68,6 +69,7 @@ const pausedActivity = new Set();
 let stopEffectTimer;
 let stopEffectSession;
 let scene;
+let fallbackScene;
 let sceneMotion;
 let unsubscribe;
 let clock;
@@ -96,8 +98,8 @@ function text(item, value) {
     value === undefined || value === null || value === '' ? '—' : String(value);
   if (item.textContent !== next) item.textContent = next;
 }
-function robot(drone = false) {
-  const item = node('span', `robot-glyph${drone ? ' drone' : ''}`);
+function robot(agent = false) {
+  const item = node('span', `robot-glyph${agent ? ' agent' : ''}`);
   item.setAttribute('aria-hidden', 'true');
   item.append(node('i'));
   return item;
@@ -467,23 +469,23 @@ function renderOverview() {
           ? `Needs input: ${data.ui.dialogs[0].title}`
           : parentHasError(session)
             ? session.error
-            : session.activity || 'Standing by for a mission',
+            : session.activity || 'Waiting for a task',
       );
-      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${tally.working} working · ${tally.queued} queued · ${data.totalAgents} drones${session.error ? `\n${session.error}` : ''}`;
+      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${tally.working} working · ${tally.queued} queued · ${data.totalAgents} agents${session.error ? `\n${session.error}` : ''}`;
     },
   );
   const workingParents = parents.filter(item =>
     ['running', 'compacting'].includes(item.session.status),
   ).length;
-  const workingDrones = parents.reduce(
+  const workingAgents = parents.reduce(
     (sum, item) => sum + counts(item).working,
     0,
   );
   text(
     $('hub-counts'),
     parents.length
-      ? `${parents.length} parents · ${workingParents} working masters · ${workingDrones} working drones`
-      : 'No parents yet',
+      ? `${parents.length} parent sessions (${workingParents} working) · ${workingAgents} working agents`
+      : 'No parent sessions yet',
   );
 }
 function createSceneLabel(id) {
@@ -561,9 +563,9 @@ function renderFallback(data) {
     },
     (entry, unit) => {
       const parent = unit.id === 'parent';
-      const task = parent ? unit.prompt || 'Master command' : unit.task;
+      const task = parent ? unit.prompt || 'Parent session prompt' : unit.task;
       const activity = unit.activity || statusName(unit.status);
-      entry.element.className = `fallback-station ${parent ? 'master' : 'drone'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
+      entry.element.className = `fallback-station ${parent ? 'parent-session' : 'agent'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
       entry.element.setAttribute(
         'aria-pressed',
         String(state.unitId === unit.id),
@@ -593,9 +595,10 @@ function resizeFactory() {
   if (scene) layoutLabels(lastLayout);
 }
 function setSceneMotion(enabled) {
-  if (!scene || sceneMotion === enabled) return;
+  const animation = scene || fallbackScene;
+  if (!animation || sceneMotion === enabled) return;
   sceneMotion = enabled;
-  scene.setMotion(enabled);
+  animation.setMotion(enabled);
 }
 function activityPhase(data) {
   if (stopping.has(data.session.id) || pausedActivity.has(data.session.id))
@@ -604,7 +607,7 @@ function activityPhase(data) {
   if (data.session.status === 'compacting') return 'Compacting';
   if (data.session.status !== 'running')
     return data.agents.some(agent => WORKING.has(agent.status))
-      ? 'Workers running'
+      ? 'Agents running'
       : '';
   if (/thinking/i.test(data.session.activity)) return 'Thinking';
   if (
@@ -640,7 +643,7 @@ function clearStopEffect() {
   const session = stopEffectSession;
   stopEffectSession = undefined;
   $('scene').classList.remove('is-startled');
-  scene?.clearStartle();
+  (scene || fallbackScene)?.clearStartle();
   const data = snapshot();
   if (!state.disposed && session && data?.session.id === session)
     renderProcessing(data);
@@ -652,7 +655,7 @@ function stopEffect() {
   // Restart the alert and fallback robot animation for each stop.
   void element.offsetWidth;
   element.classList.add('is-startled');
-  scene?.startle(state.motion && !motionPreference.matches);
+  (scene || fallbackScene)?.startle(state.motion && !motionPreference.matches);
   stopEffectTimer = setTimeout(clearStopEffect, 1100);
 }
 function renderFactory() {
@@ -684,14 +687,17 @@ function renderFactory() {
       : '',
   );
   $('context-meter').hidden = !context;
-  text($('master-activity'), session.activity || 'Standing by for a mission');
-  $('master-activity').title = $('master-activity').textContent;
+  text($('parent-activity'), session.activity || 'Waiting for a task');
+  $('parent-activity').title = $('parent-activity').textContent;
   sizeScene();
   renderProcessing(data);
   if (scene) {
     scene.update({...data, agents: sceneAgents(data)}, state.unitId);
     layoutLabels(lastLayout);
-  } else renderFallback(data);
+  } else {
+    renderFallback(data);
+    fallbackScene?.update(data, state.unitId);
+  }
 }
 function createWorkerCard(agent) {
   const element = node('button', 'worker-card');
@@ -781,8 +787,8 @@ function renderWorkers() {
   text(
     $('no-history'),
     history.length
-      ? 'No drones match this history search.'
-      : 'Completed drones appear here.',
+      ? 'No agents match this history search.'
+      : 'Completed agents appear here.',
   );
 }
 function facts(target, pairs) {
@@ -831,7 +837,7 @@ function renderFeedDetails(entry, event, data) {
   const fields = {
     ...(worker
       ? {
-          Worker: worker.name,
+          Agent: worker.name,
           Task: worker.task,
           'Current activity': worker.activity,
           'Latest result': worker.output,
@@ -1313,7 +1319,7 @@ function renderInspector() {
             'Control',
             canControl(unit)
               ? unit.owned
-                ? 'Desktop parent'
+                ? 'Desktop parent session'
                 : 'Connected pidev'
               : 'Unavailable',
           ],
@@ -1500,7 +1506,7 @@ function applyMotion() {
       !pausedActivity.has(state.sessionId) &&
       stopEffectSession !== state.sessionId,
   );
-  if (!enabled && stopEffectSession) scene?.startle(false);
+  if (!enabled && stopEffectSession) (scene || fallbackScene)?.startle(false);
 }
 async function openFolder() {
   if (creating || !api) return;
@@ -1548,12 +1554,17 @@ async function sendPrompt(event) {
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
   renderInspector();
+  if (session.status === 'idle') {
+    if (stopEffectSession === id) clearStopEffect();
+    (scene || fallbackScene)?.prompt(id);
+  }
   try {
     await api.promptSession(id, {prompt});
     pausedActivity.delete(id);
     if (stopEffectSession === id) clearStopEffect();
     clearSubmittedDraft(id, submitted);
   } catch (error) {
+    (scene || fallbackScene)?.cancelPrompt(id);
     if (id === state.sessionId) showError(error, $('prompt-error'));
     else showError(error);
   } finally {
@@ -1718,6 +1729,7 @@ try {
 } catch {
   scene = null;
 }
+if (!scene) fallbackScene = createParentFallback($('fallback-units'));
 const cleanupThemes = initThemes(palette => scene?.setPalette(palette));
 const cleanupZoom = initZoom(api);
 $('fallback').hidden = Boolean(scene);
@@ -1760,6 +1772,7 @@ window.addEventListener('unload', () => {
   cleanupThemes();
   cleanupZoom();
   scene?.dispose();
+  fallbackScene?.dispose();
 });
 if (api) {
   unsubscribe = api.onSnapshot(receive);

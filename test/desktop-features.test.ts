@@ -12,6 +12,7 @@ import {
 
 interface Request {
   model: string;
+  reasoning_effort?: string;
   messages: Array<{role: string; content: unknown}>;
 }
 
@@ -29,7 +30,10 @@ async function fixture(t: TestContext, configuredVarisdev = false) {
   const title = process.title;
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const parents: DesktopDashboardParent[] = [];
+  const responseGates: Array<ReturnType<typeof Promise.withResolvers<void>>> =
+    [];
   t.after(async () => {
+    for (const gate of responseGates) gate.resolve();
     await Promise.all(parents.map(parent => parent.close()));
     process.title = title;
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -120,6 +124,13 @@ export default function(pi) {
     }),
   );
   const requests: Request[] = [];
+  let responseGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+  const holdNextResponse = () => {
+    responseGate = Promise.withResolvers<void>();
+    const gate = responseGate;
+    responseGates.push(gate);
+    return gate;
+  };
   t.mock.method(
     globalThis,
     'fetch',
@@ -130,6 +141,9 @@ export default function(pi) {
       );
       const request = JSON.parse(String(options?.body)) as Request;
       requests.push(request);
+      const gate = responseGate;
+      responseGate = undefined;
+      await gate?.promise;
       if (JSON.stringify(request.messages).includes('EXTENSION MODEL REQUEST'))
         await delay(20);
       const summary = JSON.stringify(request.messages).includes(
@@ -200,6 +214,7 @@ export default function(pi) {
     parent,
     cwd,
     requests,
+    holdNextResponse,
     settingsPath,
     settings,
     skillPath,
@@ -393,6 +408,74 @@ void test(
 );
 
 void test(
+  'live configuration keeps the active provider request and applies model and effort to the next turn',
+  {timeout: 15000},
+  async t => {
+    const {parent, requests, holdNextResponse} = await fixture(t);
+    const first = holdNextResponse();
+    let finished = false;
+    const running = parent.prompt('Start a task').finally(() => {
+      finished = true;
+    });
+    await waitFor(() => requests.length === 1, 'First provider request starts');
+    assert.equal(parent.state.snapshot().session.status, 'running');
+    assert.equal(requests[0].model, 'first-model');
+    assert.equal(requests[0].reasoning_effort, 'low');
+    await parent.configure({thinkingLevel: 'high'});
+    assert.equal((await parent.features()).thinkingLevel, 'high');
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
+    await assert.rejects(
+      parent.configure({thinkingLevel: 'invalid'}),
+      /Thinking level/,
+    );
+    await assert.rejects(
+      parent.configure({provider: 'missing', modelId: 'missing'}),
+      /Model is unavailable/,
+    );
+    await assert.rejects(
+      parent.configure({
+        provider: 'configured-fixture',
+        modelId: 'configured-model',
+        thinkingLevel: 'high',
+      }),
+      /Thinking level/,
+    );
+    await assert.rejects(parent.compact(), /already working/);
+    await assert.rejects(parent.reload(), /already working/);
+    assert.equal(finished, false);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].reasoning_effort, 'low');
+    const second = holdNextResponse();
+    await parent.prompt('Continue with the new effort');
+    first.resolve();
+    await waitFor(() => requests.length === 2, 'Steering starts the next turn');
+    assert.equal(requests[1].model, 'first-model');
+    assert.equal(requests[1].reasoning_effort, 'high');
+    await parent.configure({
+      provider: 'desktop-fixture',
+      modelId: 'second-model',
+      thinkingLevel: 'medium',
+    });
+    assert.deepEqual((await parent.features()).model, {
+      provider: 'desktop-fixture',
+      id: 'second-model',
+    });
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'medium');
+    assert.equal(finished, false);
+    assert.equal(requests[1].model, 'first-model');
+    await parent.prompt('/thinking low');
+    await parent.prompt('/model desktop-fixture/second-model');
+    await parent.prompt('Continue with the new model');
+    second.resolve();
+    await running;
+    assert.equal(requests.length, 3);
+    assert.equal(requests[2].model, 'second-model');
+    assert.equal(requests[2].reasoning_effort, 'low');
+    assert.equal(parent.state.snapshot().session.status, 'idle');
+  },
+);
+
+void test(
   'extension commands submit before execution, retain dialogs and editors, reject busy actions and report UI errors',
   {timeout: 15000},
   async t => {
@@ -404,10 +487,8 @@ void test(
       'command arguments',
     );
     await assert.rejects(parent.reload(), /already working/);
-    await assert.rejects(
-      parent.configure({thinkingLevel: 'high'}),
-      /already working/,
-    );
+    await parent.configure({thinkingLevel: 'high'});
+    assert.equal((await parent.features()).thinkingLevel, 'high');
     await assert.rejects(parent.compact(), /already working/);
     const dialog = parent.ui.snapshot().dialogs[0];
     assert.equal(dialog.kind, 'confirm');

@@ -57,6 +57,8 @@ app.setPath('userData', join(directory, 'profile'));
 app.setPath('sessionData', join(directory, 'session'));
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 // Keep animation frames running across reloads when another window covers the fixture.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
 function session(id, name) {
@@ -1470,7 +1472,7 @@ async function main() {
   );
 
   await run(
-    'model and thinking settings apply the selected provider and values',
+    'model and thinking settings apply while idle and during active work',
     async () => {
       assert.deepEqual(
         await evaluate(() => {
@@ -1549,11 +1551,66 @@ async function main() {
       );
       hub.sessions[0].session.status = 'running';
       await publish();
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('apply-session-settings').disabled,
-        ),
-        true,
+      assert.deepEqual(
+        await evaluate(() => ({
+          model: document.getElementById('session-model').disabled,
+          thinking: document.getElementById('session-thinking').disabled,
+          apply: document.getElementById('apply-session-settings').disabled,
+          compact: document.getElementById('compact-session').disabled,
+          reload: document.getElementById('reload-session').disabled,
+        })),
+        {
+          model: false,
+          thinking: false,
+          apply: false,
+          compact: true,
+          reload: true,
+        },
+      );
+      for (const request of [
+        {provider: 'fixture-other', modelId: 'large', thinkingLevel: 'low'},
+        {provider: 'fixture', modelId: 'small', thinkingLevel: 'medium'},
+      ]) {
+        await evaluate(request => {
+          document.getElementById('session-model').value =
+            `${request.provider}/${request.modelId}`;
+          document.getElementById('session-thinking').value =
+            request.thinkingLevel;
+        }, request);
+        // Streaming snapshots must preserve settings being edited.
+        await publish();
+        await evaluate(() =>
+          document.getElementById('apply-session-settings').click(),
+        );
+        await until(
+          () => !document.getElementById('apply-session-settings').disabled,
+          'Applying settings during work did not finish',
+        );
+        assert.deepEqual(calls.at(-1), {
+          method: 'configureSession',
+          sessionId: 'alpha',
+          request,
+        });
+        assert.equal(hub.sessions[0].session.status, 'running');
+        assert.deepEqual(
+          await evaluate(() => ({
+            model: document.getElementById('factory-model').textContent,
+            effort: document.getElementById('factory-effort').textContent,
+          })),
+          {
+            model: `${request.provider}/${request.modelId}`,
+            effort: `Effort: ${request.thinkingLevel}`,
+          },
+        );
+      }
+      hub.sessions[0].session.status = 'idle';
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          compact: document.getElementById('compact-session').disabled,
+          reload: document.getElementById('reload-session').disabled,
+        })),
+        {compact: false, reload: false},
       );
       await evaluate(() =>
         document.getElementById('close-session-settings').click(),
@@ -2632,7 +2689,7 @@ async function main() {
   );
 
   await run(
-    'Open folder uses the native picker and creates an idle conversation without a prompt',
+    'Open folder creates an idle conversation and the first prompt wakes its parent',
     async () => {
       await evaluate(() => document.getElementById('new-session').click());
       await until(
@@ -2662,6 +2719,23 @@ async function main() {
         })),
         {editor: '', messages: 0, dialog: false, focused: true},
       );
+      const mode = await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Inspect this project';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+        return document.getElementById('factory-canvas').dataset.parentMode;
+      });
+      assert.equal(mode, 'startled', 'The prompt wakes the parent immediately');
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'The animation must allow the prompt to submit immediately',
+      );
+      assert.deepEqual(calls.at(-1), {
+        method: 'prompt',
+        sessionId: 'folder-parent',
+        request: {prompt: 'Inspect this project'},
+      });
     },
   );
 }

@@ -11,6 +11,7 @@
     <title>VarisDev</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="themes.css" />
+    <link rel="stylesheet" href="parent-fallback.css" />
     <link
       rel="stylesheet"
       href="../../node_modules/@xterm/xterm/css/xterm.css"
@@ -19,7 +20,7 @@
     <script type="module" src="app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#factory-title">Skip to factory</a>
+    <a class="skip-link" href="#factory-title">Skip to parent session</a>
     <main>
       <div class="app-controls" aria-label="Application controls">
         <label class="zoom-control" for="app-zoom">
@@ -58,7 +59,7 @@
         aria-labelledby="welcome-title"
       >
         <div class="welcome-machine" aria-hidden="true">
-          <span class="robot-glyph master"><i></i></span
+          <span class="robot-glyph parent-session"><i></i></span
           ><span class="orbit orbit-one"></span
           ><span class="orbit orbit-two"></span>
         </div>
@@ -75,16 +76,18 @@
           <section class="overview" aria-labelledby="overview-title">
             <div class="section-heading">
               <div>
-                <h1 id="overview-title">Your factories<span>.</span></h1>
+                <h1 id="overview-title">Parent sessions<span>.</span></h1>
               </div>
-              <p id="hub-counts" class="overview-counts">No parents yet</p>
+              <p id="hub-counts" class="overview-counts">
+                No parent sessions yet
+              </p>
             </div>
             <div id="parents" class="parent-grid"></div>
           </section>
           <section class="factory-panel panel" aria-labelledby="factory-title">
             <div class="factory-heading">
               <div>
-                <h2 id="factory-title">Factory</h2>
+                <h2 id="factory-title">Parent session</h2>
                 <p id="factory-path" class="mono muted"></p>
               </div>
               <div class="factory-state">
@@ -95,7 +98,7 @@
                 </div>
               </div>
             </div>
-            <div class="factory-metrics" aria-label="Factory counts">
+            <div class="factory-metrics" aria-label="Agent counts">
               <span><strong id="metric-running">0</strong> working</span
               ><span><strong id="metric-queued">0</strong> queued</span
               ><span><strong id="metric-completed">0</strong> completed</span
@@ -114,14 +117,14 @@
               </div>
               <canvas
                 id="factory-canvas"
-                aria-label="Factory view with a parent and workers"
+                aria-label="Factory view with a parent session and agents"
               ></canvas>
               <div id="fallback" class="fallback" hidden>
                 <div class="fallback-grid"></div>
                 <div id="fallback-units" class="fallback-units"></div>
               </div>
             </div>
-            <div class="scene-legend" aria-label="Worker status colors">
+            <div class="scene-legend" aria-label="Agent status colors">
               <span><i class="mint" aria-hidden="true"></i>Working</span>
               <span><i class="amber" aria-hidden="true"></i>Queued</span>
               <span><i class="cyan" aria-hidden="true"></i>Completed</span>
@@ -129,15 +132,15 @@
             <div
               id="scene-labels"
               class="scene-labels"
-              aria-label="Robots"
+              aria-label="Parent session and agents"
             ></div>
-            <div class="master-summary">
+            <div class="parent-summary">
               <span class="robot-glyph" aria-hidden="true"><i></i></span>
               <div>
-                <p id="master-activity"></p>
+                <p id="parent-activity"></p>
               </div>
               <button id="inspect-parent" class="quiet-button" type="button">
-                Inspect master ↗
+                Inspect parent session ↗
               </button>
             </div>
           </section>
@@ -148,12 +151,12 @@
             >
               <div class="section-heading compact">
                 <h2 id="workers-title">
-                  On the floor
+                  Active agents
                   <span id="active-count" class="count-tag">0</span>
                 </h2>
               </div>
               <div id="active-workers" class="worker-grid"></div>
-              <p id="no-workers" class="empty-state">No active drones.</p>
+              <p id="no-workers" class="empty-state">No active agents.</p>
             </section>
             <section
               class="history-section panel"
@@ -161,11 +164,11 @@
             >
               <div class="section-heading compact">
                 <h2 id="history-title">
-                  Drone history
+                  Agent history
                   <span id="history-count" class="count-tag">0</span>
                 </h2>
                 <label class="history-search"
-                  ><span class="sr-only">Search drone history</span
+                  ><span class="sr-only">Search agent history</span
                   ><input
                     id="history-search"
                     type="search"
@@ -174,7 +177,7 @@
               </div>
               <div id="history-workers" class="history-list"></div>
               <p id="no-history" class="empty-state">
-                Completed drones appear here.
+                Completed agents appear here.
               </p>
             </section>
           </div>
@@ -357,7 +360,7 @@
             </div>
             <ol id="live-feed" class="live-feed"></ol>
             <p id="feed-empty" class="empty-state">
-              Activity appears here as this robot works.
+              Activity appears here during work.
             </p>
           </div>
           <div
@@ -368,12 +371,12 @@
             hidden
           >
             <p class="changes-note">
-              Exact edit and write diffs recorded for this robot, including
-              files outside Git.
+              Exact edit and write diffs recorded for the selected parent session
+              or agent, including files outside Git.
             </p>
             <div id="unit-changes" class="unit-changes"></div>
             <p id="changes-empty" class="empty-state">
-              No recorded file changes for this robot.
+              No recorded file changes.
             </p>
             <section class="workspace-section">
               <div>
@@ -384,7 +387,7 @@
               </div>
               <p class="muted">
                 Folder wide Git changes, including existing and shell changes.
-                These are separate from this robot’s recorded edits.
+                Recorded edits are listed above.
               </p>
               <div id="workspace-result" hidden>
                 <p id="workspace-summary" class="mono muted"></p>
@@ -530,7 +533,7 @@
                 Counts use recorded model usage. Providers do not report exact
                 tokens for each file, skill, or tool result. Cost uses
                 configured model rates; image and audio service billing is
-                separate. Select a worker above to see its usage.
+                separate. Select an agent above to see its usage.
               </p>
             </section>
           </div>
@@ -543,7 +546,6 @@
               aria-labelledby="steering-messages-title"
             >
               <h3 id="steering-messages-title">Steering</h3>
-              <p class="muted">Applies at the next model turn.</p>
               <ol id="steering-message-list"></ol>
             </section>
             <div
@@ -664,7 +666,6 @@
         ><select id="session-model"></select>
         <label for="session-thinking">Thinking level</label
         ><select id="session-thinking"></select>
-        <p id="session-settings-note" class="muted"></p>
         <button
           id="apply-session-settings"
           class="primary-button"
