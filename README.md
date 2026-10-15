@@ -28,7 +28,7 @@ Requires [Node.js](https://nodejs.org/) 24+.
 
 Open a new terminal and run `varisdev`. On macOS, `varisdev app install` adds the app to Applications.
 
-See [installation options and releases](docs/installation.md).
+See [installation options](docs/installation.md).
 
 ## Features
 
