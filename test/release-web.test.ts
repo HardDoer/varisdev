@@ -29,7 +29,7 @@ void test('standalone release contains the verified package and installers and r
   assert.equal(manifest.version, pkg.version);
   assert.match(manifest.revision, /^[a-f0-9]{40}$/);
   const archiveName = `varisdev-${manifest.version}-${manifest.revision}.tgz`;
-  assert.equal(manifest.url, `./${archiveName}`);
+  assert.equal(manifest.url, './download');
   const archive = join(output, archiveName);
   assert.equal(
     manifest.sha256,

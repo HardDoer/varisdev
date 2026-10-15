@@ -84,7 +84,7 @@ try {
   const manifest = {
     version,
     revision,
-    url: `./${name}`,
+    url: './download',
     sha256: createHash('sha256').update(archive).digest('hex'),
   };
   await writeFile(
