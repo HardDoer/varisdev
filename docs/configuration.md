@@ -41,7 +41,7 @@ Loading and downloading show progress. **Cancel**, **Escape**, **Stop**, or clos
 
 ### Custom local servers
 
-VarisDev also uses Pi's `models.json` configuration for servers such as Ollama, LM Studio, and llama.cpp in single-model mode. The file is in `PI_CODING_AGENT_DIR`, or `~/.pi/agent` by default. The model runs in your server; VarisDev connects to its API.
+VarisDev uses Pi's `models.json` format for servers such as Ollama, LM Studio, and llama.cpp in single-model mode. The file is in `~/.varisdev`, or the directory set by `VARISDEV_SETTINGS_DIR`. The model runs in your server; VarisDev connects to its API.
 
 For a llama.cpp server at `http://127.0.0.1:8080`, add a provider like this to `models.json`, keeping any existing providers:
 
@@ -84,7 +84,7 @@ Open **Menu → Commit settings** to select the model and reasoning level used b
 
 Before the first `/commit` request, a separate notice explains that the commit agent inherits the parent session's model and reasoning level by default. It links to **Commit settings**, where you can override those values, and describes the commit-and-push task. Opening the settings keeps the command in your draft so you can send it after configuring the tool.
 
-Agent and commit settings are saved in `varisdev/tool-settings.json` under Pi's configured agent directory. These settings apply across projects.
+Agent and commit settings are saved in `varisdev/tool-settings.json` under VarisDev's settings directory. These settings apply across projects.
 
 ### Image and audio models
 
@@ -94,7 +94,15 @@ Image and audio tools need separate models. On first use, the GUI explains this 
 - `ELEVENLABS_SPEECH_MODEL`
 - `ELEVENLABS_EFFECTS_MODEL`
 
-Saved tool choices live in `varisdev/tool-models/` under Pi's configured agent directory. There are no preset models.
+Saved tool choices live in `varisdev/tool-models/` under VarisDev's settings directory. There are no preset models.
+
+## Settings and sessions
+
+VarisDev stores accounts, models, settings, plugins, and sessions in `~/.varisdev` (`%USERPROFILE%\.varisdev` on Windows). Set `VARISDEV_SETTINGS_DIR` to use another directory.
+
+Project settings and plugins use `.varisdev` inside the project folder. Regular Pi keeps its own settings in `.pi`.
+
+When upgrading from a version that shared Pi's settings, connect your accounts through **Menu → Accounts** and configure your models and plugins in VarisDev. Existing Pi settings are not imported automatically.
 
 ## Desktop storage
 
@@ -110,7 +118,7 @@ Saved tool choices live in `varisdev/tool-models/` under Pi's configured agent d
 
 The macOS installer adds VarisDev to `~/Applications`. Use `varisdev app install` to reinstall the launcher. The launcher follows application updates automatically.
 
-Finder uses the executable search path and agent directory recorded when the launcher was installed. Extra environment settings can be placed in `~/Library/Application Support/VarisDev/environment.json` as a JSON object of string values.
+Finder uses the executable search path and settings directory recorded when the launcher was installed. Extra environment settings can be placed in `~/Library/Application Support/VarisDev/environment.json` as a JSON object of string values.
 
 ## CLI
 

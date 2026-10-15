@@ -5,26 +5,36 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type {ImageContent} from '@earendil-works/pi-ai';
 import {mkdir, writeFile} from 'node:fs/promises';
-import {dirname} from 'node:path';
+import {basename, dirname, isAbsolute, join, relative, sep} from 'node:path';
 import type {DesktopStartup} from '../desktop/startup.ts';
 
 export async function restoreDesktopSession(
   startup: DesktopStartup,
+  agentDir: string,
 ): Promise<SessionManager> {
   let manager: SessionManager;
   if (startup.sessionFile) {
-    // New CLI sessions and extension startup entries may still be buffered.
-    // The source is idle and suspended in session_start throughout this copy.
-    await mkdir(dirname(startup.sessionFile), {recursive: true});
+    let sessionFile = startup.sessionFile;
+    let sessionDir = startup.sessionDir;
+    const belongsToSettings = (path: string) => {
+      const pathFromSettings = relative(agentDir, path);
+      return (
+        pathFromSettings !== '..' &&
+        !pathFromSettings.startsWith(`..${sep}`) &&
+        !isAbsolute(pathFromSettings)
+      );
+    };
+    if (!belongsToSettings(sessionFile) || !belongsToSettings(sessionDir)) {
+      sessionDir = SessionManager.create(startup.cwd).getSessionDir();
+      sessionFile = join(sessionDir, basename(startup.sessionFile));
+    }
+    // The source is idle; copy buffered entries into the selected settings directory.
+    await mkdir(dirname(sessionFile), {recursive: true});
     await writeFile(
-      startup.sessionFile,
+      sessionFile,
       startup.entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
     );
-    manager = SessionManager.open(
-      startup.sessionFile,
-      startup.sessionDir,
-      startup.cwd,
-    );
+    manager = SessionManager.open(sessionFile, sessionDir, startup.cwd);
   } else {
     manager = SessionManager.inMemory(startup.cwd, undefined, startup.entries);
   }

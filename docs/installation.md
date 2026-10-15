@@ -4,6 +4,10 @@ Use the [platform's install command](../README.md#install). Requires [Node.js](h
 
 On macOS, installation also adds **VarisDev** to `~/Applications` for Finder, Spotlight, and the Dock.
 
+On Windows, installation adds **VarisDev** to the Start menu. Open it there and pin its window to the taskbar. The pinned icon opens the start view. Run `varisdev app install` to add or repair the shortcut after a direct npm installation or an update from an older version.
+
+If an existing taskbar icon opens Electron or shows the Electron logo, unpin it, open the updated VarisDev, and pin its window again.
+
 ## Directory and PATH
 
 Default: `~/.local/varisdev` on macOS and Linux, or `%USERPROFILE%\.local\varisdev` on Windows. Set `VARISDEV_INSTALL_DIR` before installing to change it.
@@ -17,6 +21,8 @@ Use **Updates → Check for updates** or `varisdev update`. Restart when prompte
 ## Uninstall
 
 Quit VarisDev before uninstalling.
+
+On Windows, unpin VarisDev from the taskbar and delete `%APPDATA%\Microsoft\Windows\Start Menu\Programs\VarisDev.lnk`.
 
 ### Website installer
 
@@ -58,4 +64,4 @@ On macOS, also delete `~/Applications/VarisDev.app` if you installed the launche
 
 To remove desktop preferences, logs, and downloaded updates, delete the [desktop storage directory](configuration.md#desktop-storage), or the directory set by `VARISDEV_DATA_DIR`.
 
-Sessions, credentials, settings, and plugins live in `~/.pi/agent/` (`%USERPROFILE%\.pi\agent\` on Windows), or the directory set by `PI_CODING_AGENT_DIR`. This directory is shared with Pi; deleting it removes that data for both apps. VarisDev's tool settings are in its `varisdev/` subdirectory.
+To remove VarisDev's sessions, credentials, settings, and plugins, delete `~/.varisdev` (`%USERPROFILE%\.varisdev` on Windows), or the directory set by `VARISDEV_SETTINGS_DIR`. Project settings and plugins are stored in each project's `.varisdev` directory.

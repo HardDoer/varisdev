@@ -1,3 +1,4 @@
+import '../runtime/settings-entry.mjs';
 import {
   app,
   BrowserWindow,
@@ -22,6 +23,10 @@ import {
   unlinkSync,
 } from 'node:fs';
 import {RuntimeManager, defaultDataDir} from '../runtime/manager.ts';
+import {
+  prepareWindowsLauncher,
+  windowsAppId,
+} from '../runtime/windows-launcher.ts';
 import {
   publicUpdateStatus,
   requireUpdateRestart,
@@ -55,6 +60,7 @@ import type {
 } from '../dashboard/features.ts';
 
 app.setName('VarisDev');
+if (process.platform === 'win32') app.setAppUserModelId(windowsAppId);
 const terminals = new DesktopTerminals(event => {
   if (mainWindow && !mainWindow.isDestroyed())
     mainWindow.webContents.send('pidev:terminal', event);
@@ -436,6 +442,16 @@ function showWindow(): void {
 }
 
 async function createWindow(): Promise<void> {
+  const windowsLauncher =
+    process.platform === 'win32'
+      ? await prepareWindowsLauncher({
+          installRoot,
+          runtimeRoot: fileURLToPath(new URL('../../../../', import.meta.url)),
+          profile,
+          dataDir: runtime.dataDir,
+          nodeExecutable: process.env.VARISDEV_NODE_EXECUTABLE,
+        })
+      : undefined;
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 1000,
@@ -452,6 +468,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
     },
   });
+  if (windowsLauncher) mainWindow.setAppDetails(windowsLauncher.appDetails);
   mainWindow.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   mainWindow.webContents.on(
     'did-start-navigation',
@@ -804,10 +821,7 @@ if (!primaryInstance) {
           startup,
         );
         try {
-          const settings = SettingsManager.create(
-            startup.cwd,
-            startup.agentDir,
-          );
+          const settings = SettingsManager.create(startup.cwd);
           const prompts = await desktopInitialPrompts(
             startup.argv,
             settings.getImageAutoResize(),

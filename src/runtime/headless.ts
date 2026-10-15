@@ -1,3 +1,4 @@
+import './settings-entry.mjs';
 import {SettingsManager, getAgentDir} from '@earendil-works/pi-coding-agent';
 import {createAppResourceFilter} from '../dashboard/resources.ts';
 

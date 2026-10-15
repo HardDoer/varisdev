@@ -26,7 +26,7 @@ curl -fsSLo install.cmd https://joonas.ninja/varisdev/install.cmd && install.cmd
 
 Requires [Node.js](https://nodejs.org/) 24+.
 
-Open a new terminal and run `varisdev`. On macOS, the installer also adds VarisDev to `~/Applications`.
+Open a new terminal and run `varisdev`. On Windows, you can also open VarisDev from the Start menu. On macOS, the installer adds VarisDev to `~/Applications`.
 
 See [installation options](docs/installation.md) and [uninstall instructions](docs/installation.md#uninstall).
 

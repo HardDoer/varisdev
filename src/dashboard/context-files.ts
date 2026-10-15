@@ -61,9 +61,9 @@ function templateFile(
   };
 }
 
-// Match the SDK read tool's @, tilde, Unicode space and file URL handling.
+// Match the SDK file tools' @, tilde, Unicode space and file URL handling.
 // No filesystem lookup: provenance comes from the retained tool call/result.
-function readPath(path: string, cwd: string): string {
+function toolPath(path: string, cwd: string): string {
   let normalized = path.replace(
     /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g,
     ' ',
@@ -86,56 +86,116 @@ function readPath(path: string, cwd: string): string {
   return resolve(cwd, normalized);
 }
 
+type Replacement = {oldText: string; newText: string};
+type DocumentCall = {path: string} & (
+  | {name: 'read'; offset?: number; limit?: number}
+  | {name: 'write'; content: string}
+  | {name: 'edit'; edits: Replacement[]}
+);
+
+function isReplacement(value: unknown): value is Replacement {
+  if (!value || typeof value !== 'object') return false;
+  const edit = value as Record<string, unknown>;
+  return typeof edit.oldText === 'string' && typeof edit.newText === 'string';
+}
+
+// The SDK also accepts legacy fields and coerces single/JSON edits to an array.
+function retainedEdits(
+  args: Record<string, unknown>,
+): Replacement[] | undefined {
+  let edits = args.edits;
+  if (typeof edits === 'string') {
+    try {
+      edits = JSON.parse(edits);
+    } catch {
+      return undefined;
+    }
+  }
+  if (isReplacement(edits)) edits = [edits];
+  if (edits !== undefined && !Array.isArray(edits)) return undefined;
+  const replacements: unknown[] = edits === undefined ? [] : [...edits];
+  if (isReplacement(args)) replacements.push(args);
+  return replacements.length && replacements.every(isReplacement)
+    ? replacements
+    : undefined;
+}
+
 /** Only text already retained in the current context; this never opens a path. */
 function retainedDocuments(messages: Messages, cwd: string): ContextFile[] {
-  const calls = new Map<
-    string,
-    {path: string; offset?: number; limit?: number}
-  >();
+  const calls = new Map<string, DocumentCall>();
   const files: ContextFile[] = [];
   for (const message of messages) {
     if (message.role === 'assistant') {
       for (const block of message.content) {
         if (
           block.type !== 'toolCall' ||
-          block.name !== 'read' ||
-          typeof block.arguments.path !== 'string' ||
-          !/\.md$/i.test(block.arguments.path)
+          !['read', 'write', 'edit'].includes(block.name)
+        )
+          continue;
+        const args = block.arguments;
+        if (
+          !args ||
+          typeof args !== 'object' ||
+          typeof args.path !== 'string' ||
+          !/\.md$/i.test(args.path)
         )
           continue;
         let path: string;
         try {
-          path = readPath(block.arguments.path, cwd);
+          path = toolPath(args.path, cwd);
         } catch {
           // Invalid calls can remain in history beside their failed results.
           continue;
         }
-        calls.set(block.id, {
-          path,
-          ...(typeof block.arguments.offset === 'number'
-            ? {offset: block.arguments.offset}
-            : {}),
-          ...(typeof block.arguments.limit === 'number'
-            ? {limit: block.arguments.limit}
-            : {}),
-        });
+        if (block.name === 'read') {
+          calls.set(block.id, {
+            name: 'read',
+            path,
+            ...(typeof args.offset === 'number' ? {offset: args.offset} : {}),
+            ...(typeof args.limit === 'number' ? {limit: args.limit} : {}),
+          });
+        } else if (block.name === 'write' && typeof args.content === 'string') {
+          calls.set(block.id, {name: 'write', path, content: args.content});
+        } else if (block.name === 'edit') {
+          const edits = retainedEdits(args);
+          if (edits) calls.set(block.id, {name: 'edit', path, edits});
+        }
       }
     } else if (message.role === 'toolResult') {
       const call = calls.get(message.toolCallId);
-      if (!call || message.toolName !== 'read' || message.isError) continue;
-      const content = message.content
-        .filter(block => block.type === 'text')
-        .map(block => block.text)
-        .join('\n');
-      if (!content) continue;
-      const portion = `Read from line ${call.offset ?? 1}${call.limit === undefined ? '' : `, requested up to ${call.limit} lines`}.`;
+      if (!call || message.toolName !== call.name || message.isError) continue;
+      let content: string;
+      let description: string;
+      if (call.name === 'read') {
+        const result = message.content
+          .filter(block => block.type === 'text')
+          .map(block => block.text)
+          .join('\n');
+        if (!result) continue;
+        const portion = `Read from line ${call.offset ?? 1}${call.limit === undefined ? '' : `, requested up to ${call.limit} lines`}.`;
+        description = `${portion} The successful read result is retained in the parent session context and may contain only part of the file.`;
+        content = `${portion}\n${result}`;
+      } else if (call.name === 'write') {
+        description =
+          'The full content supplied to a successful write call is retained in the parent session context.';
+        content = `Written content:\n${call.content}`;
+      } else {
+        description =
+          'Only the old and new replacement snippets from a successful edit call are retained in the parent session context.';
+        content = call.edits
+          .map(
+            (edit, index) =>
+              `Edit ${index + 1}, old text:\n${edit.oldText}\n\nEdit ${index + 1}, new text:\n${edit.newText}`,
+          )
+          .join('\n\n');
+      }
       files.push({
         path: call.path,
         name: basename(call.path),
         kind: 'document',
         status: 'included',
-        description: `${portion} The successful read result is retained in the parent session context and may contain only part of the file.`,
-        content: `${portion}\n${content}`,
+        description,
+        content,
       });
     } else if (message.role === 'user') {
       const text =

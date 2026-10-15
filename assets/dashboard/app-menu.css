@@ -58,6 +58,13 @@
   width: 100%;
   text-align: left;
 }
+#about-dialog .about-logo {
+  display: block;
+  margin: 0 auto 20px;
+}
+#about-credit {
+  text-align: center;
+}
 #welcome {
   position: relative;
 }

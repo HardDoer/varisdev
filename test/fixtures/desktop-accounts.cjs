@@ -57,7 +57,7 @@ async function main() {
       ),
     ).href
   );
-  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  const agentDir = process.env.VARISDEV_SETTINGS_DIR;
   mkdirSync(agentDir, {recursive: true});
   const authPath = join(agentDir, 'auth.json');
   const other = {other: {type: 'api_key', key: 'keep-other-account'}};

@@ -9,6 +9,9 @@ export function initAppMenu() {
   const resume = document.getElementById('resume-session');
   const start = document.getElementById('start-session');
   const closeSession = document.getElementById('close-session');
+  const about = document.getElementById('about-dialog');
+  const aboutButton = document.getElementById('open-about');
+  const aboutClose = document.getElementById('about-close');
 
   function sync() {
     button.setAttribute(
@@ -35,6 +38,16 @@ export function initAppMenu() {
     close();
     button.focus();
   }
+  function showAbout() {
+    close();
+    button.focus();
+    about.showModal();
+  }
+  function closeAbout() {
+    about.close();
+  }
+  aboutButton.addEventListener('click', showAbout);
+  aboutClose.addEventListener('click', closeAbout);
   button.addEventListener('click', toggle);
   panel.addEventListener('toggle', sync);
   openFolder.addEventListener('click', close);
@@ -55,6 +68,8 @@ export function initAppMenu() {
       slot.append(controls);
     },
     dispose() {
+      aboutButton.removeEventListener('click', showAbout);
+      aboutClose.removeEventListener('click', closeAbout);
       button.removeEventListener('click', toggle);
       panel.removeEventListener('toggle', sync);
       openFolder.removeEventListener('click', close);

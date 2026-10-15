@@ -46,6 +46,26 @@
       <p id="session-history-error" class="form-error" role="alert" hidden></p>
       <ul id="session-history-list" aria-label="Saved sessions"></ul>
     </dialog>
+    <dialog
+      id="about-dialog"
+      aria-labelledby="about-title"
+      aria-describedby="about-credit"
+    >
+      <div class="dialog-heading">
+        <h2 id="about-title">About VarisDev</h2>
+        <button id="about-close" class="quiet-button" type="button">
+          Close
+        </button>
+      </div>
+      <img
+        class="about-logo"
+        src="../desktop/robot-crow.png"
+        alt=""
+        width="80"
+        height="80"
+      />
+      <p id="about-credit">VarisDev by Joonas Nousiainen 2026</p>
+    </dialog>
     <dialog id="updates-dialog" aria-labelledby="updates-title">
       <div class="updates-heading">
         <h2 id="updates-title">VarisDev updates</h2>
@@ -417,6 +437,15 @@
               </button>
               <button id="new-session" class="primary-button" type="button">
                 Open folder
+              </button>
+              <button
+                id="open-about"
+                class="quiet-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="about-dialog"
+              >
+                About
               </button>
             </div>
           </div>

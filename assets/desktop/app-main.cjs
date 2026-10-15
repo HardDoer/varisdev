@@ -20,7 +20,7 @@ async function start() {
     (config.dataDir !== undefined && typeof config.dataDir !== 'string') ||
     typeof config.path !== 'string' ||
     !config.path ||
-    (config.agentDir !== undefined && typeof config.agentDir !== 'string')
+    (config.settingsDir !== undefined && typeof config.settingsDir !== 'string')
   )
     throw new Error(
       'Invalid launcher configuration. Run varisdev app install.',
@@ -30,7 +30,8 @@ async function start() {
   process.env.VARISDEV_INSTALL_ROOT = config.installRoot;
   process.env.VARISDEV_NODE_EXECUTABLE = config.nodeExecutable;
   if (config.dataDir) process.env.VARISDEV_DATA_DIR = config.dataDir;
-  if (config.agentDir) process.env.PI_CODING_AGENT_DIR = config.agentDir;
+  if (config.settingsDir)
+    process.env.VARISDEV_SETTINGS_DIR = config.settingsDir;
   const environmentFile = join(
     homedir(),
     'Library/Application Support/VarisDev/environment.json',

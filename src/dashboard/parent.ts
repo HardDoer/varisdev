@@ -11,7 +11,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import {mkdir} from 'node:fs/promises';
 
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {createWorkerModelRuntime} from '../agents/model-runtime.ts';
 import type {AgentSessionController} from '../agents/team.ts';
 import {registerCommitCommand} from '../commit.ts';
@@ -54,10 +54,10 @@ export async function createDashboardParent(
   inherited?: ParentModel,
   startup?: DesktopStartup,
 ): Promise<DesktopDashboardParent> {
-  const agentDir = startup?.agentDir ?? getAgentDir();
+  const agentDir = getAgentDir();
   const args = startup ? parseArgs(startup.argv) : undefined;
   const sessionManager = startup
-    ? await restoreDesktopSession(startup)
+    ? await restoreDesktopSession(startup, agentDir)
     : request.resume
       ? SessionManager.open(request.resume.path, undefined, request.cwd)
       : SessionManager.create(request.cwd);
@@ -159,10 +159,15 @@ export async function createDashboardParent(
           startup.model.id,
         )
       : undefined;
-  if (startup?.model && !startupModel)
-    throw new Error(
-      `Could not restore model ${startup.model.provider}/${startup.model.id}.`,
+  if (startup?.model && !startupModel) {
+    if (resolve(startup.agentDir) === resolve(agentDir))
+      throw new Error(
+        `Could not restore model ${startup.model.provider}/${startup.model.id}.`,
+      );
+    report(
+      `The previous model ${startup.model.provider}/${startup.model.id} is not configured in VarisDev. Select a model to continue.`,
     );
+  }
   if (args?.apiKey && startupModel)
     await modelRuntime!.setRuntimeApiKey(startupModel.provider, args.apiKey);
   const savedProvider = settingsManager.getDefaultProvider();
@@ -183,7 +188,7 @@ export async function createDashboardParent(
       model:
         inherited?.model ??
         startupModel ??
-        (request.resume ? undefined : savedModel),
+        (request.resume || startup?.model ? undefined : savedModel),
       modelRuntime,
       thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
       tools: startup?.tools,
@@ -196,7 +201,10 @@ export async function createDashboardParent(
   }
   const {session} = created;
   // Agent core supplies an unknown/unknown placeholder when no model was chosen.
-  if (session.model?.provider === 'unknown' && session.model.id === 'unknown')
+  if (
+    (startup?.model && !startupModel) ||
+    (session.model?.provider === 'unknown' && session.model.id === 'unknown')
+  )
     Reflect.set(session.agent.state, 'model', undefined);
   // SDK initialization can append model metadata to an otherwise blank branch.
   if (startup?.leafId) sessionManager.branch(startup.leafId);

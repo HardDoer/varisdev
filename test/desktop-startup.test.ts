@@ -195,6 +195,8 @@ export default function(pi) {
     );
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      VARISDEV_SETTINGS_DIR: agentDir,
+      VARISDEV_CODING_AGENT_DIR: agentDir,
       PI_CODING_AGENT_DIR: agentDir,
       PI_TEST_CLI: pathToFileURL(
         join(

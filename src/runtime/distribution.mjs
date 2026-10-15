@@ -255,7 +255,7 @@ export async function install(args = process.argv.slice(2)) {
         'Installed application does not match the release manifest.',
       );
     run([join(root, 'bin/varisdev.mjs'), '--version'], root);
-    if (process.platform === 'darwin')
+    if (process.platform === 'darwin' || process.platform === 'win32')
       run([join(root, 'scripts/desktop-app.mjs'), 'install'], root, {
         ...process.env,
         VARISDEV_INSTALL_ROOT: await realpath(root),

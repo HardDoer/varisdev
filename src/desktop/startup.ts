@@ -10,6 +10,8 @@ import {closeSync, mkdirSync, openSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {buildDesktop} from './build.ts';
+import {configureSettings} from '../runtime/settings.mjs';
+import {defaultDataDir} from '../runtime/manager.ts';
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -56,10 +58,10 @@ export async function launchDesktop(
 ): Promise<void> {
   await buildDesktop(signal);
   signal.throwIfAborted();
-  const env = {...process.env, PI_CODING_AGENT_DIR: startup.agentDir};
+  const env = configureSettings({...process.env});
   delete (env as NodeJS.ProcessEnv).ELECTRON_RUN_AS_NODE;
   const dataDir =
-    process.env.PIDEV_DESKTOP_DATA_DIR ?? join(root, '.pi/desktop');
+    process.env.PIDEV_DESKTOP_DATA_DIR ?? join(defaultDataDir(), 'desktop');
   mkdirSync(dataDir, {recursive: true});
   const logPath = join(dataDir, 'startup.log');
   const log = openSync(logPath, 'w');

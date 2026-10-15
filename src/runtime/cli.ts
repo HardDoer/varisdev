@@ -13,6 +13,7 @@ import {delimiter, dirname, join, resolve} from 'node:path';
 import {defaultDataDir, RuntimeManager} from './manager.ts';
 import {macLauncherExecutable} from './mac-launcher.ts';
 import {runAccountCommand, runPluginCommand} from './commands.ts';
+import {configureSettings} from './settings.mjs';
 
 const help = `VarisDev
 
@@ -29,7 +30,7 @@ Usage: varisdev [folder]
   list                  List installed plugins
   plugins update [source]
                         Update plugins
-  app install           Install the macOS app launcher
+  app install           Install the Windows or macOS app launcher
   run [options]         Run a prompt or automation from the terminal
   --version             Show the VarisDev version
   --help                Show this help
@@ -50,7 +51,7 @@ function launchEnvironment(
     process.env.VARISDEV_NODE_EXECUTABLE ||
     (!process.versions.electron ? process.execPath : undefined);
   return {
-    ...process.env,
+    ...configureSettings({...process.env}),
     VARISDEV_INSTALL_ROOT: installRoot,
     ...(nodeExecutable ? {VARISDEV_NODE_EXECUTABLE: nodeExecutable} : {}),
     PATH: [
@@ -217,6 +218,7 @@ export async function runCli(
   args: string[],
   installRoot: string,
 ): Promise<number> {
+  configureSettings();
   const [command, ...rest] = args;
   const manager = new RuntimeManager({installRoot});
   const runtimeRoot = await manager.currentRoot();

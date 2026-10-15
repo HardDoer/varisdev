@@ -333,7 +333,9 @@ void test(
     const reportPath = join(directory, 'report.json');
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      PI_CODING_AGENT_DIR: join(directory, 'agent'),
+      VARISDEV_SETTINGS_DIR: join(directory, 'agent'),
+      VARISDEV_CODING_AGENT_DIR: join(directory, 'agent'),
+      PI_CODING_AGENT_DIR: join(directory, 'regular-pi'),
       VARISDEV_DATA_DIR: join(directory, 'data'),
     };
     delete env.ELECTRON_RUN_AS_NODE;

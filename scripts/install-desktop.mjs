@@ -4,6 +4,7 @@ import process from 'node:process';
 import {dirname, join} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
 import {applyLinuxSandboxFix} from './linux-sandbox.mjs';
+import {configureBundledPi} from './configure-pi.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -40,6 +41,7 @@ run(
   ],
   desktop,
 );
+await configureBundledPi(desktop);
 run(
   [require.resolve('typescript/bin/tsc'), '--project', 'tsconfig.desktop.json'],
   root,

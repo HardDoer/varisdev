@@ -19,7 +19,8 @@ void test(
       ...process.env,
       HOME: home,
       PI_OFFLINE: '1',
-      PI_CODING_AGENT_DIR: join(home, 'agent'),
+      VARISDEV_SETTINGS_DIR: join(home, 'settings'),
+      PI_CODING_AGENT_DIR: join(home, 'regular-pi'),
       VARISDEV_DATA_DIR: join(home, 'data'),
       PIDEV_DESKTOP_DATA_DIR: join(home, 'profile'),
       VARISDEV_NODE_EXECUTABLE: process.execPath,
@@ -99,12 +100,14 @@ void test(
         join(bundle, 'Contents/Resources/app/launch.json'),
         'utf8',
       ),
-    ) as {installRoot: string; runtimeRoot: string};
+    ) as {installRoot: string; runtimeRoot: string; settingsDir: string};
     assert.equal(
       config.installRoot,
       await realpath(join(prefix, 'lib/node_modules/varisdev')),
     );
     assert.equal(config.runtimeRoot, config.installRoot);
+    assert.equal(config.settingsDir, env.VARISDEV_SETTINGS_DIR);
+    assert.equal(Object.hasOwn(config, 'agentDir'), false);
     const child = spawn(join(bundle, 'Contents/MacOS/VarisDev'), [], {
       env,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],

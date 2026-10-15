@@ -203,7 +203,8 @@ void test(
       ...process.env,
       PI_OFFLINE: '1',
       PIDEV_DESKTOP_DATA_DIR: join(directory, 'desktop'),
-      PI_CODING_AGENT_DIR: join(directory, 'agent'),
+      VARISDEV_SETTINGS_DIR: join(directory, 'agent'),
+      PI_CODING_AGENT_DIR: join(directory, 'regular-pi'),
       VARISDEV_DATA_DIR: join(directory, 'data'),
       VARISDEV_INSTALL_ROOT: fileURLToPath(new URL('../', import.meta.url)),
     };

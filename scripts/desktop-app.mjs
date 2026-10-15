@@ -15,6 +15,7 @@ import {
 import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
+import {configureSettings} from '../src/runtime/settings.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -108,7 +109,7 @@ function install() {
               '/sbin',
             ]),
           ].join(':'),
-          agentDir: process.env.PI_CODING_AGENT_DIR,
+          settingsDir: process.env.VARISDEV_SETTINGS_DIR,
         },
         null,
         2,
@@ -154,12 +155,43 @@ function install() {
   }
 }
 
-try {
-  if (process.platform !== 'darwin')
-    throw new Error(
-      'The app launcher installer currently supports macOS. Run varisdev to open the app on this platform.',
+function windowsApp() {
+  if (command === 'install') {
+    const env = {
+      ...process.env,
+      VARISDEV_NODE_EXECUTABLE:
+        process.env.VARISDEV_NODE_EXECUTABLE || process.execPath,
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    execFileSync(
+      require('electron'),
+      [
+        join(root, 'assets/desktop/windows-install.cjs'),
+        process.env.VARISDEV_INSTALL_ROOT || root,
+        root,
+      ],
+      {stdio: 'inherit', env, windowsHide: true},
     );
-  if (command === 'install') install();
+  } else if (command === 'open') {
+    execFileSync(
+      process.execPath,
+      [
+        join(process.env.VARISDEV_INSTALL_ROOT || root, 'bin/varisdev.mjs'),
+        '--overview',
+      ],
+      {stdio: 'inherit'},
+    );
+  } else throw new Error('Usage: node scripts/desktop-app.mjs install|open');
+}
+
+try {
+  configureSettings();
+  if (process.platform === 'win32') windowsApp();
+  else if (process.platform !== 'darwin')
+    throw new Error(
+      'The app launcher installer supports macOS and Windows. Run varisdev to open the app on this platform.',
+    );
+  else if (command === 'install') install();
   else if (command === 'open') {
     if (!existsSync(destination))
       throw new Error('Run varisdev app install first.');
