@@ -12,6 +12,7 @@ import {
   type AgentMessageSender,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
+import {assertAgentModelAllowed, readToolSettings} from './settings.ts';
 import {observeFileChanges} from '../dashboard/changes.ts';
 import {
   AgentSessionController,
@@ -300,6 +301,9 @@ function registerAgentSendTool(
           };
         }
       }
+      const recipient = current.get(params.id);
+      if (recipient.status === 'completed')
+        await assertAgentModelAllowed(recipient.model);
       return toolResult(
         [await current.send(params.id, message, identity)],
         false,
@@ -316,87 +320,128 @@ export function registerAgentTools(
   const getManager = (ctx: ExtensionContext) =>
     control.getTeam(ctx).getManager();
 
-  pi.registerTool({
-    name: 'agent_spawn',
-    label: 'Spawn agent',
-    description:
-      'Start a background agent with its own conversation. Accepts any model from the parent model registry in provider/model format. Inherits the selected parent model when omitted; requires a model choice when the parent has none. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
-    promptSnippet:
-      'Start a background agent with its own conversation and return its ID immediately.',
-    parameters: spawnSchema,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      signal?.throwIfAborted();
-      const team = control.getTeam(ctx);
-      const cwd = resolve(ctx.cwd, params.cwd ?? '.');
-      if (!(await stat(cwd)).isDirectory())
-        throw new Error(`Agent cwd is not a directory: ${cwd}`);
-      const inheritedModel =
-        ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
-      const selectedModel = params.model ?? inheritedModel;
-      if (selectedModel === undefined)
-        throw new Error(
-          'Choose a parent model or specify the agent model as provider/model.',
-        );
-      const separator = selectedModel.indexOf('/');
-      if (separator <= 0 || separator === selectedModel.length - 1)
-        throw new Error('Agent model must use provider/model format.');
-      const model =
-        selectedModel === inheritedModel
-          ? ctx.model
-          : ctx.modelRegistry.find(
-              selectedModel.slice(0, separator),
-              selectedModel.slice(separator + 1),
-            );
-      if (!model || `${model.provider}/${model.id}` !== selectedModel)
-        throw new Error(`Agent model is unavailable: ${selectedModel}.`);
-      const thinkingLevel = params.thinkingLevel ?? pi.getThinkingLevel();
-      if (!allowedEfforts.some(effort => effort === thinkingLevel))
-        throw new Error(
-          'Agent thinkingLevel must be off, minimal, low, medium, high, or xhigh.',
-        );
-      const workerOptions = {
-        cwd,
-        name: params.name,
-        instructions: params.instructions,
-        model,
-        modelRegistry: ctx.modelRegistry,
-        thinkingLevel,
-      };
-      signal?.throwIfAborted();
-      const current = getManager(ctx);
-      const record = current.spawn(
-        {
-          name: params.name,
-          task: params.task,
-          cwd,
-          model: `${model.provider}/${model.id}`,
-          timeoutMs: params.timeoutMs,
-          autoCleanup: params.autoCleanup,
+  const registerSpawn = (allowedModels: string[] | null) =>
+    pi.registerTool({
+      name: 'agent_spawn',
+      label: 'Spawn agent',
+      description:
+        'Start a background agent with its own conversation. ' +
+        (allowedModels === null
+          ? 'Accepts any model from the parent model registry in provider/model format. '
+          : `Allowed models: ${allowedModels.join(', ')}. Change these in Menu → Agent models. `) +
+        'Inherits the selected parent model when omitted; requires a model choice when the parent has none. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
+      promptSnippet:
+        'Start a background agent with its own conversation and return its ID immediately.',
+      parameters: {
+        ...spawnSchema,
+        properties: {
+          ...spawnSchema.properties,
+          model: {
+            ...spawnSchema.properties.model,
+            ...(allowedModels === null ? {} : {enum: allowedModels}),
+            description:
+              'Model in provider/model format. Inherits the selected parent model when omitted.' +
+              (allowedModels === null
+                ? ''
+                : ` Allowed models: ${allowedModels.join(', ')}. Inherited models must also be allowed.`),
+          },
         },
-        id =>
-          createWorker({
-            ...workerOptions,
-            parentSessionId: team.sessionId,
-            id,
-            agentToolsExtension(workerPi) {
-              observeFileChanges(workerPi, change =>
-                team.storeChange({
-                  ...change,
-                  unitId: id,
-                  unitName: params.name,
-                }),
+      },
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+        signal?.throwIfAborted();
+        const team = control.getTeam(ctx);
+        const cwd = resolve(ctx.cwd, params.cwd ?? '.');
+        if (!(await stat(cwd)).isDirectory())
+          throw new Error(`Agent cwd is not a directory: ${cwd}`);
+        const inheritedModel =
+          ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
+        const selectedModel = params.model ?? inheritedModel;
+        if (selectedModel === undefined)
+          throw new Error(
+            'Choose a parent model or specify the agent model as provider/model.',
+          );
+        await assertAgentModelAllowed(selectedModel);
+        const separator = selectedModel.indexOf('/');
+        const model =
+          selectedModel === inheritedModel
+            ? ctx.model
+            : ctx.modelRegistry.find(
+                selectedModel.slice(0, separator),
+                selectedModel.slice(separator + 1),
               );
-              const getWorkerManager = () => team.getManager();
-              registerAgentListTool(workerPi, getWorkerManager, id);
-              registerAgentSendTool(workerPi, getWorkerManager, {
-                id,
-                sendToParent: message => team.storeMessage(message),
-              });
-            },
-          }),
-      );
-      return toolResult([record], false);
-    },
+        if (!model || `${model.provider}/${model.id}` !== selectedModel)
+          throw new Error(`Agent model is unavailable: ${selectedModel}.`);
+        const thinkingLevel = params.thinkingLevel ?? pi.getThinkingLevel();
+        if (!allowedEfforts.some(effort => effort === thinkingLevel))
+          throw new Error(
+            'Agent thinkingLevel must be off, minimal, low, medium, high, or xhigh.',
+          );
+        const workerOptions = {
+          cwd,
+          name: params.name,
+          instructions: params.instructions,
+          model,
+          modelRegistry: ctx.modelRegistry,
+          thinkingLevel,
+        };
+        signal?.throwIfAborted();
+        const current = getManager(ctx);
+        const record = current.spawn(
+          {
+            name: params.name,
+            task: params.task,
+            cwd,
+            model: `${model.provider}/${model.id}`,
+            timeoutMs: params.timeoutMs,
+            autoCleanup: params.autoCleanup,
+          },
+          async id => {
+            await assertAgentModelAllowed(selectedModel);
+            const worker = await createWorker({
+              ...workerOptions,
+              parentSessionId: team.sessionId,
+              id,
+              agentToolsExtension(workerPi) {
+                observeFileChanges(workerPi, change =>
+                  team.storeChange({
+                    ...change,
+                    unitId: id,
+                    unitName: params.name,
+                  }),
+                );
+                const getWorkerManager = () => team.getManager();
+                registerAgentListTool(workerPi, getWorkerManager, id);
+                registerAgentSendTool(workerPi, getWorkerManager, {
+                  id,
+                  sendToParent: message => team.storeMessage(message),
+                });
+              },
+            });
+            return {
+              ...worker,
+              get usage() {
+                return worker.usage;
+              },
+              get conversation() {
+                return worker.conversation;
+              },
+              steer: (message, starting) => worker.steer(message, starting),
+              dispose: () => worker.dispose(),
+              async run(...args) {
+                await assertAgentModelAllowed(selectedModel);
+                args[1].throwIfAborted();
+                return worker.run(...args);
+              },
+            };
+          },
+        );
+        return toolResult([record], false);
+      },
+    });
+
+  registerSpawn(null);
+  pi.on('before_agent_start', async () => {
+    registerSpawn((await readToolSettings()).agents.allowedModels);
   });
 
   registerAgentListTool(pi, getManager);

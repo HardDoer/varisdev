@@ -133,7 +133,7 @@ registerHooks({
       const result = await response;
       assert.equal(result.success, true);
       const commands = result.data.commands.map(command => command.name);
-      for (const name of ['varisdev', 'agents', 'commit', 'factory']) {
+      for (const name of ['agents', 'commit', 'factory']) {
         assert.ok(commands.includes(name), `Missing /${name}: ${stderr}`);
       }
       for (const name of [

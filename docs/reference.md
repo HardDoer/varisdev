@@ -8,6 +8,8 @@ This page covers VarisDev's additions. See [Pi's documentation](https://github.c
 
 Each agent has its own conversation and shares its selected working directory. It inherits the parent model and thinking level unless explicitly configured. Without a parent model, `agent_spawn` requires a model choice.
 
+**Menu → Agent models** controls which models `agent_spawn` may use. The restriction also applies to inherited models. The tool shows the configured choices to the parent model and checks them when agents start or resume. See [model configuration](configuration.md#agent-models).
+
 | Tool | Purpose |
 | --- | --- |
 | `agent_spawn` | Start an agent and return its ID. |
@@ -28,7 +30,7 @@ The GUI provides individual and collective cancellation. **Stop** stops the pare
 
 ## Commit and push
 
-`/commit [instructions]` delegates committing and pushing to an agent using the selected parent model and thinking level. The agent inspects the changes, runs checks, and reports the result.
+`/commit [instructions]` delegates committing and pushing to an agent. Choose its model and reasoning level in **Menu → Commit settings**, or inherit those values from the parent session. Its model must be allowed in **Agent models**. The agent inspects the changes, runs checks, and reports the result.
 
 ## Browsing and files
 

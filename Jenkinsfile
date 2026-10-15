@@ -1,0 +1,35 @@
+pipeline {
+    agent any
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+    }
+    environment {
+        RELEASE_IMAGE = "jnokikana/joonas.ninja:varisdev-${BUILD_NUMBER}"
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage('Build') {
+            steps {
+                sh 'docker build -t "$RELEASE_IMAGE" .'
+            }
+        }
+        stage('Login') {
+            steps {
+                withCredentials([usernamePassword(usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD', credentialsId: '06401b2c-c73a-4fb8-9a44-95cdc301d3d3')]) {
+                    sh 'printf "%s" "$PASSWORD" | docker login --username "$USERNAME" --password-stdin'
+                }
+            }
+        }
+        stage('Push to artifactory') {
+            steps {
+                sh 'docker push "$RELEASE_IMAGE"'
+                echo "Release image: ${env.RELEASE_IMAGE}"
+            }
+        }
+    }
+}

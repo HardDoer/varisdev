@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('pidev', {
       throw new TypeError('Zoom must be between 25% and 500%.');
     webFrame.setZoomFactor(factor);
   },
+  getToolSettings: sessionId => invoke('varisdev:get-tool-settings', sessionId),
+  saveToolSettings: (section, value, sessionId) =>
+    invoke('varisdev:save-tool-settings', section, value, sessionId),
+  getAgentNotice: () => invoke('varisdev:get-agent-notice'),
+  acknowledgeAgentNotice: () => invoke('varisdev:acknowledge-agent-notice'),
+  getCommitNotice: () => invoke('varisdev:get-commit-notice'),
+  acknowledgeCommitNotice: () => invoke('varisdev:acknowledge-commit-notice'),
   getToolModels: () => invoke('varisdev:get-tool-models'),
   saveToolModel: (tool, model) =>
     invoke('varisdev:save-tool-model', tool, model),

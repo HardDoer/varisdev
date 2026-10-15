@@ -30,7 +30,6 @@
     "CONTRIBUTING.md",
     "src/",
     "extensions/",
-    "themes/",
     "assets/",
     "scripts/",
     "desktop/package.json",
@@ -70,9 +69,6 @@
   "pi": {
     "extensions": [
       "./extensions"
-    ],
-    "themes": [
-      "./themes"
     ]
   },
   "devDependencies": {

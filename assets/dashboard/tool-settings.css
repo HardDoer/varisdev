@@ -1,0 +1,81 @@
+#tool-settings-dialog,
+#agent-notice-dialog,
+#commit-notice-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: clamp(16px, 4vw, 28px);
+  overflow: auto;
+  border-color: var(--line);
+}
+#tool-settings-dialog .dialog-heading {
+  gap: 16px;
+  margin-bottom: 12px;
+}
+#tool-settings-dialog .dialog-heading h2,
+#agent-notice-dialog h2,
+#commit-notice-dialog h2 {
+  margin-top: 0;
+}
+#tool-settings-dialog p,
+#agent-notice-dialog p,
+#commit-notice-dialog p {
+  overflow-wrap: anywhere;
+}
+#tool-settings-content > label,
+#agent-model-settings > label,
+#commit-model-settings > label:not(.tool-model-option) {
+  display: block;
+  margin: 16px 0 8px;
+}
+#tool-settings-search,
+#agent-model-mode,
+#commit-thinking {
+  width: 100%;
+  min-width: 0;
+}
+#tool-settings-models {
+  max-height: min(320px, 40dvh);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+#tool-settings-models:empty {
+  display: none;
+}
+.tool-model-option {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  cursor: pointer;
+}
+.tool-model-option + .tool-model-option {
+  border-top: 1px solid var(--line);
+}
+.tool-model-option input {
+  width: auto;
+  flex: none;
+  margin: 4px 0 0;
+  accent-color: var(--cyan);
+}
+.tool-model-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tool-model-option strong,
+.tool-model-option small {
+  display: block;
+}
+.tool-model-option small,
+.tool-model-option.unavailable {
+  color: var(--muted);
+}
+.tool-model-option:focus-within {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+}
+#tool-settings-dialog .dialog-footer,
+#agent-notice-dialog .dialog-footer,
+#commit-notice-dialog .dialog-footer {
+  flex-wrap: wrap;
+}

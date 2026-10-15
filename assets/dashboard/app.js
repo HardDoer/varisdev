@@ -7,6 +7,7 @@ import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
 import {initUpdates} from './updates.js';
 import {initAccounts} from './accounts.js';
+import {initToolSettings} from './tool-settings.js';
 import {initAppMenu} from './app-menu.js';
 import {initAgentControls} from './agent-controls.js';
 import {createConversationVisualizations} from './visualizations.js';
@@ -1750,6 +1751,7 @@ function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
   state.hub = hub;
+  toolSettings.observe(hub);
   const next =
     state.desiredSessionId &&
     hub.sessions.some(item => item.session.id === state.desiredSessionId)
@@ -1840,11 +1842,12 @@ async function sendPrompt(event) {
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
   renderInspector();
-  if (session.status === 'idle') {
-    if (stopEffectSession === id) clearStopEffect();
-    (scene || fallbackScene)?.prompt(id);
-  }
   try {
+    if (!(await toolSettings.beforePrompt(prompt))) return;
+    if (session.status === 'idle') {
+      if (stopEffectSession === id) clearStopEffect();
+      (scene || fallbackScene)?.prompt(id);
+    }
     await api.promptSession(id, {prompt});
     pausedActivity.delete(id);
     if (stopEffectSession === id) clearStopEffect();
@@ -2105,6 +2108,10 @@ const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
 });
 const cleanupZoom = initZoom(api);
 const cleanupAccounts = initAccounts(api);
+const toolSettings = initToolSettings({
+  api,
+  selectedSessionId: () => state.sessionId,
+});
 const cleanupUpdates = initUpdates(api, {
   beforeRestart() {
     saveDraft();
@@ -2184,6 +2191,7 @@ window.addEventListener('unload', () => {
   cleanupZoom();
   cleanupUpdates();
   cleanupAccounts();
+  toolSettings.dispose();
   appMenu.dispose();
   cleanupSessionSelection?.();
   scene?.dispose();

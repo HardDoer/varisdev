@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {setImmediate as nextTick} from 'node:timers/promises';
-import {test} from 'node:test';
+import {
+  setImmediate as nextTick,
+  setTimeout as delay,
+} from 'node:timers/promises';
+import {test, type TestContext} from 'node:test';
 import {Check} from 'typebox/value';
 import type {
   AgentSession,
@@ -24,6 +27,7 @@ import {
   type createSessionWorker,
 } from '../src/agents/session.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
+import {saveToolSettings} from '../src/tools/settings.ts';
 
 type AgentEventHandler = (
   event: {reason?: string},
@@ -1060,6 +1064,7 @@ function agentParent(
   return {
     pi,
     ctx,
+    tools,
     control,
     execute,
     notifications,
@@ -1468,5 +1473,174 @@ void test('simultaneous worker callbacks keep separate histories after cleanup a
         .conversation(record.id)
         .conversation.every(message => !message.streaming),
     ),
+  );
+});
+
+async function untilPolicy(condition: () => boolean) {
+  const deadline = Date.now() + 2000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, 'Expected worker state was not reached');
+    await delay(5);
+  }
+}
+
+async function isolateToolSettings(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-agent-policy-'));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, {recursive: true, force: true});
+  });
+}
+
+void test('agent tools enforce live allowed models for explicit and inherited choices and refresh the schema before prompts', async t => {
+  await isolateToolSettings(t);
+  const workers = teamWorkers();
+  const parent = agentParent('policy-live', workers.create);
+  t.after(() => parent.shutdown());
+  const fullName = 'openai-codex/gpt-5.6-sol';
+  const params = {name: 'Allowed', task: 'Inspect', model: fullName};
+  await saveToolSettings('agents', {allowedModels: ['other/model']});
+  await parent.emit('before_agent_start');
+  assert.match(
+    parent.tools.get('agent_spawn')!.description,
+    /Allowed models: other\/model/,
+  );
+  assert.equal(
+    Check(parent.tools.get('agent_spawn')!.parameters, params),
+    false,
+  );
+  assert.equal(
+    Check(parent.tools.get('agent_spawn')!.parameters, {
+      ...params,
+      model: 'other/model',
+    }),
+    true,
+  );
+  // Execute also enforces policy even when callers bypass schema validation.
+  await assert.rejects(
+    parent.spawn('Inherited denied'),
+    /Menu → Agent models.*other\/model/,
+  );
+  await assert.rejects(parent.execute('agent_spawn', params), /not allowed/);
+  assert.equal(workers.created.length, 0);
+  await saveToolSettings('agents', {allowedModels: [fullName]});
+  await parent.emit('before_agent_start');
+  assert.ok(Check(parent.tools.get('agent_spawn')!.parameters, params));
+  assert.match(
+    parent.tools.get('agent_spawn')!.description,
+    /Allowed models: openai-codex/,
+  );
+  const id = await parent.spawn('Inherited allowed');
+  await untilPolicy(() => workers.byId.get(id)?.controlled.runs.length === 1);
+  assert.equal(workers.byId.get(id)!.options.model, parent.ctx.model);
+  await saveToolSettings('agents', {allowedModels: ['other/model']});
+  await assert.rejects(
+    parent.spawn('Changed during open session'),
+    /not allowed/,
+  );
+  assert.equal(workers.byId.get(id)!.controlled.runs[0].signal.aborted, false);
+  await saveToolSettings('agents', {allowedModels: null});
+  await parent.emit('before_agent_start');
+  assert.match(
+    parent.tools.get('agent_spawn')!.description,
+    /any model from the parent model registry/,
+  );
+  assert.ok(
+    Check(parent.tools.get('agent_spawn')!.parameters, {
+      ...params,
+      model: 'custom/organization/model',
+    }),
+  );
+  // The controller's session_start handler must still reset the team.
+  await parent.shutdown('new');
+  await parent.emit('session_start');
+  assert.deepEqual((await parent.execute('agent_list')).details.agents, []);
+});
+
+void test('model policy is checked when queued workers start, including initialized and resumed workers', async t => {
+  await isolateToolSettings(t);
+  const workers = teamWorkers();
+  const parent = agentParent('policy-queue', workers.create);
+  t.after(() => parent.shutdown());
+  const resumed = await parent.spawn('Will resume');
+  await untilPolicy(
+    () => workers.byId.get(resumed)?.controlled.runs.length === 1,
+  );
+  workers.byId.get(resumed)!.controlled.runs[0].finish('First result');
+  await parent.execute('agent_wait', {ids: [resumed]});
+  const busy: string[] = [];
+  for (let i = 0; i < 6; i++) busy.push(await parent.spawn(`Busy ${i}`));
+  await untilPolicy(() =>
+    busy.every(id => workers.byId.get(id)?.controlled.runs.length === 1),
+  );
+  const uninitialized = await parent.spawn('Uninitialized queued');
+  const initialized = await parent.spawn('Initialized queued');
+  await parent.execute('agent_send', {
+    id: initialized,
+    message: 'Steer before queue opens',
+  });
+  assert.equal(workers.byId.get(initialized)!.controlled.runs.length, 0);
+  await parent.execute('agent_send', {
+    id: resumed,
+    message: 'Resume after queue opens',
+  });
+  await saveToolSettings('agents', {allowedModels: ['other/model']});
+  for (const id of busy)
+    workers.byId.get(id)!.controlled.runs[0].finish('Done');
+  const result = await parent.execute('agent_wait', {
+    ids: [uninitialized, initialized, resumed],
+  });
+  assert.ok(
+    result.details.agents.every(
+      agent =>
+        agent.status === 'failed' &&
+        agent.error?.includes('Menu → Agent models'),
+    ),
+  );
+  assert.equal(workers.byId.has(uninitialized), false);
+  assert.equal(workers.byId.get(initialized)!.controlled.runs.length, 0);
+  assert.equal(workers.byId.get(resumed)!.controlled.runs.length, 1);
+});
+
+void test('parent and peer messages cannot resume completed agents with disallowed models', async t => {
+  await isolateToolSettings(t);
+  const workers = teamWorkers();
+  const parent = agentParent('policy-resume', workers.create);
+  t.after(() => parent.shutdown());
+  const recipient = await parent.spawn('Recipient');
+  const sender = await parent.spawn('Sender');
+  await untilPolicy(
+    () => workers.byId.get(sender)?.controlled.runs.length === 1,
+  );
+  workers.byId.get(recipient)!.controlled.runs[0].finish('Done');
+  await parent.execute('agent_wait', {ids: [recipient]});
+  await saveToolSettings('agents', {allowedModels: ['other/model']});
+  await assert.rejects(
+    parent.execute('agent_send', {id: recipient, message: 'More work'}),
+    /not allowed/,
+  );
+  await assert.rejects(
+    workers.byId
+      .get(sender)!
+      .execute('agent_send', {id: recipient, message: 'More work'}),
+    /not allowed/,
+  );
+  assert.equal(
+    (await parent.execute('agent_status', {id: recipient})).details.agents[0]
+      .status,
+    'completed',
+  );
+  await parent.execute('agent_send', {
+    id: sender,
+    message: 'Finish in-flight work',
+  });
+  assert.equal(workers.byId.get(sender)!.controlled.steering.length, 1);
+  await saveToolSettings('agents', {allowedModels: null});
+  await parent.execute('agent_send', {id: recipient, message: 'Allowed again'});
+  await untilPolicy(
+    () => workers.byId.get(recipient)!.controlled.runs.length === 2,
   );
 });

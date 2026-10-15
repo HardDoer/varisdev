@@ -83,6 +83,7 @@ async function main() {
     },
   });
   handle('pidev:get-state', () => hub);
+  handle('varisdev:get-agent-notice', () => ({acknowledged: true}));
   handle('varisdev:get-update-status', () => ({
     phase: 'idle',
     currentVersion: '0.85.1',

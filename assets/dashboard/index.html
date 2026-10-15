@@ -18,6 +18,7 @@
     <link rel="stylesheet" href="visualizations.css" />
     <link rel="stylesheet" href="updates.css" />
     <link rel="stylesheet" href="accounts.css" />
+    <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link
       rel="stylesheet"
@@ -111,6 +112,168 @@
         <p id="tool-models-error" class="form-error" role="alert" hidden></p>
       </details>
     </dialog>
+    <dialog
+      id="tool-settings-dialog"
+      aria-labelledby="tool-settings-title"
+      aria-describedby="tool-settings-description"
+    >
+      <form id="tool-settings-form">
+        <div class="dialog-heading">
+          <h2 id="tool-settings-title">Agent models</h2>
+          <button
+            id="tool-settings-close"
+            class="quiet-button"
+            type="button"
+            aria-label="Close settings"
+          >
+            Close
+          </button>
+        </div>
+        <p id="tool-settings-description"></p>
+        <p id="tool-settings-loading" role="status">Loading models from Pi…</p>
+        <div id="tool-settings-content" hidden>
+          <div id="agent-model-settings">
+            <label for="agent-model-mode">Allowed models</label>
+            <select id="agent-model-mode">
+              <option value="all">All available models (default)</option>
+              <option value="selected">Only selected models</option>
+            </select>
+          </div>
+          <div id="commit-model-settings" hidden>
+            <label for="commit-thinking">Thinking level</label>
+            <select id="commit-thinking">
+              <option value="">Inherit parent thinking level (default)</option>
+              <option value="off">Off</option>
+              <option value="minimal">Minimal</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">Extra high</option>
+            </select>
+            <label class="tool-model-option">
+              <input
+                id="commit-inherit-model"
+                name="tool-settings-model"
+                type="radio"
+                value=""
+              />
+              <span>Inherit parent model (default)</span>
+            </label>
+          </div>
+          <label for="tool-settings-search">Search models</label>
+          <input
+            id="tool-settings-search"
+            type="search"
+            placeholder="Model name, provider or ID"
+            autocomplete="off"
+          />
+          <p id="tool-settings-selection" class="muted" role="status"></p>
+          <div
+            id="tool-settings-models"
+            role="group"
+            aria-label="Available models"
+          ></div>
+          <p id="tool-settings-empty" class="muted" hidden></p>
+          <p id="tool-settings-validation" class="form-error" role="status"></p>
+        </div>
+        <p id="tool-settings-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-footer">
+          <button
+            id="tool-settings-retry"
+            class="quiet-button"
+            type="button"
+            hidden
+          >
+            Retry loading models
+          </button>
+          <button id="tool-settings-save" class="primary-button" type="submit">
+            Save settings
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog
+      id="commit-notice-dialog"
+      aria-labelledby="commit-notice-title"
+      aria-describedby="commit-notice-description"
+    >
+      <h2 id="commit-notice-title">Your commit agent’s model and reasoning</h2>
+      <p id="commit-notice-description">
+        The commit agent inherits the parent session’s model and reasoning level
+        by default. Choices saved in Menu → Commit settings override these
+        values.
+      </p>
+      <p>
+        The /commit command asks that agent to review changes, create a Git
+        commit and push it to the remote repository.
+      </p>
+      <p class="muted">
+        Continue sends your command. Configure commit settings keeps it in the
+        composer. Cancel or Escape leaves it unsent.
+      </p>
+      <p id="commit-notice-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-footer">
+        <button
+          id="commit-notice-retry"
+          class="quiet-button"
+          type="button"
+          hidden
+        >
+          Retry
+        </button>
+        <button id="commit-notice-cancel" class="quiet-button" type="button">
+          Cancel
+        </button>
+        <button id="commit-notice-configure" class="quiet-button" type="button">
+          Configure commit settings
+        </button>
+        <button
+          id="commit-notice-continue"
+          class="primary-button"
+          type="button"
+        >
+          Continue
+        </button>
+      </div>
+    </dialog>
+    <dialog
+      id="agent-notice-dialog"
+      aria-labelledby="agent-notice-title"
+      aria-describedby="agent-notice-description"
+    >
+      <h2 id="agent-notice-title">Your agents’ model and reasoning</h2>
+      <p id="agent-notice-description">
+        Background agents inherit the parent session’s model and reasoning level
+        by default. An agent request can explicitly choose another allowed model
+        or reasoning level.
+      </p>
+      <p>
+        Choose allowed models in Menu → Agent models. This also limits which
+        models agents can inherit, including agents started by /commit.
+      </p>
+      <p class="muted">Escape also acknowledges this notice.</p>
+      <p id="agent-notice-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-footer">
+        <button
+          id="agent-notice-retry"
+          class="quiet-button"
+          type="button"
+          hidden
+        >
+          Retry
+        </button>
+        <button id="agent-notice-configure" class="quiet-button" type="button">
+          Configure agent models
+        </button>
+        <button
+          id="agent-notice-acknowledge"
+          class="primary-button"
+          type="button"
+        >
+          Got it
+        </button>
+      </div>
+    </dialog>
     <main>
       <section
         id="welcome"
@@ -182,6 +345,24 @@
                 aria-controls="accounts-dialog"
               >
                 Accounts
+              </button>
+              <button
+                id="open-agent-models"
+                class="quiet-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="tool-settings-dialog"
+              >
+                Agent models
+              </button>
+              <button
+                id="open-commit-settings"
+                class="quiet-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="tool-settings-dialog"
+              >
+                Commit settings
               </button>
               <button
                 id="open-session-settings"

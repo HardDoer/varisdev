@@ -40,6 +40,7 @@ import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopPreferences} from './preferences.ts';
 import {openSystemTerminal} from './terminal.ts';
 import {DesktopAccounts} from './accounts.ts';
+import {DesktopToolSettings} from './tool-settings.ts';
 import {getToolModels, saveToolModel} from '../tools/model-selection.ts';
 import {
   hasConversationImage,
@@ -108,6 +109,9 @@ const hub = new DashboardHub(
   request => createDashboardParent(request),
   launchCwd,
 );
+const toolSettings = new DesktopToolSettings({
+  sessionFeatures: sessionId => hub.sessionFeatures(sessionId),
+});
 let mainWindow: BrowserWindow | undefined;
 const accounts = new DesktopAccounts({
   openBrowser: url => shell.openExternal(url),
@@ -215,6 +219,30 @@ function handle(
 }
 
 function installHandlers(): void {
+  handle('varisdev:get-tool-settings', sessionId =>
+    toolSettings.getToolSettings(
+      sessionId === undefined ? undefined : id(sessionId),
+    ),
+  );
+  handle('varisdev:save-tool-settings', (section, value, sessionId) =>
+    toolSettings.saveToolSettings(
+      section,
+      value,
+      sessionId === undefined ? undefined : id(sessionId),
+    ),
+  );
+  handle('varisdev:get-agent-notice', () => ({
+    acknowledged: preferences.agentNoticeAcknowledged(),
+  }));
+  handle('varisdev:acknowledge-agent-notice', () =>
+    preferences.acknowledgeAgentNotice(),
+  );
+  handle('varisdev:get-commit-notice', () => ({
+    acknowledged: preferences.commitNoticeAcknowledged(),
+  }));
+  handle('varisdev:acknowledge-commit-notice', () =>
+    preferences.acknowledgeCommitNotice(),
+  );
   handle('varisdev:get-tool-models', getToolModels);
   handle('varisdev:save-tool-model', saveToolModel);
   handle('varisdev:get-accounts', () => accounts.get());

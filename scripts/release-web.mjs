@@ -1,31 +1,27 @@
 import {execFileSync} from 'node:child_process';
+import console from 'node:console';
 import {createHash} from 'node:crypto';
 import {
   copyFile,
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import process from 'node:process';
+import {fileURLToPath, URL} from 'node:url';
 import {releaseURL} from '../src/runtime/distribution.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const target = process.argv[2];
 if (!target || process.argv.length !== 3) {
-  console.error(
-    'Usage: npm run release:web -- /path/to/joonas.ninja-user-frontend',
-  );
+  console.error('Usage: npm run release:web -- /path/to/output-directory');
   process.exit(1);
 }
-const website = resolve(target);
-const site = JSON.parse(await readFile(join(website, 'package.json'), 'utf8'));
-if (site.name !== 'joonas.ninja-user-frontend')
-  throw new Error('Expected the joonas.ninja-user-frontend repository.');
+const destination = resolve(target);
 const npm = join(root, 'node_modules/npm/bin/npm-cli.js');
 function pack(args, cwd) {
   return JSON.parse(
@@ -67,7 +63,6 @@ try {
   const {filename, version} = pack(['--pack-destination', temporary], staging);
   const archive = await readFile(join(temporary, filename));
   const name = `varisdev-${version}-${revision}.tgz`;
-  const destination = join(website, 'public/varisdev');
   await mkdir(destination, {recursive: true});
   await writeFile(join(destination, name), archive);
   await copyFile(
@@ -100,13 +95,6 @@ try {
     join(destination, 'latest.json.tmp'),
     join(destination, 'latest.json'),
   );
-  for (const file of await readdir(destination)) {
-    if (
-      /^varisdev-\d+\.\d+\.\d+(?:-[\w.-]+)?-[a-f0-9]{40}\.tgz$/.test(file) &&
-      file !== name
-    )
-      await rm(join(destination, file));
-  }
   console.log(
     `Prepared local release files in ${destination}\n${name} (${archive.length} bytes)`,
   );
