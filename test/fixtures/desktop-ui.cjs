@@ -20,6 +20,8 @@ let editorSubmission;
 let chosenFolder;
 let abortDelay = 0;
 let cancellationError;
+let savedSessions;
+let resumeError;
 
 function features() {
   return {
@@ -125,6 +127,16 @@ function reset() {
   chosenFolder = undefined;
   abortDelay = 0;
   cancellationError = undefined;
+  resumeError = undefined;
+  savedSessions = [
+    {
+      id: 'saved-parent',
+      name: 'Saved conversation',
+      firstMessage: 'Inspect the project',
+      modified: at,
+      messageCount: 2,
+    },
+  ];
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
@@ -174,13 +186,20 @@ ipcMain.handle('fixture:choose-folder', () => {
   calls.push({method: 'chooseFolder'});
   return chosenFolder;
 });
+ipcMain.handle('fixture:list-sessions', (_event, cwd) => {
+  calls.push({method: 'listSessions', cwd});
+  return cwd === directory ? savedSessions : [];
+});
 ipcMain.handle('fixture:create-session', (_event, input) => {
   calls.push({method: 'createSession', input});
-  const parent = session('folder-parent', 'Selected folder');
+  if (input.sessionId && resumeError) throw new Error(resumeError);
+  const parent = input.sessionId
+    ? session(input.sessionId, 'Saved conversation')
+    : session('folder-parent', 'Selected folder');
   parent.session.cwd = input.cwd;
   parent.session.status = 'idle';
   parent.session.activity = 'Ready';
-  parent.conversation = [];
+  if (!input.sessionId) parent.conversation = [];
   hub.sessions.push(parent);
   resources.set(parent.session.id, features());
   window.webContents.send('fixture:snapshot', hub);
@@ -4865,6 +4884,133 @@ async function main() {
         `Zoom restores saved placement and size: ${JSON.stringify({restored, preferred})}`,
       );
       await evaluate(() => document.getElementById('markdown-close').click());
+    },
+  );
+
+  await run(
+    'Resume session lists folder history and opens the selected conversation',
+    async () => {
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('resume-session').click();
+      });
+      await until(
+        () =>
+          document.querySelectorAll('#session-history-list button').length ===
+          1,
+        'Saved session did not appear',
+      );
+      assert.equal(
+        await evaluate(() =>
+          document.getElementById('app-menu-panel').matches(':popover-open'),
+        ),
+        false,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('session-history-folder').textContent,
+        ),
+        directory,
+      );
+      assert.deepEqual(calls, [{method: 'listSessions', cwd: directory}]);
+      assert.match(
+        await evaluate(
+          () => document.getElementById('session-history-list').textContent,
+        ),
+        /Saved conversation.*2 messages/s,
+      );
+      await evaluate(() =>
+        document.getElementById('session-history-choose').click(),
+      );
+      await until(
+        () => !document.getElementById('session-history-choose').disabled,
+        'Cancelled folder picker stayed busy',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelectorAll('#session-history-list button').length,
+        ),
+        1,
+      );
+      chosenFolder = join(directory, 'empty');
+      await evaluate(() =>
+        document.getElementById('session-history-choose').click(),
+      );
+      await until(
+        () =>
+          document.getElementById('session-history-status').textContent ===
+          'No saved sessions in this folder.',
+        'Empty folder not shown',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelectorAll('#session-history-list button').length,
+        ),
+        0,
+      );
+      chosenFolder = directory;
+      await evaluate(() =>
+        document.getElementById('session-history-choose').click(),
+      );
+      await until(
+        () =>
+          document.querySelectorAll('#session-history-list button').length ===
+          1,
+        'Folder history did not reload',
+      );
+      resumeError = 'Saved session unavailable';
+      await evaluate(() =>
+        document.querySelector('#session-history-list button').click(),
+      );
+      await until(
+        () => !document.getElementById('session-history-error').hidden,
+        'Resume failure not shown',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('session-history-dialog').open,
+        ),
+        true,
+      );
+      resumeError = undefined;
+      await evaluate(() => {
+        const button = document.querySelector('#session-history-list button');
+        button.click();
+        button.click();
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Saved conversation',
+        'Resumed session was not selected',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession'),
+        [
+          {
+            method: 'createSession',
+            input: {cwd: directory, sessionId: 'saved-parent'},
+          },
+          {
+            method: 'createSession',
+            input: {cwd: directory, sessionId: 'saved-parent'},
+          },
+        ],
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          open: document.getElementById('session-history-dialog').open,
+          history: document
+            .getElementById('conversation')
+            .textContent.includes('I will inspect the project.'),
+          focused:
+            document.activeElement === document.getElementById('parent-prompt'),
+        })),
+        {open: false, history: true, focused: true},
+      );
+      assert.ok(!calls.some(call => call.method === 'prompt'));
     },
   );
 

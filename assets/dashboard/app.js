@@ -11,6 +11,7 @@ import {initUpdates} from './updates.js';
 import {initAccounts} from './accounts.js';
 import {initToolSettings} from './tool-settings.js';
 import {initAppMenu} from './app-menu.js';
+import {initSessionHistory} from './session-history.js';
 import {initAgentControls} from './agent-controls.js';
 import {createConversationVisualizations} from './visualizations.js';
 import {initUsage, renderUsage} from './usage.js';
@@ -1803,6 +1804,14 @@ function applyMotion() {
         stopping.has(data.session.id) || pausedActivity.has(data.session.id),
     });
 }
+async function selectOpenedSession(id) {
+  state.desiredSessionId = id;
+  if (state.hub.sessions.some(item => item.session.id === id)) {
+    selectSession(id);
+    state.desiredSessionId = null;
+  } else receive(await api.getState());
+  $('parent-prompt').focus();
+}
 async function openFolder() {
   if (creating || !api) return;
   creating = true;
@@ -1813,12 +1822,7 @@ async function openFolder() {
     if (!cwd) return;
     text($('new-session'), 'Opening…');
     const result = await api.createSession({cwd});
-    state.desiredSessionId = result.id;
-    if (state.hub.sessions.some(item => item.session.id === result.id)) {
-      selectSession(result.id);
-      state.desiredSessionId = null;
-    } else receive(await api.getState());
-    $('parent-prompt').focus();
+    await selectOpenedSession(result.id);
   } catch (error) {
     showError(error);
   } finally {
@@ -2130,6 +2134,11 @@ const agentControls = initAgentControls({
   },
 });
 const appMenu = initAppMenu();
+const cleanupSessionHistory = initSessionHistory({
+  api,
+  currentFolder: () => snapshot()?.session.cwd || state.hub.launchCwd,
+  opened: selectOpenedSession,
+});
 const cleanupSessionSelection = api?.onSelectSession?.(id => {
   state.desiredSessionId = id;
   api.getState().then(receive).catch(showError);
@@ -2195,6 +2204,7 @@ window.addEventListener('unload', () => {
   cleanupAccounts();
   toolSettings.dispose();
   appMenu.dispose();
+  cleanupSessionHistory();
   cleanupSessionSelection?.();
   scene?.dispose();
   fallbackScene?.dispose();

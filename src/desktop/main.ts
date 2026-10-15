@@ -298,6 +298,7 @@ function installHandlers(): void {
     return loadPluginThemes({cwd: selected?.session.cwd ?? launchCwd});
   });
   handle('pidev:get-state', () => hub.snapshot());
+  handle('pidev:list-sessions', cwd => hub.listSessions(cwd));
   handle('pidev:create-session', async input => {
     const result = await hub.createSession(input);
     const cwd = hub

@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('pidev', {
     ipcRenderer.on('pidev:snapshot', listener);
     return () => ipcRenderer.removeListener('pidev:snapshot', listener);
   },
+  listSessions: cwd => invoke('pidev:list-sessions', cwd),
   createSession: input => invoke('pidev:create-session', input),
   promptSession: (id, input) => invoke('pidev:prompt-session', id, input),
   abortSession: id => invoke('pidev:abort-session', id),

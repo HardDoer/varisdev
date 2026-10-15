@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="accounts.css" />
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="app-menu.css" />
+    <link rel="stylesheet" href="session-history.css" />
     <link
       rel="stylesheet"
       href="../../node_modules/@xterm/xterm/css/xterm.css"
@@ -30,6 +31,21 @@
   </head>
   <body>
     <a class="skip-link" href="#factory-title">Skip to parent session</a>
+    <dialog id="session-history-dialog" aria-labelledby="session-history-title">
+      <div class="dialog-heading">
+        <h2 id="session-history-title">Resume session</h2>
+        <button id="session-history-close" class="quiet-button" type="button">
+          Close
+        </button>
+      </div>
+      <p id="session-history-folder"></p>
+      <button id="session-history-choose" class="quiet-button" type="button">
+        Choose folder
+      </button>
+      <p id="session-history-status" role="status"></p>
+      <p id="session-history-error" class="form-error" role="alert" hidden></p>
+      <ul id="session-history-list" aria-label="Saved sessions"></ul>
+    </dialog>
     <dialog id="updates-dialog" aria-labelledby="updates-title">
       <div class="updates-heading">
         <h2 id="updates-title">VarisDev updates</h2>
@@ -373,6 +389,15 @@
                 type="button"
               >
                 Model &amp; settings
+              </button>
+              <button
+                id="resume-session"
+                class="quiet-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="session-history-dialog"
+              >
+                Resume session
               </button>
               <button id="new-session" class="primary-button" type="button">
                 Open folder

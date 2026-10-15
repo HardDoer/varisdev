@@ -57,7 +57,11 @@ export async function createDashboardParent(
   const args = startup ? parseArgs(startup.argv) : undefined;
   const sessionManager = startup
     ? await restoreDesktopSession(startup)
-    : SessionManager.create(request.cwd);
+    : request.resume
+      ? SessionManager.open(request.resume.path, undefined, request.cwd)
+      : SessionManager.create(request.cwd);
+  if (request.resume && sessionManager.getSessionId() !== request.resume.id)
+    throw new Error('This saved session is no longer available.');
   const directory = join(
     agentDir,
     'varisdev',
@@ -136,7 +140,7 @@ export async function createDashboardParent(
       delegated.getProvider(inherited.model.provider)!,
     );
   }
-  if (startup && modelRuntime) {
+  if ((startup || request.resume) && modelRuntime) {
     const runtime = loader.getExtensions().runtime;
     for (const {name, config} of runtime.pendingProviderRegistrations)
       modelRuntime.registerProvider(name, config);
@@ -173,7 +177,10 @@ export async function createDashboardParent(
     created = await createAgentSession({
       cwd: request.cwd,
       agentDir,
-      model: inherited?.model ?? startupModel ?? savedModel,
+      model:
+        inherited?.model ??
+        startupModel ??
+        (request.resume ? undefined : savedModel),
       modelRuntime,
       thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
       tools: startup?.tools,

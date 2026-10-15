@@ -6,6 +6,7 @@ export function initAppMenu() {
   const panel = document.getElementById('app-menu-panel');
   const openFolder = document.getElementById('new-session');
   const settings = document.getElementById('open-session-settings');
+  const resume = document.getElementById('resume-session');
 
   function sync() {
     button.setAttribute(
@@ -36,6 +37,7 @@ export function initAppMenu() {
   panel.addEventListener('toggle', sync);
   openFolder.addEventListener('click', close);
   settings.addEventListener('click', close);
+  resume.addEventListener('click', close);
   document.addEventListener('keydown', escape, true);
   return {
     place(hasSession) {
@@ -52,6 +54,7 @@ export function initAppMenu() {
       panel.removeEventListener('toggle', sync);
       openFolder.removeEventListener('click', close);
       settings.removeEventListener('click', close);
+      resume.removeEventListener('click', close);
       document.removeEventListener('keydown', escape, true);
     },
   };

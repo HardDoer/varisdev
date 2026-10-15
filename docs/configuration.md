@@ -4,6 +4,10 @@
 
 For accounts, runtime settings, skills, and package commands, see [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent).
 
+## Sessions
+
+Use **Menu → Resume session** to reopen a saved conversation in the current folder. Sessions appear newest first. Use **Choose folder** in the dialog to browse another folder's history.
+
 ## Models
 
 Choose the parent model in **Menu → Model & settings**. VarisDev remembers your selection.

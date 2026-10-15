@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('pidev', {
   respondToDialog: (sessionId, dialogId, value) =>
     ipcRenderer.invoke('fixture:dialog', sessionId, dialogId, value),
   chooseFolder: () => ipcRenderer.invoke('fixture:choose-folder'),
+  listSessions: cwd => ipcRenderer.invoke('fixture:list-sessions', cwd),
   createSession: input => ipcRenderer.invoke('fixture:create-session', input),
 });
 

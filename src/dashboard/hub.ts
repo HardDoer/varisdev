@@ -1,4 +1,5 @@
 import type {ImageContent} from '@earendil-works/pi-ai';
+import {SessionManager} from '@earendil-works/pi-coding-agent';
 import type {DesktopStartup} from '../desktop/startup.ts';
 import {realpath, stat} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
@@ -17,6 +18,15 @@ import {
 export interface ParentRequest {
   cwd: string;
   name?: string;
+  resume?: {id: string; path: string};
+}
+
+export interface SavedSession {
+  id: string;
+  name?: string;
+  firstMessage: string;
+  modified: string;
+  messageCount: number;
 }
 
 export type StoppedMessages = NonNullable<DashboardSnapshot['queue']>;
@@ -117,11 +127,27 @@ export function compactionInstructions(input: unknown): string | undefined {
   return text(input, 'Compaction instructions', 64000);
 }
 
+async function sessionFolder(input: unknown): Promise<string> {
+  const path = text(input, 'Folder', 4096);
+  if (!isAbsolute(path))
+    throw new DashboardInputError('Choose an absolute folder path.');
+  try {
+    const cwd = await realpath(path);
+    if ((await stat(cwd)).isDirectory()) return cwd;
+  } catch {
+    // Report missing and inaccessible folders through the same input error.
+  }
+  throw new DashboardInputError(
+    'The folder does not exist or is not a directory.',
+  );
+}
+
 /** Owns parent conversations started in the desktop factory. */
 export class DashboardHub {
   private readonly sessions = new Map<string, Headquarters>();
   private readonly listeners = new Set<() => void>();
   private readonly creating = new Set<Promise<DashboardParent>>();
+  private readonly resuming = new Map<string, Promise<{id: string}>>();
   private readonly selectedSessionId?: string;
   private external?: DashboardSnapshot;
   private externalControl?: ExternalSessionControl;
@@ -304,26 +330,55 @@ export class DashboardHub {
     if (this.closed) throw new DashboardInputError('The dashboard has closed.');
   }
 
+  async listSessions(input: unknown): Promise<SavedSession[]> {
+    this.ensureOpen();
+    const cwd = await sessionFolder(input);
+    const sessions = await SessionManager.list(cwd);
+    return sessions.map(session => ({
+      id: session.id,
+      name: session.name,
+      firstMessage: session.firstMessage.slice(0, 500),
+      modified: session.modified.toISOString(),
+      messageCount: session.messageCount,
+    }));
+  }
+
   async createSession(input: unknown): Promise<{id: string}> {
     this.ensureOpen();
     const values = fields(input);
-    const path = text(values.cwd, 'Folder', 4096);
-    if (!isAbsolute(path))
-      throw new DashboardInputError('Choose an absolute folder path.');
+    const cwd = await sessionFolder(values.cwd);
+    if (values.sessionId !== undefined) {
+      const id = text(values.sessionId, 'Session ID', 128);
+      const saved = (await SessionManager.list(cwd)).find(
+        item => item.id === id,
+      );
+      if (!saved)
+        throw new DashboardInputError(
+          'This saved session is no longer available in this folder.',
+        );
+      this.ensureOpen();
+      const opened = this.snapshot().sessions.find(
+        item => item.session.id === id && item.session.status !== 'closed',
+      );
+      if (opened) return {id};
+      const pending = this.resuming.get(id);
+      if (pending) return pending;
+      const opening = this.startSession({cwd, resume: {id, path: saved.path}});
+      this.resuming.set(id, opening);
+      try {
+        return await opening;
+      } finally {
+        this.resuming.delete(id);
+      }
+    }
     const name =
       values.name === undefined || values.name === ''
         ? undefined
         : text(values.name, 'Name', 120);
-    let cwd: string;
-    try {
-      cwd = await realpath(path);
-      if (!(await stat(cwd)).isDirectory())
-        throw new DashboardInputError('Not a directory');
-    } catch {
-      throw new DashboardInputError(
-        'The folder does not exist or is not a directory.',
-      );
-    }
+    return this.startSession({cwd, name});
+  }
+
+  private async startSession(request: ParentRequest): Promise<{id: string}> {
     this.ensureOpen();
     const owned = [...this.sessions.values()].filter(
       entry => entry.parent,
@@ -334,7 +389,7 @@ export class DashboardHub {
       );
     }
     const creation = Promise.resolve().then(async () => {
-      const parent = await this.factory({cwd, name});
+      const parent = await this.factory(request);
       if (this.closed) {
         await parent.close();
         throw new DashboardInputError(
@@ -352,8 +407,11 @@ export class DashboardHub {
           'The dashboard closed while starting the session.',
         );
       }
+      const id = parent.state.snapshot().session.id;
+      if (this.external?.session.id === id) this.external = undefined;
+      this.sessions.get(id)?.unsubscribe();
       this.add(parent.state, parent);
-      return {id: parent.state.snapshot().session.id};
+      return {id};
     } finally {
       this.creating.delete(creation);
     }
