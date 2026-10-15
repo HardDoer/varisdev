@@ -1,4 +1,6 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
+import {createTerminalTabs} from './terminal.js';
+import {renderFileLinks} from './file-links.js';
 import {createFactoryScene} from './factory-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createParentFallback} from './parent-fallback.js';
@@ -69,6 +71,7 @@ const state = {
   motion: true,
   disposed: false,
 };
+const terminalTabs = createTerminalTabs(api, () => state.sessionId);
 const parentNodes = new Map();
 const workerNodes = new Map();
 const historyNodes = new Map();
@@ -91,7 +94,7 @@ try {
       )
         disclosures.set(entry[0], entry[1]);
 } catch {
-  // Actions start expanded when no saved preference is available.
+  // Actions start collapsed when no saved preference is available.
 }
 let promptDraftStorageError;
 const promptDraftStore = createDraftStore('varisdev.composer-drafts.v1', {
@@ -1168,7 +1171,7 @@ function saveConversationDisclosures() {
     'details[data-disclosure-key]',
   )) {
     const key = details.dataset.disclosureKey;
-    if (details.open !== (disclosures.get(key) ?? true))
+    if (details.open !== (disclosures.get(key) ?? false))
       disclosures.set(key, details.open);
   }
 }
@@ -1224,7 +1227,7 @@ function updateStreamText(textNode, value, selection) {
 }
 function preserveDisclosure(details, key) {
   details.dataset.disclosureKey = key;
-  details.open = disclosures.get(key) ?? true;
+  details.open = disclosures.get(key) ?? !key.startsWith('tool:');
   let previousOpen = details.open;
   details.addEventListener('toggle', () => {
     if (!details.isConnected || previousOpen === details.open) return;
@@ -1423,11 +1426,15 @@ function renderConversation(snapshot) {
         entry.streaming.hidden = !message.streaming;
         text(entry.streaming, 'Streaming');
       }
-      const outputChanged = updateStreamText(
-        entry.textNode,
-        tool ? formatToolResult(message.text) : message.text,
-        selection,
-      );
+      const outputChanged = tool
+        ? updateStreamText(
+            entry.textNode,
+            formatToolResult(message.text),
+            selection,
+          )
+        : renderFileLinks(entry.content, message.text || '', (target, value) =>
+            updateStreamText(target, value, selection),
+          );
       changed = outputChanged || changed;
       entry.visualizations.update(message);
       entry.truncated.hidden = !message.truncated;
@@ -1515,6 +1522,7 @@ function rememberComposerHeight() {
   if (height > 0) dock.style.setProperty('--agent-dock-height', `${height}px`);
 }
 function renderInspector() {
+  terminalTabs.update();
   const data = snapshot();
   const unit = selectedUnit();
   if (!data || !unit) return;
@@ -1940,31 +1948,24 @@ async function loadWorkspace() {
 
 $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
-$('prompt-tab').addEventListener('click', () => $('parent-prompt').focus());
-let openingTerminal = false;
-$('terminal-tab').addEventListener('click', async () => {
-  if (openingTerminal || !state.sessionId) return;
-  const sessionId = state.sessionId;
-  openingTerminal = true;
-  $('terminal-tab').disabled = true;
-  $('terminal-error').hidden = true;
-  try {
-    if (!api?.openTerminal)
-      throw new Error('Restart VarisDev to use the terminal.');
-    await api.openTerminal(sessionId);
-  } catch (error) {
-    if (state.sessionId === sessionId) {
-      text($('terminal-error'), error.message || String(error));
-      $('terminal-error').hidden = false;
-    }
-  } finally {
-    openingTerminal = false;
-    $('terminal-tab').disabled = false;
-  }
-});
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('back-to-parent').addEventListener('click', () => selectUnit('parent'));
-$('prompt-form').addEventListener('submit', sendPrompt);
+$('prompt-form').addEventListener('submit', event => {
+  if (terminalTabs.isSelected()) event.preventDefault();
+  else void sendPrompt(event);
+});
+$('conversation').addEventListener('click', async event => {
+  const link = event.target.closest('a[data-file-path]');
+  if (!link) return;
+  event.preventDefault();
+  try {
+    if (/\.md$/i.test(link.dataset.filePath))
+      await openMarkdownFile(link.dataset.filePath);
+    else await api.openFile(state.sessionId, link.dataset.filePath);
+  } catch (error) {
+    showError(error);
+  }
+});
 initTextareaResize($('parent-prompt-resize'), $('parent-prompt'));
 for (const event of ['input', 'select', 'keyup', 'pointerup', 'scroll', 'blur'])
   $('parent-prompt').addEventListener(event, saveDraft);
@@ -1991,7 +1992,7 @@ $('expand-parent-editor').addEventListener('click', () =>
   ),
 );
 document.addEventListener('keydown', event => {
-  if (event.target.closest?.('#markdown-panel')) return;
+  if (event.target.closest?.('#markdown-panel, #terminal-panel')) return;
   if (
     event.key !== 'Escape' ||
     event.defaultPrevented ||
@@ -2185,6 +2186,7 @@ window.addEventListener('unload', () => {
   workspaceResize.disconnect();
   conversationResize.disconnect();
   conversationVisualizations.dispose();
+  terminalTabs.dispose();
   composerResize.disconnect();
   window.cancelAnimationFrame(conversationScrollFrame);
   cleanupThemes();

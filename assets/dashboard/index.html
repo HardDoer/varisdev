@@ -25,6 +25,7 @@
       href="../../node_modules/@xterm/xterm/css/xterm.css"
     />
     <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+    <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script type="module" src="app.js"></script>
   </head>
   <body>
@@ -48,7 +49,7 @@
           Check for updates
         </button>
         <button id="updates-action" class="primary-button" type="button" hidden>
-          Update VarisDev
+          Install update
         </button>
       </div>
     </dialog>
@@ -1022,11 +1023,14 @@
                 </div>
                 <div
                   class="composer-tabs"
-                  role="group"
+                  role="tablist"
                   aria-label="Prompt and terminal"
                 >
                   <button
                     id="prompt-tab"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="prompt-panel"
                     class="composer-tab selected"
                     type="button"
                   >
@@ -1034,11 +1038,15 @@
                   </button>
                   <button
                     id="terminal-tab"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="terminal-panel"
+                    tabindex="-1"
                     class="composer-tab"
                     type="button"
-                    title="Open system terminal in this project"
+                    title="Open terminal in this project"
                   >
-                    Terminal <span aria-hidden="true">↗</span>
+                    Terminal
                   </button>
                 </div>
                 <p
@@ -1047,29 +1055,63 @@
                   role="alert"
                   hidden
                 ></p>
-                <div class="composer-resize-frame">
-                  <textarea
-                    id="parent-prompt"
-                    rows="4"
-                    placeholder="Describe the next task…"
-                    required
-                  ></textarea>
-                  <span
-                    id="parent-prompt-resize"
-                    class="composer-resize-handle"
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-label="Resize message field"
-                    tabindex="0"
-                  ></span>
+                <div
+                  id="prompt-panel"
+                  role="tabpanel"
+                  aria-labelledby="prompt-tab"
+                >
+                  <div class="composer-resize-frame">
+                    <textarea
+                      id="parent-prompt"
+                      rows="4"
+                      placeholder="Describe the next task…"
+                      required
+                    ></textarea>
+                    <span
+                      id="parent-prompt-resize"
+                      class="composer-resize-handle"
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="Resize message field"
+                      tabindex="0"
+                    ></span>
+                  </div>
+                  <p
+                    id="prompt-error"
+                    class="form-error"
+                    role="alert"
+                    hidden
+                  ></p>
+                  <div class="composer-actions">
+                    <button
+                      id="abort-parent"
+                      class="danger-button"
+                      type="button"
+                    >
+                      Stop <kbd>Esc</kbd>
+                    </button>
+                    <button
+                      id="send-prompt"
+                      class="primary-button"
+                      type="submit"
+                    >
+                      Send
+                    </button>
+                  </div>
                 </div>
-                <p id="prompt-error" class="form-error" role="alert" hidden></p>
-                <div class="composer-actions">
-                  <button id="abort-parent" class="danger-button" type="button">
-                    Stop <kbd>Esc</kbd>
-                  </button>
-                  <button id="send-prompt" class="primary-button" type="submit">
-                    Send
+                <div
+                  id="terminal-panel"
+                  role="tabpanel"
+                  aria-labelledby="terminal-tab"
+                  hidden
+                >
+                  <div id="terminal-sessions"></div>
+                  <button
+                    id="terminal-close"
+                    class="quiet-button"
+                    type="button"
+                  >
+                    Close terminal
                   </button>
                 </div>
               </form>

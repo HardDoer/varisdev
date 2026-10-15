@@ -1,35 +1,53 @@
-/* global document, window */
+/* global document */
 const {app, BrowserWindow, ipcMain} = require('electron');
 const assert = require('node:assert/strict');
-const {writeFileSync} = require('node:fs');
-const {resolve} = require('node:path');
+const {writeFileSync, mkdirSync} = require('node:fs');
+const {resolve, join} = require('node:path');
+const {pathToFileURL} = require('node:url');
+const openedFiles = [];
 const [profile, reportPath] = process.argv.slice(2);
 app.setPath('userData', profile);
 let browser;
+let terminals;
 const report = {cases: []};
 const calls = [];
 let fail = false;
+for (const name of ['first', 'second']) mkdirSync(join(profile, name));
 const snapshot = id => ({
-  sessions: [
-    {
-      session: {
-        id,
-        name: id,
-        cwd: '/projects/' + id,
-        status: 'idle',
-        owned: true,
-        controllable: true,
-        updatedAt: new Date().toISOString(),
-      },
-      agents: [],
-      events: [],
-      changes: [],
-      conversation: [],
-      queue: {steering: [], followUp: []},
+  sessions: ['first', 'second'].map(name => ({
+    session: {
+      id: name,
+      name,
+      cwd: join(profile, name),
+      status: 'idle',
+      owned: true,
+      controllable: true,
+      updatedAt: new Date().toISOString(),
     },
-  ],
+    agents: [],
+    events: [],
+    changes: [],
+    conversation: [
+      {
+        id: 'reply',
+        role: 'assistant',
+        at: new Date().toISOString(),
+        text: `[Play%20Instant%20Action.command](${pathToFileURL(join(profile, 'Play Instant Action.command')).href})`,
+      },
+      {
+        id: 'command',
+        role: 'tool',
+        toolName: 'bash',
+        at: new Date().toISOString(),
+        input: '{"command":"pwd"}',
+        text: 'Output\n'.repeat(100),
+        status: 'completed',
+      },
+    ],
+    queue: {steering: [], followUp: []},
+  })),
   selectedSessionId: id,
-  launchCwd: '/projects/first',
+  launchCwd: profile,
 });
 function handle(channel, action) {
   ipcMain.handle(channel, async (_event, ...args) => {
@@ -40,9 +58,10 @@ function handle(channel, action) {
     }
   });
 }
+const evaluate = source => browser.webContents.executeJavaScript(source);
 async function until(source) {
-  for (let i = 0; i < 100; i++) {
-    if (await browser.webContents.executeJavaScript(source)) return;
+  for (let i = 0; i < 200; i++) {
+    if (await evaluate(source)) return;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error('Timed out: ' + source);
@@ -50,7 +69,16 @@ async function until(source) {
 app
   .whenReady()
   .then(async () => {
+    const {DesktopTerminals} = await import(
+      pathToFileURL(
+        resolve(__dirname, '../../desktop/build/src/desktop/terminal.js'),
+      ).href
+    );
+    terminals = new DesktopTerminals(event =>
+      browser.webContents.send('pidev:terminal', event),
+    );
     handle('pidev:get-state', () => snapshot('first'));
+    handle('pidev:open-file', (id, path) => openedFiles.push([id, path]));
     handle('varisdev:get-update-status', () => ({
       phase: 'idle',
       currentVersion: '',
@@ -58,11 +86,16 @@ app
     }));
     handle('pidev:open-terminal', id => {
       calls.push(id);
-      if (fail) throw new Error('No terminal application was found.');
-      return {name: 'Terminal'};
+      if (fail) throw new Error('Shell could not start.');
+      return terminals.open(id, join(profile, id));
     });
+    handle('pidev:terminal-write', (id, data) => terminals.write(id, data));
+    handle('pidev:terminal-resize', (id, cols, rows) =>
+      terminals.resize(id, cols, rows),
+    );
+    handle('pidev:terminal-close', id => terminals.close(id));
     handle('pidev:prompt-session', () => {
-      throw new Error('Opening a terminal must not submit the draft');
+      throw new Error('Terminal input must not submit the draft');
     });
     browser = new BrowserWindow({
       width: 1600,
@@ -72,57 +105,114 @@ app
         preload: resolve(__dirname, '../../assets/desktop/preload.cjs'),
         contextIsolation: true,
         sandbox: true,
+        backgroundThrottling: false,
       },
     });
     await browser.loadFile(
       resolve(__dirname, '../../assets/dashboard/index.html'),
     );
     await until("!document.getElementById('parent-controls').hidden");
-    await browser.webContents.executeJavaScript(
+    await evaluate(
       "document.getElementById('parent-prompt').value = 'Keep this draft'; document.getElementById('parent-prompt').dispatchEvent(new Event('input')); document.getElementById('terminal-tab').click()",
     );
-    await until("!document.getElementById('terminal-tab').disabled");
+    await until(
+      "!document.getElementById('terminal-close').disabled && !!document.querySelector('.project-terminal .xterm')",
+    );
     assert.deepEqual(calls, ['first']);
     assert.equal(
-      await browser.webContents.executeJavaScript(
-        "document.getElementById('parent-prompt').value",
-      ),
-      'Keep this draft',
-    );
-    await browser.webContents.executeJavaScript(
-      "document.getElementById('prompt-tab').click()",
+      await evaluate("document.getElementById('prompt-panel').hidden"),
+      true,
     );
     assert.equal(
-      await browser.webContents.executeJavaScript('document.activeElement.id'),
-      'parent-prompt',
+      await evaluate("document.getElementById('terminal-panel').hidden"),
+      false,
+    );
+    await browser.webContents.insertText("printf 'embedded-%s\\n' 'ready'");
+    browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
+    browser.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Return'});
+    await until(
+      "document.querySelector('.project-terminal').textContent.includes('embedded-ready')",
+    );
+    await evaluate("document.getElementById('prompt-tab').click()");
+    assert.equal(await evaluate('document.activeElement.id'), 'parent-prompt');
+    assert.equal(
+      await evaluate("document.getElementById('parent-prompt').value"),
+      'Keep this draft',
+    );
+    await evaluate("document.getElementById('terminal-tab').click()");
+    assert.deepEqual(calls, ['first']);
+    assert.equal(
+      await evaluate(
+        "document.querySelector('.project-terminal').textContent.includes('embedded-ready')",
+      ),
+      true,
     );
     report.cases.push(
-      'Terminal opens the selected project without submitting or discarding its draft',
-    );
-    browser.webContents.send('pidev:snapshot', snapshot('second'));
-    await until(
-      "document.getElementById('factory-title').textContent.includes('second')",
+      'Native shell input and output stay inside the composer and preserve the prompt',
     );
     fail = true;
-    await browser.webContents.executeJavaScript(
-      "document.getElementById('terminal-tab').click()",
+    await evaluate(
+      "[...document.querySelectorAll('#parents button')].find(button => button.textContent.includes('second')).click()",
     );
     await until("!document.getElementById('terminal-error').hidden");
     assert.deepEqual(calls, ['first', 'second']);
     assert.match(
-      await browser.webContents.executeJavaScript(
-        "document.getElementById('terminal-error').textContent",
-      ),
-      /No terminal application/,
+      await evaluate("document.getElementById('terminal-error').textContent"),
+      /Shell could not start/,
+    );
+    fail = false;
+    await evaluate("document.getElementById('terminal-tab').click()");
+    await until(
+      "!document.getElementById('terminal-close').disabled && document.getElementById('terminal-error').hidden",
+    );
+    assert.deepEqual(calls, ['first', 'second', 'second']);
+    await evaluate(
+      "[...document.querySelectorAll('#parents button')].find(button => button.textContent.includes('first')).click()",
+    );
+    await until(
+      "document.getElementById('factory-title').textContent.includes('first')",
     );
     assert.equal(
-      await browser.webContents.executeJavaScript(
-        "document.getElementById('terminal-tab').disabled",
+      await evaluate(
+        "document.querySelector('.project-terminal:not([hidden])').textContent.includes('embedded-ready')",
       ),
+      true,
+    );
+    report.cases.push(
+      'Shells follow the selected project and recover from startup errors',
+    );
+    await evaluate("document.getElementById('terminal-close').click()");
+    await until("document.getElementById('terminal-panel').hidden");
+    assert.throws(() => terminals.write('first', 'pwd\r'), /Open a terminal/);
+    report.cases.push('Closing the embedded terminal closes its shell');
+    assert.equal(
+      await evaluate("document.querySelector('#conversation a').textContent"),
+      'Play Instant Action.command',
+    );
+    await evaluate("document.querySelector('#conversation a').click()");
+    assert.deepEqual(openedFiles, [
+      ['first', join(profile, 'Play Instant Action.command')],
+    ]);
+    assert.equal(
+      await evaluate("document.querySelector('#conversation details').open"),
+      false,
+    );
+    await evaluate("document.querySelector('#conversation summary').click()");
+    browser.webContents.send('pidev:snapshot', snapshot('first'));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(
+      await evaluate("document.querySelector('#conversation details').open"),
+      true,
+    );
+    await evaluate("document.querySelector('#conversation summary').click()");
+    browser.webContents.send('pidev:snapshot', snapshot('first'));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(
+      await evaluate("document.querySelector('#conversation details').open"),
       false,
     );
     report.cases.push(
-      'Terminal follows conversation selection and reports launch errors',
+      'File links display decoded names and command disclosures preserve user choices',
     );
   })
   .catch(error => {
@@ -130,6 +220,7 @@ app
     process.exitCode = 1;
   })
   .finally(() => {
+    terminals?.dispose();
     writeFileSync(reportPath, JSON.stringify(report));
     app.quit();
   });

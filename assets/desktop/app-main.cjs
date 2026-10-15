@@ -1,9 +1,10 @@
 const {app, dialog} = require('electron');
 const process = require('node:process');
 const console = require('node:console');
-const {readFileSync} = require('node:fs');
+const {spawn} = require('node:child_process');
+const {readFileSync, mkdirSync} = require('node:fs');
 const {homedir} = require('node:os');
-const {isAbsolute, join} = require('node:path');
+const {isAbsolute, join, resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 
 async function start() {
@@ -55,18 +56,61 @@ async function start() {
     }
   }
   process.chdir(homedir());
-  const {RuntimeManager} = await import(
+  const {RuntimeManager, defaultDataDir} = await import(
     pathToFileURL(
       join(config.installRoot, 'desktop/build/src/runtime/manager.js'),
     ).href
   );
   const runtime = new RuntimeManager({installRoot: config.installRoot});
   const root = await runtime.currentRoot();
-  const {runCli} = await import(
-    pathToFileURL(join(root, 'desktop/build/src/runtime/cli.js')).href
+  if (
+    (!config.runtimeRoot || resolve(config.runtimeRoot) !== resolve(root)) &&
+    !process.connected
+  ) {
+    const project = process.argv.find(arg =>
+      arg.startsWith('--varisdev-project='),
+    );
+    const profile =
+      process.env.PIDEV_DESKTOP_DATA_DIR || join(defaultDataDir(), 'desktop');
+    mkdirSync(profile, {recursive: true});
+    app.setPath('userData', profile);
+    if (
+      !app.requestSingleInstanceLock({
+        project: project?.slice('--varisdev-project='.length),
+      })
+    ) {
+      app.quit();
+      return;
+    }
+    app.releaseSingleInstanceLock();
+    const child = spawn(
+      config.nodeExecutable,
+      [
+        join(config.installRoot, 'bin/varisdev.mjs'),
+        ...(project
+          ? [project.slice('--varisdev-project='.length)]
+          : ['--overview']),
+      ],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: {...process.env, VARISDEV_RESTART_PID: String(process.pid)},
+      },
+    );
+    await new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    child.unref();
+    app.quit();
+    return;
+  }
+  process.env.PATH = [join(root, 'node_modules/.bin'), process.env.PATH].join(
+    ':',
   );
-  await runCli(['--overview'], config.installRoot);
-  app.quit();
+  await import(
+    pathToFileURL(join(root, 'desktop/build/src/desktop/main.js')).href
+  );
 }
 
 app.setName('VarisDev');

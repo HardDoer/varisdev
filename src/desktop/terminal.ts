@@ -1,145 +1,119 @@
-import {execFile} from 'node:child_process';
-import {access, stat} from 'node:fs/promises';
-import {constants} from 'node:fs';
-import {delimiter, isAbsolute, join} from 'node:path';
-import {promisify} from 'node:util';
+import {randomUUID} from 'node:crypto';
+import {stat} from 'node:fs/promises';
+import {userInfo} from 'node:os';
+import {isAbsolute} from 'node:path';
+import type {IPty} from '@lydell/node-pty';
 
-interface TerminalCommand {
-  name: string;
-  executable: string;
-  args: string[];
+export interface TerminalSnapshot {
+  sessionId: string;
+  generation: string;
+  sequence: number;
+  data: string;
+  exitCode?: number;
 }
 
-const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const powershellQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+interface TerminalSession {
+  pty: IPty;
+  snapshot: TerminalSnapshot;
+}
 
-/** Arguments are passed directly; project names never become shell syntax. */
-export function terminalCommands(
-  platform: NodeJS.Platform,
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): TerminalCommand[] {
-  if (platform === 'darwin') {
-    const command = `cd -- ${shellQuote(cwd)}`;
-    return [
+export class DesktopTerminals {
+  private readonly sessions = new Map<string, TerminalSession>();
+  private disposed = false;
+
+  private readonly send: (event: TerminalSnapshot) => void;
+
+  constructor(send: (event: TerminalSnapshot) => void) {
+    this.send = send;
+  }
+
+  async open(sessionId: string, cwd: string): Promise<TerminalSnapshot> {
+    if (!isAbsolute(cwd) || !(await stat(cwd)).isDirectory())
+      throw new Error('Choose a project folder before opening a terminal.');
+    const {spawn} = await import('@lydell/node-pty');
+    if (this.disposed) throw new Error('The terminal is closing.');
+    const existing = this.sessions.get(sessionId);
+    if (existing) return {...existing.snapshot};
+    if (this.sessions.size >= 16)
+      throw new Error('Close a terminal before opening another.');
+    const shell =
+      process.platform === 'win32'
+        ? 'powershell.exe'
+        : process.env.SHELL || userInfo().shell || '/bin/sh';
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const pty = spawn(
+      shell,
+      process.platform === 'win32' ? ['-NoLogo'] : ['-l'],
       {
-        name: 'Terminal',
-        executable: '/usr/bin/osascript',
-        args: [
-          '-e',
-          `tell application "Terminal"\nactivate\ndo script ${JSON.stringify(command)}\nend tell`,
-        ],
+        cwd,
+        env,
+        name: 'xterm-256color',
+        cols: 80,
+        rows: 24,
       },
-    ];
-  }
-  if (platform === 'win32') {
-    const script = `Start-Process -FilePath 'powershell.exe' -WorkingDirectory ${powershellQuote(cwd)} -ArgumentList '-NoExit'`;
-    return [
-      {name: 'Windows Terminal', executable: 'wt.exe', args: ['-d', cwd]},
-      {
-        name: 'PowerShell',
-        executable: 'powershell.exe',
-        args: [
-          '-NoProfile',
-          '-NonInteractive',
-          '-EncodedCommand',
-          Buffer.from(script, 'utf16le').toString('base64'),
-        ],
-      },
-    ];
-  }
-  const shell = env.SHELL && isAbsolute(env.SHELL) ? env.SHELL : '/bin/sh';
-  return [
-    ...(env.TERMINAL
-      ? [{name: 'Terminal', executable: env.TERMINAL, args: ['-e', shell]}]
-      : []),
-    {name: 'Terminal', executable: 'x-terminal-emulator', args: ['-e', shell]},
-    {
-      name: 'GNOME Terminal',
-      executable: 'gnome-terminal',
-      args: [`--working-directory=${cwd}`],
-    },
-    {name: 'Konsole', executable: 'konsole', args: ['--workdir', cwd]},
-    {
-      name: 'Xfce Terminal',
-      executable: 'xfce4-terminal',
-      args: [`--working-directory=${cwd}`],
-    },
-    {name: 'Kitty', executable: 'kitty', args: ['--directory', cwd]},
-    {
-      name: 'Alacritty',
-      executable: 'alacritty',
-      args: ['--working-directory', cwd],
-    },
-    {name: 'XTerm', executable: 'xterm', args: ['-e', shell]},
-  ];
-}
-
-async function available(command: string): Promise<boolean> {
-  const paths = isAbsolute(command)
-    ? [command]
-    : (process.env.PATH ?? '')
-        .split(delimiter)
-        .filter(Boolean)
-        .map(path => join(path, command));
-  for (const path of paths) {
-    try {
-      await access(
-        path,
-        process.platform === 'win32' ? constants.F_OK : constants.X_OK,
-      );
-      return true;
-    } catch {
-      // Try the next search directory.
-    }
-  }
-  return false;
-}
-
-export async function openSystemTerminal(
-  cwd: string,
-  options: {
-    platform?: NodeJS.Platform;
-    env?: NodeJS.ProcessEnv;
-    available?: (command: string) => Promise<boolean>;
-    run?: (command: string, args: string[], cwd: string) => Promise<void>;
-  } = {},
-): Promise<{name: string}> {
-  if (!isAbsolute(cwd) || !(await stat(cwd)).isDirectory())
-    throw new Error('Choose a project folder before opening a terminal.');
-  const run =
-    options.run ??
-    (async (command, args, cwd) => {
-      // Desktop terminal emulators may keep their launching process alive. Detach
-      // them while retaining spawn errors, and wait only for short system launchers.
-      if (command === '/usr/bin/osascript' || command === 'powershell.exe') {
-        await promisify(execFile)(command, args, {cwd, timeout: 15000});
-      } else {
-        const {spawn} = await import('node:child_process');
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn(command, args, {
-            cwd,
-            detached: true,
-            stdio: 'ignore',
-          });
-          child.once('error', reject);
-          child.once('spawn', () => {
-            child.unref();
-            resolve();
-          });
-        });
-      }
+    );
+    const snapshot: TerminalSnapshot = {
+      sessionId,
+      generation: randomUUID(),
+      sequence: 0,
+      data: '',
+    };
+    const entry = {pty, snapshot};
+    this.sessions.set(sessionId, entry);
+    pty.onData(data => {
+      if (this.sessions.get(sessionId) !== entry) return;
+      snapshot.sequence++;
+      snapshot.data = (snapshot.data + data).slice(-256 * 1024);
+      this.send({...snapshot, data});
     });
-  for (const command of terminalCommands(
-    options.platform ?? process.platform,
-    cwd,
-    options.env,
-  )) {
-    if (!(await (options.available ?? available)(command.executable))) continue;
-    await run(command.executable, command.args, cwd);
-    return {name: command.name};
+    pty.onExit(({exitCode}) => {
+      if (this.sessions.get(sessionId) !== entry) return;
+      snapshot.sequence++;
+      snapshot.exitCode = exitCode;
+      this.send({...snapshot, data: ''});
+    });
+    return {...snapshot};
   }
-  throw new Error(
-    'No terminal application was found. Install a terminal and try again.',
-  );
+
+  write(sessionId: string, data: unknown): void {
+    if (typeof data !== 'string' || data.length > 64 * 1024)
+      throw new Error('Terminal input must contain at most 64 KB.');
+    const entry = this.sessions.get(sessionId);
+    if (!entry || entry.snapshot.exitCode !== undefined)
+      throw new Error('Open a terminal before sending input.');
+    entry.pty.write(data);
+  }
+
+  resize(sessionId: string, cols: unknown, rows: unknown): void {
+    if (
+      typeof cols !== 'number' ||
+      !Number.isInteger(cols) ||
+      cols < 2 ||
+      cols > 500 ||
+      typeof rows !== 'number' ||
+      !Number.isInteger(rows) ||
+      rows < 1 ||
+      rows > 200
+    )
+      throw new Error('Invalid terminal dimensions.');
+    const entry = this.sessions.get(sessionId);
+    if (entry && entry.snapshot.exitCode === undefined)
+      entry.pty.resize(cols, rows);
+  }
+
+  close(sessionId: string): void {
+    const entry = this.sessions.get(sessionId);
+    this.sessions.delete(sessionId);
+    if (entry && entry.snapshot.exitCode === undefined) entry.pty.kill();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    for (const id of this.sessions.keys()) this.close(id);
+  }
 }

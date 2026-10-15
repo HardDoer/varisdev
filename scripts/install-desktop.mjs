@@ -3,6 +3,7 @@ import {createRequire} from 'node:module';
 import process from 'node:process';
 import {dirname, join} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
+import {applyLinuxSandboxFix} from './linux-sandbox.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -21,6 +22,8 @@ function run(args, cwd) {
 // Electron 44 downloads lazily when required. Install its executable now so
 // first launch works offline and never blocks an extension host on a download.
 run([require.resolve('electron/install.js')], root);
+if (process.platform === 'linux')
+  await applyLinuxSandboxFix(require('electron'));
 
 const desktop = fileURLToPath(new URL('../desktop/', import.meta.url));
 run(

@@ -540,9 +540,10 @@ async function check(name, fn) {
           .getBoundingClientRect();
         return {x: box.x, y: box.y, height: box.height};
       });
-      await evaluate(() =>
-        document.querySelector('#active-workers button').click(),
-      );
+      await evaluate(() => {
+        document.querySelector('#active-workers button').click();
+        document.querySelector('#conversation details').open = true;
+      });
       await loaded();
       assert.equal(
         await evaluate(() => document.querySelector('#conversation img').alt),

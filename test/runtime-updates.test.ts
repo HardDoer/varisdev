@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   utimes,
@@ -75,7 +76,9 @@ async function appFiles(
   );
 }
 async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
-  const temp = await mkdtemp(join(tmpdir(), 'varisdev-update-test-'));
+  const temp = await realpath(
+    await mkdtemp(join(tmpdir(), 'varisdev-update-test-')),
+  );
   t.after(() => rm(temp, {recursive: true, force: true}));
   const installRoot = join(temp, 'package');
   const dataDir = join(temp, 'data');

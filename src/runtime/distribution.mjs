@@ -10,7 +10,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import {homedir} from 'node:os';
+import {homedir, userInfo} from 'node:os';
 import {delimiter, dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
@@ -99,20 +99,30 @@ async function findNpm() {
     candidates.push(join(dirname(target), 'node_modules/npm/bin/npm-cli.js'));
   }
   const npm = candidates.find(path => existsSync(path));
-  if (!npm)
-    throw new Error('VarisDev requires Node.js 24+ with npm.');
+  if (!npm) throw new Error('VarisDev requires Node.js 24+ with npm.');
   return npm;
 }
 
-function run(args, cwd) {
-  const result = spawnSync(process.execPath, args, {cwd, stdio: 'inherit'});
+function run(args, cwd, env = process.env) {
+  const result = spawnSync(process.execPath, args, {
+    cwd,
+    env,
+    stdio: 'inherit',
+  });
   if (result.error) throw result.error;
   if (result.status !== 0)
     throw new Error(`Installation command failed (${result.status}).`);
 }
 
-async function configurePath(bin) {
-  if (process.platform === 'win32') {
+/**
+ * @param {string} bin
+ * @param {{home?: string, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform}} [options]
+ */
+export async function configurePath(
+  bin,
+  {home = homedir(), env = process.env, platform = process.platform} = {},
+) {
+  if (platform === 'win32') {
     const result = spawnSync(
       'powershell.exe',
       [
@@ -127,28 +137,49 @@ async function configurePath(bin) {
       }
     `,
       ],
-      {env: {...process.env, VARISDEV_BIN: bin}, stdio: 'inherit'},
+      {env: {...env, VARISDEV_BIN: bin}, stdio: 'inherit'},
     );
     if (result.error) throw result.error;
     if (result.status !== 0)
       throw new Error('Could not add VarisDev to your user PATH.');
+    return;
+  }
+  const shell = env.SHELL || userInfo().shell || '';
+  const config = env.XDG_CONFIG_HOME || join(home, '.config');
+  let profiles;
+  let line = `export PATH='${bin.replaceAll("'", "'\\''")}':"$PATH"`;
+  if (shell.endsWith('/fish')) {
+    profiles = [join(config, 'fish/conf.d/varisdev.fish')];
+    const quoted = bin.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+    line = `fish_add_path --path '${quoted}'`;
+  } else if (shell.endsWith('/nu')) {
+    const directory =
+      !env.XDG_CONFIG_HOME && platform === 'darwin'
+        ? join(home, 'Library/Application Support')
+        : config;
+    profiles = [join(directory, 'nushell/env.nu')];
+    line = `$env.PATH = ($env.PATH | prepend ${JSON.stringify(bin)} | uniq)`;
+  } else if (shell.endsWith('/zsh')) {
+    const directory = env.ZDOTDIR || home;
+    profiles = [join(directory, '.zshrc'), join(directory, '.zprofile')];
+  } else if (shell.endsWith('/bash')) {
+    // Bash reads only the first existing login file. Do not create a new
+    // .bash_profile that would prevent an existing .profile from being read.
+    const login =
+      ['.bash_profile', '.bash_login', '.profile'].find(name =>
+        existsSync(join(home, name)),
+      ) || '.profile';
+    profiles = [join(home, '.bashrc'), join(home, login)];
   } else {
-    const shell = process.env.SHELL || '';
-    const profile = join(
-      homedir(),
-      shell.endsWith('/zsh')
-        ? '.zshrc'
-        : shell.endsWith('/bash')
-          ? process.platform === 'darwin'
-            ? '.bash_profile'
-            : '.bashrc'
-          : '.profile',
-    );
-    const line = `export PATH='${bin.replaceAll("'", "'\\''")}':"$PATH"`;
+    profiles = [join(home, '.profile')];
+  }
+  for (const profile of profiles) {
+    await mkdir(dirname(profile), {recursive: true});
     const current = existsSync(profile) ? await readFile(profile, 'utf8') : '';
     if (!current.split('\n').includes(line))
       await appendFile(profile, `\n# VarisDev\n${line}\n`);
   }
+  return line;
 }
 
 export async function install(args = process.argv.slice(2)) {
@@ -224,10 +255,18 @@ export async function install(args = process.argv.slice(2)) {
         'Installed application does not match the release manifest.',
       );
     run([join(root, 'bin/varisdev.mjs'), '--version'], root);
+    if (process.platform === 'darwin')
+      run([join(root, 'scripts/desktop-app.mjs'), 'install'], root, {
+        ...process.env,
+        VARISDEV_INSTALL_ROOT: await realpath(root),
+        VARISDEV_NODE_EXECUTABLE: process.execPath,
+      });
     const bin = process.platform === 'win32' ? prefix : join(prefix, 'bin');
     if (addPath) {
-      await configurePath(bin);
+      const activation = await configurePath(bin);
       console.log('Installed. Open a new terminal and run varisdev.');
+      if (activation)
+        console.log(`To use this terminal now, run:\n${activation}`);
     } else console.log(`Installed. Add ${bin} to PATH, then run varisdev.`);
   } finally {
     await rm(temporary, {recursive: true, force: true, maxRetries: 5});

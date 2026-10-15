@@ -56,7 +56,8 @@ export function initUpdates(
           ? 'Retry update'
           : phase === 'updating'
             ? 'Updating…'
-            : 'Update VarisDev';
+            : 'Install update';
+    check.hidden = ['available', 'updating', 'ready'].includes(phase);
     check.disabled = working || phase === 'ready';
     dialog.setAttribute('aria-busy', String(working));
   }

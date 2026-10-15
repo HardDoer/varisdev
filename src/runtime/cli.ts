@@ -1,9 +1,17 @@
 import {spawn, type ChildProcess} from 'node:child_process';
 import {createRequire} from 'node:module';
-import {closeSync, mkdirSync, openSync, readFileSync} from 'node:fs';
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from 'node:fs';
 import {stat} from 'node:fs/promises';
 import {delimiter, dirname, join, resolve} from 'node:path';
 import {defaultDataDir, RuntimeManager} from './manager.ts';
+import {macLauncherExecutable} from './mac-launcher.ts';
 import {runAccountCommand, runPluginCommand} from './commands.ts';
 
 const help = `VarisDev
@@ -55,6 +63,18 @@ function launchEnvironment(
   };
 }
 
+/** Electron exposes an API object inside its own process. Read its installed path there. */
+export function electronExecutable(require: NodeJS.Require): string {
+  const electron: unknown = require('electron');
+  if (typeof electron === 'string') return electron;
+  const directory = dirname(require.resolve('electron/package.json'));
+  return join(
+    directory,
+    'dist',
+    readFileSync(join(directory, 'path.txt'), 'utf8').trim(),
+  );
+}
+
 /** Let the previous desktop finish closing before opening its profile again. */
 export async function waitForPreviousDesktop(): Promise<void> {
   const value = process.env.VARISDEV_RESTART_PID;
@@ -95,17 +115,24 @@ export async function openDesktop(
   const profile =
     process.env.PIDEV_DESKTOP_DATA_DIR ?? join(dataDir, 'desktop');
   mkdirSync(profile, {recursive: true});
-  const logPath = join(profile, 'startup.log');
-  const log = openSync(logPath, 'a');
-  const require = createRequire(join(runtimeRoot, 'package.json'));
   const env = launchEnvironment(installRoot, runtimeRoot);
   delete env.ELECTRON_RUN_AS_NODE;
+  const launcher =
+    process.platform === 'darwin'
+      ? await macLauncherExecutable(installRoot, runtimeRoot, env)
+      : undefined;
+  const logPath = join(profile, 'startup.log');
+  const log = openSync(logPath, 'a');
+  const logStart = fstatSync(log).size;
+  const require = createRequire(join(runtimeRoot, 'package.json'));
   let child: ChildProcess;
   try {
     child = spawn(
-      require('electron') as string,
+      launcher || electronExecutable(require),
       [
-        join(runtimeRoot, 'desktop/build/src/desktop/main.js'),
+        ...(launcher
+          ? []
+          : [join(runtimeRoot, 'desktop/build/src/desktop/main.js')]),
         '--varisdev-launcher',
         ...(project ? [`--varisdev-project=${project}`] : []),
       ],
@@ -135,15 +162,41 @@ export async function openDesktop(
       child.off('message', message);
       if (error) {
         child.kill();
-        reject(new Error(`${error.message} Details: ${logPath}`));
+        let details = '';
+        try {
+          const file = openSync(logPath, 'r');
+          try {
+            const size = fstatSync(file).size;
+            const start = Math.max(logStart, size - 8000);
+            const buffer = Buffer.alloc(Math.max(0, size - start));
+            const length = readSync(file, buffer, 0, buffer.length, start);
+            details = buffer.subarray(0, length).toString('utf8').trim();
+          } finally {
+            closeSync(file);
+          }
+        } catch {
+          // Keep the original startup error if its log cannot be read.
+        }
+        const sandbox = /SUID sandbox helper|No usable sandbox/i.test(details)
+          ? `\nLinux sandbox setup: ${join(runtimeRoot, 'docs/installation.md')}#linux-sandbox`
+          : '';
+        reject(
+          new Error(
+            `${error.message}${details ? `\n${details}` : ''}${sandbox}\nDetails: ${logPath}`,
+          ),
+        );
       } else {
         if (child.connected) child.disconnect();
         child.unref();
         resolve();
       }
     };
-    const exited = (code: number | null) =>
-      finish(new Error(`The app closed during startup (${code}).`));
+    const exited = (code: number | null, signal: NodeJS.Signals | null) =>
+      finish(
+        new Error(
+          `The app closed during startup (${code ?? signal ?? 'unknown'}).`,
+        ),
+      );
     const message = (value: unknown) => {
       if (!value || typeof value !== 'object' || !('type' in value)) return;
       if (value.type === 'ready') finish();

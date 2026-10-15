@@ -46,7 +46,7 @@ Saved tool choices live in `varisdev/tool-models/` under Pi's configured agent d
 
 ## macOS launcher
 
-`varisdev app install` adds VarisDev to `~/Applications`. The launcher follows application updates automatically.
+The macOS installer adds VarisDev to `~/Applications`. Use `varisdev app install` to reinstall the launcher. The launcher follows application updates automatically.
 
 Finder uses the executable search path and agent directory recorded when the launcher was installed. Extra environment settings can be placed in `~/Library/Application Support/VarisDev/environment.json` as a JSON object of string values.
 

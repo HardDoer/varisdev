@@ -281,7 +281,7 @@ export function createConversationVisualizations({api, root, dialog}) {
           if (item.signature !== signature) {
             if (block.type === 'image') item.update(block);
             else if (block.type === 'markdown')
-              renderMarkdown(item.element, String(block.text || ''));
+              renderMarkdown(item.element, String(block.text || ''), true);
             else if (block.type === 'progress') {
               const progress = node('progress');
               const value = Number.isFinite(block.value)

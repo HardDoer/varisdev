@@ -1,4 +1,5 @@
 /* global document, window, localStorage, setInterval, clearInterval */
+import {fileLinkPath} from './file-links.js';
 import {createDraftStore} from './draft-storage.js';
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'varisdev.markdown-pins.v1';
@@ -70,7 +71,7 @@ function node(tag, text, className) {
 }
 
 // File text is always appended as text nodes. Markdown never creates raw HTML.
-function inline(target, text) {
+function inline(target, text, linkFiles) {
   const tokens =
     /(`+)([^`\n]+)\1|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|\[([^\]\n]+)\]\(([^)\n]+)\)/g;
   let start = 0;
@@ -84,13 +85,28 @@ function inline(target, text) {
           ? node('em', match[5])
           : node('span', match[6], 'markdown-link');
     if (match[7]) item.title = match[7];
+    const path = linkFiles && match[7] && fileLinkPath(match[7]);
+    if (path) {
+      const link = document.createElement('a');
+      link.href = '#';
+      link.dataset.filePath = path;
+      link.title = path;
+      try {
+        link.textContent = decodeURIComponent(match[6]);
+      } catch {
+        link.textContent = match[6];
+      }
+      target.append(link);
+      start = match.index + match[0].length;
+      continue;
+    }
     target.append(item);
     start = match.index + match[0].length;
   }
   target.append(document.createTextNode(text.slice(start)));
 }
 
-export function renderMarkdown(target, content) {
+export function renderMarkdown(target, content, linkFiles = false) {
   const limit = 150_000;
   const lines = content.slice(0, limit).replace(/\r\n?/g, '\n').split('\n');
   const fragment = document.createDocumentFragment();
@@ -99,7 +115,7 @@ export function renderMarkdown(target, content) {
   const flush = () => {
     if (paragraph.length) {
       const item = node('p');
-      inline(item, paragraph.join('\n'));
+      inline(item, paragraph.join('\n'), linkFiles);
       fragment.append(item);
       paragraph = [];
     }
@@ -146,8 +162,8 @@ export function renderMarkdown(target, content) {
           checkbox.disabled = true;
           checkbox.setAttribute('aria-label', task[2]);
           item.append(checkbox);
-          inline(item, task[2]);
-        } else inline(item, bullet[3]);
+          inline(item, task[2], linkFiles);
+        } else inline(item, bullet[3], linkFiles);
         // Keep nested task indentation readable without interpreting file HTML.
         item.style.marginInlineStart = `${Math.min(bullet[1].length, 16) * 0.45}em`;
         list.append(item);
@@ -156,7 +172,8 @@ export function renderMarkdown(target, content) {
         const item = node(
           heading ? `h${heading[1].length}` : quote ? 'blockquote' : 'hr',
         );
-        if (heading || quote) inline(item, heading ? heading[2] : quote[1]);
+        if (heading || quote)
+          inline(item, heading ? heading[2] : quote[1], linkFiles);
         fragment.append(item);
       }
     } else if (!line.trim()) {

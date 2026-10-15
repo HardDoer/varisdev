@@ -6,6 +6,7 @@ pipeline {
     }
     environment {
         RELEASE_IMAGE = "jnokikana/joonas.ninja:varisdev-${BUILD_NUMBER}"
+        LATEST_RELEASE_IMAGE = 'jnokikana/joonas.ninja:varisdev-latest'
     }
     stages {
         stage('Checkout') {
@@ -28,7 +29,9 @@ pipeline {
         stage('Push to artifactory') {
             steps {
                 sh 'docker push "$RELEASE_IMAGE"'
-                echo "Release image: ${env.RELEASE_IMAGE}"
+                sh 'docker tag "$RELEASE_IMAGE" "$LATEST_RELEASE_IMAGE"'
+                sh 'docker push "$LATEST_RELEASE_IMAGE"'
+                echo "Release image: ${env.RELEASE_IMAGE} (also available as ${env.LATEST_RELEASE_IMAGE})"
             }
         }
     }

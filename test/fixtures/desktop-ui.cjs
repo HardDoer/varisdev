@@ -1680,8 +1680,16 @@ async function main() {
         text: 'Older result line\n'.repeat(80),
       });
       await publish();
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#conversation details').open,
+        ),
+        false,
+        'New tool results should start collapsed',
+      );
       const wheel = await evaluate(() => {
         const details = document.querySelector('#conversation details');
+        details.open = true;
         const output = details.querySelector('.tool-output');
         const panel = document.getElementById('panel-conversation');
         panel.scrollTop +=
@@ -1699,7 +1707,7 @@ async function main() {
           outputTop: output.scrollTop,
         };
       });
-      assert.equal(wheel.open, true, 'New tool results should be expanded');
+      assert.equal(wheel.open, true, 'A tool result opens when requested');
       assert.ok(
         wheel.nestedOverflow <= 1,
         'Tool results must have no nested vertical scroll',
@@ -2862,6 +2870,7 @@ async function main() {
         editor.dispatchEvent(new Event('input', {bubbles: true}));
         document.querySelector('#conversation details summary').click();
         document.querySelector('#active-workers button').click();
+        document.querySelector('#conversation details').open = true;
       });
       await settle();
       assert.deepEqual(
@@ -3008,7 +3017,7 @@ async function main() {
         await evaluate(
           () => document.querySelector('#conversation details').open,
         ),
-        true,
+        false,
       );
       // Factory robot selections also open the agent conversation.
       await evaluate(() =>
@@ -3096,7 +3105,7 @@ async function main() {
           title: 'Alpha factory',
           draft: 'Unsent parent draft',
           tool: 'Parent changed output',
-          open: false,
+          open: true,
           composer: false,
           context: false,
           follow: true,
@@ -3388,6 +3397,7 @@ async function main() {
       assert.equal(view.scripts, 0);
       assert.equal(view.error, 'Execution failed\nExit code 1');
       await evaluate(() => {
+        document.querySelector('#conversation details').open = true;
         const text = document.querySelector(
           '#conversation .tool-input',
         ).firstChild;
@@ -3530,7 +3540,9 @@ async function main() {
           .getElementById('tab-context')
           .getAttribute('aria-selected'),
         focused: document.activeElement.id,
-        panels: [...document.querySelectorAll('[role="tabpanel"]')]
+        panels: [
+          ...document.querySelectorAll('[role="tabpanel"][id^="panel-"]'),
+        ]
           .filter(item => !item.hidden)
           .map(item => item.id),
         headings: [...document.querySelectorAll('.context-section h3')].map(
@@ -4147,7 +4159,7 @@ async function main() {
     },
   );
   await run(
-    'actions remain expanded and distinct through streaming, parent switches and reload',
+    'actions start collapsed and preserve disclosure choices through streaming, parent switches and reload',
     async () => {
       hub.sessions[0].conversation = [
         'read',
@@ -4182,7 +4194,7 @@ async function main() {
           accent: getComputedStyle(row).borderLeftColor,
         })),
       );
-      assert.ok(initial.every(row => row.open));
+      assert.ok(initial.every(row => !row.open));
       assert.equal(new Set(initial.map(row => row.accent)).size, 4);
       assert.deepEqual(
         initial.map(row => row.label),
@@ -4211,7 +4223,7 @@ async function main() {
             details => details.open,
           ),
         ),
-        [false, true, true, true],
+        [true, false, false, false],
       );
       await evaluate(() => document.getElementById('tab-feed').click());
       assert.deepEqual(
@@ -4887,11 +4899,12 @@ async function main() {
         })),
         {editor: '', messages: 0, dialog: false, focused: true},
       );
-      const mode = await evaluate(() => {
+      const mode = await evaluate(async () => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Inspect this project';
         editor.dispatchEvent(new Event('input', {bubbles: true}));
         document.getElementById('prompt-form').requestSubmit();
+        await Promise.resolve();
         return document.getElementById('factory-canvas').dataset.parentMode;
       });
       assert.equal(mode, 'startled', 'The prompt wakes the parent immediately');

@@ -2634,3 +2634,40 @@ select:focus-visible {
 .composer-tab:hover {
   color: var(--mint);
 }
+
+#terminal-sessions {
+  height: 240px;
+  min-height: 120px;
+  resize: vertical;
+  overflow: hidden;
+  background: #10171d;
+}
+.project-terminal {
+  height: 100%;
+  padding: 8px;
+}
+.project-terminal .xterm {
+  height: 100%;
+}
+#terminal-close {
+  margin-top: 6px;
+}
+.conversation-text a {
+  color: var(--mint);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.editor-expanded #prompt-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.editor-expanded #terminal-panel {
+  flex: 1;
+  min-height: 0;
+}
+.editor-expanded #terminal-sessions {
+  height: calc(100% - 40px);
+}

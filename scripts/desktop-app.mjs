@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {homedir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -26,15 +26,17 @@ function run(executable, args) {
 }
 
 function checkNotRunning() {
-  const executable = join(destination, 'Contents/MacOS/Electron');
-  const pattern = `^${executable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`;
+  const executable = join(destination, 'Contents/MacOS') + '/';
+  const pattern = `^${executable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(Electron|VarisDev)( |$)`;
   try {
     run('/usr/bin/pgrep', ['-f', pattern]);
   } catch (error) {
     if (error.status === 1) return;
     throw error;
   }
-  throw new Error('Quit VarisDev before reinstalling it.');
+  const error = new Error('Quit VarisDev before reinstalling it.');
+  error.code = 'APP_RUNNING';
+  throw error;
 }
 
 function install() {
@@ -92,6 +94,7 @@ function install() {
       JSON.stringify(
         {
           installRoot: process.env.VARISDEV_INSTALL_ROOT || root,
+          runtimeRoot: resolve(root),
           nodeExecutable:
             process.env.VARISDEV_NODE_EXECUTABLE || process.execPath,
           dataDir: process.env.VARISDEV_DATA_DIR,
@@ -111,9 +114,14 @@ function install() {
         2,
       ),
     );
+    renameSync(
+      join(staged, 'Contents/MacOS/Electron'),
+      join(staged, 'Contents/MacOS/VarisDev'),
+    );
     const plist = join(staged, 'Contents/Info.plist');
     for (const [key, value] of Object.entries({
       CFBundleIdentifier: 'com.varisware.varisdev',
+      CFBundleExecutable: 'VarisDev',
       CFBundleName: 'VarisDev',
       CFBundleDisplayName: 'VarisDev',
       CFBundleIconFile: 'varisdev.icns',
@@ -159,5 +167,5 @@ try {
   } else throw new Error('Usage: node scripts/desktop-app.mjs install|open');
 } catch (error) {
   console.error(error.message);
-  process.exitCode = 1;
+  process.exitCode = error.code === 'APP_RUNNING' ? 2 : 1;
 }

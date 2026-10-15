@@ -1,81 +1,70 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, realpath, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
-import {openSystemTerminal, terminalCommands} from '../src/desktop/terminal.ts';
-
-void test('terminal launches in the selected project and falls back to an installed application', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'varisdev-terminal-'));
-  t.after(() => rm(directory, {recursive: true, force: true}));
-  const cwd = join(directory, "project's files & $work");
-  await mkdir(cwd);
-  const attempts: string[] = [];
-  const launched: unknown[] = [];
-  const terminal = await openSystemTerminal(cwd, {
-    platform: 'linux',
-    env: {SHELL: '/bin/sh'},
-    available: async command => {
-      attempts.push(command);
-      return command === 'konsole';
-    },
-    run: async (...args) => {
-      launched.push(args);
-    },
-  });
-  assert.equal(terminal.name, 'Konsole');
-  assert.deepEqual(launched, [['konsole', ['--workdir', cwd], cwd]]);
-  assert.ok(attempts.includes('gnome-terminal'));
-  await assert.rejects(
-    openSystemTerminal(cwd, {
-      platform: 'linux',
-      env: {},
-      available: async () => false,
-    }),
-    /No terminal application/,
-  );
-  await assert.rejects(
-    openSystemTerminal(join(cwd, 'missing'), {
-      run: async () =>
-        assert.fail('Must not start a terminal for a missing project'),
-    }),
-    {code: 'ENOENT'},
-  );
-});
+import {DesktopTerminals} from '../src/desktop/terminal.ts';
 
 void test(
-  'macOS terminal navigation treats punctuation in a project path as data',
-  {skip: process.platform === 'win32'},
+  'embedded shells retain their project, resize, isolate sessions and close',
+  {skip: process.platform === 'win32', timeout: 15000},
   async t => {
-    const directory = await mkdtemp(
-      join(tmpdir(), 'varisdev-terminal-quoting-'),
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'varisdev-terminal-')),
     );
     t.after(() => rm(directory, {recursive: true, force: true}));
-    const cwd = join(directory, "quotes' $USER; echo wrong\nfolder");
+    const cwd = join(directory, "project's files & $work");
     await mkdir(cwd);
-    const command = terminalCommands('darwin', cwd)[0];
-    const encoded = command.args[1]
-      .split('\ndo script ')[1]
-      .split('\nend tell')[0];
-    const shellCommand = JSON.parse(encoded) as string;
-    const {stdout} = await promisify(execFile)('/bin/sh', [
-      '-c',
-      `${shellCommand} && pwd -P`,
-    ]);
-    // macOS /var is an alias for /private/var.
-    const {stdout: realCwd} = await promisify(execFile)('/bin/pwd', ['-P'], {
-      cwd,
+    const previous = process.env.SHELL;
+    process.env.SHELL = '/bin/sh';
+    t.after(() => {
+      if (previous === undefined) delete process.env.SHELL;
+      else process.env.SHELL = previous;
     });
-    assert.equal(stdout, realCwd);
+    const terminals = new DesktopTerminals(() => {});
+    t.after(() => terminals.dispose());
+    const first = await terminals.open('first', cwd);
+    assert.equal(
+      (await terminals.open('first', cwd)).generation,
+      first.generation,
+    );
+    const second = await terminals.open('second', directory);
+    assert.notEqual(second.generation, first.generation);
+    terminals.resize('first', 93, 31);
+    terminals.write('first', "pwd -P; stty size; printf 'pty-%s\\n' 'ready'\r");
+    let output = '';
+    for (let i = 0; i < 100; i++) {
+      output = (await terminals.open('first', cwd)).data;
+      if (output.includes('pty-ready')) break;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    assert.ok(output.includes(cwd), output);
+    assert.match(output, /31 93/);
+    assert.match(output, /pty-ready/);
+    assert.doesNotMatch(
+      (await terminals.open('second', directory)).data,
+      /pty-ready/,
+    );
+    assert.throws(() => terminals.resize('first', 0, 50), /dimensions/);
+    terminals.close('first');
+    assert.throws(() => terminals.write('first', 'pwd\r'), /Open a terminal/);
+    assert.notEqual(
+      (await terminals.open('first', cwd)).generation,
+      first.generation,
+    );
+    await assert.rejects(
+      terminals.open('missing', join(directory, 'missing')),
+      {code: 'ENOENT'},
+    );
   },
 );
 
 void test(
-  'Terminal tab uses the desktop bridge without affecting the draft',
+  'Embedded terminal and conversation controls work in Electron',
   {
     timeout: 30000,
     skip:
@@ -87,7 +76,11 @@ void test(
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-terminal-ui-'));
     t.after(() => rm(directory, {recursive: true, force: true}));
     const reportPath = join(directory, 'report.json');
-    const env = {...process.env};
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: directory,
+      SHELL: '/bin/sh',
+    };
     delete env.ELECTRON_RUN_AS_NODE;
     let error;
     try {
@@ -111,16 +104,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(error);
-    assert.equal(report.cases.length, 2);
+    assert.equal(report.cases.length, 4);
   },
 );
-
-void test('Windows terminal receives the project as one argument and has a PowerShell fallback', () => {
-  const cwd = "C:\\project's files & $data";
-  const [terminal, fallback] = terminalCommands('win32', cwd);
-  assert.deepEqual(terminal.args, ['-d', cwd]);
-  const command = Buffer.from(fallback.args.at(-1)!, 'base64').toString(
-    'utf16le',
-  );
-  assert.match(command, /-WorkingDirectory 'C:\\project''s files & \$data'/);
-});

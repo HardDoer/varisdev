@@ -98,6 +98,18 @@ contextBridge.exposeInMainWorld('pidev', {
   reloadSession: id => invoke('pidev:reload-session', id),
   workspace: id => invoke('pidev:workspace', id),
   openTerminal: id => invoke('pidev:open-terminal', id),
+  writeTerminal: (id, data) => invoke('pidev:terminal-write', id, data),
+  resizeTerminal: (id, cols, rows) =>
+    invoke('pidev:terminal-resize', id, cols, rows),
+  closeTerminal: id => invoke('pidev:terminal-close', id),
+  onTerminal(callback) {
+    if (typeof callback !== 'function')
+      throw new TypeError('A terminal callback is required.');
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('pidev:terminal', listener);
+    return () => ipcRenderer.removeListener('pidev:terminal', listener);
+  },
+  openFile: (id, path) => invoke('pidev:open-file', id, path),
   readMarkdown: (sessionId, path) =>
     invoke('pidev:read-markdown', sessionId, path),
   saveMarkdown: (sessionId, path, content, version) =>

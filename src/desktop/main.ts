@@ -38,7 +38,8 @@ import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopPreferences} from './preferences.ts';
-import {openSystemTerminal} from './terminal.ts';
+import {DesktopTerminals} from './terminal.ts';
+import {openConversationFile} from './files.ts';
 import {DesktopAccounts} from './accounts.ts';
 import {DesktopToolSettings} from './tool-settings.ts';
 import {getToolModels, saveToolModel} from '../tools/model-selection.ts';
@@ -54,6 +55,10 @@ import type {
 } from '../dashboard/features.ts';
 
 app.setName('VarisDev');
+const terminals = new DesktopTerminals(event => {
+  if (mainWindow && !mainWindow.isDestroyed())
+    mainWindow.webContents.send('pidev:terminal', event);
+});
 const installRoot =
   process.env.VARISDEV_INSTALL_ROOT ??
   fileURLToPath(new URL('../../../../', import.meta.url));
@@ -334,7 +339,22 @@ function installHandlers(): void {
       .sessions.find(item => item.session.id === id(sessionId));
     if (!selected)
       throw new DashboardInputError('Choose a valid parent session.');
-    return openSystemTerminal(selected.session.cwd);
+    return terminals.open(selected.session.id, selected.session.cwd);
+  });
+  handle('pidev:terminal-write', (sessionId, data) =>
+    terminals.write(id(sessionId), data),
+  );
+  handle('pidev:terminal-resize', (sessionId, cols, rows) =>
+    terminals.resize(id(sessionId), cols, rows),
+  );
+  handle('pidev:terminal-close', sessionId => terminals.close(id(sessionId)));
+  handle('pidev:open-file', (sessionId, path) => {
+    const selected = hub
+      .snapshot()
+      .sessions.find(item => item.session.id === id(sessionId));
+    if (!selected)
+      throw new DashboardInputError('Choose a valid parent session.');
+    return openConversationFile(selected.session.cwd, path, shell.openPath);
   });
   handle('pidev:choose-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
@@ -377,13 +397,6 @@ function installMenu(): void {
             showWindow();
             mainWindow?.webContents.send('varisdev:show-updates');
             void runtime.check().catch(() => {});
-          },
-        },
-        {
-          label: 'Update VarisDev…',
-          click: () => {
-            showWindow();
-            mainWindow?.webContents.send('varisdev:show-updates');
           },
         },
       ],
@@ -712,6 +725,7 @@ async function shutdown(): Promise<void> {
   unsubscribe();
   unsubscribeUpdates();
   try {
+    terminals.dispose();
     await accounts.dispose();
     if (attachedSessionId) {
       try {
