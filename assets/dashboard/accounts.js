@@ -47,9 +47,12 @@ export function initAccounts(api) {
       $(id).hidden = !available;
       $(id).disabled = working;
     }
-    $('accounts-key').textContent = selected?.stored
-      ? 'Replace with API key'
-      : 'Enter API key';
+    $('accounts-key').textContent =
+      selected?.id === 'llama.cpp'
+        ? 'Connect server'
+        : selected?.stored
+          ? 'Replace with API key'
+          : 'Enter API key';
     $('accounts-message').textContent = state.message;
     $('accounts-error').textContent = failure || state.error || '';
     $('accounts-error').hidden = !$('accounts-error').textContent;
@@ -89,7 +92,7 @@ export function initAccounts(api) {
           : 'accounts-input';
         input.hidden = selecting;
         choice.hidden = !selecting;
-        input.required = !selecting;
+        input.required = !selecting && !request.allowEmpty;
         input.type = ['secret', 'manual_code'].includes(request.type)
           ? 'password'
           : 'text';

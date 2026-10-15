@@ -2,7 +2,6 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRuntime,
   ModelRegistry,
   parseArgs,
   SessionManager,
@@ -32,6 +31,8 @@ import type {DashboardState} from './state.ts';
 import type {DesktopStartup} from '../desktop/startup.ts';
 import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
 import {createAppResourceFilter} from './resources.ts';
+import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
+import {createLlamaExtension} from './llama.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -88,6 +89,7 @@ export async function createDashboardParent(
     if (diagnostics.length > 100) diagnostics.shift();
     state?.record('error', message);
   };
+  const llama = createLlamaExtension();
   const loader = new DefaultResourceLoader({
     ...resourceOptions,
     additionalExtensionPaths: resources.paths(
@@ -106,6 +108,7 @@ export async function createDashboardParent(
     agentDir,
     settingsManager: resources.settingsManager,
     extensionFactories: [
+      llama.extension,
       pi => {
         registerProjectTools(pi);
         control = registerAgentTools(pi);
@@ -125,7 +128,7 @@ export async function createDashboardParent(
   await loader.reload();
   for (const [name, value] of args?.unknownFlags ?? [])
     loader.getExtensions().runtime.flagValues.set(name, value);
-  const modelRuntime = await ModelRuntime.create({
+  const modelRuntime = await createDesktopModelRuntime({
     authPath: join(agentDir, 'auth.json'),
     modelsPath: join(agentDir, 'models.json'),
     refreshOnCreate: !inherited,
@@ -301,6 +304,7 @@ export async function createDashboardParent(
     stoppedMessages?.followUp.push(...queued.followUp);
   };
   const stop = () => {
+    llama.cancel();
     ui.cancelDialogs();
     preserveQueue();
     session.abortRetry();
@@ -454,8 +458,18 @@ export async function createDashboardParent(
   return {
     state,
     ui,
-    features: async () =>
-      sessionFeatures(session, loader, settingsManager, diagnostics),
+    features: async () => {
+      const result = await modelRuntime.refresh({
+        providers: [LLAMA_PROVIDER],
+        allowNetwork: true,
+        signal: AbortSignal.timeout(5000),
+      });
+      const failure = result.errors.get(LLAMA_PROVIDER);
+      return sessionFeatures(session, loader, settingsManager, [
+        ...diagnostics,
+        ...(failure ? [{message: `llama.cpp: ${failure.message}`}] : []),
+      ]);
+    },
     configure: configurationAction,
     compact: instructions => sessionAction(() => session.compact(instructions)),
     reload: () => sessionAction(reload),

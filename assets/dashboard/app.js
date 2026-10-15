@@ -1867,7 +1867,7 @@ async function openFolder() {
     text($('new-session'), 'Open folder');
   }
 }
-async function startSession() {
+async function startSession(submission) {
   const cwd = snapshot()?.session.cwd;
   if (creating || !api || !cwd) return;
   saveDraft();
@@ -1876,6 +1876,7 @@ async function startSession() {
   renderSessionActions();
   try {
     const result = await api.createSession({cwd});
+    if (submission) clearSubmittedDraft(submission.id, submission.draft);
     await selectOpenedSession(result.id);
   } catch (error) {
     showError(error);
@@ -1927,6 +1928,15 @@ async function sendPrompt(event) {
     return;
   saveDraft();
   const submitted = {...promptDrafts.get(id)};
+  if (/^\/new(?:\s|$)/.test(prompt)) {
+    if (prompt !== '/new') {
+      showError(new Error('Usage: /new'), $('prompt-error'));
+      return;
+    }
+    $('prompt-error').hidden = true;
+    await startSession({id, draft: submitted});
+    return;
+  }
   sending.add(id);
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
@@ -2030,7 +2040,7 @@ async function loadWorkspace() {
 
 $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
-$('start-session').addEventListener('click', startSession);
+$('start-session').addEventListener('click', () => void startSession());
 $('close-session').addEventListener('click', closeSession);
 $('close-parent-session').addEventListener('click', closeSession);
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));

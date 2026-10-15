@@ -1,5 +1,6 @@
 import {join} from 'node:path';
-import {getAgentDir, ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {getAgentDir, type ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {createDesktopModelRuntime} from '../llama.ts';
 import {
   readToolSettings,
   saveToolSettings,
@@ -42,7 +43,7 @@ export class DesktopToolSettings {
       this.runtime ??= (
         this.dependencies.createRuntime
           ? this.dependencies.createRuntime()
-          : ModelRuntime.create({
+          : createDesktopModelRuntime({
               authPath: join(getAgentDir(), 'auth.json'),
               modelsPath: join(getAgentDir(), 'models.json'),
               allowModelNetwork: false,

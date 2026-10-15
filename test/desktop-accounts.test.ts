@@ -359,7 +359,7 @@ void test(
       cases: string[];
     };
     assert.ifError(report.error);
-    assert.equal(report.cases.length, 6);
+    assert.equal(report.cases.length, 7);
     assert.ifError(failure);
   },
 );

@@ -379,6 +379,90 @@ async function main() {
   report.cases.push(
     'tool model choices are editable and saved through the GUI',
   );
+  runtime.registerNativeProvider({
+    ...runtime.getProvider('openai'),
+    id: 'llama.cpp',
+    name: 'llama.cpp',
+    getModels: () => [],
+    refreshModels: undefined,
+    auth: {
+      apiKey: {
+        name: 'llama.cpp server',
+        async login(interaction) {
+          const url = await interaction.prompt({
+            type: 'text',
+            message: 'llama.cpp server URL',
+            placeholder: 'http://127.0.0.1:8080',
+          });
+          const key = await interaction.prompt({
+            type: 'secret',
+            message: 'API key (optional)',
+          });
+          return {
+            type: 'api_key',
+            key: key || undefined,
+            env: {LLAMA_BASE_URL: url || 'http://127.0.0.1:8080'},
+          };
+        },
+        async check({credential}) {
+          return credential ? {type: 'api_key'} : undefined;
+        },
+        async resolve({credential}) {
+          return credential
+            ? {auth: {apiKey: credential.key || 'local'}}
+            : undefined;
+        },
+      },
+    },
+  });
+  await accounts.get();
+  await waitFor(() =>
+    [...document.getElementById('accounts-provider').options].some(
+      item => item.value === 'llama.cpp',
+    ),
+  );
+  await select('llama.cpp');
+  assert.equal(
+    await evaluate(() => document.getElementById('accounts-key').textContent),
+    'Connect server',
+  );
+  await evaluate(() => document.getElementById('accounts-key').click());
+  await waitFor(
+    () =>
+      document.getElementById('accounts-prompt-label').textContent ===
+      'llama.cpp server URL',
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('accounts-input').required),
+    false,
+  );
+  await evaluate(() =>
+    document.getElementById('accounts-form').requestSubmit(),
+  );
+  await waitFor(
+    () =>
+      document.getElementById('accounts-prompt-label').textContent ===
+      'API key (optional)',
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('accounts-input').required),
+    false,
+  );
+  await evaluate(() =>
+    document.getElementById('accounts-form').requestSubmit(),
+  );
+  await waitFor(
+    () =>
+      document.getElementById('accounts-message').textContent ===
+      'Connected to llama.cpp.',
+  );
+  assert.deepEqual(JSON.parse(readFileSync(authPath, 'utf8'))['llama.cpp'], {
+    type: 'api_key',
+    env: {LLAMA_BASE_URL: 'http://127.0.0.1:8080'},
+  });
+  report.cases.push(
+    'llama.cpp server setup accepts the default URL and an empty optional key',
+  );
 }
 main()
   .catch(error => {

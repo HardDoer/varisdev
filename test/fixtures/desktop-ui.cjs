@@ -2343,7 +2343,7 @@ async function main() {
         document.getElementById('open-commands').click();
       });
       await until(
-        () => document.querySelectorAll('#command-catalog button').length === 4,
+        () => document.querySelectorAll('#command-catalog button').length === 5,
         'Skill catalog did not load from sessionFeatures',
       );
       const catalog = await evaluate(() => ({
@@ -5282,6 +5282,205 @@ async function main() {
         true,
         'Retry clears the previous close error',
       );
+    },
+  );
+
+  await run(
+    '/new starts a fresh session in the current folder without contacting the model',
+    async () => {
+      const cwd = join(directory, 'new-command-project');
+      hub.sessions[0].session.cwd = cwd;
+      hub.sessions[0].session.model = undefined;
+      hub.sessions[0].agents = [
+        {
+          id: 'working-agent',
+          name: 'Working agent',
+          task: 'Continue working',
+          status: 'running',
+          startedAt: at,
+          createdAt: at,
+        },
+      ];
+      resources.set('alpha', {...features(), model: undefined, models: []});
+      creationIds = ['command-parent'];
+      creationDelay = 180;
+      await publish();
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/ne';
+        editor.focus();
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await until(
+        () =>
+          !document.getElementById('command-suggestions').hidden &&
+          document
+            .getElementById('command-suggestions')
+            .textContent.includes('/new'),
+        '/new must appear in slash suggestions without a selected model',
+      );
+      await press('Return');
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '/new ',
+      );
+      assert.deepEqual(
+        calls,
+        [],
+        'Accepting a suggestion only edits the draft',
+      );
+      await press('Return');
+      await until(
+        () =>
+          document.getElementById('start-session').textContent === 'Creating…',
+        '/new did not start session creation',
+      );
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        '/new did not select the fresh parent',
+      );
+      assert.deepEqual(calls, [{method: 'createSession', input: {cwd}}]);
+      const fresh = hub.sessions.find(
+        item => item.session.id === 'command-parent',
+      );
+      assert.deepEqual(fresh.conversation, []);
+      assert.equal(fresh.session.status, 'idle');
+      assert.equal(hub.sessions[0].session.status, 'running');
+      assert.equal(hub.sessions[0].agents[0].status, 'running');
+      assert.equal(hub.sessions[0].conversation.length, 3);
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Alpha factory'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '',
+      );
+      assert.equal(
+        await evaluate(() => {
+          const saved = JSON.parse(
+            window.localStorage.getItem('varisdev.composer-drafts.v1') || '[]',
+          );
+          return saved.some(([id]) => id === 'alpha');
+        }),
+        false,
+        'A successful /new must clear its submitted draft',
+      );
+    },
+  );
+
+  await run(
+    '/new validates arguments, preserves failed or edited drafts, and allows retry',
+    async () => {
+      creationError = 'The factory can hold eight parent sessions.';
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/new extra';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+      });
+      await until(
+        () => !document.getElementById('prompt-error').hidden,
+        '/new with arguments must report its usage',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('prompt-error').textContent,
+        ),
+        /Usage: \/new/,
+      );
+      assert.deepEqual(calls, []);
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '  /new  ';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+      });
+      await until(
+        () => !document.getElementById('app-error').hidden,
+        'Session creation failure must be visible',
+      );
+      assert.match(
+        await evaluate(() => document.getElementById('app-error').textContent),
+        /eight parent sessions/,
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '  /new  ',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-title').textContent,
+        ),
+        'Alpha factory',
+      );
+      creationError = undefined;
+      creationDelay = 180;
+      creationIds = ['retry-command-parent'];
+      await evaluate(() => {
+        document.getElementById('prompt-form').requestSubmit();
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Keep this edited draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta factory'))
+          .click();
+        editor.value = 'Keep the other draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        '/new retry must select the fresh parent',
+      );
+      assert.deepEqual(calls, [
+        {method: 'createSession', input: {cwd: directory}},
+        {method: 'createSession', input: {cwd: directory}},
+      ]);
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Alpha factory'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Keep this edited draft',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta factory'))
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Keep the other draft',
+      );
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/newspaper';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+      });
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'A different command name must follow normal prompt handling',
+      );
+      assert.deepEqual(calls.at(-1), {
+        method: 'prompt',
+        sessionId: 'beta',
+        request: {prompt: '/newspaper'},
+      });
     },
   );
 

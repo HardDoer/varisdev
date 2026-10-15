@@ -6,7 +6,7 @@ For accounts, runtime settings, skills, and package commands, see [Pi's document
 
 ## Sessions
 
-Use **Menu → New session** to start a fresh conversation in the current folder.
+Type **`/new`** in the parent composer and send it, or use **Menu → New session**, to start a fresh conversation in the current folder. The new parent starts with empty conversation history; the previous parent and its agents remain open. `/new` takes no arguments and does not require a selected model.
 
 Use **Menu → Resume session** to reopen a saved conversation in the current folder. Sessions appear newest first. Use **Choose folder** in the dialog to browse another folder's history.
 
@@ -17,6 +17,58 @@ Select a stopped or finished agent and click **Remove agent** to clear it from t
 ## Models
 
 Choose the parent model in **Menu → Model & settings**. VarisDev remembers your selection.
+
+### llama.cpp
+
+Start a recent llama.cpp server in router mode, pointing it at your GGUF model directory. For example:
+
+```sh
+llama-server --models-dir ./models --no-models-autoload --jinja --host 127.0.0.1 --port 8080 -c 32768
+```
+
+Adjust the directory, context size, and GPU options for your setup. Router mode starts without `-m` or `--model`.
+
+1. Open **Menu → Accounts**, select **llama.cpp**, and click **Connect server**.
+2. Enter the server URL, or leave it blank for `http://127.0.0.1:8080`. The API key is optional unless your server requires one.
+3. Send **`/llama`** in the parent composer. Select an unloaded model to load it, or a loaded model to unload it.
+4. Select a loaded model in **Menu → Model & settings**. Background agents can inherit it or use it through **Agent models**.
+
+**Download model…** accepts a Hugging Face search or `owner/repository[:quantization]`. Select the repository and quantization; the server downloads the model. For gated repositories, grant access on Hugging Face and provide `HF_TOKEN` to the llama.cpp server. `HF_TOKEN` in VarisDev also authenticates its repository searches.
+
+Loading and downloading show progress. **Cancel**, **Escape**, **Stop**, or closing the parent cancels its active operation. If other models are loaded, choose whether to keep them loaded or unload them first. Saved GGUF files stay on the server.
+
+`LLAMA_BASE_URL` and optional `LLAMA_API_KEY` can configure the connection instead of Accounts. Set them before starting VarisDev. The server runs separately from VarisDev.
+
+### Custom local servers
+
+VarisDev also uses Pi's `models.json` configuration for servers such as Ollama, LM Studio, and llama.cpp in single-model mode. The file is in `PI_CODING_AGENT_DIR`, or `~/.pi/agent` by default. The model runs in your server; VarisDev connects to its API.
+
+For a llama.cpp server at `http://127.0.0.1:8080`, add a provider like this to `models.json`, keeping any existing providers:
+
+```json
+{
+  "providers": {
+    "local-llama": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "local",
+      "models": [
+        {
+          "id": "your-served-model-id",
+          "contextWindow": 32768,
+          "maxTokens": 4096
+        }
+      ]
+    }
+  }
+}
+```
+
+Use the model ID reported by the server and a context size it supports. `local` is a placeholder for a server without authentication; replace it with your API key when required. For coding tools, use a model with tool calling support and enable the appropriate chat template in the server, such as llama.cpp's `--jinja` option.
+
+For Ollama, use `http://127.0.0.1:11434/v1` and its installed model tag, such as `llama3.1:8b`. After editing the configuration, open a new session and select the model in **Menu → Model & settings**.
+
+The **`/llama`** manager connects to the llama.cpp router configured above. Ollama and other custom providers use their own model management tools.
 
 ### Agent models
 

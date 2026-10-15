@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
-import {getAgentDir, ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {getAgentDir, type ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
 import type {AuthEvent, AuthPrompt, AuthType} from '@earendil-works/pi-ai';
 import {updateMessage} from './updates.ts';
 
@@ -20,6 +21,7 @@ export interface AccountState {
     type: AuthPrompt['type'];
     message: string;
     placeholder?: string;
+    allowEmpty?: boolean;
     options?: Array<{id: string; label: string}>;
   };
   message: string;
@@ -59,7 +61,7 @@ export class DesktopAccounts {
     this.runtime ??= (
       this.dependencies.createRuntime
         ? this.dependencies.createRuntime()
-        : ModelRuntime.create({
+        : createDesktopModelRuntime({
             authPath: join(getAgentDir(), 'auth.json'),
             modelsPath: join(getAgentDir(), 'models.json'),
             allowModelNetwork: false,
@@ -110,7 +112,9 @@ export class DesktopAccounts {
             credential === 'oauth'
               ? 'Signed in'
               : credential === 'api_key'
-                ? 'API key saved'
+                ? provider.id === LLAMA_PROVIDER
+                  ? 'Server configured'
+                  : 'API key saved'
                 : auth.configured
                   ? auth.source === 'environment'
                     ? 'Configured in environment'
@@ -202,9 +206,11 @@ export class DesktopAccounts {
         });
         this.state.error = undefined;
         this.state.message =
-          method === 'api_key'
-            ? `API key saved for ${provider.name}.`
-            : `Signed in to ${provider.name}.`;
+          providerId === LLAMA_PROVIDER
+            ? 'Connected to llama.cpp.'
+            : method === 'api_key'
+              ? `API key saved for ${provider.name}.`
+              : `Signed in to ${provider.name}.`;
       }
     } catch (error) {
       this.state.message = signal.aborted
@@ -234,6 +240,10 @@ export class DesktopAccounts {
     if (this.pending)
       throw new Error('The provider requested overlapping account prompts.');
     const id = randomUUID();
+    // Pi's llama.cpp login accepts the default URL and an optional server key.
+    const allowEmpty =
+      this.state.attempt?.provider === LLAMA_PROVIDER &&
+      (request.type === 'text' || request.type === 'secret');
     return new Promise((resolve, reject) => {
       const clear = () => {
         signal.removeEventListener('abort', abort);
@@ -255,7 +265,8 @@ export class DesktopAccounts {
             !request.options.some(option => option.id === value)
           )
             throw new Error('Choose one of the listed options.');
-          if (!value.trim()) throw new Error('A value is required.');
+          if (!allowEmpty && !value.trim())
+            throw new Error('A value is required.');
           if (request.type === 'secret' || request.type === 'manual_code')
             this.secrets.add(value);
           clear();
@@ -266,6 +277,7 @@ export class DesktopAccounts {
         id,
         type: request.type,
         message: this.clean(request.message),
+        ...(allowEmpty ? {allowEmpty: true} : {}),
         ...('placeholder' in request ? {placeholder: request.placeholder} : {}),
         ...(request.type === 'select'
           ? {

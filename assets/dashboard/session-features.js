@@ -11,6 +11,14 @@ let contextConversation;
 let contextRefreshTimer;
 const dismissed = new Set();
 const seenEditor = new Map();
+// These commands operate on desktop sessions before any prompt reaches Pi.
+const composerCommands = [
+  {
+    name: 'new',
+    description: 'Start a fresh conversation in this folder.',
+    source: 'builtin',
+  },
+];
 const sourceName = {
   skill: 'Skill',
   prompt: 'Template',
@@ -212,7 +220,12 @@ function renderContext() {
 }
 function commands(query = '') {
   const needle = query.toLocaleLowerCase().replace(/^\//, '');
-  return (features()?.commands || []).filter(command =>
+  return [
+    ...composerCommands,
+    ...(features()?.commands || []).filter(
+      command => !composerCommands.some(local => local.name === command.name),
+    ),
+  ].filter(command =>
     `${command.name} ${command.description} ${sourceName[command.source] || ''}`
       .toLocaleLowerCase()
       .includes(needle),
