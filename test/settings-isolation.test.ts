@@ -87,7 +87,7 @@ async function fixture(t: TestContext, custom: boolean) {
   const project = join(root, 'project');
   const settings = custom
     ? join(root, 'custom-settings')
-    : join(home, '.varisdev');
+    : join(home, '.varisdev', 'agent');
   const normalPi = join(home, '.pi');
   const projectPi = join(project, '.pi');
   const inherited = join(root, 'inherited-agent');
@@ -335,6 +335,156 @@ async function fixture(t: TestContext, custom: boolean) {
     },
   };
 }
+
+void test(
+  'bundled Pi uses the upstream global and project resource layout in its own namespace',
+  {timeout: 60000},
+  async t => {
+    const f = await fixture(t, false);
+    const projectSettings = join(f.project, '.varisdev');
+    const theme = await json(
+      join(privateSDK, 'dist/modes/interactive/theme/dark.json'),
+    );
+    for (const [scope, directory] of [
+      ['global', f.settings],
+      ['project', projectSettings],
+    ]) {
+      await put(join(directory, 'SYSTEM.md'), `${scope} system prompt`);
+      await put(
+        join(directory, 'APPEND_SYSTEM.md'),
+        `${scope} appended prompt`,
+      );
+      await put(
+        join(directory, 'extensions', `${scope}.ts`),
+        'export default function () {}',
+      );
+      await put(
+        join(directory, 'prompts', `${scope}.md`),
+        `${scope} prompt template`,
+      );
+      await put(
+        join(directory, 'skills', `${scope}-skill`, 'SKILL.md'),
+        `---\nname: ${scope}-skill\ndescription: Layout fixture\n---\n${scope} skill instructions`,
+      );
+      await put(join(directory, 'themes', `${scope}.json`), {
+        ...theme,
+        name: scope,
+      });
+      await mkdir(join(directory, 'npm/node_modules/layout-fixture'), {
+        recursive: true,
+      });
+      await mkdir(join(directory, 'git/github.com/example/layout-fixture'), {
+        recursive: true,
+      });
+    }
+    await put(join(f.settings, 'AGENTS.md'), 'VarisDev global instructions');
+    await put(join(f.project, 'AGENTS.md'), 'Shared project instructions');
+    const report = await f.evaluate(`
+    await import(${asURL(join(packageRoot, 'desktop/build/src/runtime/settings-entry.mjs'))});
+    const sdk = await import(${asURL(join(privateSDK, 'dist/index.js'))});
+    const config = await import(${asURL(join(privateSDK, 'dist/config.js'))});
+    const stock = await import(${asURL(join(stockSDK, 'dist/config.js'))});
+    const {rm} = await import('node:fs/promises');
+    const {join} = await import('node:path');
+    const names = ['getAgentDir', 'getCustomThemesDir', 'getModelsPath', 'getAuthPath',
+      'getSettingsPath', 'getToolsDir', 'getBinDir', 'getPromptsDir', 'getSessionsDir'];
+    delete process.env.PI_CODING_AGENT_DIR;
+    const piPaths = Object.fromEntries(names.map(name => [name, stock[name]()]));
+    const appPaths = Object.fromEntries(names.map(name => [name, config[name]()]));
+    const settings = sdk.SettingsManager.create(process.cwd());
+    const options = {cwd: process.cwd(), agentDir: sdk.getAgentDir(), settingsManager: settings};
+    const loader = new sdk.DefaultResourceLoader(options);
+    await loader.reload();
+    const packages = new sdk.DefaultPackageManager(options);
+    const project = join(process.cwd(), config.CONFIG_DIR_NAME);
+    const projectPrompt = loader.getSystemPrompt();
+    const projectAppend = loader.getAppendSystemPrompt();
+    const projectSource = loader.getSystemPromptSource();
+    const projectAppendSources = loader.getAppendSystemPromptSources();
+    await rm(join(project, 'SYSTEM.md'));
+    await rm(join(project, 'APPEND_SYSTEM.md'));
+    await loader.reload();
+    console.log('ISOLATION=' + JSON.stringify({
+      piPaths, appPaths, projectPrompt, projectAppend, projectSource, projectAppendSources,
+      globalPrompt: loader.getSystemPrompt(), globalAppend: loader.getAppendSystemPrompt(),
+      globalSource: loader.getSystemPromptSource(), globalAppendSources: loader.getAppendSystemPromptSources(),
+      instructions: loader.getAgentsFiles().agentsFiles,
+      extensions: loader.getExtensions().extensions.map(item => item.resolvedPath).sort(),
+      extensionErrors: loader.getExtensions().errors,
+      skills: loader.getSkills().skills.map(item => item.filePath).sort(),
+      prompts: loader.getPrompts().prompts.map(item => item.filePath).sort(),
+      themes: loader.getThemes().themes.map(item => item.name).sort(),
+      packages: ['user', 'project'].map(scope => ({
+        npm: packages.getInstalledPath('npm:layout-fixture', scope),
+        git: packages.getInstalledPath('git:github.com/example/layout-fixture', scope),
+      })),
+    }));
+  `);
+    for (const [key, path] of Object.entries(report.piPaths)) {
+      assert.equal(
+        report.appPaths[key],
+        String(path).replace(join(f.home, '.pi'), join(f.home, '.varisdev')),
+      );
+    }
+    assert.equal(report.projectPrompt, 'project system prompt');
+    assert.deepEqual(report.projectAppend, ['project appended prompt']);
+    assert.deepEqual(report.projectSource, {
+      path: join(projectSettings, 'SYSTEM.md'),
+    });
+    assert.deepEqual(report.projectAppendSources, [
+      {path: join(projectSettings, 'APPEND_SYSTEM.md')},
+    ]);
+    assert.equal(report.globalPrompt, 'global system prompt');
+    assert.deepEqual(report.globalAppend, ['global appended prompt']);
+    assert.deepEqual(report.globalSource, {
+      path: join(f.settings, 'SYSTEM.md'),
+    });
+    assert.deepEqual(report.globalAppendSources, [
+      {path: join(f.settings, 'APPEND_SYSTEM.md')},
+    ]);
+    assert.deepEqual(report.instructions, [
+      {
+        path: join(f.settings, 'AGENTS.md'),
+        content: 'VarisDev global instructions',
+      },
+      {
+        path: join(f.project, 'AGENTS.md'),
+        content: 'Shared project instructions',
+      },
+    ]);
+    assert.deepEqual(report.extensionErrors, []);
+    assert.deepEqual(
+      report.extensions,
+      [
+        join(f.settings, 'extensions/global.ts'),
+        join(projectSettings, 'extensions/project.ts'),
+      ].sort(),
+    );
+    assert.deepEqual(
+      report.skills,
+      [
+        join(f.settings, 'skills/global-skill/SKILL.md'),
+        join(projectSettings, 'skills/project-skill/SKILL.md'),
+      ].sort(),
+    );
+    assert.deepEqual(
+      report.prompts,
+      [
+        join(f.settings, 'prompts/global.md'),
+        join(projectSettings, 'prompts/project.md'),
+      ].sort(),
+    );
+    assert.deepEqual(report.themes, ['global', 'project']);
+    assert.deepEqual(
+      report.packages,
+      [f.settings, projectSettings].map(directory => ({
+        npm: join(directory, 'npm/node_modules/layout-fixture'),
+        git: join(directory, 'git/github.com/example/layout-fixture'),
+      })),
+    );
+    await f.assertProtected();
+  },
+);
 
 for (const custom of [false, true]) {
   void test(

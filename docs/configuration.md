@@ -41,7 +41,7 @@ Loading and downloading show progress. **Cancel**, **Escape**, **Stop**, or clos
 
 ### Custom local servers
 
-VarisDev uses Pi's `models.json` format for servers such as Ollama, LM Studio, and llama.cpp in single-model mode. The file is in `~/.varisdev`, or the directory set by `VARISDEV_SETTINGS_DIR`. The model runs in your server; VarisDev connects to its API.
+VarisDev uses Pi's `models.json` format for servers such as Ollama, LM Studio, and llama.cpp in single-model mode. The file is in `~/.varisdev/agent`, or the directory set by `VARISDEV_SETTINGS_DIR`. The model runs in your server; VarisDev connects to its API.
 
 For a llama.cpp server at `http://127.0.0.1:8080`, add a provider like this to `models.json`, keeping any existing providers:
 
@@ -98,11 +98,22 @@ Saved tool choices live in `varisdev/tool-models/` under VarisDev's settings dir
 
 ## Settings and sessions
 
-VarisDev stores accounts, models, settings, plugins, and sessions in `~/.varisdev` (`%USERPROFILE%\.varisdev` on Windows). Set `VARISDEV_SETTINGS_DIR` to use another directory.
+VarisDev follows Pi's directory structure: replace `.pi` with `.varisdev` in Pi's documentation. The two applications keep separate accounts, models, settings, plugins, and sessions; installing or using standalone Pi does not change VarisDev's configuration, or vice versa.
 
-Project settings and plugins use `.varisdev` inside the project folder. Regular Pi keeps its own settings in `.pi`.
+| Scope | Pi | VarisDev |
+| --- | --- | --- |
+| Global | `~/.pi/agent/` | `~/.varisdev/agent/` |
+| Project | `<project>/.pi/` | `<project>/.varisdev/` |
 
-When upgrading from a version that shared Pi's settings, connect your accounts through **Menu → Accounts** and configure your models and plugins in VarisDev. Existing Pi settings are not imported automatically.
+On Windows, the global directory is `%USERPROFILE%\.varisdev\agent`. It contains `settings.json`, `auth.json`, `models.json`, `keybindings.json`, `trust.json`, and the usual `extensions/`, `skills/`, `prompts/`, `themes/`, `sessions/`, `npm/`, and `git/` directories as needed.
+
+Put global prompt overrides in `~/.varisdev/agent/SYSTEM.md`, or project overrides in `<project>/.varisdev/SYSTEM.md`. Use `APPEND_SYSTEM.md` in the same locations to append instructions instead. Global instructions go in `~/.varisdev/agent/AGENTS.md`; project instructions remain in `<project>/AGENTS.md`, just as in Pi.
+
+Set `VARISDEV_SETTINGS_DIR` to use another global agent directory (no extra `agent/` is appended to a custom path). Pi's directory overrides do not redirect VarisDev's settings or sessions.
+
+When upgrading from VarisDev's old flat `~/.varisdev/` layout, settings are copied into `agent/` if it does not already exist. The originals are retained as a backup. An existing `agent/` directory is never overwritten; move any needed old files there with VarisDev closed.
+
+Pi settings are never imported automatically. When upgrading from a version that shared Pi's settings, connect your accounts through **Menu → Accounts** and configure your models and plugins in VarisDev.
 
 ## Desktop storage
 

@@ -64,4 +64,4 @@ On macOS, also delete `~/Applications/VarisDev.app` if you installed the launche
 
 To remove desktop preferences, logs, and downloaded updates, delete the [desktop storage directory](configuration.md#desktop-storage), or the directory set by `VARISDEV_DATA_DIR`.
 
-To remove VarisDev's sessions, credentials, settings, and plugins, delete `~/.varisdev` (`%USERPROFILE%\.varisdev` on Windows), or the directory set by `VARISDEV_SETTINGS_DIR`. Project settings and plugins are stored in each project's `.varisdev` directory.
+To remove VarisDev's sessions, credentials, settings, and plugins, delete `~/.varisdev` (`%USERPROFILE%\.varisdev` on Windows), or the directory set by `VARISDEV_SETTINGS_DIR`. The default global profile is `~/.varisdev/agent/`; deleting the whole `.varisdev` directory also removes any backups from older versions. Project settings and plugins are stored in each project's `.varisdev` directory. Standalone Pi's `.pi` directories are separate and should be left untouched.

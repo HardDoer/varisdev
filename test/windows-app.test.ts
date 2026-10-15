@@ -60,7 +60,7 @@ void test('Windows launcher persists dedicated settings independently of Pi', as
       );
       assert.equal(
         config.settingsDir,
-        override || join(homedir(), '.varisdev'),
+        override || join(homedir(), '.varisdev', 'agent'),
       );
       assert.equal(Object.hasOwn(config, 'agentDir'), false);
     }
