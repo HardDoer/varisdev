@@ -391,6 +391,14 @@
                 Model &amp; settings
               </button>
               <button
+                id="start-session"
+                class="quiet-button"
+                type="button"
+                hidden
+              >
+                New session
+              </button>
+              <button
                 id="resume-session"
                 class="quiet-button"
                 type="button"
@@ -398,6 +406,14 @@
                 aria-controls="session-history-dialog"
               >
                 Resume session
+              </button>
+              <button
+                id="close-session"
+                class="quiet-button"
+                type="button"
+                hidden
+              >
+                Close session
               </button>
               <button id="new-session" class="primary-button" type="button">
                 Open folder
@@ -982,14 +998,25 @@
             >
               <div class="agent-task-heading">
                 <h3 id="agent-task-title">Agent task</h3>
-                <button
-                  id="cancel-agent"
-                  class="quiet-button"
-                  type="button"
-                  disabled
-                >
-                  Cancel agent
-                </button>
+                <div class="agent-task-actions">
+                  <button
+                    id="cancel-agent"
+                    class="quiet-button"
+                    type="button"
+                    disabled
+                  >
+                    Cancel agent
+                  </button>
+                  <button
+                    id="remove-agent"
+                    class="quiet-button"
+                    type="button"
+                    hidden
+                    disabled
+                  >
+                    Remove agent
+                  </button>
+                </div>
               </div>
               <p
                 id="cancel-agent-error"

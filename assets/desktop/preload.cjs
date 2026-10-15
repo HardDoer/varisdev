@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld('pidev', {
   },
   listSessions: cwd => invoke('pidev:list-sessions', cwd),
   createSession: input => invoke('pidev:create-session', input),
+  closeSession: id => invoke('pidev:close-session', id),
   promptSession: (id, input) => invoke('pidev:prompt-session', id, input),
   abortSession: id => invoke('pidev:abort-session', id),
   cancelAgent: (sessionId, agentId) =>

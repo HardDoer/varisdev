@@ -6,7 +6,13 @@ For accounts, runtime settings, skills, and package commands, see [Pi's document
 
 ## Sessions
 
+Use **Menu → New session** to start a fresh conversation in the current folder.
+
 Use **Menu → Resume session** to reopen a saved conversation in the current folder. Sessions appear newest first. Use **Choose folder** in the dialog to browse another folder's history.
+
+Use **Menu → Close session** to close the selected parent and stop its running work and agents. The saved conversation remains available to resume. For a session connected from a terminal, this closes its view in the app.
+
+Select a stopped or finished agent and click **Remove agent** to clear it from the dashboard. It appears again if it resumes.
 
 ## Models
 

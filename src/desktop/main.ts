@@ -134,9 +134,11 @@ let shuttingDown = false;
 let cleanupFinished = false;
 let restarting = false;
 let sessionOperations = 0;
+const closingSessions = new Set<string>();
 let updateTimer: NodeJS.Timeout | undefined;
 const sessionActions = new Set([
   'pidev:create-session',
+  'pidev:close-session',
   'pidev:prompt-session',
   'pidev:configure-session',
   'pidev:compact-session',
@@ -307,6 +309,16 @@ function installHandlers(): void {
     preferences.rememberFolder(cwd);
     return result;
   });
+  handle('pidev:close-session', async sessionId => {
+    const parentId = id(sessionId);
+    closingSessions.add(parentId);
+    try {
+      await hub.closeSession(parentId);
+      terminals.close(parentId);
+    } finally {
+      closingSessions.delete(parentId);
+    }
+  });
   handle('pidev:prompt-session', (sessionId, input) =>
     hub.promptSession(id(sessionId), input),
   );
@@ -334,13 +346,22 @@ function installHandlers(): void {
   handle('pidev:save-markdown', (sessionId, path, content, version) =>
     hub.saveMarkdown(id(sessionId), path, content, version),
   );
-  handle('pidev:open-terminal', sessionId => {
+  handle('pidev:open-terminal', async sessionId => {
+    const parentId = id(sessionId);
     const selected = hub
       .snapshot()
-      .sessions.find(item => item.session.id === id(sessionId));
-    if (!selected)
-      throw new DashboardInputError('Choose a valid parent session.');
-    return terminals.open(selected.session.id, selected.session.cwd);
+      .sessions.find(item => item.session.id === parentId);
+    if (!selected || closingSessions.has(parentId))
+      throw new DashboardInputError('Choose an open parent session.');
+    const terminal = await terminals.open(parentId, selected.session.cwd);
+    if (
+      closingSessions.has(parentId) ||
+      !hub.snapshot().sessions.some(item => item.session.id === parentId)
+    ) {
+      terminals.close(parentId);
+      throw new DashboardInputError('This parent session has closed.');
+    }
+    return terminal;
   });
   handle('pidev:terminal-write', (sessionId, data) =>
     terminals.write(id(sessionId), data),
@@ -728,7 +749,12 @@ async function shutdown(): Promise<void> {
   try {
     terminals.dispose();
     await accounts.dispose();
-    if (attachedSessionId) {
+    if (
+      attachedSessionId &&
+      hub
+        .snapshot()
+        .sessions.some(item => item.session.id === attachedSessionId)
+    ) {
       try {
         await Promise.all([
           hub.abortSession(attachedSessionId),

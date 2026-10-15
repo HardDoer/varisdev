@@ -63,7 +63,9 @@ interface Headquarters {
   state: DashboardState;
   parent?: DashboardParent;
   running: Set<Promise<void>>;
+  pending: Set<Promise<unknown>>;
   stopping: boolean;
+  closing: boolean;
   maintaining: boolean;
   unsubscribe: () => void;
 }
@@ -148,6 +150,8 @@ export class DashboardHub {
   private readonly listeners = new Set<() => void>();
   private readonly creating = new Set<Promise<DashboardParent>>();
   private readonly resuming = new Map<string, Promise<{id: string}>>();
+  private readonly closingSessions = new Map<string, Promise<void>>();
+  private readonly dismissedExternalSessions = new Set<string>();
   private readonly selectedSessionId?: string;
   private external?: DashboardSnapshot;
   private externalControl?: ExternalSessionControl;
@@ -169,7 +173,12 @@ export class DashboardHub {
   }
 
   updateExternal(snapshot: DashboardSnapshot): void {
-    if (this.closed) return;
+    if (
+      this.closed ||
+      this.dismissedExternalSessions.has(snapshot.session.id) ||
+      this.sessions.has(snapshot.session.id)
+    )
+      return;
     this.external = structuredClone(snapshot);
     this.changed();
   }
@@ -193,7 +202,9 @@ export class DashboardHub {
       state,
       parent,
       running: new Set(),
+      pending: new Set(),
       stopping: false,
+      closing: false,
       maintaining: false,
       unsubscribe: state.subscribe(() => this.changed()),
     };
@@ -202,8 +213,18 @@ export class DashboardHub {
     return entry;
   }
 
+  private has(entry: Headquarters): boolean {
+    return [...this.sessions.values()].includes(entry);
+  }
+
   private refresh(entry: Headquarters): void {
-    if (this.closed || !entry.parent || entry.parent.state === entry.state)
+    if (
+      this.closed ||
+      !this.has(entry) ||
+      entry.closing ||
+      !entry.parent ||
+      entry.parent.state === entry.state
+    )
       return;
     const previousId = entry.state.snapshot().session.id;
     entry.unsubscribe();
@@ -227,43 +248,48 @@ export class DashboardHub {
   }
 
   snapshot(): DashboardHubSnapshot {
-    return {
-      selectedSessionId:
-        this.selectedSessionId ??
-        this.external?.session.id ??
-        this.sessions.keys().next().value,
-      launchCwd: this.launchCwd,
-      sessions: [
-        ...(this.external
-          ? [
-              {
-                ...structuredClone(this.external),
-                session: {
-                  ...structuredClone(this.external.session),
-                  owned: false,
-                  controllable:
-                    !!this.externalControl &&
-                    this.external.session.status !== 'closed',
-                },
+    const sessions: DashboardHubSnapshot['sessions'] = [
+      ...(this.external
+        ? [
+            {
+              ...structuredClone(this.external),
+              session: {
+                ...structuredClone(this.external.session),
+                owned: false,
+                controllable:
+                  !!this.externalControl &&
+                  this.external.session.status !== 'closed',
               },
-            ]
-          : []),
-        ...[...this.sessions.values()].map(entry => {
-          const snapshot = entry.state.snapshot();
-          return {
-            ...snapshot,
-            ...(entry.parent?.ui
-              ? {ui: structuredClone(entry.parent.ui.snapshot())}
-              : {}),
-            session: {
-              ...snapshot.session,
-              owned: !!entry.parent,
-              controllable:
-                !!entry.parent && snapshot.session.status !== 'closed',
             },
-          };
-        }),
-      ],
+          ]
+        : []),
+      ...[...this.sessions.values()].map(entry => {
+        const snapshot = entry.state.snapshot();
+        return {
+          ...snapshot,
+          ...(entry.parent?.ui
+            ? {ui: structuredClone(entry.parent.ui.snapshot())}
+            : {}),
+          session: {
+            ...snapshot.session,
+            ...(entry.closing ? {activity: 'Closing'} : {}),
+            owned: !!entry.parent,
+            controllable:
+              !!entry.parent &&
+              !entry.closing &&
+              snapshot.session.status !== 'closed',
+          },
+        };
+      }),
+    ];
+    return {
+      selectedSessionId: sessions.some(
+        item => item.session.id === this.selectedSessionId,
+      )
+        ? this.selectedSessionId
+        : sessions[0]?.session.id,
+      launchCwd: this.launchCwd,
+      sessions,
     };
   }
 
@@ -276,6 +302,8 @@ export class DashboardHub {
     const id = parent.state.snapshot().session.id;
     if (this.sessions.has(id))
       throw new DashboardInputError('This session is already open.');
+    this.dismissedExternalSessions.delete(id);
+    if (this.external?.session.id === id) this.external = undefined;
     const entry = this.add(parent.state, parent);
     // CLI arguments are an invocation script, executed in Pi's original order.
     // Interactive messages still go straight to native steering while it runs.
@@ -288,9 +316,11 @@ export class DashboardHub {
       })
       .finally(() => {
         entry.running.delete(startup);
-        this.changed();
+        entry.pending.delete(startup);
+        if (this.has(entry)) this.changed();
       });
     entry.running.add(startup);
+    entry.pending.add(startup);
     this.changed();
   }
 
@@ -357,6 +387,17 @@ export class DashboardHub {
           'This saved session is no longer available in this folder.',
         );
       this.ensureOpen();
+      const closing = this.closingSessions.get(id);
+      if (closing) {
+        try {
+          await closing;
+        } catch {
+          throw new DashboardInputError(
+            'This session did not close. Retry closing it before reopening.',
+          );
+        }
+        this.ensureOpen();
+      }
       const opened = this.snapshot().sessions.find(
         item => item.session.id === id && item.session.status !== 'closed',
       );
@@ -408,8 +449,12 @@ export class DashboardHub {
         );
       }
       const id = parent.state.snapshot().session.id;
+      if (this.sessions.has(id)) {
+        await parent.close();
+        throw new DashboardInputError('This session is already open.');
+      }
       if (this.external?.session.id === id) this.external = undefined;
-      this.sessions.get(id)?.unsubscribe();
+      this.dismissedExternalSessions.delete(id);
       this.add(parent.state, parent);
       return {id};
     } finally {
@@ -428,6 +473,8 @@ export class DashboardHub {
     if (!entry) throw new DashboardInputError('Unknown parent session.');
     if (!entry.parent)
       throw new DashboardInputError('Continue this session in its terminal.');
+    if (entry.closing)
+      throw new DashboardInputError('This session is closing.');
     if (entry.stopping && !allowStopping)
       throw new DashboardInputError(
         'This session is stopping. Try again when it is idle.',
@@ -496,7 +543,7 @@ export class DashboardHub {
     return structuredClone(features);
   }
 
-  private async maintain(
+  private maintain(
     id: string,
     action: (parent: DashboardParent) => Promise<void>,
     allowRunning = false,
@@ -511,13 +558,22 @@ export class DashboardHub {
     )
       throw new DashboardInputError('Wait until this session is idle.');
     entry.maintaining = true;
+    let actionOperation: Promise<void>;
     try {
-      await action(entry.parent);
-    } finally {
-      entry.maintaining = false;
-      this.refresh(entry);
-      this.changed();
+      actionOperation = action(entry.parent);
+    } catch (error) {
+      actionOperation = Promise.reject(error);
     }
+    const operation = actionOperation.finally(() => {
+      entry.maintaining = false;
+      entry.pending.delete(operation);
+      if (this.has(entry)) {
+        if (!entry.closing) this.refresh(entry);
+        this.changed();
+      }
+    });
+    entry.pending.add(operation);
+    return operation;
   }
 
   async configureSession(id: string, input: unknown): Promise<void> {
@@ -571,10 +627,14 @@ export class DashboardHub {
       })
       .finally(() => {
         entry.running.delete(operation);
-        this.refresh(entry);
-        this.changed();
+        entry.pending.delete(operation);
+        if (this.has(entry)) {
+          if (!entry.closing) this.refresh(entry);
+          this.changed();
+        }
       });
     entry.running.add(operation);
+    entry.pending.add(operation);
     this.changed();
     return operation;
   }
@@ -591,6 +651,7 @@ export class DashboardHub {
       if (
         entry.running.size ||
         entry.stopping ||
+        entry.closing ||
         entry.maintaining ||
         snapshot.session.status !== 'idle' ||
         snapshot.agents.some(agent =>
@@ -618,16 +679,94 @@ export class DashboardHub {
     const entry = this.owned(id);
     entry.stopping = true;
     entry.state.updateSession({activity: 'Stopping'});
+    let aborting: Promise<StoppedMessages>;
     try {
-      const queued = await entry.parent.abort();
-      await Promise.allSettled(entry.running);
-      entry.state.updateSession({status: 'idle', activity: 'Stopped'});
-      entry.state.record('session', 'Parent stopped');
-      return queued;
-    } finally {
-      entry.stopping = false;
-      this.changed();
+      aborting = entry.parent.abort();
+    } catch (error) {
+      aborting = Promise.reject(error);
     }
+    const operation = (async () => {
+      const queued = await aborting;
+      await Promise.allSettled(entry.running);
+      if (!entry.closing) {
+        entry.state.updateSession({status: 'idle', activity: 'Stopped'});
+        entry.state.record('session', 'Parent stopped');
+      }
+      return queued;
+    })().finally(() => {
+      if (!entry.closing) entry.stopping = false;
+      entry.pending.delete(operation);
+      if (this.has(entry)) this.changed();
+    });
+    entry.pending.add(operation);
+    return operation;
+  }
+
+  async closeSession(id: string): Promise<void> {
+    this.ensureOpen();
+    const closing = this.closingSessions.get(id);
+    if (closing) return closing;
+    if (this.external?.session.id === id) {
+      this.dismissedExternalSessions.add(id);
+      this.external = undefined;
+      this.externalControl = undefined;
+      this.changed();
+      return Promise.resolve();
+    }
+    if (this.dismissedExternalSessions.has(id)) return Promise.resolve();
+    const entry = this.sessions.get(id);
+    if (!entry) throw new DashboardInputError('Unknown parent session.');
+    if (!entry.parent) {
+      entry.unsubscribe();
+      this.sessions.delete(id);
+      this.dismissedExternalSessions.add(id);
+      this.changed();
+      return Promise.resolve();
+    }
+    entry.stopping = true;
+    entry.closing = true;
+    const operation = Promise.resolve().then(async () => {
+      let parentClosing: Promise<void>;
+      try {
+        parentClosing = entry.parent!.close();
+      } catch (error) {
+        parentClosing = Promise.reject(error);
+      }
+      const [result] = await Promise.allSettled([
+        parentClosing,
+        ...entry.pending,
+      ]);
+      if (result.status === 'rejected') {
+        entry.closing = false;
+        entry.stopping = false;
+        const message =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
+        entry.state.updateSession({
+          activity: `Close failed: ${message.slice(0, 1000)}`,
+          error: message.slice(0, 4000),
+        });
+        throw result.reason;
+      }
+      entry.unsubscribe();
+      if (this.sessions.get(id) === entry) this.sessions.delete(id);
+      this.changed();
+    });
+    const tracked = operation.then(
+      () => {
+        if (this.closingSessions.get(id) === tracked)
+          this.closingSessions.delete(id);
+      },
+      error => {
+        if (this.closingSessions.get(id) === tracked)
+          this.closingSessions.delete(id);
+        throw error;
+      },
+    );
+    this.closingSessions.set(id, tracked);
+    entry.state.updateSession({activity: 'Closing', error: undefined});
+    return tracked;
   }
 
   close(): Promise<void> {
@@ -640,12 +779,23 @@ export class DashboardHub {
     }
     this.listeners.clear();
     this.closing = (async () => {
-      await Promise.allSettled(
-        [...this.sessions.values()].map(async entry => {
-          await entry.parent?.close();
-          await Promise.allSettled(entry.running);
+      await Promise.allSettled([
+        ...[...this.sessions.entries()].map(async ([id, entry]) => {
+          const sessionClosing = this.closingSessions.get(id);
+          if (sessionClosing) {
+            await Promise.allSettled([sessionClosing, ...entry.pending]);
+            return;
+          }
+          let parentClosing: Promise<void> = Promise.resolve();
+          try {
+            parentClosing = entry.parent?.close() ?? parentClosing;
+          } catch (error) {
+            parentClosing = Promise.reject(error);
+          }
+          await Promise.allSettled([parentClosing, ...entry.pending]);
         }),
-      );
+        ...this.closingSessions.values(),
+      ]);
       // A concurrently created parent is disposed by createSession before it can run.
       await Promise.allSettled([...this.creating]);
     })();

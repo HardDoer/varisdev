@@ -90,6 +90,7 @@ export function createTerminalTabs(api, selectedSession) {
         terminal.focus();
       }
     } catch (error) {
+      if (disposed || sessions.get(id) !== entry) return;
       sessions.delete(id);
       terminal.dispose();
       element.remove();
@@ -164,6 +165,17 @@ export function createTerminalTabs(api, selectedSession) {
   observer.observe($('terminal-sessions'));
   return {
     update,
+    showPrompt: () => show(false),
+    retain(ids) {
+      const opened = new Set(ids);
+      for (const [id, entry] of sessions) {
+        if (opened.has(id)) continue;
+        sessions.delete(id);
+        entry.terminal.dispose();
+        entry.element.remove();
+      }
+      if (activeId && !opened.has(activeId)) show(false);
+    },
     isSelected: () => selected,
     dispose() {
       disposed = true;

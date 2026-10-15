@@ -21,6 +21,12 @@ let chosenFolder;
 let abortDelay = 0;
 let cancellationError;
 let savedSessions;
+let archivedSessions;
+let creationIds;
+let creationDelay;
+let creationError;
+let closeDelay;
+let closeError;
 let resumeError;
 
 function features() {
@@ -127,7 +133,13 @@ function reset() {
   chosenFolder = undefined;
   abortDelay = 0;
   cancellationError = undefined;
+  creationIds = ['folder-parent'];
+  creationDelay = 0;
+  creationError = undefined;
+  closeDelay = 0;
+  closeError = undefined;
   resumeError = undefined;
+  archivedSessions = new Map();
   savedSessions = [
     {
       id: 'saved-parent',
@@ -190,12 +202,18 @@ ipcMain.handle('fixture:list-sessions', (_event, cwd) => {
   calls.push({method: 'listSessions', cwd});
   return cwd === directory ? savedSessions : [];
 });
-ipcMain.handle('fixture:create-session', (_event, input) => {
+ipcMain.handle('fixture:create-session', async (_event, input) => {
   calls.push({method: 'createSession', input});
+  if (creationDelay)
+    await new Promise(resolve => setTimeout(resolve, creationDelay));
   if (input.sessionId && resumeError) throw new Error(resumeError);
+  if (!input.sessionId && creationError) throw new Error(creationError);
   const parent = input.sessionId
-    ? session(input.sessionId, 'Saved conversation')
-    : session('folder-parent', 'Selected folder');
+    ? structuredClone(
+        archivedSessions.get(input.sessionId) ||
+          session(input.sessionId, 'Saved conversation'),
+      )
+    : session(creationIds.shift() || 'folder-parent', 'Selected folder');
   parent.session.cwd = input.cwd;
   parent.session.status = 'idle';
   parent.session.activity = 'Ready';
@@ -204,6 +222,29 @@ ipcMain.handle('fixture:create-session', (_event, input) => {
   resources.set(parent.session.id, features());
   window.webContents.send('fixture:snapshot', hub);
   return {id: parent.session.id};
+});
+
+ipcMain.handle('fixture:close-session', async (_event, sessionId) => {
+  calls.push({method: 'closeSession', sessionId});
+  if (closeDelay) await new Promise(resolve => setTimeout(resolve, closeDelay));
+  if (closeError) throw new Error(closeError);
+  const index = hub.sessions.findIndex(item => item.session.id === sessionId);
+  assert.notEqual(index, -1, `Unknown session ${sessionId}`);
+  const [parent] = hub.sessions.splice(index, 1);
+  archivedSessions.set(sessionId, structuredClone(parent));
+  if (!savedSessions.some(item => item.id === sessionId))
+    savedSessions.unshift({
+      id: sessionId,
+      name: parent.session.name,
+      firstMessage:
+        parent.conversation.find(item => item.role === 'user')?.text || '',
+      modified: parent.session.updatedAt,
+      messageCount: parent.conversation.length,
+    });
+  resources.delete(sessionId);
+  if (hub.selectedSessionId === sessionId)
+    hub.selectedSessionId = hub.sessions[0]?.session.id;
+  window.webContents.send('fixture:snapshot', hub);
 });
 
 ipcMain.handle('fixture:read-markdown', (_event, sessionId, path) => {
@@ -1981,6 +2022,43 @@ async function main() {
         ),
         0,
       );
+      assert.equal(
+        await evaluate(() => document.getElementById('remove-agent').hidden),
+        false,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('remove-stopped-agent');
+      await evaluate(() => document.getElementById('remove-agent').click());
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('inspector-title').textContent,
+        ),
+        'Alpha factory',
+        'Removing the inspected agent returns to its parent',
+      );
+      await publish();
+      await reloadPage();
+      assert.equal(
+        await evaluate(() =>
+          document
+            .getElementById('history-workers')
+            .textContent.includes('Working agent'),
+        ),
+        false,
+        'Removed agent stays hidden through snapshots and reload',
+      );
+      assert.equal(parent.agents[0].status, 'cancelled');
+      parent.agents[0].status = 'running';
+      await publish();
+      assert.equal(
+        await evaluate(() =>
+          document
+            .getElementById('active-workers')
+            .textContent.includes('Working agent'),
+        ),
+        true,
+        'A resumed agent returns to the active list',
+      );
     },
   );
 
@@ -2096,8 +2174,6 @@ async function main() {
           alert: 'factory-alert',
         },
       );
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('startled-robot');
       // A fast cancellation must still let the reaction finish.
       Object.assign(hub.sessions[0].session, {
         status: 'idle',
@@ -2143,6 +2219,15 @@ async function main() {
         false,
         'The stopped robot must jump while normal activity is paused',
       );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await evaluate(() =>
+          document.getElementById('scene').classList.add('is-startled'),
+        );
+        await screenshot('startled-robot');
+        await evaluate(() =>
+          document.getElementById('scene').classList.remove('is-startled'),
+        );
+      }
       await new Promise(resolve => setTimeout(resolve, 1100));
       const geometry = () =>
         evaluate(() =>
@@ -2215,12 +2300,22 @@ async function main() {
         'none',
         'Motion off must use a static alert',
       );
+      const stillGeometry = await geometry();
+      assert.ok(stillGeometry.some(buffer => buffer.length > 0));
+      // capturePage can return the previous compositor frame immediately after
+      // the static alert appears, even though its WebGL geometry is settled.
+      await new Promise(resolve => setTimeout(resolve, 100));
       const stillStartle = await frame();
       await new Promise(resolve => setTimeout(resolve, 180));
       assert.equal(
         stillStartle.equals(await frame()),
         true,
         'Motion off must keep the robot still during Stop',
+      );
+      assert.deepEqual(
+        await geometry(),
+        stillGeometry,
+        'Motion off must keep the robot geometry still during Stop',
       );
       assert.equal(calls.filter(call => call.method === 'abort').length, 2);
       await evaluate(() =>
@@ -4901,6 +4996,445 @@ async function main() {
         `Zoom restores saved placement and size: ${JSON.stringify({restored, preferred})}`,
       );
       await evaluate(() => document.getElementById('markdown-close').click());
+    },
+  );
+
+  await run(
+    'New session uses the selected parent folder and keeps the working parent draft',
+    async () => {
+      const currentFolder = join(directory, 'selected-parent-folder');
+      hub.sessions[0].session.cwd = currentFolder;
+      hub.sessions[0].agents = [
+        {
+          id: 'new-session-agent',
+          name: 'New session agent',
+          task: 'Keep working in the original parent',
+          activity: 'Inspecting the project',
+          model: 'fixture/small',
+          status: 'running',
+          createdAt: at,
+          startedAt: at,
+        },
+      ];
+      hub.sessions[0].totalAgents = 1;
+      creationIds = ['fresh-parent'];
+      creationDelay = 180;
+      await publish();
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Keep this draft in the working parent';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.setSelectionRange(5, 15);
+        document.querySelector('#active-workers button').click();
+        document.getElementById('app-menu-button').click();
+      });
+      assert.deepEqual(
+        await evaluate(() => ({
+          inspector: document.getElementById('inspector-title').textContent,
+          startHidden: document.getElementById('start-session').hidden,
+          closeHidden: document.getElementById('close-session').hidden,
+          start: document.getElementById('start-session').textContent,
+          openFolder: document.getElementById('new-session').textContent.trim(),
+        })),
+        {
+          inspector: 'New session agent',
+          startHidden: false,
+          closeHidden: false,
+          start: 'New session',
+          openFolder: 'Open folder',
+        },
+        'Parent actions remain available while an agent is selected',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('session-menu');
+      await evaluate(() => {
+        const action = document.getElementById('start-session');
+        action.click();
+        action.click();
+      });
+      await until(
+        () =>
+          document.getElementById('start-session').textContent === 'Creating…',
+        'New session did not enter its pending state',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          disabled: document.getElementById('start-session').disabled,
+          label: document.getElementById('start-session').textContent,
+          menuOpen: document
+            .getElementById('app-menu-panel')
+            .matches(':popover-open'),
+        })),
+        {disabled: true, label: 'Creating…', menuOpen: false},
+      );
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        'Fresh session was not selected',
+      );
+      assert.deepEqual(
+        calls.filter(call =>
+          ['chooseFolder', 'createSession'].includes(call.method),
+        ),
+        [
+          {
+            method: 'createSession',
+            input: {cwd: currentFolder},
+          },
+        ],
+        'New session creates once in the selected parent folder without a picker',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          editor: document.getElementById('parent-prompt').value,
+          messages: document.querySelectorAll('#conversation > li').length,
+          focused:
+            document.activeElement === document.getElementById('parent-prompt'),
+          parents: [
+            ...document.querySelectorAll('#parents .parent-card-name'),
+          ].map(item => item.textContent),
+        })),
+        {
+          editor: '',
+          messages: 0,
+          focused: true,
+          parents: ['Alpha factory', 'Beta factory', 'Selected folder'],
+        },
+        'The fresh session starts empty alongside existing parents',
+      );
+      assert.equal(
+        hub.sessions.find(item => item.session.id === 'alpha').session.status,
+        'running',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Alpha factory'))
+          .click(),
+      );
+      await settle();
+      assert.deepEqual(
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          return {
+            value: editor.value,
+            start: editor.selectionStart,
+            end: editor.selectionEnd,
+          };
+        }),
+        {
+          value: 'Keep this draft in the working parent',
+          start: 5,
+          end: 15,
+        },
+        'Starting another session preserves the previous parent draft',
+      );
+    },
+  );
+
+  await run(
+    'session action failures coalesce while pending and allow retry',
+    async () => {
+      creationIds = ['retry-parent'];
+      creationDelay = 180;
+      creationError = 'Could not create the session';
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        const action = document.getElementById('start-session');
+        action.click();
+        action.click();
+      });
+      await until(
+        () =>
+          document.getElementById('start-session').textContent === 'Creating…',
+        'Create failure case did not enter its pending state',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          disabled: document.getElementById('start-session').disabled,
+          menuOpen: document
+            .getElementById('app-menu-panel')
+            .matches(':popover-open'),
+        })),
+        {disabled: true, menuOpen: false},
+      );
+      await until(
+        () => !document.getElementById('app-error').hidden,
+        'Create failure was not shown',
+      );
+      assert.match(
+        await evaluate(() => document.getElementById('app-error').textContent),
+        /Could not create the session/,
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession'),
+        [{method: 'createSession', input: {cwd: directory}}],
+        'Repeated create clicks must share one request',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          disabled: document.getElementById('start-session').disabled,
+          label: document.getElementById('start-session').textContent,
+        })),
+        {disabled: false, label: 'New session'},
+      );
+
+      creationDelay = 0;
+      creationError = undefined;
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('start-session').click();
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        'Create retry did not select the fresh session',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('app-error').hidden),
+        true,
+        'Retry clears the previous creation error',
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'createSession').length,
+        2,
+      );
+
+      closeDelay = 180;
+      closeError = 'Could not close the session';
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        const action = document.getElementById('close-session');
+        action.click();
+        action.click();
+      });
+      await until(
+        () =>
+          document.getElementById('close-session').textContent === 'Closing…',
+        'Close failure case did not enter its pending state',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          disabled: document.getElementById('close-session').disabled,
+          menuOpen: document
+            .getElementById('app-menu-panel')
+            .matches(':popover-open'),
+        })),
+        {disabled: true, menuOpen: false},
+      );
+      await until(
+        () => !document.getElementById('app-error').hidden,
+        'Close failure was not shown',
+      );
+      assert.match(
+        await evaluate(() => document.getElementById('app-error').textContent),
+        /Could not close the session/,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-title').textContent,
+        ),
+        'Selected folder',
+        'A failed close keeps the selected parent open',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'closeSession'),
+        [{method: 'closeSession', sessionId: 'retry-parent'}],
+        'Repeated close clicks must share one request',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          disabled: document.getElementById('close-session').disabled,
+          label: document.getElementById('close-session').textContent,
+        })),
+        {disabled: false, label: 'Close session'},
+      );
+
+      closeDelay = 0;
+      closeError = undefined;
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('close-session').click();
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Alpha factory',
+        'Close retry did not select a remaining parent',
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'closeSession').length,
+        2,
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('app-error').hidden),
+        true,
+        'Retry clears the previous close error',
+      );
+    },
+  );
+
+  await run(
+    'Close session falls back and reaches welcome while preserving draft and history',
+    async () => {
+      hub.sessions[0].agents = [
+        {
+          id: 'close-session-agent',
+          name: 'Close session agent',
+          task: 'Keep working until the parent closes',
+          activity: 'Running in the active parent',
+          model: 'fixture/small',
+          status: 'running',
+          createdAt: at,
+          startedAt: at,
+        },
+      ];
+      hub.sessions[0].totalAgents = 1;
+      await publish();
+      await evaluate(async () => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Resume this draft after closing';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.setSelectionRange(7, 18);
+        editor.dispatchEvent(new Event('select', {bubbles: true}));
+        const {flushDrafts} = await import('./draft-storage.js');
+        flushDrafts();
+        document.querySelector('#active-workers button').click();
+        document.getElementById('app-menu-button').click();
+        document.getElementById('close-session').click();
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Beta factory',
+        'Closing the active parent did not select the remaining parent',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'closeSession'),
+        [{method: 'closeSession', sessionId: 'alpha'}],
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          menuOpen: document
+            .getElementById('app-menu-panel')
+            .matches(':popover-open'),
+          parents: [
+            ...document.querySelectorAll('#parents .parent-card-name'),
+          ].map(item => item.textContent),
+          draft: JSON.parse(
+            window.localStorage.getItem('varisdev.composer-drafts.v1'),
+          ).find(([id]) => id === 'alpha')?.[1]?.value,
+        })),
+        {
+          menuOpen: false,
+          parents: ['Beta factory'],
+          draft: 'Resume this draft after closing',
+        },
+        'Closing removes only the live parent and keeps its recovered draft',
+      );
+
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('resume-session').click();
+      });
+      await until(
+        () =>
+          document.querySelectorAll('#session-history-list button').length ===
+          2,
+        'Closed parent did not remain in session history',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('session-history-list').textContent,
+        ),
+        /Alpha factory.*3 messages/s,
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#session-history-list button')]
+          .find(item => item.textContent.includes('Alpha factory'))
+          .click(),
+      );
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Alpha factory',
+        'Closed parent did not reopen from history',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession'),
+        [
+          {
+            method: 'createSession',
+            input: {cwd: directory, sessionId: 'alpha'},
+          },
+        ],
+      );
+      assert.deepEqual(
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          return {
+            history: document
+              .getElementById('conversation')
+              .textContent.includes('I will inspect the project.'),
+            draft: editor.value,
+            start: editor.selectionStart,
+            end: editor.selectionEnd,
+          };
+        }),
+        {
+          history: true,
+          draft: 'Resume this draft after closing',
+          start: 7,
+          end: 18,
+        },
+        'Reopening restores conversation history and its unsent draft',
+      );
+
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('close-session').click();
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Beta factory',
+        'Reopened parent did not fall back to the other parent',
+      );
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('close-session').click();
+      });
+      await until(
+        () => !document.getElementById('welcome').hidden,
+        'Closing the final parent did not show welcome',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'closeSession'),
+        [
+          {method: 'closeSession', sessionId: 'alpha'},
+          {method: 'closeSession', sessionId: 'alpha'},
+          {method: 'closeSession', sessionId: 'beta'},
+        ],
+      );
+      await evaluate(() => document.getElementById('app-menu-button').click());
+      assert.deepEqual(
+        await evaluate(() => ({
+          welcome: !document.getElementById('welcome').hidden,
+          workspace: document.getElementById('factory-workspace').hidden,
+          startHidden: document.getElementById('start-session').hidden,
+          closeHidden: document.getElementById('close-session').hidden,
+          openFolder: document.getElementById('new-session').textContent.trim(),
+        })),
+        {
+          welcome: true,
+          workspace: true,
+          startHidden: true,
+          closeHidden: true,
+          openFolder: 'Open folder',
+        },
+        'Parent-only actions are hidden when no parent remains',
+      );
     },
   );
 

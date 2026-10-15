@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('pidev', {
   chooseFolder: () => ipcRenderer.invoke('fixture:choose-folder'),
   listSessions: cwd => ipcRenderer.invoke('fixture:list-sessions', cwd),
   createSession: input => ipcRenderer.invoke('fixture:create-session', input),
+  closeSession: sessionId =>
+    ipcRenderer.invoke('fixture:close-session', sessionId),
 });
 
 window.addEventListener('error', event => {

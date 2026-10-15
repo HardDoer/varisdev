@@ -13,6 +13,7 @@ import {join} from 'node:path';
 import {setImmediate as nextTick} from 'node:timers/promises';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
+import {SessionManager} from '@earendil-works/pi-coding-agent';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
 import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
@@ -296,6 +297,292 @@ void test('closing during parent initialization disposes it before any prompt ru
   await Promise.all([closing, rejected]);
   assert.equal(parent.closed, true);
   assert.equal(parent.runs.length, 0);
+});
+
+void test('closing an owned session awaits parent cleanup and active prompts exactly once', async t => {
+  const promptGate = Promise.withResolvers<void>();
+  const closeGate = Promise.withResolvers<void>();
+  const current = state('closable');
+  let promptStarted = false;
+  let closeCalls = 0;
+  const parent: DashboardParent = {
+    ...featureControls,
+    state: current,
+    restartSnapshot() {
+      throw new Error('This test parent cannot restart.');
+    },
+    async prompt() {
+      promptStarted = true;
+      await promptGate.promise;
+    },
+    async abort() {
+      return {steering: [], followUp: []};
+    },
+    async close() {
+      closeCalls++;
+      await closeGate.promise;
+    },
+  };
+  const hub = new DashboardHub(undefined, async () => parent);
+  t.after(async () => {
+    promptGate.resolve();
+    closeGate.resolve();
+    await hub.close();
+  });
+  await hub.createSession({cwd: process.cwd()});
+  await hub.promptSession('closable', {prompt: 'Keep working'});
+  await until(() => promptStarted);
+  let changes = 0;
+  hub.subscribe(() => changes++);
+  const first = hub.closeSession('closable');
+  const second = hub.closeSession('closable');
+  await until(() => closeCalls === 1);
+  assert.equal(hub.snapshot().sessions.length, 1);
+  assert.equal(hub.snapshot().sessions[0].session.activity, 'Closing');
+  assert.equal(hub.snapshot().sessions[0].session.controllable, false);
+  assert.equal(hub.snapshot().selectedSessionId, 'closable');
+  await assert.rejects(
+    hub.promptSession('closable', {prompt: 'Too late'}),
+    /closing/,
+  );
+  await assert.rejects(hub.reloadSession('closable'), /closing/);
+  await assert.rejects(hub.abortSession('closable'), /closing/);
+  await assert.rejects(hub.cancelAgent('closable', 'all'), /closing/);
+  current.updateSession({activity: 'Late parent update'});
+  assert.equal(hub.snapshot().sessions[0].session.activity, 'Closing');
+  let closed = false;
+  void first.then(() => {
+    closed = true;
+  });
+  closeGate.resolve();
+  await nextTick();
+  assert.equal(closed, false);
+  promptGate.resolve();
+  await Promise.all([first, second]);
+  assert.equal(closed, true);
+  assert.equal(closeCalls, 1);
+  assert.deepEqual(hub.snapshot().sessions, []);
+  assert.equal(hub.snapshot().selectedSessionId, undefined);
+  const afterRemoval = changes;
+  current.updateSession({activity: 'Update after removal'});
+  assert.equal(changes, afterRemoval);
+});
+
+void test('a failed close remains visible and can be retried', async t => {
+  const current = controlledParent('retry-close', process.cwd());
+  let attempts = 0;
+  current.parent.close = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('cleanup is busy');
+  };
+  const hub = new DashboardHub(undefined, async () => current.parent);
+  t.after(() => hub.close());
+  await hub.createSession({cwd: process.cwd()});
+  await assert.rejects(hub.closeSession('retry-close'), /cleanup is busy/);
+  const failed = hub.snapshot().sessions[0].session;
+  assert.equal(failed.id, 'retry-close');
+  assert.equal(failed.status, 'idle');
+  assert.equal(failed.controllable, true);
+  assert.match(failed.activity, /Close failed: cleanup is busy/);
+  await hub.closeSession('retry-close');
+  assert.equal(attempts, 2);
+  assert.deepEqual(hub.snapshot().sessions, []);
+});
+
+void test('closing sessions frees capacity and keeps the selected session valid through the last removal', async t => {
+  const parents: ReturnType<typeof controlledParent>[] = [];
+  const initial = state('terminal');
+  const hub = new DashboardHub(initial, async request => {
+    const parent = controlledParent(`owned-${parents.length}`, request.cwd);
+    parents.push(parent);
+    return parent.parent;
+  });
+  t.after(() => hub.close());
+  const opened = await Promise.all(
+    Array.from({length: 8}, () => hub.createSession({cwd: process.cwd()})),
+  );
+  await assert.rejects(
+    hub.createSession({cwd: process.cwd()}),
+    /eight parent sessions/,
+  );
+  const closeGate = Promise.withResolvers<void>();
+  const closeFirst = parents[0].parent.close.bind(parents[0].parent);
+  parents[0].parent.close = async () => {
+    await closeGate.promise;
+    await closeFirst();
+  };
+  assert.equal(hub.snapshot().selectedSessionId, 'terminal');
+  let changes = 0;
+  hub.subscribe(() => changes++);
+  await hub.closeSession('terminal');
+  assert.equal(hub.snapshot().selectedSessionId, opened[0].id);
+  const afterInitialRemoval = changes;
+  initial.record('session', 'Late terminal update');
+  assert.equal(changes, afterInitialRemoval);
+  const closing = hub.closeSession(opened[0].id);
+  await assert.rejects(
+    hub.createSession({cwd: process.cwd()}),
+    /eight parent sessions/,
+  );
+  assert.equal(hub.snapshot().sessions[0].session.id, opened[0].id);
+  assert.equal(hub.snapshot().sessions[0].session.activity, 'Closing');
+  closeGate.resolve();
+  await closing;
+  const afterClose = hub.snapshot();
+  assert.ok(
+    afterClose.sessions.some(
+      item => item.session.id === afterClose.selectedSessionId,
+    ),
+  );
+  assert.notEqual(afterClose.selectedSessionId, opened[0].id);
+  const replacement = await hub.createSession({cwd: process.cwd()});
+  assert.equal(replacement.id, 'owned-8');
+  assert.equal(
+    hub.snapshot().sessions.filter(item => item.session.owned).length,
+    8,
+  );
+  await Promise.all(
+    hub.snapshot().sessions.map(item => hub.closeSession(item.session.id)),
+  );
+  assert.deepEqual(hub.snapshot().sessions, []);
+  assert.equal(hub.snapshot().selectedSessionId, undefined);
+  assert.ok(parents.every(parent => parent.closed));
+});
+
+void test('resuming a saved session waits for its successful close and preserves the saved file', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-close-resume-'));
+  const savedPath = join(directory, 'saved-session.jsonl');
+  const id = 'saved-session';
+  await writeFile(savedPath, 'saved history\n');
+  let listed = false;
+  t.mock.method(SessionManager, 'list', async () => {
+    listed = true;
+    return [
+      {
+        id,
+        name: 'Saved work',
+        firstMessage: 'Saved prompt',
+        modified: new Date(),
+        messageCount: 1,
+        path: savedPath,
+      },
+    ];
+  });
+  const closeGate = Promise.withResolvers<void>();
+  const first = controlledParent(id, directory);
+  let closeCalls = 0;
+  first.parent.close = async () => {
+    closeCalls++;
+    await closeGate.promise;
+  };
+  const reopened = controlledParent(id, directory);
+  const requests: Array<{cwd: string; resume?: {id: string; path: string}}> =
+    [];
+  const hub = new DashboardHub(undefined, async request => {
+    requests.push(request);
+    return reopened.parent;
+  });
+  t.after(async () => {
+    closeGate.resolve();
+    await hub.close();
+    await rm(directory, {recursive: true, force: true});
+  });
+  hub.adoptSession(first.parent);
+  const closing = hub.closeSession(id);
+  const resuming = hub.createSession({cwd: directory, sessionId: id});
+  await until(() => listed);
+  assert.equal(requests.length, 0);
+  assert.equal(hub.snapshot().sessions[0].session.activity, 'Closing');
+  closeGate.resolve();
+  await closing;
+  assert.deepEqual(await resuming, {id});
+  assert.equal(closeCalls, 1);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].resume, {id, path: savedPath});
+  assert.equal(await readFile(savedPath, 'utf8'), 'saved history\n');
+  assert.equal(hub.snapshot().sessions[0].session.id, id);
+  assert.equal(hub.snapshot().sessions[0].session.owned, true);
+});
+
+void test('closing during reload and abort waits for each operation without restoring removed sessions', async () => {
+  for (const action of ['reload', 'abort'] as const) {
+    const gate = Promise.withResolvers<void>();
+    const current = controlledParent(action, process.cwd());
+    const replacement = state(`${action}-replacement`);
+    let started = false;
+    current.parent.close = async () => {};
+    if (action === 'reload') {
+      current.parent.reload = async () => {
+        started = true;
+        await gate.promise;
+        current.parent.state = replacement;
+      };
+    } else {
+      current.parent.abort = async () => {
+        started = true;
+        await gate.promise;
+        return {steering: [], followUp: []};
+      };
+    }
+    const hub = new DashboardHub(undefined, async () => current.parent);
+    await hub.createSession({cwd: process.cwd()});
+    const pending =
+      action === 'reload'
+        ? hub.reloadSession(action)
+        : hub.abortSession(action);
+    await until(() => started);
+    const closing = hub.closeSession(action);
+    assert.equal(hub.snapshot().sessions.length, 1);
+    assert.equal(hub.snapshot().sessions[0].session.activity, 'Closing');
+    assert.equal(hub.snapshot().sessions[0].session.controllable, false);
+    let closed = false;
+    void closing.then(() => {
+      closed = true;
+    });
+    await nextTick();
+    assert.equal(closed, false);
+    gate.resolve();
+    await Promise.all([pending, closing]);
+    replacement.record('session', 'Update after removal');
+    assert.deepEqual(hub.snapshot().sessions, []);
+    await hub.close();
+  }
+});
+
+void test('dismissing external sessions ignores stale updates but allows fresh IDs and deliberate reopening', async t => {
+  const reopened = controlledParent('external-b', process.cwd());
+  const hub = new DashboardHub(undefined, async () => reopened.parent);
+  t.after(() => hub.close());
+  const actions: string[] = [];
+  hub.updateExternal(state('external-a').snapshot());
+  hub.setExternalControl({
+    ...featureControls,
+    async prompt(id) {
+      actions.push(`prompt:${id}`);
+    },
+    async abort(id) {
+      actions.push(`abort:${id}`);
+      return {steering: [], followUp: []};
+    },
+  });
+  await Promise.all([
+    hub.closeSession('external-a'),
+    hub.closeSession('external-a'),
+  ]);
+  assert.deepEqual(hub.snapshot().sessions, []);
+  hub.updateExternal(state('external-a').snapshot());
+  assert.deepEqual(hub.snapshot().sessions, []);
+  hub.updateExternal(state('external-b').snapshot());
+  assert.equal(hub.snapshot().sessions[0].session.id, 'external-b');
+  assert.equal(hub.snapshot().sessions[0].session.owned, false);
+  await hub.closeSession('external-b');
+  const opened = await hub.createSession({cwd: process.cwd()});
+  assert.equal(opened.id, 'external-b');
+  assert.equal(hub.snapshot().sessions[0].session.owned, true);
+  await hub.closeSession('external-b');
+  hub.updateExternal(state('external-b').snapshot());
+  assert.equal(hub.snapshot().sessions[0].session.owned, false);
+  assert.deepEqual(actions, []);
 });
 
 void test('dashboard snapshots keep transitions, cap history and never mutate source records', () => {

@@ -1,4 +1,4 @@
-/* global document */
+/* global process, __dirname, setTimeout */
 const {app, BrowserWindow, ipcMain} = require('electron');
 const assert = require('node:assert/strict');
 const {writeFileSync, mkdirSync} = require('node:fs');
@@ -12,9 +12,12 @@ let terminals;
 const report = {cases: []};
 const calls = [];
 let fail = false;
+const closedSessions = new Set();
+const openSessions = () =>
+  ['first', 'second'].filter(name => !closedSessions.has(name));
 for (const name of ['first', 'second']) mkdirSync(join(profile, name));
 const snapshot = id => ({
-  sessions: ['first', 'second'].map(name => ({
+  sessions: openSessions().map(name => ({
     session: {
       id: name,
       name,
@@ -94,6 +97,11 @@ app
       terminals.resize(id, cols, rows),
     );
     handle('pidev:terminal-close', id => terminals.close(id));
+    handle('pidev:close-session', id => {
+      closedSessions.add(id);
+      terminals.close(id);
+      browser.webContents.send('pidev:snapshot', snapshot());
+    });
     handle('pidev:prompt-session', () => {
       throw new Error('Terminal input must not submit the draft');
     });
@@ -213,6 +221,33 @@ app
     );
     report.cases.push(
       'File links display decoded names and command disclosures preserve user choices',
+    );
+    await evaluate("document.getElementById('terminal-tab').click()");
+    await until("!document.getElementById('terminal-close').disabled");
+    assert.equal(
+      await evaluate("document.querySelectorAll('.project-terminal').length"),
+      2,
+    );
+    await evaluate("document.getElementById('close-session').click()");
+    await until("document.querySelectorAll('#parents button').length === 1");
+    assert.throws(() => terminals.write('first', 'pwd\r'), /Open a terminal/);
+    assert.equal(
+      await evaluate("document.querySelectorAll('.project-terminal').length"),
+      1,
+    );
+    assert.equal(
+      await evaluate("document.getElementById('prompt-panel').hidden"),
+      false,
+    );
+    await evaluate("document.getElementById('close-session').click()");
+    await until("!document.getElementById('welcome').hidden");
+    assert.throws(() => terminals.write('second', 'pwd\r'), /Open a terminal/);
+    assert.equal(
+      await evaluate("document.querySelectorAll('.project-terminal').length"),
+      0,
+    );
+    report.cases.push(
+      'Closing parents removes their terminal views and shells',
     );
   })
   .catch(error => {

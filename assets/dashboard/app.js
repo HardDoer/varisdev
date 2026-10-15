@@ -143,6 +143,7 @@ const workspaceCache = new Map();
 const workspacePending = new Set();
 const sending = new Set();
 const stopping = new Set();
+const closingSessions = new Set();
 const pausedActivity = new Set();
 let stopEffectTimer;
 let stopEffectSession;
@@ -1658,7 +1659,8 @@ function renderInspector() {
   $('abort-parent').disabled =
     !canControl(data.session) ||
     !parentHasWork(data) ||
-    stopping.has(state.sessionId);
+    stopping.has(state.sessionId) ||
+    closingSessions.has(state.sessionId);
   text(
     $('abort-parent'),
     stopping.has(state.sessionId) ? 'Stopping…' : 'Stop · Esc',
@@ -1666,6 +1668,7 @@ function renderInspector() {
   $('send-prompt').disabled =
     sending.has(state.sessionId) ||
     stopping.has(state.sessionId) ||
+    closingSessions.has(state.sessionId) ||
     data.session.status === 'closed';
   const steering = data.session.status === 'running';
   text($('prompt-action'), steering ? 'Steer' : 'Message');
@@ -1742,6 +1745,7 @@ function render() {
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
   appMenu.place(hasSession);
+  renderSessionActions();
   if (!themesDiscovered || themeSessionId !== state.sessionId) {
     themesDiscovered = true;
     themeSessionId = state.sessionId;
@@ -1754,12 +1758,13 @@ function render() {
     renderInspector();
   } else {
     conversationVisualizations.reset();
+    updateMarkdownFiles();
   }
 }
 function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
-  state.hub = hub;
+  state.hub = agentControls.filterHub(hub);
   toolSettings.observe(hub);
   const next =
     state.desiredSessionId &&
@@ -1771,6 +1776,7 @@ function receive(hub) {
           ? hub.selectedSessionId
           : hub.sessions[0]?.session.id || null;
   if (state.sessionId !== next) {
+    if (expandedEditor) collapseEditor(false);
     saveDraft();
     saveConversationDisclosures();
     state.sessionId = next;
@@ -1778,6 +1784,7 @@ function receive(hub) {
     restoreDraft(next);
     setTab('conversation');
   }
+  terminalTabs.retain(hub.sessions.map(item => item.session.id));
   if (next === state.desiredSessionId) state.desiredSessionId = null;
   if (
     state.unitId !== 'parent' &&
@@ -1805,6 +1812,7 @@ function applyMotion() {
     });
 }
 async function selectOpenedSession(id) {
+  terminalTabs.showPrompt();
   state.desiredSessionId = id;
   if (state.hub.sessions.some(item => item.session.id === id)) {
     selectSession(id);
@@ -1812,11 +1820,35 @@ async function selectOpenedSession(id) {
   } else receive(await api.getState());
   $('parent-prompt').focus();
 }
+function renderSessionActions() {
+  const session = snapshot()?.session;
+  for (const id of ['new-session', 'welcome-create'])
+    $(id).disabled = Boolean(creating);
+  $('start-session').disabled = Boolean(creating) || !session || !api;
+  $('start-session').title = session
+    ? `Start a new session in ${session.cwd}`
+    : '';
+  text(
+    $('start-session'),
+    creating === 'session' ? 'Creating…' : 'New session',
+  );
+  $('close-session').disabled =
+    !session || !api?.closeSession || closingSessions.has(session.id);
+  $('close-session').title = session
+    ? session.owned
+      ? `Close ${session.name} and stop its running work`
+      : `Close ${session.name} in this window`
+    : '';
+  text(
+    $('close-session'),
+    closingSessions.has(session?.id) ? 'Closing…' : 'Close session',
+  );
+}
 async function openFolder() {
   if (creating || !api) return;
-  creating = true;
+  creating = 'folder';
   $('app-error').hidden = true;
-  for (const id of ['new-session', 'welcome-create']) $(id).disabled = true;
+  renderSessionActions();
   try {
     const cwd = await api.chooseFolder();
     if (!cwd) return;
@@ -1827,8 +1859,43 @@ async function openFolder() {
     showError(error);
   } finally {
     creating = false;
-    for (const id of ['new-session', 'welcome-create']) $(id).disabled = false;
+    renderSessionActions();
     text($('new-session'), 'Open folder');
+  }
+}
+async function startSession() {
+  const cwd = snapshot()?.session.cwd;
+  if (creating || !api || !cwd) return;
+  saveDraft();
+  creating = 'session';
+  $('app-error').hidden = true;
+  renderSessionActions();
+  try {
+    const result = await api.createSession({cwd});
+    await selectOpenedSession(result.id);
+  } catch (error) {
+    showError(error);
+  } finally {
+    creating = false;
+    renderSessionActions();
+  }
+}
+async function closeSession() {
+  const id = state.sessionId;
+  if (!id || !api?.closeSession || closingSessions.has(id)) return;
+  saveDraft();
+  closingSessions.add(id);
+  $('app-error').hidden = true;
+  render();
+  try {
+    await api.closeSession(id);
+    receive(await api.getState());
+    if (!snapshot()) $('app-menu-button').focus();
+  } catch (error) {
+    showError(error);
+  } finally {
+    closingSessions.delete(id);
+    render();
   }
 }
 async function sendPrompt(event) {
@@ -1845,6 +1912,7 @@ async function sendPrompt(event) {
     session.status === 'closed' ||
     sending.has(id) ||
     stopping.has(id) ||
+    closingSessions.has(id) ||
     !prompt
   )
     return;
@@ -1883,7 +1951,8 @@ async function abortParent() {
     !session ||
     !canControl(session) ||
     !parentHasWork(data) ||
-    stopping.has(id)
+    stopping.has(id) ||
+    closingSessions.has(id)
   )
     return;
   stopping.add(id);
@@ -1952,6 +2021,8 @@ async function loadWorkspace() {
 
 $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
+$('start-session').addEventListener('click', startSession);
+$('close-session').addEventListener('click', closeSession);
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('back-to-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', event => {
@@ -2128,6 +2199,7 @@ const agentControls = initAgentControls({
   api,
   selected: snapshot,
   selectedAgent: () => state.unitId,
+  removed: () => receive(state.hub),
   refresh: () => {
     renderFactory();
     renderInspector();
