@@ -2,7 +2,7 @@
 
 [Back to VarisDev](../README.md)
 
-Commands, accounts, models, settings, skills, prompts, and packages work as in Pi. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent). This page covers only VarisDev-specific configuration and desktop controls.
+Commands, accounts, models, settings, skills, prompts, and packages work as in Pi. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent), including [MCP servers](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md), [codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md), and [virtual models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/virtual-models.md). This page covers only VarisDev-specific configuration and desktop controls.
 
 ## Settings directory
 
@@ -28,6 +28,8 @@ Use **Menu → Model defaults → Save defaults** to choose the model and thinki
 **Menu → Agent models** controls which models background agents may use. All registered models are allowed by default; choose **Only selected models** to restrict them.
 
 Agents inherit the parent's model and reasoning level unless explicitly configured. The inherited model must also be allowed. Restrictions apply across projects, including queued and resumed agents.
+
+For virtual models, the router's extension must also be loaded from the worker's project or global configuration.
 
 ### Commit settings
 

@@ -87,6 +87,7 @@ void test('worker usage reports live and idle persisted cache-warming entries on
     abortCompaction() {},
     abortBash() {},
     async abort() {},
+    extensionRunner: {async emit() {}},
     dispose() {},
   } as unknown as AgentSession;
   const worker = sessionWorker(session, resultFile);
@@ -119,6 +120,6 @@ void test('worker usage reports live and idle persisted cache-warming entries on
   assert.equal(worker.usage?.calls.length, 2);
   assert.equal(worker.usage?.totalTokens, 12);
   assert.equal(worker.usage?.cost, 0.012);
-  worker.dispose();
+  await worker.dispose();
   assert.equal(listeners.size, 0);
 });

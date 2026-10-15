@@ -9,10 +9,11 @@ import {
   type CreateAgentSessionOptions,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import {mkdir} from 'node:fs/promises';
-
 import {join, resolve} from 'node:path';
-import {createWorkerModelRuntime} from '../agents/model-runtime.ts';
+import {
+  flushPendingVirtualModelRegistrations,
+  registerParentModelProviders,
+} from '../agents/model-runtime.ts';
 import type {AgentSessionController} from '../agents/team.ts';
 import {registerCommitCommand} from '../commit.ts';
 import {registerAgentTools} from '../tools/agents.ts';
@@ -33,6 +34,7 @@ import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
 import {createAppResourceFilter} from './resources.ts';
 import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
 import {createLlamaExtension} from './llama.ts';
+import {createBuiltinExtensions} from '../builtin-extensions.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -63,13 +65,6 @@ export async function createDashboardParent(
       : SessionManager.create(request.cwd);
   if (request.resume && sessionManager.getSessionId() !== request.resume.id)
     throw new Error('This saved session is no longer available.');
-  const directory = join(
-    agentDir,
-    'varisdev',
-    'dashboard',
-    sessionManager.getSessionId(),
-  );
-  await mkdir(directory, {recursive: true});
   const settingsManager = SettingsManager.create(request.cwd, agentDir);
   const resources = createAppResourceFilter(
     settingsManager,
@@ -108,6 +103,7 @@ export async function createDashboardParent(
     agentDir,
     settingsManager: resources.settingsManager,
     extensionFactories: [
+      ...createBuiltinExtensions(),
       llama.extension,
       pi => {
         registerProjectTools(pi);
@@ -134,14 +130,12 @@ export async function createDashboardParent(
     refreshOnCreate: !inherited,
   });
   if (inherited && modelRuntime) {
-    const delegated = await createWorkerModelRuntime(
+    const providers = registerParentModelProviders(
       inherited.modelRegistry,
-      inherited.model,
-      directory,
+      modelRuntime,
     );
-    modelRuntime.registerNativeProvider(
-      delegated.getProvider(inherited.model.provider)!,
-    );
+    if (providers.length)
+      await modelRuntime.refresh({allowNetwork: false, providers});
   }
   if (modelRuntime) {
     // Extension providers must be available before selecting a saved default.
@@ -154,6 +148,7 @@ export async function createDashboardParent(
     for (const {provider} of runtime.pendingNativeProviderRegistrations)
       modelRuntime.registerNativeProvider(provider);
     runtime.pendingNativeProviderRegistrations = [];
+    flushPendingVirtualModelRegistrations(runtime, modelRuntime);
   }
   const startupModel =
     startup?.model && modelRuntime
@@ -195,6 +190,7 @@ export async function createDashboardParent(
       modelRuntime,
       thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
       tools: startup?.tools,
+      excludeTools: args?.excludeTools,
       settingsManager,
       resourceLoader: loader,
       sessionManager,
@@ -282,9 +278,16 @@ export async function createDashboardParent(
       session.getFollowUpMessages(),
     );
   } catch (error) {
-    unsubscribeSessionEvents();
-    ui.dispose();
-    session.dispose();
+    try {
+      await session.extensionRunner.emit({
+        type: 'session_shutdown',
+        reason: 'quit',
+      });
+    } finally {
+      unsubscribeSessionEvents();
+      ui.dispose();
+      session.dispose();
+    }
     throw error;
   }
   let closed = false;

@@ -30,6 +30,7 @@ Usage: varisdev [folder]
   list                  List installed plugins
   plugins update [source]
                         Update plugins
+  mcp <command>         Configure and inspect MCP servers
   app install           Install the Windows or macOS app launcher
   run [options]         Run a prompt or automation from the terminal
   --version             Show the VarisDev version
@@ -41,6 +42,33 @@ function childDone(child: ChildProcess): Promise<number> {
     child.once('error', reject);
     child.once('exit', code => resolve(code ?? 1));
   });
+}
+
+/** Keep Pi's management command first instead of treating it as a prompt. */
+export function mcpCliArguments(args: string[]): string[] | undefined {
+  if (args[0] === 'mcp') return args;
+  if (args[0] === 'run' && args[1] === 'mcp') return args.slice(1);
+  return undefined;
+}
+
+function runBundledPiCli(
+  runtimeRoot: string,
+  installRoot: string,
+  args: string[],
+): Promise<number> {
+  return childDone(
+    spawn(
+      process.execPath,
+      [
+        join(
+          runtimeRoot,
+          'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+        ),
+        ...args,
+      ],
+      {stdio: 'inherit', env: launchEnvironment(installRoot, runtimeRoot)},
+    ),
+  );
 }
 
 function launchEnvironment(
@@ -233,6 +261,8 @@ export async function runCli(
     console.log(`VarisDev ${manifest.version}`);
     return 0;
   }
+  const mcpArgs = mcpCliArguments(args);
+  if (mcpArgs) return runBundledPiCli(runtimeRoot, installRoot, mcpArgs);
   if (command === 'update') {
     if (rest.length > 1 || (rest.length === 1 && rest[0] !== '--check'))
       throw new Error('Usage: varisdev update [--check]');

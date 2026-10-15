@@ -41,7 +41,7 @@ export interface AgentWorker {
     onConversation?: (conversation: ConversationSnapshot) => void,
   ): Promise<string>;
   steer(message: string, starting: boolean): Promise<boolean>;
-  dispose(): void;
+  dispose(): void | Promise<void>;
 }
 
 export interface AgentMessageSender {
@@ -60,6 +60,7 @@ interface Job {
   promptStarted?: boolean;
   controller?: AbortController;
   operation?: Promise<void>;
+  disposal?: Promise<void>;
 }
 
 export function isAgentFinished(status: AgentStatus): boolean {
@@ -183,12 +184,13 @@ export class AgentOrchestrator {
 
   private prepare(job: Job): Promise<AgentWorker> {
     if (job.worker) return Promise.resolve(job.worker);
-    job.initializing ??= job.createWorker!(job.record.id).then(worker => {
+    job.initializing ??= job.createWorker!(job.record.id).then(async worker => {
       if (
         this.closed ||
         ['cancelled', 'cancelling', 'failed'].includes(job.record.status)
       ) {
-        worker.dispose();
+        job.worker = worker;
+        await this.dispose(job);
         throw new Error('Agent stopped before its session was ready.');
       }
       job.worker = worker;
@@ -276,14 +278,26 @@ export class AgentOrchestrator {
     );
   }
 
-  private dispose(job: Job): void {
+  private dispose(job: Job): Promise<void> {
     this.captureUsage(job);
     this.captureConversation(job);
     const worker = job.worker;
     job.worker = undefined;
     job.createWorker = undefined;
-    worker?.dispose();
+    if (worker) {
+      const disposal = (async () => {
+        try {
+          await worker.dispose();
+        } catch {
+          // Cleanup must not strand the worker slot or session shutdown.
+        }
+      })();
+      job.disposal = job.disposal
+        ? Promise.all([job.disposal, disposal]).then(() => {})
+        : disposal;
+    }
     this.settleConversation(job);
+    return job.disposal ?? Promise.resolve();
   }
 
   private settleConversation(job: Job): void {
@@ -317,7 +331,7 @@ export class AgentOrchestrator {
       job.record.status = 'cancelled';
       job.record.activity = 'Cancelled';
       job.record.finishedAt = new Date().toISOString();
-      this.dispose(job);
+      void this.dispose(job);
     }
     this.changed();
     return this.get(id);
@@ -399,7 +413,7 @@ export class AgentOrchestrator {
       this.captureUsage(job);
       this.captureConversation(job);
       if (job.record.autoCleanup || job.record.status !== 'completed') {
-        this.dispose(job);
+        await this.dispose(job);
       }
       this.settleConversation(job);
       job.record.finishedAt = new Date().toISOString();
@@ -466,8 +480,8 @@ export class AgentOrchestrator {
         job.operation,
         job.initializing?.catch(() => {}),
       ]),
-    ).then(() => {
-      for (const job of this.jobs.values()) this.dispose(job);
+    ).then(async () => {
+      await Promise.all([...this.jobs.values()].map(job => this.dispose(job)));
       this.listeners.clear();
     });
     return this.closing;

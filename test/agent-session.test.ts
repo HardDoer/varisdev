@@ -140,9 +140,13 @@ void test(
       }
     });
     let worker: AgentWorker | undefined;
+    let workerTools: string[] = [];
+    let workerCommands: string[] = [];
+    let workerStopped = false;
     t.after(async () => {
-      worker?.dispose();
+      await worker?.dispose();
       worker = undefined;
+      assert.ok(workerStopped);
       registry.unregisterProvider('varisdev-agent-test');
       await new Promise<void>((resolve, reject) =>
         server.close(error => (error ? reject(error) : resolve())),
@@ -202,8 +206,20 @@ void test(
       model: registry.find('varisdev-agent-test', 'worker-model')!,
       modelRegistry: registry,
       thinkingLevel: 'high',
-      agentToolsExtension: () => {},
+      agentToolsExtension: pi => {
+        pi.on('session_start', () => {
+          workerTools = pi.getAllTools().map(tool => tool.name);
+          workerCommands = pi.getCommands().map(command => command.name);
+        });
+        pi.on('session_shutdown', () => {
+          workerStopped = true;
+        });
+      },
     });
+    assert.ok(
+      workerTools.includes('codemode') && workerTools.includes('tool_search'),
+    );
+    assert.ok(workerCommands.includes('mcp'));
     const activity: string[] = [];
     const usageUpdates: ModelUsage[] = [];
     assert.equal(
@@ -404,7 +420,7 @@ void test(
     });
     let worker: AgentWorker | undefined;
     t.after(async () => {
-      worker?.dispose();
+      await worker?.dispose();
       worker = undefined;
       registry.unregisterProvider(providerId);
       await new Promise<void>((resolve, reject) =>
@@ -1033,7 +1049,7 @@ void test(
           const dispose = worker.dispose.bind(worker);
           worker.dispose = () => {
             disposed.add(name);
-            dispose();
+            return dispose();
           };
           workers.set(name, worker);
           return worker;

@@ -13,6 +13,20 @@ import {
   type CommandDependencies,
   type CommandSDK,
 } from '../src/runtime/commands.ts';
+import {mcpCliArguments} from '../src/runtime/cli.ts';
+
+void test('MCP commands are forwarded with mcp as Pi argv[0]', () => {
+  assert.deepEqual(mcpCliArguments(['mcp', 'list', '--json']), [
+    'mcp',
+    'list',
+    '--json',
+  ]);
+  assert.deepEqual(mcpCliArguments(['run', 'mcp', '--help']), [
+    'mcp',
+    '--help',
+  ]);
+  assert.equal(mcpCliArguments(['run', '--help']), undefined);
+});
 
 function accountFixture() {
   const output: string[] = [];

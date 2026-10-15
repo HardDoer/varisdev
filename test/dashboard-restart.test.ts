@@ -48,6 +48,11 @@ void test(
     await writeFile(
       extension,
       `export default function(pi) {
+    pi.registerVirtualModel({
+      provider: 'restart-router', id: 'auto', name: 'Restart router',
+      thinkingLevels: ['off', 'high'],
+      route() { throw new Error('Restart must not dispatch a model request.'); }
+    });
     pi.registerCommand('remember-restart', {
       description: 'Record custom state without an assistant response',
       async handler() {
@@ -88,8 +93,17 @@ void test(
       },
     });
     t.after(() => registry.unregisterProvider('restart-fixture'));
+    registry.registerVirtualModel({
+      provider: 'restart-router',
+      id: 'auto',
+      name: 'Restart router',
+      thinkingLevels: ['off', 'high'],
+      route() {
+        throw new Error('Restart must not dispatch a model request.');
+      },
+    });
     const inherited = {
-      model: registry.find('restart-fixture', 'restart-model')!,
+      model: registry.find('restart-router', 'auto')!,
       modelRegistry: registry,
       thinkingLevel: 'high' as const,
     };
@@ -100,6 +114,13 @@ void test(
       '--no-extensions',
       '-e',
       extension,
+      '-e',
+      'builtin:codemode',
+      '-e',
+      'builtin:tool-search',
+      '-e',
+      'builtin:mcp',
+      '--no-mcp',
       '--no-skills',
       '--no-prompt-templates',
       '--no-themes',
@@ -116,7 +137,7 @@ void test(
       leafId: null,
       model: {provider: inherited.model.provider, id: inherited.model.id},
       thinkingLevel: 'high',
-      tools: ['read', 'write'],
+      tools: ['read', 'write', 'codemode', 'tool_search'],
       argv,
     };
     const parent = await createDashboardParent(
@@ -129,7 +150,12 @@ void test(
     assert.equal(parent.state.snapshot().session.id, sourceId);
     assert.equal(blank.entries[0].type, 'session');
     assert.equal(blank.entries[0].id, sourceId);
-    assert.deepEqual(blank.tools, ['read', 'write']);
+    assert.deepEqual(blank.tools, ['read', 'write', 'codemode', 'tool_search']);
+    assert.ok(
+      !(await parent.features()).commands.some(
+        command => command.name === 'mcp',
+      ),
+    );
     assert.deepEqual(blank.argv, argv);
     assert.equal(blank.thinkingLevel, 'high');
     assert.deepEqual(blank.model, startup.model);
@@ -144,6 +170,9 @@ void test(
       inherited,
     );
     parents.push(fresh);
+    assert.ok(
+      (await fresh.features()).commands.some(command => command.name === 'mcp'),
+    );
     const unsent = fresh.restartSnapshot();
     assert.ok(unsent.sessionFile);
     await assert.rejects(access(unsent.sessionFile), /ENOENT/);

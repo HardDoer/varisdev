@@ -12,9 +12,13 @@ import {
 import {mkdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {registerProjectTools} from '../tools/index.ts';
+import {createBuiltinExtensions} from '../builtin-extensions.ts';
 import {createAppResourceFilter} from '../dashboard/resources.ts';
 import type {AgentWorker} from './orchestrator.ts';
-import {createWorkerModelRuntime} from './model-runtime.ts';
+import {
+  createWorkerModelRuntime,
+  flushPendingVirtualModelRegistrations,
+} from './model-runtime.ts';
 import {WorkerConversation} from './conversation.ts';
 import {
   modelUsage,
@@ -46,6 +50,7 @@ export function sessionWorker(
     session.sessionManager.getCwd?.(),
   );
   let finishing = false;
+  let closing: Promise<void> | undefined;
   let publishUsage: ((usage: ModelUsage) => void) | undefined;
   function restoreUsage(): void {
     const branch = session.sessionManager.getBranch?.();
@@ -193,9 +198,20 @@ export function sessionWorker(
       }
     },
     dispose() {
+      if (closing) return closing;
       publishUsage = undefined;
       unsubscribeUsage();
-      session.dispose();
+      closing = (async () => {
+        try {
+          await session.extensionRunner.emit({
+            type: 'session_shutdown',
+            reason: 'quit',
+          });
+        } finally {
+          session.dispose();
+        }
+      })();
+      return closing;
     },
   };
 }
@@ -224,7 +240,11 @@ export async function createSessionWorker(
     settingsManager: resources.settingsManager,
     noThemes: true,
     noPromptTemplates: true,
-    extensionFactories: [registerProjectTools, options.agentToolsExtension],
+    extensionFactories: [
+      ...createBuiltinExtensions(),
+      registerProjectTools,
+      options.agentToolsExtension,
+    ],
     appendSystemPrompt: [
       `You are the delegated agent ${JSON.stringify(options.name)}. Your agent ID is ${options.id}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
       'Your conversation contains the delegated task and steering messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
@@ -239,6 +259,17 @@ export async function createSessionWorker(
     options.model,
     directory,
   );
+  flushPendingVirtualModelRegistrations(
+    loader.getExtensions().runtime,
+    modelRuntime,
+  );
+  if (
+    options.model.api === 'pi-virtual' &&
+    !modelRuntime.getModel(options.model.provider, options.model.id)
+  )
+    throw new Error(
+      `Virtual model ${options.model.provider}/${options.model.id} is not registered in this worker. Load its extension in the worker's project or global settings.`,
+    );
   const {session} = await createAgentSession({
     cwd: options.cwd,
     model: options.model,
@@ -248,5 +279,12 @@ export async function createSessionWorker(
     resourceLoader: loader,
     sessionManager,
   });
-  return sessionWorker(session, join(directory, 'result.txt'));
+  const worker = sessionWorker(session, join(directory, 'result.txt'));
+  try {
+    await session.bindExtensions({mode: 'rpc'});
+    return worker;
+  } catch (error) {
+    await worker.dispose();
+    throw error;
+  }
 }

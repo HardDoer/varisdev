@@ -375,7 +375,16 @@ void test('wait supports any, all, polling, and interruption without cancelling 
 void test('closing during worker initialization disposes it and never starts queued agents', async () => {
   const manager = new AgentOrchestrator(1);
   const initializing = deferred<AgentWorker>();
+  const cleanup = deferred<void>();
   const controlled = controlledWorker();
+  const worker = {
+    ...controlled.worker,
+    async dispose() {
+      await controlled.worker.dispose();
+      await cleanup.promise;
+      throw new Error('Cleanup failed');
+    },
+  };
   let created = 0;
   const first = manager.spawn(spec, async () => {
     created++;
@@ -387,7 +396,14 @@ void test('closing during worker initialization disposes it and never starts que
   });
   await until(() => created === 1);
   const closing = manager.close();
-  initializing.resolve(controlled.worker);
+  let closed = false;
+  void closing.then(() => {
+    closed = true;
+  });
+  initializing.resolve(worker);
+  await until(() => controlled.disposed === 1);
+  assert.equal(closed, false);
+  cleanup.resolve();
   await closing;
   await manager.close();
   assert.equal(controlled.disposed, 1);
@@ -425,6 +441,7 @@ function fakeSession() {
   let aborts = 0;
   const session = {
     messages,
+    extensionRunner: {emit: async () => {}},
     sessionManager: {getSessionFile: () => '/saved/session.jsonl'},
     subscribe(listener: (event: AgentSessionEvent) => void) {
       listeners.add(listener);
@@ -519,7 +536,7 @@ void test('session workers save the final answer, track tools, and detect API fa
   );
   assert.equal(await readFile(resultFile, 'utf8'), 'complete answer');
   assert.equal(fake.listeners.size, 1);
-  worker.dispose();
+  await worker.dispose();
   assert.equal(fake.listeners.size, 0);
   assert.equal(fake.disposed, 1);
 });
@@ -544,7 +561,7 @@ void test('session workers cancel again if a prompt starts after cancellation du
   await assert.rejects(running, /Cancelled during setup/);
   assert.equal(fake.aborts, 2);
   assert.equal(fake.listeners.size, 1);
-  worker.dispose();
+  await worker.dispose();
   assert.equal(fake.listeners.size, 0);
 });
 
@@ -1420,7 +1437,7 @@ void test('session callbacks publish pending tool output and settle cancellation
           'Prompt execution failed',
         );
       assert.equal(fake.listeners.size, 1);
-      worker.dispose();
+      await worker.dispose();
       assert.equal(fake.listeners.size, 0);
       assert.deepEqual(worker.conversation, last);
     });

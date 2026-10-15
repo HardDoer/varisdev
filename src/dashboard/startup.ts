@@ -82,6 +82,7 @@ export function desktopResourceOptions(args: Args) {
     additionalPromptTemplatePaths: args.promptTemplates,
     additionalThemePaths: args.themes,
     noExtensions: args.noExtensions,
+    disabledBuiltinExtensions: args.noMcp ? ['mcp'] : undefined,
     noSkills: args.noSkills,
     noPromptTemplates: args.noPromptTemplates,
     noThemes: args.noThemes,
