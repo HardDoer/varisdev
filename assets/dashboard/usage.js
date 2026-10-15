@@ -155,13 +155,21 @@ export function renderUsage(snapshot) {
         button.textContent =
           call.kind === 'compaction'
             ? 'Compaction summary'
-            : call.toolNames?.length
-              ? `Requested ${call.toolNames.join(', ')}`
-              : 'Assistant response';
-        button.disabled = !!worker || call.kind === 'compaction';
+            : call.kind === 'usage'
+              ? call.usageKind === 'cache_warm'
+                ? 'Cache warming'
+                : 'Model operation'
+              : call.toolNames?.length
+                ? `Requested ${call.toolNames.join(', ')}`
+                : 'Assistant response';
+        const hasConversationMessage =
+          call.kind === undefined || call.kind === 'response';
+        button.disabled = !!worker || !hasConversationMessage;
         button.title = worker
           ? 'Worker call details are saved in its session file.'
-          : 'Show this model call in Conversation';
+          : !hasConversationMessage
+            ? 'This model operation has no conversation message.'
+            : 'Show this model call in Conversation';
         button.addEventListener('click', () => reveal(call));
         const detail = document.createElement('small');
         detail.textContent = `${new Date(call.at).toLocaleTimeString()} · ${call.model}${call.stopReason === 'error' ? ' · Error' : call.stopReason === 'aborted' ? ' · Stopped' : ''}`;

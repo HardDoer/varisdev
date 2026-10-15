@@ -10,8 +10,9 @@ import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
   fauxToolCall,
-  type Context,
+  type TranscriptContext,
 } from '@earendil-works/pi-ai';
+import {getCurrentTools} from '@earendil-works/pi-ai/utils/transcript';
 import {ModelRegistry, ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 import type {DashboardParent} from '../src/dashboard/hub.ts';
@@ -124,11 +125,10 @@ void test(
           maxTokens: 1000,
         },
       ],
-      streamSimple(model, context: Context) {
-        const worker = !context.tools?.some(
-          tool => tool.name === 'agent_spawn',
-        );
-        const toolNames = context.tools?.map(tool => tool.name) ?? [];
+      streamSimple(model, context: TranscriptContext) {
+        const tools = getCurrentTools(context.messages);
+        const worker = !tools.some(tool => tool.name === 'agent_spawn');
+        const toolNames = tools.map(tool => tool.name);
         turns.push({worker, toolNames});
         const userIndex = context.messages.findLastIndex(
           message => message.role === 'user',

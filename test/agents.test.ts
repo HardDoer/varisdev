@@ -14,6 +14,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {
@@ -33,6 +34,15 @@ type AgentEventHandler = (
   event: {reason?: string},
   ctx: ExtensionContext,
 ) => Promise<void> | void;
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return Object.assign(ctx, {
+    tools: [],
+    async executeTool(): Promise<never> {
+      throw new Error('Nested tool calls are not configured for this fixture.');
+    },
+  });
+}
 
 const spec: AgentSpec = {
   name: 'worker',
@@ -486,7 +496,8 @@ void test('session workers save the final answer, track tools, and detect API fa
   );
   assert.equal(await readFile(resultFile, 'utf8'), 'complete answer');
   assert.deepEqual(activities, ['Using read']);
-  assert.equal(fake.listeners.size, 0);
+  // Only the lifetime usage listener remains between runs.
+  assert.equal(fake.listeners.size, 1);
   fake.session.prompt = async () => {
     fake.session.messages.push(assistant('', 'error', 'Provider failed'));
   };
@@ -494,7 +505,7 @@ void test('session workers save the final answer, track tools, and detect API fa
     worker.run('retry', new AbortController().signal, () => {}),
     /Provider failed/,
   );
-  assert.equal(fake.listeners.size, 0);
+  assert.equal(fake.listeners.size, 1);
   assert.equal(
     worker.conversation?.conversation.at(-1)?.error,
     'Provider failed',
@@ -507,8 +518,9 @@ void test('session workers save the final answer, track tools, and detect API fa
     /Agent length/,
   );
   assert.equal(await readFile(resultFile, 'utf8'), 'complete answer');
-  assert.equal(fake.listeners.size, 0);
+  assert.equal(fake.listeners.size, 1);
   worker.dispose();
+  assert.equal(fake.listeners.size, 0);
   assert.equal(fake.disposed, 1);
 });
 
@@ -531,10 +543,13 @@ void test('session workers cancel again if a prompt starts after cancellation du
   preflight.resolve();
   await assert.rejects(running, /Cancelled during setup/);
   assert.equal(fake.aborts, 2);
+  assert.equal(fake.listeners.size, 1);
+  worker.dispose();
   assert.equal(fake.listeners.size, 0);
 });
 
 void test('agent tools select registered models and effort without adding parent prompts', async t => {
+  await isolateToolSettings(t);
   t.mock.timers.enable({apis: ['setTimeout']});
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
@@ -600,8 +615,9 @@ void test('agent tools select registered models and effort without adding parent
     },
     sessionManager: {getSessionId: () => 'parent-session'},
   } as unknown as ExtensionContext;
+  const executeCtx = toolContext(ctx);
   const execute = (name: string, params: Record<string, unknown>) =>
-    tools.get(name)!.execute('call', params, undefined, undefined, ctx);
+    tools.get(name)!.execute('call', params, undefined, undefined, executeCtx);
   const list = async (view?: string) => {
     const result = await execute('agent_list', view ? {view} : {});
     const content = result.content[0];
@@ -792,6 +808,7 @@ void test('agent tools select registered models and effort without adding parent
 });
 
 void test('worker messaging identifies senders, validates recipients, and stays in its parent session', async t => {
+  await isolateToolSettings(t);
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
   const notifications: Array<{
@@ -842,12 +859,13 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     },
     sessionManager: {getSessionId: () => 'parent-session'},
   } as unknown as ExtensionContext;
+  const executeCtx = toolContext(ctx);
   const execute = (
     source: Map<string, ToolDefinition>,
     name: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => source.get(name)!.execute('call', params, signal, undefined, ctx);
+  ) => source.get(name)!.execute('call', params, signal, undefined, executeCtx);
   const spawn = async (name: string) => {
     const result = await execute(tools, 'agent_spawn', {
       name,
@@ -1046,6 +1064,7 @@ function agentParent(
     },
     sessionManager: {getSessionId: () => sessionId},
   } as unknown as ExtensionContext;
+  const executeCtx = toolContext(ctx);
   const control = registerAgentTools(pi, createWorker);
   async function emit(event: string, reason?: string) {
     if (event === 'agent_start') idle = false;
@@ -1058,7 +1077,7 @@ function agentParent(
   ) => {
     const result = await tools
       .get(name)!
-      .execute('call', params, undefined, undefined, ctx);
+      .execute('call', params, undefined, undefined, executeCtx);
     return {...result, details: result.details as {agents: AgentRecord[]}};
   };
   return {
@@ -1101,9 +1120,15 @@ function teamWorkers() {
       options,
       controlled: controlledWorker(true, `/worker/${created.length}`),
       execute: (name: string, params: Record<string, unknown> = {}) =>
-        tools.get(name)!.execute('call', params, undefined, undefined, {
-          sessionManager: {getSessionId: () => options.id},
-        } as unknown as ExtensionContext),
+        tools.get(name)!.execute(
+          'call',
+          params,
+          undefined,
+          undefined,
+          toolContext({
+            sessionManager: {getSessionId: () => options.id},
+          } as unknown as ExtensionContext),
+        ),
     };
     created.push(worker);
     byId.set(options.id, worker);
@@ -1113,6 +1138,7 @@ function teamWorkers() {
 }
 
 void test('parent activity and interruption never turn inbox messages into prompts', async t => {
+  await isolateToolSettings(t);
   const workers = teamWorkers();
   const parent = agentParent('interrupted-parent', workers.create);
   t.after(() => parent.shutdown());
@@ -1155,6 +1181,7 @@ void test('parent activity and interruption never turn inbox messages into promp
 });
 
 void test('every session shutdown closes running and queued workers', async t => {
+  await isolateToolSettings(t);
   for (const reason of ['quit', 'reload', 'new', 'resume', 'fork']) {
     const workers = teamWorkers();
     const parent = agentParent(`ordinary-${reason}`, workers.create);
@@ -1269,6 +1296,7 @@ void test('cleaned agents release the session capacity for later commands', asyn
 });
 
 void test('controller observes activity and inbox with copied state and resets without stale workers', async t => {
+  await isolateToolSettings(t);
   const workers = teamWorkers();
   const parent = agentParent('observed-parent', workers.create);
   t.after(() => parent.shutdown());
@@ -1391,8 +1419,9 @@ void test('session callbacks publish pending tool output and settle cancellation
           last.conversation.at(-1)?.error,
           'Prompt execution failed',
         );
-      assert.equal(fake.listeners.size, 0);
+      assert.equal(fake.listeners.size, 1);
       worker.dispose();
+      assert.equal(fake.listeners.size, 0);
       assert.deepEqual(worker.conversation, last);
     });
   }

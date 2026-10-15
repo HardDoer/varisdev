@@ -143,7 +143,10 @@ export async function createDashboardParent(
       delegated.getProvider(inherited.model.provider)!,
     );
   }
-  if ((startup || request.resume) && modelRuntime) {
+  if (modelRuntime) {
+    // Extension providers must be available before selecting a saved default.
+    // Pi also flushes this queue while binding extensions, but that is too late
+    // for createAgentSession's initial model selection.
     const runtime = loader.getExtensions().runtime;
     for (const {name, config} of runtime.pendingProviderRegistrations)
       modelRuntime.registerProvider(name, config);
@@ -230,6 +233,12 @@ export async function createDashboardParent(
   const unsubscribeSessionEvents = session.subscribe(event => {
     if (event.type === 'queue_update')
       state?.updateQueue(event.steering, event.followUp);
+    if (
+      event.type === 'entry_appended' &&
+      event.entry.type === 'usage' &&
+      context
+    )
+      showCustomMessage?.restoreUsage(context);
     if (
       event.type === 'message_end' &&
       event.message.role === 'custom' &&
@@ -536,18 +545,44 @@ export async function createDashboardParent(
               // Put it directly into Pi's steering queue instead of starting a second run.
               await session.steer(text, images);
             } else {
-              await session.prompt(
-                extension ? '/' + name + (args ? ' ' + args : '') : text,
-                {
-                  expandPromptTemplates: true,
-                  streamingBehavior: 'steer',
-                  images,
-                  preflightResult: accepted => {
-                    if (accepted && running.cancelled)
-                      throw new Error('Prompt cancelled.');
+              const leafBeforePrompt = session.sessionManager.getLeafId();
+              let rewindCancelledPreflight = false;
+              try {
+                await session.prompt(
+                  extension ? '/' + name + (args ? ' ' + args : '') : text,
+                  {
+                    expandPromptTemplates: true,
+                    streamingBehavior: 'steer',
+                    images,
+                    preflightResult: disposition => {
+                      if (
+                        disposition === 'started' &&
+                        running.cancelled &&
+                        !aborting
+                      ) {
+                        rewindCancelledPreflight = true;
+                        aborting = stop().catch(() => {});
+                      }
+                    },
                   },
-                },
-              );
+                );
+              } finally {
+                await aborting;
+                if (rewindCancelledPreflight) {
+                  // Pi 1.2+ accepts the run only after credential preflight. Rewind
+                  // the immediately-aborted branch so cancellation stays invisible.
+                  if (leafBeforePrompt)
+                    session.sessionManager.branch(leafBeforePrompt);
+                  else session.sessionManager.resetLeaf();
+                  // Make the restored leaf the final persisted path too. Otherwise
+                  // reopening the JSONL file would select the abandoned abort again.
+                  session.sessionManager.appendCustomEntry(
+                    'varisdev.cancelled-preflight',
+                  );
+                  session.refreshContext();
+                  showCustomMessage!.restore(context!);
+                }
+              }
             }
             for (const operation of running.extensionOperations)
               await operation;

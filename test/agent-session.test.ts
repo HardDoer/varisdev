@@ -17,6 +17,7 @@ import {
   SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
+  type ExtensionToolContext,
   type SessionShutdownEvent,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
@@ -30,6 +31,15 @@ import {
 import {DashboardState} from '../src/dashboard/state.ts';
 import type {ModelUsage} from '../src/usage.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return Object.assign(ctx, {
+    tools: [],
+    async executeTool(): Promise<never> {
+      throw new Error('Nested tool calls are not configured for this fixture.');
+    },
+  });
+}
 
 interface ProviderRequest {
   model: string;
@@ -742,10 +752,11 @@ void test(
       isIdle: () => true,
       sessionManager: {getSessionId: () => 'messaging-parent'},
     } as unknown as ExtensionContext;
+    const executeCtx = toolContext(ctx);
     const execute = (name: string, params: Record<string, unknown>) =>
       tools
         .get(name)!
-        .execute('parent-call', params, undefined, undefined, ctx);
+        .execute('parent-call', params, undefined, undefined, executeCtx);
     const spawn = async (name: string) => {
       const result = await execute('agent_spawn', {
         name,

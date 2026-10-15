@@ -1,5 +1,6 @@
 node_modules/
 build/
+.pi
 .pi/npm/
 .pi/git/
 .pi/desktop/

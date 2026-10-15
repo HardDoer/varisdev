@@ -15,6 +15,7 @@ import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
 import {loadPluginThemes} from '../src/desktop/plugin-themes.ts';
+import {THEMES} from '../assets/dashboard/themes.js';
 
 async function fixture(t: {after(fn: () => Promise<void>): void}) {
   const root = await mkdtemp(join(tmpdir(), 'varisdev-plugin-themes-'));
@@ -99,6 +100,29 @@ void test('installed global and project packages expose declarative themes witho
     agentDir: f.agentDir,
   });
   assert.equal(globalOnly.themes.length, 1);
+});
+
+void test('plugins can inherit every shipped theme', async t => {
+  const f = await fixture(t);
+  await writeFile(
+    join(f.plugin, 'package.json'),
+    JSON.stringify({
+      name: 'test-style',
+      varisdev: {themes: THEMES.map(theme => `./themes/${theme.id}.json`)},
+    }),
+  );
+  for (const theme of THEMES) {
+    await writeFile(
+      join(f.plugin, `themes/${theme.id}.json`),
+      JSON.stringify({id: theme.id, name: theme.name, base: theme.id}),
+    );
+  }
+  const result = await loadPluginThemes(f);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(
+    result.themes.map(theme => theme.base),
+    THEMES.map(theme => theme.id),
+  );
 });
 
 void test('project installations override duplicate global theme IDs and retain other global themes', async t => {

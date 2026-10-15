@@ -6,7 +6,7 @@ import {basename} from 'node:path';
 import type {AgentSessionController} from '../agents/team.ts';
 import {DashboardState, type ConversationMessage} from './state.ts';
 import {observeFileChanges} from './changes.ts';
-import {modelUsage, compactionUsage, type ModelUsageCall} from '../usage.ts';
+import {modelUsage, compactionUsage, sessionUsageCalls} from '../usage.ts';
 import {
   messageText,
   conversationVisualizations,
@@ -34,12 +34,18 @@ export interface DashboardCustomMessage {
   timestamp: number;
 }
 
+export interface DashboardSessionObserver {
+  (message: DashboardCustomMessage, ctx: ExtensionContext): void;
+  restore(ctx: ExtensionContext): void;
+  restoreUsage(ctx: ExtensionContext): void;
+}
+
 export function observeDashboardSession(
   pi: ExtensionAPI,
   control: AgentSessionController,
   onReady: (state: DashboardState, ctx: ExtensionContext) => void,
   existingState?: DashboardState,
-): (message: DashboardCustomMessage, ctx: ExtensionContext) => void {
+): DashboardSessionObserver {
   let state: DashboardState | undefined;
   let cwd = process.cwd();
   let unsubscribe: (() => void) | undefined;
@@ -194,6 +200,10 @@ export function observeDashboardSession(
     }
   }
 
+  function restoreUsage(ctx: ExtensionContext): void {
+    state?.replaceUsage(sessionUsageCalls(ctx.sessionManager.getBranch()));
+  }
+
   function restoreConversation(ctx: ExtensionContext): void {
     tools.clear();
     assistantMessage = undefined;
@@ -309,33 +319,8 @@ export function observeDashboardSession(
         }
       }
     }
-    function* calls(): Generator<{call: ModelUsageCall; sequence: number}> {
-      let sequence = 0;
-      let summarySequence = 0;
-      let summaryModel: string | undefined;
-      for (const entry of branch) {
-        if (entry.type === 'model_change')
-          summaryModel = `${entry.provider}/${entry.modelId}`;
-        if (entry.type === 'compaction') {
-          summarySequence++;
-          const call = compactionUsage(entry, summaryModel);
-          if (call) yield {call, sequence: summarySequence};
-          continue;
-        }
-        if (entry.type !== 'message') continue;
-        const message = entry.message;
-        if (message.role !== 'user' && message.role !== 'assistant') continue;
-        sequence++;
-        if (message.role !== 'assistant') continue;
-        const call = modelUsage(message, {
-          id: messageId(message.role, message.timestamp, sequence),
-          at: new Date(message.timestamp).toISOString(),
-        });
-        if (call) yield {call, sequence};
-      }
-    }
     state?.replaceConversation(messages());
-    state?.replaceUsage(calls());
+    restoreUsage(ctx);
     state?.updateSession({prompt, response});
   }
 
@@ -427,6 +412,8 @@ export function observeDashboardSession(
     onReady(state, ctx);
   });
   pi.on('before_agent_start', (event, ctx) => {
+    // Pick up usage appended while idle before this run starts.
+    restoreUsage(ctx);
     lastError = undefined;
     const prompt = 'prompt' in event ? event.prompt : undefined;
     state?.updateSession({
@@ -599,6 +586,8 @@ export function observeDashboardSession(
       );
   });
   pi.on('agent_settled', (_event, ctx) => {
+    // Streaming cache warming appends usage outside the message lifecycle.
+    restoreUsage(ctx);
     tools.clear();
     state?.settleConversation();
     assistantMessage = undefined;
@@ -686,5 +675,8 @@ export function observeDashboardSession(
     sessionId = undefined;
     seenChanges.clear();
   });
-  return showCustomMessage;
+  return Object.assign(showCustomMessage, {
+    restore: restoreConversation,
+    restoreUsage,
+  });
 }

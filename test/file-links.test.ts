@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, normalize} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {test} from 'node:test';
 import {fileLinkPath} from '../assets/dashboard/file-links.js';
@@ -14,7 +14,8 @@ void test('conversation links decode filenames once and open the selected projec
   const path = join(cwd, name);
   await writeFile(path, 'example');
   const decoded = fileLinkPath(pathToFileURL(path).href);
-  assert.equal(decoded, path);
+  assert.ok(decoded);
+  assert.equal(normalize(decoded), path);
   assert.equal(fileLinkPath(encodeURIComponent(name)), name);
   assert.equal(
     fileLinkPath('file:///C:/Project/Play%20Instant.command'),

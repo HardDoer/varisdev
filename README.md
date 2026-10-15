@@ -4,6 +4,17 @@ VarisDev is built on top of the open-source coding harness [Pi](https://pi.dev),
 
 Pi is a very cool project and VarisDev would not have been possible without it. Check it out [here](https://github.com/earendil-works/pi).
 
+## Features
+
+- Parent sessions and background agents with a cool 3D-view reminiscent of early 2000s tycoon games.
+- Makes you look like you are not working when in fact you are!
+- Robots drinking coffee!
+- Detailed visualizations regarding whatever the agents are doing and token usage.
+- Context files, Markdown editing, and image previews.
+- Supports all plugins that Pi supports. Though because the visualization is quite different some plugins that do UI-stuff probably do not work that well. You have been warned!
+- Has its own theming system that you can extend as you wish.
+- Additional tools for browsing, structured data, images, and audio.
+
 ## Install
 
 **macOS / Linux**
@@ -29,17 +40,6 @@ Requires [Node.js](https://nodejs.org/) 24+.
 Open a new terminal and run `varisdev`. On Windows, you can also open VarisDev from the Start menu. On macOS, the installer adds VarisDev to `~/Applications`.
 
 See [installation options](docs/installation.md) and [uninstall instructions](docs/installation.md#uninstall).
-
-## Features
-
-- Parent sessions and background agents with a cool 3D-view reminiscent of early 2000s tycoon games.
-- Makes you look like you are not working when in fact you are!
-- Robots drinking coffee!
-- Detailed visualizations regarding whatever the agents are doing and token usage.
-- Context files, Markdown editing, and image previews.
-- Supports all plugins that Pi supports. Though because the visualization is quite different some plugins that do UI-stuff probably do not work that well. You have been warned!
-- Has its own theming system that you can extend as you wish.
-- Additional tools for browsing, structured data, images, and audio.
 
 ## Updates
 

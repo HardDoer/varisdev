@@ -29,7 +29,13 @@ const BASES = new Set([
   'nord',
   'dracula',
   'catppuccin-mocha',
+  'forest',
+  'moss',
+  'kimbie-dark',
   'solarized-light',
+  'mint-paper',
+  'glacier',
+  'rose-quartz',
   'high-contrast',
 ]);
 const COLORS = new Set([

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
-import {THEMES} from '../assets/dashboard/themes.js';
+import {pluginTheme, THEMES} from '../assets/dashboard/themes.js';
 
 function luminance(hex: string) {
   const values = [1, 3, 5].map(offset => {
@@ -30,6 +30,35 @@ const surfaces = [
   'scene-glow',
   'page-glow',
 ];
+
+void test('catalog includes green, warm dark, and varied light themes with complete scene palettes', () => {
+  const schemes = Object.fromEntries(
+    THEMES.map(theme => [theme.id, theme.colorScheme]),
+  );
+  for (const id of ['forest', 'moss', 'kimbie-dark'])
+    assert.equal(schemes[id], 'dark');
+  for (const id of ['mint-paper', 'glacier', 'rose-quartz'])
+    assert.equal(schemes[id], 'light');
+  assert.equal(new Set(THEMES.map(theme => theme.id)).size, THEMES.length);
+  for (const theme of THEMES) {
+    assert.deepEqual(Object.keys(theme.colors), Object.keys(THEMES[0].colors));
+    assert.deepEqual(
+      Object.keys(theme.scenePalette),
+      Object.keys(THEMES[0].scenePalette),
+    );
+    for (const rgb of Object.values(theme.scenePalette)) {
+      assert.equal(rgb.length, 3);
+      assert.ok(
+        rgb.every(
+          (value: number) => Number.isFinite(value) && value >= 0 && value <= 1,
+        ),
+      );
+    }
+    const inherited = pluginTheme({base: theme.id, colors: {}});
+    assert.equal(inherited.colorScheme, theme.colorScheme);
+    assert.deepEqual(inherited.colors, theme.colors);
+  }
+});
 
 void test('shipped theme CSS matches the palette definitions', async () => {
   const css = await readFile(
@@ -64,6 +93,9 @@ for (const theme of THEMES) {
       'red',
       'violet',
       'rose',
+      'status-running',
+      'status-queued',
+      'status-completed',
     ]) {
       for (const background of surfaces) {
         const ratio = contrast(colors[foreground], colors[background]);
@@ -74,6 +106,10 @@ for (const theme of THEMES) {
       }
     }
     assert.ok(contrast(colors['accent-text'], colors.mint) >= 4.5);
+    assert.ok(
+      contrast(colors['selection-text'], colors['selection-bg']) >= 4.5,
+    );
+    assert.ok(contrast(colors['selection-bg'], colors['panel-raised']) >= 3);
   });
 
   void test(`${theme.name} focus indicators and input borders have at least 3:1 contrast`, () => {

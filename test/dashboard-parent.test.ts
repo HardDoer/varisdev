@@ -850,6 +850,7 @@ void test(
           );
           assert.deepEqual(cancelledSnapshot.agents, []);
           assert.deepEqual(cancelledSnapshot.changes, []);
+          assert.deepEqual(cancelledSnapshot.usage.calls, []);
           assert.equal(
             cancelledSnapshot.session.status,
             action === 'close' ? 'closed' : 'idle',
@@ -873,6 +874,123 @@ void test(
         },
       );
     }
+
+    await t.test(
+      'cancelled credential preflight preserves and resumes the existing branch',
+      async cancellation => {
+        const historical = await createDashboardParent(
+          {cwd: otherCwd, name: 'Existing preflight history'},
+          inherited,
+        );
+        parents.push(historical);
+        await historical.prompt(
+          'independent-parent: establish history before cancellation.',
+        );
+        const before = historical.state.snapshot();
+        const conversationIdentity = (snapshot: DashboardState) =>
+          snapshot
+            .snapshot()
+            .conversation.map(message => [
+              message.id,
+              message.role,
+              message.text,
+              message.error,
+            ]);
+        const beforeConversation = conversationIdentity(historical.state);
+        assert.ok(before.session.sessionFile);
+        assert.equal(before.session.response, 'Independent parent answer.');
+
+        let releaseCredentials!: () => void;
+        const credentials = new Promise<void>(resolve => {
+          releaseCredentials = resolve;
+        });
+        cancellation.after(releaseCredentials);
+        let checkingCredentials = false;
+        const hasConfiguredAuth = ModelRuntime.prototype.hasConfiguredAuth;
+        const checkAuth = ModelRuntime.prototype.checkAuth;
+        cancellation.mock.method(
+          ModelRuntime.prototype,
+          'hasConfiguredAuth',
+          function (this: ModelRuntime, provider: string) {
+            return provider === providerId
+              ? false
+              : hasConfiguredAuth.call(this, provider);
+          },
+        );
+        cancellation.mock.method(
+          ModelRuntime.prototype,
+          'checkAuth',
+          async function (
+            this: ModelRuntime,
+            ...args: Parameters<ModelRuntime['checkAuth']>
+          ) {
+            if (args[0] === providerId) {
+              checkingCredentials = true;
+              await credentials;
+            }
+            return checkAuth.apply(this, args);
+          },
+        );
+
+        const requestCount = requests.length;
+        const cancelledText =
+          'independent-parent: this cancelled preflight must stay abandoned.';
+        const prompting = historical.prompt(cancelledText);
+        await waitFor(
+          () => checkingCredentials,
+          'existing session waits for credentials',
+        );
+        const stopping = historical.abort();
+        releaseCredentials();
+        await Promise.all([prompting, stopping]);
+        const after = historical.state.snapshot();
+        assert.equal(requests.length, requestCount);
+        assert.deepEqual(
+          conversationIdentity(historical.state),
+          beforeConversation,
+        );
+        assert.doesNotMatch(
+          JSON.stringify(after.conversation),
+          new RegExp(cancelledText),
+        );
+        assert.deepEqual(after.usage, before.usage);
+        assert.equal(after.session.response, before.session.response);
+        await historical.close();
+
+        const resumed = await createDashboardParent(
+          {
+            cwd: otherCwd,
+            name: 'Resumed preflight history',
+            resume: {
+              id: before.session.id,
+              path: before.session.sessionFile,
+            },
+          },
+          inherited,
+        );
+        parents.push(resumed);
+        const restored = resumed.state.snapshot();
+        assert.deepEqual(
+          conversationIdentity(resumed.state),
+          beforeConversation,
+        );
+        assert.doesNotMatch(
+          JSON.stringify(restored.conversation),
+          new RegExp(cancelledText),
+        );
+        assert.deepEqual(restored.usage, before.usage);
+        assert.equal(restored.session.response, before.session.response);
+
+        await resumed.prompt(
+          'independent-parent: continue only the preserved history.',
+        );
+        assert.equal(requests.length, requestCount + 1);
+        const resumedMessages = JSON.stringify(requests.at(-1)!.body.messages);
+        assert.match(resumedMessages, /establish history before cancellation/);
+        assert.doesNotMatch(resumedMessages, new RegExp(cancelledText));
+        await resumed.close();
+      },
+    );
 
     assert.equal(
       JSON.parse(await readFile(join(agentDir, 'settings.json'), 'utf8'))
@@ -958,6 +1076,69 @@ void test(
     );
     await standalone.close();
     assert.equal(standalone.state.snapshot().session.status, 'closed');
+
+    // Extension providers must be registered before selecting a saved default,
+    // including for a brand-new parent without startup or resume metadata.
+    const extensionProviderId = 'dashboard-extension-provider';
+    const extensionModelId = 'extension-model';
+    const extensions = join(otherCwd, '.pi', 'extensions');
+    await mkdir(extensions, {recursive: true});
+    await writeFile(
+      join(extensions, 'provider.js'),
+      `export default pi => pi.registerProvider('${extensionProviderId}', {
+        api: 'openai-completions',
+        baseUrl: 'http://127.0.0.1:${(server.address() as AddressInfo).port}/v1',
+        headers: {'x-extension-provider': 'registered-before-selection'},
+        models: [{
+          id: '${extensionModelId}', name: 'Extension model', reasoning: true,
+          input: ['text'], contextWindow: 128000, maxTokens: 1000,
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+        }],
+      });`,
+    );
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({
+        defaultProvider: extensionProviderId,
+        defaultModel: extensionModelId,
+        retry: {enabled: false},
+      }),
+    );
+    await writeFile(
+      join(agentDir, 'auth.json'),
+      JSON.stringify({
+        [extensionProviderId]: {
+          type: 'api_key',
+          key: 'saved-extension-key',
+        },
+      }),
+    );
+    const extensionParent = await createDashboardParent({
+      cwd: otherCwd,
+      name: 'Extension-provider parent',
+    });
+    parents.push(extensionParent);
+    assert.equal(
+      extensionParent.state.snapshot().session.model,
+      `${extensionProviderId}/${extensionModelId}`,
+    );
+    const extensionRequestStart = requests.length;
+    await extensionParent.prompt(
+      'independent-parent: use the saved extension provider.',
+    );
+    assert.equal(requests.length, extensionRequestStart + 1);
+    const extensionRequest = requests.at(-1)!;
+    assert.equal(extensionRequest.body.model, extensionModelId);
+    assert.equal(
+      extensionRequest.headers.authorization,
+      'Bearer saved-extension-key',
+    );
+    assert.equal(
+      extensionRequest.headers['x-extension-provider'],
+      'registered-before-selection',
+    );
+    await extensionParent.close();
+
     assert.deepEqual(serverErrors, []);
   },
 );

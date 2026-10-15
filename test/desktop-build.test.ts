@@ -1,10 +1,40 @@
 import assert from 'node:assert/strict';
-import {cp, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {cp, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+
+void test('development and private desktop Pi dependencies stay on the same release', async () => {
+  const [development, desktop, developmentLock, desktopLock] =
+    await Promise.all(
+      [
+        'package.json',
+        'desktop/package.json',
+        'package-lock.json',
+        'desktop/package-lock.json',
+      ].map(async path => JSON.parse(await readFile(join(root, path), 'utf8'))),
+    );
+  const release =
+    developmentLock.packages['node_modules/@earendil-works/pi-coding-agent']
+      .version;
+  for (const name of ['pi-ai', 'pi-coding-agent', 'pi-tui']) {
+    const dependency = `@earendil-works/${name}`;
+    const key = `node_modules/${dependency}`;
+    assert.equal(
+      desktop.dependencies[dependency],
+      development.devDependencies[dependency],
+      `${dependency}: update both manifests together`,
+    );
+    assert.equal(developmentLock.packages[key].version, release, dependency);
+    assert.equal(
+      desktopLock.packages[key].version,
+      release,
+      `${dependency}: desktop must run the release verified by development tests`,
+    );
+  }
+});
 
 void test('desktop build reports TypeScript stdout diagnostics from the installed package', async t => {
   const tempRoot = join(root, '.pi/tmp');

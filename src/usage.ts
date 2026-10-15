@@ -1,3 +1,5 @@
+import type {SessionEntry} from '@earendil-works/pi-coding-agent';
+
 export interface ModelUsageCall {
   id: string;
   at: string;
@@ -10,7 +12,9 @@ export interface ModelUsageCall {
   cost: number;
   toolNames: string[];
   stopReason?: string;
-  kind?: 'response' | 'compaction';
+  kind?: 'response' | 'compaction' | 'usage';
+  /** SDK usage-entry category, such as cache_warm. */
+  usageKind?: string;
 }
 
 export interface ModelUsage {
@@ -125,6 +129,24 @@ export function modelUsage(
   };
 }
 
+/** Model-attributed SDK work persisted outside assistant messages. */
+export function persistedUsage(entry: {
+  id: string;
+  timestamp: string;
+  kind: string;
+  provider: string;
+  model: string;
+  usage?: unknown;
+}): ModelUsageCall | undefined {
+  const call = modelUsage(
+    {usage: entry.usage, provider: entry.provider, model: entry.model},
+    {id: `usage-${entry.id}`, at: entry.timestamp},
+  );
+  return call
+    ? {...call, kind: 'usage', usageKind: entry.kind.slice(0, 100)}
+    : undefined;
+}
+
 /** Successful SDK summaries can report one aggregate for several model calls. */
 export function compactionUsage(
   entry: {id: string; timestamp: string; usage?: unknown},
@@ -140,10 +162,52 @@ export function compactionUsage(
   return call ? {...call, kind: 'compaction'} : undefined;
 }
 
+/** Project assistant, compaction, and standalone persisted usage calls. */
+export function* sessionUsageCalls(
+  entries: readonly SessionEntry[],
+): Generator<{call: ModelUsageCall; sequence: number}> {
+  let responseSequence = 0;
+  let compactionSequence = 0;
+  let usageSequence = 0;
+  let summaryModel: string | undefined;
+  for (const entry of entries) {
+    if (entry.type === 'model_change')
+      summaryModel = `${entry.provider}/${entry.modelId}`;
+    if (entry.type === 'usage') {
+      usageSequence++;
+      const call = persistedUsage(entry);
+      if (call) yield {call, sequence: usageSequence};
+      continue;
+    }
+    if (entry.type === 'compaction') {
+      compactionSequence++;
+      const call = compactionUsage(entry, summaryModel);
+      if (call) yield {call, sequence: compactionSequence};
+      continue;
+    }
+    if (entry.type !== 'message') continue;
+    const message = entry.message;
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+    responseSequence++;
+    if (message.role !== 'assistant') continue;
+    const call = modelUsage(message, {
+      id: `message-assistant-${message.timestamp}-${responseSequence}`,
+      at: new Date(message.timestamp).toISOString(),
+    });
+    if (call) yield {call, sequence: responseSequence};
+  }
+}
+
+type TrackedUsageKind = NonNullable<ModelUsageCall['kind']>;
+
 /** Keeps every recorded count while retaining the latest 100 responses and summaries. */
 export class ModelUsageTracker {
   private value = emptyUsage();
-  private sequences = {response: 0, compaction: 0};
+  private sequences: Record<TrackedUsageKind, number> = {
+    response: 0,
+    compaction: 0,
+    usage: 0,
+  };
 
   record(call: ModelUsageCall, sequence: number): boolean {
     const index = this.value.calls.findIndex(item => item.id === call.id);
@@ -174,7 +238,7 @@ export class ModelUsageTracker {
 
   replace(calls: Iterable<{call: ModelUsageCall; sequence: number}>): void {
     this.value = emptyUsage();
-    this.sequences = {response: 0, compaction: 0};
+    this.sequences = {response: 0, compaction: 0, usage: 0};
     for (const {call, sequence} of calls) this.record(call, sequence);
   }
 

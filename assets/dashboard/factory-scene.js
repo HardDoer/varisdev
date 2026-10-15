@@ -2,7 +2,12 @@
 /* A small, dependency-free WebGL scene. Coordinates and lighting are real 3D;
  * the dashboard owns the accessible labels, session data and motion preference. */
 import {createParentMotion} from './parent-motion.js';
-import {idleActivityPose, drawIdleActivity} from './parent-activities.js';
+import {
+  AWAKE_EYE_HEIGHT,
+  relaxedIdlePose,
+  idleActivityPose,
+  drawIdleActivity,
+} from './parent-activities.js';
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 
 const TAU = Math.PI * 2;
@@ -744,6 +749,8 @@ export function createFactoryScene(
     const idle = pose.activity
       ? idleActivityPose(pose.activity, pose.elapsed)
       : null;
+    const relaxed =
+      pose.mode === 'rest' && !reaction ? relaxedIdlePose(time, motion) : null;
     const blend = idle
       ? Math.max(
           0,
@@ -782,7 +789,8 @@ export function createFactoryScene(
     const surprise = Math.max(reactionPose.surprise, pose.surprise);
     const jump = reactionPose.jump + pose.jump;
     const {squash, wobble} = reactionPose;
-    const lift = bob + jump + squash + (idle?.lift || 0) * blend;
+    const lift =
+      bob + jump + squash + (idle?.lift || 0) * blend + (relaxed?.lift || 0);
     const y = 0.4 + lift;
     g.cylinder(
       [x, 0.38, 0],
@@ -828,10 +836,11 @@ export function createFactoryScene(
     g.box([x + 0.12, y + 3.09, 0], [1.35, 0.11, 1.5], C.white);
     g.box([x + 0.84, y + 2.61, 0], [0.095, 0.47, 1.45], C.dark);
     g.box([x + 0.9, y + 2.58, 0], [0.035, 0.05, 1.23], color, 0.7);
+    const eyeHeight = relaxed?.eyeHeight || AWAKE_EYE_HEIGHT;
     for (const z of [-0.4, 0.4]) {
       g.box(
         [x + 0.91, y + 2.67, z],
-        [0.04, 0.16 + surprise * 0.23, 0.29 + surprise * 0.08],
+        [0.04, eyeHeight + surprise * 0.15, 0.3 + surprise * 0.08],
         surprise ? C.white : color,
         1,
       );
@@ -864,12 +873,19 @@ export function createFactoryScene(
       const stroke = Math.sin(
         t * (writing ? 11 : tools ? 5 : 2.4) + side * 1.8,
       );
-      const elbow =
-        thinking && side === 1
+      const relaxedArm = relaxed?.arms[side === -1 ? 0 : 1];
+      const elbow = relaxedArm
+        ? [
+            x + relaxedArm.elbow[0],
+            y + relaxedArm.elbow[1],
+            relaxedArm.elbow[2],
+          ]
+        : thinking && side === 1
           ? [x + 0.5, y + 1.85, 1.18]
           : [x + 0.55 + (active ? stroke * 0.22 : 0), y + 1.2, side * 1.25];
-      const hand =
-        thinking && side === 1
+      const hand = relaxedArm
+        ? [x + relaxedArm.hand[0], y + relaxedArm.hand[1], relaxedArm.hand[2]]
+        : thinking && side === 1
           ? [x + 0.95, y + 2.37 + stroke * 0.1, 0.52]
           : [
               x + 1.3 + (tools ? stroke * 0.45 : 0),
@@ -1024,6 +1040,7 @@ export function createFactoryScene(
     sceneEffects.append(fx, position, yaw, x);
     canvas.dataset.parentMode = pose.mode;
     canvas.dataset.parentActivity = pose.activity || '';
+    canvas.dataset.parentEyes = String(eyeHeight);
     return {
       p: [pose.x, pose.ground + y + 4.0, pose.z],
       body: [pose.x, pose.ground + y + 1.6, pose.z],

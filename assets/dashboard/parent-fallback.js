@@ -1,5 +1,10 @@
 import {createParentMotion} from './parent-motion.js';
-import {idleActivityPose, drawIdleActivity} from './parent-activities.js';
+import {
+  AWAKE_EYE_HEIGHT,
+  relaxedIdlePose,
+  idleActivityPose,
+  drawIdleActivity,
+} from './parent-activities.js';
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -240,6 +245,8 @@ export function createParentFallback(container) {
     const idle = pose.activity
       ? idleActivityPose(pose.activity, pose.elapsed)
       : null;
+    const relaxed =
+      pose.mode === 'rest' && !reaction ? relaxedIdlePose(time, motion) : null;
     const blend = idle
       ? Math.max(
           0,
@@ -261,7 +268,12 @@ export function createParentFallback(container) {
       : working && motion
         ? Math.sin(time * 3) * 0.06
         : 0;
-    const lift = bob + jump + stop.squash + (idle?.lift || 0) * blend;
+    const lift =
+      bob +
+      jump +
+      stop.squash +
+      (idle?.lift || 0) * blend +
+      (relaxed?.lift || 0);
     const base = 0.4 + lift;
     const color = surprise ? C.amber : working ? C.cyan : C.mint;
     const origin = 57 + (pose.x - HOME) * 8.8;
@@ -301,11 +313,12 @@ export function createParentFallback(container) {
     g.cylinder([0, base + 2.22, 0], [0.56, 0.34, 0.56], C.dark);
     g.box([0, base + 2.72, 0], [1.65, 0.88, 1.9], C.shell);
     g.box([0.83, base + 2.68, 0], [0.12, 0.58, 1.65], C.dark);
+    const eyeHeight = relaxed?.eyeHeight || AWAKE_EYE_HEIGHT;
     for (const side of [-1, 1]) {
       g.box(
         [0.92, base + 2.72, side * 0.42],
-        [0.04, 0.13 + surprise * 0.2, 0.3 - surprise * 0.08],
-        color,
+        [0.04, eyeHeight + surprise * 0.15, 0.3 + surprise * 0.08],
+        surprise ? C.white : color,
         1,
       );
       g.box([0, base + 2.65, side * 1.02], [0.5, 0.48, 0.22], C.metal);
@@ -326,8 +339,13 @@ export function createParentFallback(container) {
     g.octagon([-0.53, base + 3.67, -0.48], [0.19, 0.16, 0.19], color, 1);
     for (const [i, side] of [-1, 1].entries()) {
       const shoulder = [0, base + 1.94, side * 0.96];
-      let elbow = [0.55, base + 1.2, side * 1.25];
-      let hand = [1.3, base + 0.98, side * 1.52];
+      const relaxedArm = relaxed?.arms[i];
+      let elbow = relaxedArm
+        ? [relaxedArm.elbow[0], base + relaxedArm.elbow[1], relaxedArm.elbow[2]]
+        : [0.55, base + 1.2, side * 1.25];
+      let hand = relaxedArm
+        ? [relaxedArm.hand[0], base + relaxedArm.hand[1], relaxedArm.hand[2]]
+        : [1.3, base + 0.98, side * 1.52];
       if (idle) {
         const at = p => [p[0], p[1] + base, p[2]];
         elbow = mix(elbow, at(idle.arms[i].elbow), blend);
@@ -430,6 +448,7 @@ export function createParentFallback(container) {
     }
     svg.dataset.mode = reaction ? 'startled' : pose.mode;
     svg.dataset.activity = pose.activity || '';
+    svg.dataset.eyes = String(eyeHeight);
   }
 
   function drawWorkstation() {

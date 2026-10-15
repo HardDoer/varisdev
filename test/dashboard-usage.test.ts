@@ -46,7 +46,7 @@ function observer() {
       getBranch: () => branch,
     },
   } as unknown as ExtensionContext;
-  observeDashboardSession(
+  const sessionObserver = observeDashboardSession(
     {
       getThinkingLevel: () => 'off',
       on(name: string, handler: Handler) {
@@ -68,6 +68,9 @@ function observer() {
     async emit(type: string, event: object = {}) {
       for (const handler of handlers.get(type) ?? [])
         await handler({...event, type} as never, ctx);
+    },
+    restoreUsage() {
+      sessionObserver.restoreUsage(ctx);
     },
     append(entry: object) {
       branch.push(entry as SessionEntry);
@@ -262,6 +265,78 @@ void test('missing numeric usage creates no call and missing costs normalize wit
   );
   assert.equal(usage.totalTokens, 11);
   assert.equal(usage.cost, 0.5);
+});
+
+void test('restores persisted cache-warming usage and reconciles live appends without double counting', async () => {
+  const fixture = observer();
+  const response = assistant(1, {
+    input: 10,
+    output: 2,
+    cacheRead: 3,
+    cacheWrite: 1,
+    totalTokens: 16,
+    cost: {total: 0.25},
+  });
+  fixture.history([response]);
+  const warm = {
+    type: 'usage',
+    id: 'warm-one',
+    parentId: 'entry-0',
+    timestamp: new Date(epoch + 2).toISOString(),
+    kind: 'cache_warm',
+    provider: 'fixture',
+    model: 'model-a',
+    usage: {
+      input: 0,
+      output: 1,
+      cacheRead: 120,
+      cacheWrite: 4,
+      totalTokens: 125,
+      cost: {cacheRead: 0.12, cacheWrite: 0.04, total: 0.16},
+    },
+  };
+  fixture.append(warm);
+  await fixture.emit('session_start');
+  const restored = fixture.state.snapshot().usage;
+  assert.equal(restored.calls.length, 2);
+  assert.equal(restored.totalTokens, 141);
+  assert.ok(Math.abs(restored.cost - 0.41) < 1e-12);
+  assert.deepEqual(restored.calls[1], {
+    id: 'usage-warm-one',
+    at: warm.timestamp,
+    model: 'fixture/model-a',
+    input: 0,
+    output: 1,
+    cacheRead: 120,
+    cacheWrite: 4,
+    totalTokens: 125,
+    cost: 0.16,
+    toolNames: [],
+    stopReason: undefined,
+    kind: 'usage',
+    usageKind: 'cache_warm',
+  });
+
+  const other = {
+    ...warm,
+    id: 'warm-two',
+    parentId: 'warm-one',
+    timestamp: new Date(epoch + 3).toISOString(),
+    kind: 'provider_housekeeping',
+    usage: {input: 7, output: 0, totalTokens: 7, cost: {total: 0.02}},
+  };
+  fixture.append(other);
+  // AgentSession exposes cache-warm appends through a session-only event. The
+  // desktop parent asks the extension observer to reconcile its canonical branch.
+  fixture.restoreUsage();
+  const live = fixture.state.snapshot().usage;
+  assert.equal(live.calls.length, 3);
+  assert.equal(live.totalTokens, 148);
+  assert.ok(Math.abs(live.cost - 0.43) < 1e-12);
+  assert.equal(live.calls[2].usageKind, 'provider_housekeeping');
+  await fixture.emit('agent_settled', {aborted: false});
+  await fixture.emit('session_tree');
+  assert.deepEqual(fixture.state.snapshot().usage, live);
 });
 
 void test('recent usage rows are bounded while all-call totals survive trimming and old repeated completions', async () => {

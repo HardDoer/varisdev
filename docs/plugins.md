@@ -103,7 +103,7 @@ Each file describes a palette and optionally a stylesheet:
 }
 ```
 
-`base` is `factory`, `nord`, `dracula`, `catppuccin-mocha`, `solarized-light`, or `high-contrast`. Omitted colors inherit from the base. Colors use six digit hex values. The interface palette also supplies matching factory colors; optional `scenePalette` overrides individual scene colors.
+`base` is `factory`, `nord`, `dracula`, `catppuccin-mocha`, `forest`, `moss`, `kimbie-dark`, `solarized-light`, `mint-paper`, `glacier`, `rose-quartz`, or `high-contrast`. Omitted colors inherit from the base. Colors use six digit hex values. The interface palette also supplies matching factory colors; optional `scenePalette` overrides individual scene colors.
 
 Available interface colors are `bg`, `panel`, `panel-raised`, `input`, `line`, `text`, `muted`, `mint`, `cyan`, `amber`, `red`, `violet`, `rose`, `focus`, `accent-text`, `hover`, `selected`, `selection-bg`, `selection-text`, `selection-border`, `status-running`, `status-queued`, `status-completed`, `danger`, `scene`, `scene-glow`, and `page-glow`.
 

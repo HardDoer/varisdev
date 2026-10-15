@@ -56,7 +56,8 @@ void test('standalone release contains the verified package and installers and r
 
   const unpack = async (path: string) =>
     (
-      await run('tar', ['-xOf', archive, `package/${path}`], {
+      await run('tar', ['-xOf', archiveName, `package/${path}`], {
+        cwd: output,
         maxBuffer: 1024 * 1024,
       })
     ).stdout;
@@ -69,7 +70,9 @@ void test('standalone release contains the verified package and installers and r
     JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')),
   );
   assert.equal(JSON.parse(await unpack('package.json')).name, 'varisdev');
-  const {stdout: entries} = await run('tar', ['-tzf', archive]);
+  const {stdout: entries} = await run('tar', ['-tzf', archiveName], {
+    cwd: output,
+  });
   assert.doesNotMatch(entries, /(?:^|\/)node_modules\//m);
   for (const [published, source] of [
     ['install.mjs', 'src/runtime/distribution.mjs'],

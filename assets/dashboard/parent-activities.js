@@ -1,8 +1,27 @@
 const TAU = Math.PI * 2;
 const sides = [-1, 1];
+export const AWAKE_EYE_HEIGHT = 0.24;
 const phase = (t, speed = 1) =>
   ((((Number.isFinite(t) ? t : 0) * speed) % 1) + 1) % 1;
 const clock = t => (Number.isFinite(t) ? t : 0) % 3600;
+
+// Rest is intentionally alive rather than a power-down pose. Keeping this in
+// shared geometry makes the WebGL scene and SVG fallback breathe identically.
+export function relaxedIdlePose(time, animate = true) {
+  const t = clock(time);
+  const wave = animate ? Math.sin(t * 1.05) : 0;
+  const breath = (1 + wave) / 2;
+  const sway = animate ? Math.sin(t * 0.52) : 0;
+  return {
+    breath,
+    lift: wave * 0.018,
+    eyeHeight: AWAKE_EYE_HEIGHT + breath * 0.018,
+    arms: sides.map(side => ({
+      elbow: [0.46 + sway * 0.018, 1.34 + breath * 0.025, side * 1.24],
+      hand: [1.08 + sway * 0.025, 1.16 + breath * 0.035, side * 1.43],
+    })),
+  };
+}
 
 // Arm points use the body base; feet are offsets from their planted positions.
 export function idleActivityPose(activity, time) {

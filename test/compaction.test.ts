@@ -27,6 +27,8 @@ type Reply = {tokens?: number} & (
 );
 const SUMMARY =
   'COMPACTED HISTORY: preserve the recorded decision and continue.';
+const TURN_PREFIX_SUMMARY =
+  'TURN PREFIX: continue the follow-up using the recorded decision.';
 const ORIGINAL =
   'ORIGINAL REQUEST: Review the implementation and record the decision. ' +
   'Explain the findings, including the relevant files and any remaining work. '.repeat(
@@ -88,7 +90,14 @@ async function fixture(
           'You are a context summarization assistant',
         );
         (isSummary ? summaries : requests).push(request);
-        reply = isSummary ? {text: SUMMARY} : replies[requests.length - 1];
+        const isTurnPrefixSummary =
+          isSummary &&
+          JSON.stringify(request.messages).includes(
+            'earlier context from an ongoing conversation',
+          );
+        reply = isSummary
+          ? {text: isTurnPrefixSummary ? TURN_PREFIX_SUMMARY : SUMMARY}
+          : replies[requests.length - 1];
       }
       assert.ok(reply, 'Unexpected provider request');
       if ('overflow' in reply) {
@@ -230,20 +239,26 @@ for (const reason of ['manual', 'threshold', 'overflow'] as const) {
         assert.equal(result.summary, SUMMARY);
         assert.match(JSON.stringify(summaries), /Keep the recorded decision/);
       }
-      assert.equal(summaries.length, 1);
+      const expectedSummary =
+        reason === 'overflow'
+          ? `${SUMMARY}\n\n---\n\n**Turn Context (split turn):**\n\n${TURN_PREFIX_SUMMARY}`
+          : SUMMARY;
+      assert.equal(summaries.length, reason === 'overflow' ? 2 : 1);
       assert.match(JSON.stringify(summaries[0].messages), /ORIGINAL REQUEST/);
+      if (reason === 'overflow')
+        assert.match(JSON.stringify(summaries[1].messages), /FOLLOW UP/);
       const compactions = session.sessionManager
         .getEntries()
         .filter(entry => entry.type === 'compaction');
       assert.equal(compactions.length, 1);
-      assert.equal(compactions[0].summary, SUMMARY);
+      assert.equal(compactions[0].summary, expectedSummary);
       assert.equal(compactions[0].fromHook, false);
       const end = events.find(event => event.type === 'compaction_end');
       assert.ok(end?.type === 'compaction_end');
       assert.equal(end.reason, reason);
       assert.equal(end.aborted, false);
       assert.equal(end.willRetry, reason === 'overflow');
-      assert.equal(end.result?.summary, SUMMARY);
+      assert.equal(end.result?.summary, expectedSummary);
 
       if (reason !== 'overflow') {
         assert.equal(requests.length, 2, 'Do not retry a completed response');
@@ -252,12 +267,14 @@ for (const reason of ['manual', 'threshold', 'overflow'] as const) {
       assert.equal(requests.length, 3);
       const continued = JSON.stringify(requests[2].messages);
       assert.ok(continued.includes(SUMMARY));
+      if (reason === 'overflow')
+        assert.ok(continued.includes(TURN_PREFIX_SUMMARY));
       assert.doesNotMatch(continued, /ORIGINAL REQUEST/);
       assert.equal(session.sessionManager.getSessionId(), sessionId);
       assert.equal(session.autoCompactionEnabled, reason !== 'manual');
       assert.equal(
         summaries.length,
-        1,
+        reason === 'overflow' ? 2 : 1,
         'Do not compact again using stale usage',
       );
     },

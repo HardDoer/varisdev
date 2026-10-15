@@ -15,6 +15,11 @@ export async function createWorkerModelRuntime(
   if (!provider) {
     throw new Error(`Parent model provider is unavailable: ${model.provider}`);
   }
+  const initialAuth = await modelRegistry.getApiKeyAndHeaders(model);
+  if (!initialAuth.ok) throw new Error(initialAuth.error);
+  const credentialType = modelRegistry.isUsingOAuth(model)
+    ? 'oauth'
+    : 'api_key';
   const modelRuntime = await ModelRuntime.create({
     authPath: join(directory, 'auth.json'),
     modelsPath: null,
@@ -30,12 +35,9 @@ export async function createWorkerModelRuntime(
       apiKey: {
         name: 'Parent session',
         async check() {
-          if (!modelRegistry.getProviderAuthStatus(provider.id).configured) {
-            return undefined;
-          }
-          return {
-            type: modelRegistry.isUsingOAuth(model) ? 'oauth' : 'api_key',
-          };
+          // Creation already resolved the parent's credentials. Avoid relying on
+          // its eventually consistent availability snapshot during preflight.
+          return {type: credentialType};
         },
         async resolve() {
           const result = await modelRegistry.getApiKeyAndHeaders(model);
@@ -52,5 +54,8 @@ export async function createWorkerModelRuntime(
       },
     },
   });
+  // Native provider registration refreshes availability asynchronously. Finish
+  // the local check before the worker session validates its selected model.
+  await modelRuntime.refresh({allowNetwork: false, providers: [provider.id]});
   return modelRuntime;
 }

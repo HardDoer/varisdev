@@ -6,10 +6,20 @@ import {test} from 'node:test';
 import type {
   ExtensionAPI,
   ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import {observeFileChanges, type UnitChange} from '../src/dashboard/changes.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
+
+function toolContext(ctx: ExtensionContext): ExtensionToolContext {
+  return Object.assign(ctx, {
+    tools: [],
+    async executeTool(): Promise<never> {
+      throw new Error('Nested tool calls are not configured for this fixture.');
+    },
+  });
+}
 
 function hooks(cwd: string) {
   const handlers = new Map<
@@ -17,13 +27,13 @@ function hooks(cwd: string) {
     Array<(event: Record<string, unknown>, ctx: ExtensionContext) => unknown>
   >();
   const tools = new Map<string, ToolDefinition>();
-  const ctx = {
+  const ctx = toolContext({
     cwd,
     hasUI: false,
     model: {provider: 'test', id: 'model'},
     modelRegistry: {},
     sessionManager: {getSessionId: () => 'parent'},
-  } as unknown as ExtensionContext;
+  } as unknown as ExtensionContext);
   const pi = {
     on(
       name: string,
@@ -141,7 +151,13 @@ void test('file hooks match calls, prefer actual edit patches and bound write di
 
 void test('worker hooks attribute changes and team snapshots retain bounded copies', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dashboard-worker-changes-'));
-  t.after(() => rm(cwd, {recursive: true, force: true}));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(cwd, 'config');
+  t.after(async () => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(cwd, {recursive: true, force: true});
+  });
   const parent = hooks(cwd);
   const worker = hooks(cwd);
   let ready!: () => void;

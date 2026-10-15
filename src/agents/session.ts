@@ -18,9 +18,9 @@ import {createWorkerModelRuntime} from './model-runtime.ts';
 import {WorkerConversation} from './conversation.ts';
 import {
   modelUsage,
-  compactionUsage,
+  sessionUsageCalls,
   ModelUsageTracker,
-  type ModelUsageCall,
+  type ModelUsage,
 } from '../usage.ts';
 
 interface WorkerOptions {
@@ -46,41 +46,24 @@ export function sessionWorker(
     session.sessionManager.getCwd?.(),
   );
   let finishing = false;
+  let publishUsage: ((usage: ModelUsage) => void) | undefined;
   function restoreUsage(): void {
     const branch = session.sessionManager.getBranch?.();
-    if (!branch) return;
-    function* calls(): Generator<{call: ModelUsageCall; sequence: number}> {
-      let sequence = 0;
-      let summarySequence = 0;
-      let summaryModel: string | undefined;
-      for (const entry of branch!) {
-        if (entry.type === 'model_change')
-          summaryModel = `${entry.provider}/${entry.modelId}`;
-        if (entry.type === 'compaction') {
-          summarySequence++;
-          const call = compactionUsage(entry, summaryModel);
-          if (call) yield {call, sequence: summarySequence};
-          continue;
-        }
-        if (entry.type !== 'message') continue;
-        const message = entry.message;
-        if (message.role !== 'user' && message.role !== 'assistant') continue;
-        sequence++;
-        if (message.role !== 'assistant') continue;
-        const call = modelUsage(message, {
-          id: `message-assistant-${message.timestamp}-${sequence}`,
-          at: new Date(message.timestamp).toISOString(),
-        });
-        if (call) yield {call, sequence};
-      }
-    }
-    usage.replace(calls());
+    if (branch) usage.replace(sessionUsageCalls(branch));
   }
   restoreUsage();
+  // Idle cache warming can append usage between runs. Keep this subscription
+  // for the worker lifetime so the orchestrator's cached record stays current.
+  const unsubscribeUsage = session.subscribe(event => {
+    if (event.type !== 'entry_appended' || event.entry.type !== 'usage') return;
+    restoreUsage();
+    publishUsage?.(usage.snapshot());
+  });
   return {
     sessionFile: session.sessionManager.getSessionFile(),
     resultFile,
     get usage() {
+      restoreUsage();
       return usage.snapshot();
     },
     get conversation() {
@@ -93,6 +76,7 @@ export function sessionWorker(
     },
     async run(message, signal, onActivity, onUsage, onConversation) {
       signal.throwIfAborted();
+      if (onUsage) publishUsage = onUsage;
       finishing = false;
       conversation.begin();
       let aborting: Promise<void> | undefined;
@@ -209,6 +193,8 @@ export function sessionWorker(
       }
     },
     dispose() {
+      publishUsage = undefined;
+      unsubscribeUsage();
       session.dispose();
     },
   };

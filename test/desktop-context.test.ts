@@ -3,6 +3,7 @@ import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {homedir, tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
+import type {ToolCall} from '@earendil-works/pi-ai';
 import {
   createAgentSession,
   createReadTool,
@@ -61,7 +62,7 @@ async function fixture(t: TestContext) {
 function appendReadCall(
   manager: SessionManager,
   id: string,
-  args: Record<string, unknown>,
+  args: ToolCall['arguments'],
 ): string {
   return manager.appendMessage({
     role: 'assistant',

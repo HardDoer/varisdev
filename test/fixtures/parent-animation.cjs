@@ -102,12 +102,17 @@ async function stillRest(pose, frames = REST_STILL_FRAMES) {
   const rested = await inspect();
   finiteRendered(rested);
   assert.equal(rested.mode, 'rest', 'Rest must last at least 15 seconds');
-  assert.equal(
+  assert.notEqual(
     rested.hash,
     pose.hash,
-    'Rest must keep all robot geometry still',
+    'Rest must retain gentle breathing motion',
   );
-  assert.equal(rested.centerX, pose.centerX);
+  assert.equal(
+    rested.centerX,
+    pose.centerX,
+    'Breathing must not move the robot around the aisle',
+  );
+  assert.ok(rested.eyes >= 0.24, 'Resting eyes must remain visibly open');
   return rested;
 }
 async function restThenWalk(pose) {
@@ -269,6 +274,7 @@ async function main() {
         return {
           mode: canvas.dataset.parentMode,
           activity: canvas.dataset.parentActivity,
+          eyes: Number(canvas.dataset.parentEyes),
           whip: canvas.dataset.robotWhip,
           centerX,
           hash,
@@ -423,6 +429,9 @@ async function main() {
         fallbackMode() {
           return fallbackContainer.querySelector('svg').dataset.mode;
         },
+        fallbackMotion(enabled) {
+          fallback.setMotion(enabled);
+        },
         fallbackPose() {
           const svg = fallbackContainer.querySelector('svg');
           const robot = svg.lastElementChild;
@@ -430,6 +439,7 @@ async function main() {
           return {
             mode: svg.dataset.mode,
             activity: svg.dataset.activity,
+            eyes: Number(svg.dataset.eyes),
             geometry: JSON.stringify(
               [...robot.children].map(path => [
                 path.getAttribute('d'),
@@ -524,10 +534,11 @@ async function main() {
   );
 
   await run(
-    'initial rest waits 15–60 seconds, then roaming and activities pause still in the aisle',
+    'initial relaxed rest breathes awake, then roaming and activities stay lively in the aisle',
     async () => {
       const home = await reset();
       finiteRendered(home);
+      assert.ok(home.eyes >= 0.24, 'WebGL rest must use open, lit eyes');
       const walk = await restThenWalk(home);
       await advance(40);
       const roaming = await inspect();
@@ -688,6 +699,13 @@ async function main() {
       const staticPose = await inspect();
       assert.equal(staticPose.pending, 0);
       assert.ok(Math.abs(staticPose.centerX + 6.25) < 0.001);
+      assert.ok(staticPose.eyes >= 0.24);
+      await advance(100);
+      assert.equal(
+        (await inspect()).hash,
+        staticPose.hash,
+        'Motion off must freeze the relaxed breathing pose',
+      );
       await evaluate(() => {
         window.fixture.scene().prompt('motion-parent');
         window.fixture.update('running');
@@ -814,7 +832,7 @@ async function main() {
   );
 
   await run(
-    'SVG fallback keeps aisle rest geometry still and prompt returns it home',
+    'SVG fallback breathes awake during aisle rest and prompt returns it home',
     async () => {
       const poses = await evaluate(() => {
         window.fixture.createFallback();
@@ -828,6 +846,11 @@ async function main() {
           return window.fixture.fallbackPose();
         };
         const home = window.fixture.fallbackPose();
+        window.fixture.fallbackMotion(false);
+        const motionOff = window.fixture.fallbackPose();
+        window.fixture.advance(100);
+        const motionOffLater = window.fixture.fallbackPose();
+        window.fixture.fallbackMotion(true);
         const idle = until('idle', 1420);
         window.fixture.advance(10);
         const active = window.fixture.fallbackPose();
@@ -845,6 +868,8 @@ async function main() {
         const cleanup = window.fixture.disposeFallback();
         return {
           home,
+          motionOff,
+          motionOffLater,
           idle,
           active,
           rest,
@@ -870,6 +895,12 @@ async function main() {
         assert.ok(pose.bounds.every(Number.isFinite));
       }
       assert.equal(poses.home.mode, 'rest');
+      assert.ok(poses.motionOff.eyes >= 0.24);
+      assert.equal(
+        poses.motionOffLater.geometry,
+        poses.motionOff.geometry,
+        'Motion off must freeze fallback breathing',
+      );
       assert.equal(poses.idle.mode, 'idle');
       assert.ok(activities.includes(poses.active.activity));
       assert.equal(poses.rest.mode, 'rest');
@@ -880,22 +911,19 @@ async function main() {
         poses.home.geometry,
         'SVG pause must be away from home',
       );
-      assert.equal(
+      assert.notEqual(
         poses.still.geometry,
         poses.rest.geometry,
-        'SVG must not walk or bob during rest',
+        'SVG rest must retain gentle breathing motion',
       );
-      assert.deepEqual(poses.still.bounds, poses.rest.bounds);
+      assert.ok(poses.home.eyes >= 0.24, 'SVG rest must use open, lit eyes');
+      assert.ok(poses.still.eyes >= 0.24, 'SVG breathing must keep eyes open');
       assert.equal(poses.unrelated.mode, 'rest');
       assert.equal(poses.woken.mode, 'startled');
       assert.notEqual(poses.jump.geometry, poses.rest.geometry);
       assert.equal(poses.returning.mode, 'return');
       assert.equal(poses.returned.mode, 'rest');
-      assert.equal(
-        poses.returned.geometry,
-        poses.home.geometry,
-        'SVG must arrive back home',
-      );
+      assert.ok(poses.returned.eyes >= 0.24);
       assert.equal(poses.cleanup.pending, 0);
       assert.equal(poses.cleanup.removed, true);
       assert.deepEqual(rendererErrors, []);
