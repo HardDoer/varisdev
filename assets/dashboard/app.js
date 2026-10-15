@@ -1757,7 +1757,9 @@ function render() {
     renderWorkers();
     renderInspector();
   } else {
+    clearStopEffect();
     conversationVisualizations.reset();
+    renderSessionFeatures(undefined, {parent: false});
     updateMarkdownFiles();
   }
 }
@@ -1832,17 +1834,19 @@ function renderSessionActions() {
     $('start-session'),
     creating === 'session' ? 'Creating…' : 'New session',
   );
-  $('close-session').disabled =
-    !session || !api?.closeSession || closingSessions.has(session.id);
-  $('close-session').title = session
-    ? session.owned
-      ? `Close ${session.name} and stop its running work`
-      : `Close ${session.name} in this window`
-    : '';
-  text(
-    $('close-session'),
-    closingSessions.has(session?.id) ? 'Closing…' : 'Close session',
-  );
+  for (const id of ['close-session', 'close-parent-session']) {
+    $(id).disabled =
+      !session || !api?.closeSession || closingSessions.has(session.id);
+    $(id).title = session
+      ? session.owned
+        ? `Close ${session.name} and stop its running work and agents`
+        : `Close ${session.name} in this window`
+      : '';
+    text(
+      $(id),
+      closingSessions.has(session?.id) ? 'Closing…' : 'Close session',
+    );
+  }
 }
 async function openFolder() {
   if (creating || !api) return;
@@ -1884,12 +1888,17 @@ async function closeSession() {
   const id = state.sessionId;
   if (!id || !api?.closeSession || closingSessions.has(id)) return;
   saveDraft();
+  saveConversationDisclosures();
   closingSessions.add(id);
   $('app-error').hidden = true;
   render();
   try {
     await api.closeSession(id);
-    receive(await api.getState());
+    const version = snapshotVersion;
+    const hub = await api.getState();
+    if (version === snapshotVersion) receive(hub);
+    workspaceCache.delete(id);
+    pausedActivity.delete(id);
     if (!snapshot()) $('app-menu-button').focus();
   } catch (error) {
     showError(error);
@@ -2023,6 +2032,7 @@ $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
 $('start-session').addEventListener('click', startSession);
 $('close-session').addEventListener('click', closeSession);
+$('close-parent-session').addEventListener('click', closeSession);
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('back-to-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', event => {

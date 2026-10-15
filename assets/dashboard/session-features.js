@@ -654,7 +654,7 @@ export function initSessionFeatures(options) {
   window.addEventListener('unload', disposeTerminal);
 }
 export function renderSessionFeatures(data, options = {parent: true}) {
-  parentView = options.parent;
+  parentView = !!data && options.parent;
   if (!parentView) {
     for (const id of [
       'commands-dialog',
@@ -664,6 +664,16 @@ export function renderSessionFeatures(data, options = {parent: true}) {
       if ($(id).open) $(id).close();
     disposeTerminal();
     activeDialog = undefined;
+  }
+  if (!data) {
+    current = undefined;
+    previousId = undefined;
+    contextConversation = undefined;
+    clearTimeout(contextRefreshTimer);
+    $('command-suggestions').hidden = true;
+    $('open-commands').disabled = true;
+    $('open-session-settings').disabled = true;
+    return;
   }
   const changedSession = current?.session.id !== data.session.id;
   current = data;
@@ -679,7 +689,7 @@ export function renderSessionFeatures(data, options = {parent: true}) {
     if (!changedSession && !$('panel-context').hidden)
       contextRefreshTimer = setTimeout(() => {
         if (
-          current.session.id === data.session.id &&
+          current?.session.id === data.session.id &&
           !$('panel-context').hidden
         )
           refreshContext();

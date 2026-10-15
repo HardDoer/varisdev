@@ -5205,9 +5205,8 @@ async function main() {
       closeError = 'Could not close the session';
       await evaluate(() => {
         document.getElementById('app-menu-button').click();
-        const action = document.getElementById('close-session');
-        action.click();
-        action.click();
+        document.getElementById('close-session').click();
+        document.getElementById('close-parent-session').click();
       });
       await until(
         () =>
@@ -5217,11 +5216,20 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           disabled: document.getElementById('close-session').disabled,
+          headingDisabled: document.getElementById('close-parent-session')
+            .disabled,
+          headingLabel: document.getElementById('close-parent-session')
+            .textContent,
           menuOpen: document
             .getElementById('app-menu-panel')
             .matches(':popover-open'),
         })),
-        {disabled: true, menuOpen: false},
+        {
+          disabled: true,
+          headingDisabled: true,
+          headingLabel: 'Closing…',
+          menuOpen: false,
+        },
       );
       await until(
         () => !document.getElementById('app-error').hidden,
@@ -5246,9 +5254,11 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           disabled: document.getElementById('close-session').disabled,
+          headingDisabled: document.getElementById('close-parent-session')
+            .disabled,
           label: document.getElementById('close-session').textContent,
         })),
-        {disabled: false, label: 'Close session'},
+        {disabled: false, headingDisabled: false, label: 'Close session'},
       );
 
       closeDelay = 0;
@@ -5292,6 +5302,13 @@ async function main() {
       ];
       hub.sessions[0].totalAgents = 1;
       await publish();
+      assert.equal(
+        await evaluate(() =>
+          document.getElementById('close-parent-session').checkVisibility(),
+        ),
+        true,
+        'Close session must be visible in the parent heading without opening Menu',
+      );
       await evaluate(async () => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Resume this draft after closing';
@@ -5301,8 +5318,7 @@ async function main() {
         const {flushDrafts} = await import('./draft-storage.js');
         flushDrafts();
         document.querySelector('#active-workers button').click();
-        document.getElementById('app-menu-button').click();
-        document.getElementById('close-session').click();
+        document.getElementById('close-parent-session').click();
       });
       await until(
         () =>
@@ -5402,8 +5418,8 @@ async function main() {
         'Reopened parent did not fall back to the other parent',
       );
       await evaluate(() => {
-        document.getElementById('app-menu-button').click();
-        document.getElementById('close-session').click();
+        document.getElementById('open-commands').click();
+        document.getElementById('close-parent-session').click();
       });
       await until(
         () => !document.getElementById('welcome').hidden,
@@ -5424,6 +5440,9 @@ async function main() {
           workspace: document.getElementById('factory-workspace').hidden,
           startHidden: document.getElementById('start-session').hidden,
           closeHidden: document.getElementById('close-session').hidden,
+          commandsOpen: document.getElementById('commands-dialog').open,
+          settingsDisabled: document.getElementById('open-session-settings')
+            .disabled,
           openFolder: document.getElementById('new-session').textContent.trim(),
         })),
         {
@@ -5431,6 +5450,8 @@ async function main() {
           workspace: true,
           startHidden: true,
           closeHidden: true,
+          commandsOpen: false,
+          settingsDisabled: true,
           openFolder: 'Open folder',
         },
         'Parent-only actions are hidden when no parent remains',

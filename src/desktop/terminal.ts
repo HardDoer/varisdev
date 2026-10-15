@@ -46,6 +46,13 @@ export class DesktopTerminals {
       COLORTERM: 'truecolor',
     };
     delete env.ELECTRON_RUN_AS_NODE;
+    if (process.platform === 'win32') {
+      // PowerShell 7's inherited module path can make Windows PowerShell load
+      // incompatible modules, including PSReadLine. Let the shell rebuild it.
+      for (const key of Object.keys(env)) {
+        if (key.toLowerCase() === 'psmodulepath') delete env[key];
+      }
+    }
     const pty = spawn(
       shell,
       process.platform === 'win32' ? ['-NoLogo'] : ['-l'],

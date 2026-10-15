@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, realpath, rm} from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
@@ -82,6 +89,40 @@ void test(
       SHELL: '/bin/sh',
     };
     delete env.ELECTRON_RUN_AS_NODE;
+    if (process.platform === 'win32') {
+      // Reproduce an inherited path that resolves PSReadLine to an incompatible
+      // PowerShell module, then verify the real embedded shell recovers from it.
+      const modules = join(directory, 'modules');
+      await mkdir(join(modules, 'PSReadLine'), {recursive: true});
+      await writeFile(
+        join(modules, 'PSReadLine', 'PSReadLine.psd1'),
+        "@{ ModuleVersion = '99.0'; PowerShellVersion = '99.0'; GUID = 'b0372f07-b2a1-4076-9725-89a858e21dde' }",
+      );
+      for (const key of Object.keys(env))
+        if (key.toLowerCase() === 'psmodulepath') delete env[key];
+      env.PSMODULEPATH = modules;
+      env.PSModuleAnalysisCachePath = join(directory, 'module-cache');
+      env.APPDATA = join(directory, 'appdata');
+      env.LOCALAPPDATA = join(directory, 'localappdata');
+      await Promise.all([
+        mkdir(env.APPDATA, {recursive: true}),
+        mkdir(env.LOCALAPPDATA, {recursive: true}),
+      ]);
+      await assert.rejects(
+        promisify(execFile)(
+          'powershell.exe',
+          [
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            "$ErrorActionPreference = 'Stop'; Import-Module PSReadLine",
+          ],
+          {env, timeout: 10000},
+        ),
+        /Modules_InsufficientPowerShellVersion/,
+      );
+    }
     let error;
     try {
       await promisify(execFile)(

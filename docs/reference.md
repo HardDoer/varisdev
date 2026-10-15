@@ -28,6 +28,8 @@ Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaul
 
 The GUI provides individual and collective cancellation. **Stop** stops the parent while its agents continue.
 
+Select a parent and click **Close session** beside **Context files**, or use **Menu → Close session**. Closing a desktop parent stops its work and agents, closes its embedded terminal, and frees its session slot. Saved history remains available through **Menu → Resume session**. Closing the last parent returns to **Open folder**. For a session attached from another terminal, **Close session** dismisses it from this window.
+
 ## Commit and push
 
 `/commit [instructions]` delegates committing and pushing to an agent. Choose its model and reasoning level in **Menu → Commit settings**, or inherit those values from the parent session. Its model must be allowed in **Agent models**. The agent inspects the changes, runs checks, and reports the result.

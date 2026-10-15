@@ -135,12 +135,24 @@ app
       await evaluate("document.getElementById('terminal-panel').hidden"),
       false,
     );
-    await browser.webContents.insertText("printf 'embedded-%s\\n' 'ready'");
+    await browser.webContents.insertText(
+      process.platform === 'win32'
+        ? "if (Get-Module PSReadLine) { 'embedded-' + 'ready' } else { throw 'PSReadLine unavailable' }"
+        : "printf 'embedded-%s\\n' 'ready'",
+    );
     browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
     browser.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Return'});
     await until(
       "document.querySelector('.project-terminal').textContent.includes('embedded-ready')",
     );
+    if (process.platform === 'win32') {
+      const output = (await terminals.open('first', join(profile, 'first')))
+        .data;
+      assert.doesNotMatch(
+        output,
+        /Cannot load PSReadLine|Modules_InsufficientPowerShellVersion/i,
+      );
+    }
     await evaluate("document.getElementById('prompt-tab').click()");
     assert.equal(await evaluate('document.activeElement.id'), 'parent-prompt');
     assert.equal(
@@ -198,9 +210,10 @@ app
       'Play Instant Action.command',
     );
     await evaluate("document.querySelector('#conversation a').click()");
-    assert.deepEqual(openedFiles, [
-      ['first', join(profile, 'Play Instant Action.command')],
-    ]);
+    assert.deepEqual(
+      openedFiles.map(([id, path]) => [id, resolve(path)]),
+      [['first', join(profile, 'Play Instant Action.command')]],
+    );
     assert.equal(
       await evaluate("document.querySelector('#conversation details').open"),
       false,
@@ -228,7 +241,7 @@ app
       await evaluate("document.querySelectorAll('.project-terminal').length"),
       2,
     );
-    await evaluate("document.getElementById('close-session').click()");
+    await evaluate("document.getElementById('close-parent-session').click()");
     await until("document.querySelectorAll('#parents button').length === 1");
     assert.throws(() => terminals.write('first', 'pwd\r'), /Open a terminal/);
     assert.equal(
