@@ -10,18 +10,52 @@ Default: `~/.local/varisdev` on macOS and Linux, or `%USERPROFILE%\.local\varisd
 
 The installer configures PATH for Bash, Zsh, Fish, and Nushell, respecting `ZDOTDIR` and `XDG_CONFIG_HOME`. Open a new terminal or use the activation command printed by the installer. Pass `--no-path` to the shell script or `-NoPath` to the PowerShell script to manage PATH yourself.
 
-## Linux sandbox
-
-Installation applies `electron-builder-sandbox-fix`. On systems that restrict unprivileged user namespaces, including affected Ubuntu installations, it starts Electron with `--no-sandbox`.
-
 ## Updates
 
 Use **Updates → Check for updates** or `varisdev update`. Restart when prompted.
 
-## Building releases
+## Uninstall
+
+Quit VarisDev before uninstalling.
+
+### Website installer
+
+**macOS / Linux**
 
 ```sh
-npm run release:web -- /path/to/web-release
+npm uninstall --global --prefix "$HOME/.local/varisdev" varisdev
 ```
 
-The Dockerfile builds the web release into `/release`. Jenkins publishes a numbered image tag and `varisdev-latest`; deployment uses the latest tag by default and also accepts numbered tags.
+**Windows (PowerShell)**
+
+```powershell
+npm uninstall --global --prefix "$HOME\.local\varisdev" varisdev
+```
+
+If you chose a custom install directory, use that path instead. On macOS, also delete `~/Applications/VarisDev.app`.
+
+Remove the installer's PATH entry:
+
+- **Bash:** remove the `# VarisDev` comment and its PATH line from `~/.bashrc` and your login file (`~/.bash_profile`, `~/.bash_login`, or `~/.profile`).
+- **Zsh:** remove the same block from `~/.zshrc` and `~/.zprofile` (under `ZDOTDIR` if set).
+- **Fish:** delete `~/.config/fish/conf.d/varisdev.fish` (under `XDG_CONFIG_HOME` if set).
+- **Nushell:** remove the `# VarisDev` comment and its PATH line from `~/.config/nushell/env.nu`, or `~/Library/Application Support/nushell/env.nu` on macOS (under `XDG_CONFIG_HOME` if set).
+- **Windows:** open **Environment Variables → User variables → Path** and remove `%USERPROFILE%\.local\varisdev`, or your custom install directory.
+
+Open a new terminal after changing PATH.
+
+### Direct npm installation
+
+If you installed globally with npm:
+
+```sh
+npm uninstall --global varisdev
+```
+
+On macOS, also delete `~/Applications/VarisDev.app` if you installed the launcher.
+
+### Remove saved data (optional)
+
+To remove desktop preferences, logs, and downloaded updates, delete the [desktop storage directory](configuration.md#desktop-storage), or the directory set by `VARISDEV_DATA_DIR`.
+
+Sessions, credentials, settings, and plugins live in `~/.pi/agent/` (`%USERPROFILE%\.pi\agent\` on Windows), or the directory set by `PI_CODING_AGENT_DIR`. This directory is shared with Pi; deleting it removes that data for both apps. VarisDev's tool settings are in its `varisdev/` subdirectory.

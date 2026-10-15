@@ -28,7 +28,7 @@ Requires [Node.js](https://nodejs.org/) 24+.
 
 Open a new terminal and run `varisdev`. On macOS, the installer also adds VarisDev to `~/Applications`.
 
-See [installation options](docs/installation.md).
+See [installation options](docs/installation.md) and [uninstall instructions](docs/installation.md#uninstall).
 
 ## Features
 
@@ -54,4 +54,3 @@ Since VarisDev uses Pi under the hood many of the things you see in VarisDev wor
 - [Configuration and CLI](docs/configuration.md)
 - [Agents and tools](docs/reference.md)
 - [Plugin visuals and themes](docs/plugins.md)
-- [Development](CONTRIBUTING.md)
