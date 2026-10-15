@@ -37,6 +37,44 @@
   position: relative;
 }
 
+.factory-away-notice {
+  display: block;
+  max-width: 220px;
+  margin: -2px auto 8px;
+  padding: 3px 8px;
+  border: 1px solid var(--amber);
+  border-radius: 999px;
+  color: var(--amber);
+  font-size: 0.72rem;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.compact-scene .factory-away-notice {
+  margin-bottom: 3px;
+  font-size: 0.65rem;
+}
+
+.factory-visitors-fallback {
+  position: absolute;
+  inset: 0 0 auto auto;
+  width: min(42%, 340px);
+  height: min(180px, 100%);
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.compact-scene .factory-visitors-fallback {
+  height: 86px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-visitors-fallback {
+    display: none;
+  }
+}
+
 .robot-whip-overlay {
   position: absolute;
   inset: 0;

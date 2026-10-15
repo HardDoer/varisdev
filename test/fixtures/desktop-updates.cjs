@@ -52,6 +52,7 @@ async function main() {
     },
   });
   handle('pidev:get-state', () => ({sessions: [], launchCwd: directory}));
+  handle('pidev:recent-projects', () => []);
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('varisdev:get-update-status', () => status);
   handle('varisdev:check-updates', () => {

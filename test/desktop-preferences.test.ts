@@ -48,6 +48,7 @@ void test('agent notice acknowledgment survives restart and folder changes', asy
   assert.equal(invalid.agentNoticeAcknowledged(), false);
   invalid.acknowledgeAgentNotice();
   assert.equal(new DesktopPreferences(profile).folder('/unused'), profile);
+  assert.deepEqual(new DesktopPreferences(profile).recentProjects(), [profile]);
 });
 
 void test('a failed preference write leaves the agent notice unacknowledged', async t => {
@@ -64,4 +65,75 @@ void test('a failed preference write leaves the agent notice unacknowledged', as
   const restarted = new DesktopPreferences(profile);
   assert.equal(restarted.commitNoticeAcknowledged(), true);
   assert.equal(restarted.agentNoticeAcknowledged(), false);
+});
+
+void test('recent projects persist in most-recent order, deduplicate, and survive notice changes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-recents-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const profile = join(directory, 'profile');
+  const first = join(directory, 'first');
+  const second = join(directory, 'second');
+  await mkdir(first);
+  await mkdir(second);
+  const preferences = new DesktopPreferences(profile);
+  assert.deepEqual(preferences.recentProjects(), []);
+  preferences.rememberFolder(first);
+  preferences.rememberFolder(second);
+  preferences.rememberFolder(first);
+  preferences.acknowledgeAgentNotice();
+  preferences.acknowledgeCommitNotice();
+  const restarted = new DesktopPreferences(profile);
+  assert.deepEqual(restarted.recentProjects(), [first, second]);
+  const copy = restarted.recentProjects();
+  copy.pop();
+  assert.deepEqual(restarted.recentProjects(), [first, second]);
+  await rm(first, {recursive: true});
+  assert.deepEqual(restarted.recentProjects(), [second]);
+});
+
+void test('recent projects migrate the last folder and bound and validate saved history', async t => {
+  const directory = await mkdtemp(
+    join(tmpdir(), 'varisdev-recents-migration-'),
+  );
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const profile = join(directory, 'profile');
+  await mkdir(profile);
+  const path = join(profile, 'settings.json');
+  await writeFile(path, JSON.stringify({lastFolder: directory}));
+  assert.deepEqual(new DesktopPreferences(profile).recentProjects(), [
+    directory,
+  ]);
+  const folders: string[] = [];
+  for (let i = 0; i < 14; i++) {
+    const folder = join(directory, `project-${i}`);
+    await mkdir(folder);
+    folders.push(folder);
+  }
+  await writeFile(
+    path,
+    JSON.stringify({
+      recentProjects: [null, 42, {}, 'relative', folders[0], ...folders],
+    }),
+  );
+  const preferences = new DesktopPreferences(profile);
+  assert.deepEqual(preferences.recentProjects(), folders.slice(0, 12));
+  preferences.rememberFolder(folders[13]);
+  assert.deepEqual(new DesktopPreferences(profile).recentProjects(), [
+    folders[13],
+    ...folders.slice(0, 11),
+  ]);
+});
+
+void test('failed writes do not change recent-project history in memory', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-recents-failure-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const profile = join(directory, 'profile');
+  const preferences = new DesktopPreferences(profile);
+  preferences.rememberFolder(directory);
+  const path = join(profile, 'settings.json');
+  await rm(path);
+  await mkdir(path);
+  assert.throws(() => preferences.rememberFolder(profile));
+  assert.deepEqual(preferences.recentProjects(), [directory]);
+  assert.equal(preferences.folder('/unused'), directory);
 });

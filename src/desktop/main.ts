@@ -311,14 +311,32 @@ function installHandlers(): void {
     return loadPluginThemes({cwd: selected?.session.cwd ?? launchCwd});
   });
   handle('pidev:get-state', () => hub.snapshot());
+  handle('pidev:recent-projects', () => preferences.recentProjects());
   handle('pidev:list-sessions', cwd => hub.listSessions(cwd));
   handle('pidev:create-session', async input => {
-    const result = await hub.createSession(input);
-    const cwd = hub
-      .snapshot()
-      .sessions.find(item => item.session.id === result.id)!.session.cwd;
-    preferences.rememberFolder(cwd);
-    return result;
+    const previousIds = hub.snapshot().sessions.map(item => item.session.id);
+    try {
+      const result = await hub.createSession(input);
+      const cwd = hub
+        .snapshot()
+        .sessions.find(item => item.session.id === result.id)!.session.cwd;
+      try {
+        preferences.rememberFolder(cwd);
+      } catch (error) {
+        // The conversation is already open. A history write failure must not
+        // tell the renderer to retry creation and produce another session.
+        console.error('Could not remember the recent project:', error);
+      }
+      return result;
+    } finally {
+      // Resume may replace sessions without going through the explicit close
+      // handler. Release their native terminals even after a partial failure.
+      const retained = new Set(
+        hub.snapshot().sessions.map(item => item.session.id),
+      );
+      for (const sessionId of previousIds)
+        if (!retained.has(sessionId)) terminals.close(sessionId);
+    }
   });
   handle('pidev:close-session', async sessionId => {
     const parentId = id(sessionId);

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('pidev', {
   reloadSession: sessionId => ipcRenderer.invoke('fixture:reload', sessionId),
   respondToDialog: (sessionId, dialogId, value) =>
     ipcRenderer.invoke('fixture:dialog', sessionId, dialogId, value),
+  recentProjects: () => ipcRenderer.invoke('fixture:recent-projects'),
   chooseFolder: () => ipcRenderer.invoke('fixture:choose-folder'),
   listSessions: cwd => ipcRenderer.invoke('fixture:list-sessions', cwd),
   createSession: input => ipcRenderer.invoke('fixture:create-session', input),

@@ -9,9 +9,20 @@ export function initAppMenu() {
   const resume = document.getElementById('resume-session');
   const start = document.getElementById('start-session');
   const closeSession = document.getElementById('close-session');
+  const appearance = document.getElementById('app-menu-appearance-controls');
+  const zoomControl = document.getElementById('app-zoom').closest('label');
+  const themeControl = panel.querySelector('.theme-control');
+  const themeErrors = document.getElementById('plugin-theme-errors');
+  const motion = document.getElementById('motion-toggle');
   const about = document.getElementById('about-dialog');
   const aboutButton = document.getElementById('open-about');
   const aboutClose = document.getElementById('about-close');
+
+  // The theme picker is installed before this module initializes. Move the
+  // generated controls together so Appearance remains one semantic group.
+  appearance.append(
+    ...[zoomControl, themeControl, themeErrors, motion].filter(Boolean),
+  );
 
   function sync() {
     button.setAttribute(

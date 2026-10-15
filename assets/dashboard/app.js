@@ -13,6 +13,7 @@ import {initToolSettings} from './tool-settings.js';
 import {initModelDefaults} from './model-defaults.js';
 import {initAppMenu} from './app-menu.js';
 import {initSessionHistory} from './session-history.js';
+import {initRecentProjects} from './recent-projects.js';
 import {initAgentControls} from './agent-controls.js';
 import {createConversationVisualizations} from './visualizations.js';
 import {initUsage, renderUsage} from './usage.js';
@@ -628,13 +629,16 @@ function layoutLabels(layout) {
       labelNodes.set(anchor.id, entry);
     }
 
-    text(entry.name, unit.name);
+    text(
+      entry.name,
+      anchor.detail ? `${unit.name} · ${anchor.detail}` : unit.name,
+    );
     entry.element.classList.toggle('selected', state.unitId === anchor.id);
     entry.element.setAttribute(
       'aria-pressed',
       String(state.unitId === anchor.id),
     );
-    entry.element.title = `${unit.name}\n${anchor.id === 'parent' ? unit.prompt || '' : unit.task}\n${unit.activity || ''}`;
+    entry.element.title = `${unit.name}${anchor.detail ? `\n${anchor.detail}` : ''}\n${anchor.id === 'parent' ? unit.prompt || '' : unit.task}\n${unit.activity || ''}`;
   }
 }
 function sceneAgents(data) {
@@ -1744,6 +1748,7 @@ let themesDiscovered = false;
 function render() {
   if (state.disposed) return;
   const hasSession = Boolean(snapshot());
+  if (!hasSession && $('welcome').hidden) void recentProjects.refresh();
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
   appMenu.place(hasSession);
@@ -1769,6 +1774,7 @@ function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
   state.hub = agentControls.filterHub(hub);
+  (scene || fallbackScene)?.updateHub(state.hub);
   toolSettings.observe(hub);
   const next =
     state.desiredSessionId &&
@@ -1823,9 +1829,11 @@ async function selectOpenedSession(id) {
     state.desiredSessionId = null;
   } else receive(await api.getState());
   $('parent-prompt').focus();
+  void recentProjects.refresh();
 }
 function renderSessionActions() {
   const session = snapshot()?.session;
+  recentProjects.setBusy(Boolean(creating));
   for (const id of ['new-session', 'welcome-create'])
     $(id).disabled = Boolean(creating);
   const replacementCwd = pendingReplacement?.cwd || session?.cwd;
@@ -1863,16 +1871,24 @@ function renderSessionActions() {
     );
   }
 }
-async function openFolder() {
+async function openFolder(folder) {
   if (creating || !api) return;
   creating = 'folder';
   $('app-error').hidden = true;
   renderSessionActions();
   try {
-    const cwd = await api.chooseFolder();
+    const recent = typeof folder === 'string';
+    const cwd = recent ? folder : await api.chooseFolder();
     if (!cwd) return;
     text($('new-session'), 'Opening…');
-    const result = await api.createSession({cwd});
+    const existing =
+      recent &&
+      state.hub.sessions.find(
+        item => item.session.cwd === cwd && item.session.status !== 'closed',
+      );
+    const result = existing
+      ? {id: existing.session.id}
+      : await api.createSession({cwd});
     pendingReplacement = undefined;
     await selectOpenedSession(result.id);
   } catch (error) {
@@ -2269,6 +2285,7 @@ const agentControls = initAgentControls({
 });
 initModelDefaults({api});
 const appMenu = initAppMenu();
+const recentProjects = initRecentProjects({api, open: openFolder});
 const cleanupSessionHistory = initSessionHistory({
   api,
   currentFolder: () => snapshot()?.session.cwd || state.hub.launchCwd,
@@ -2339,6 +2356,7 @@ window.addEventListener('unload', () => {
   cleanupAccounts();
   toolSettings.dispose();
   appMenu.dispose();
+  recentProjects.dispose();
   cleanupSessionHistory();
   cleanupSessionSelection?.();
   scene?.dispose();

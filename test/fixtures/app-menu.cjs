@@ -83,6 +83,7 @@ async function main() {
     },
   });
   handle('pidev:get-state', () => hub);
+  handle('pidev:recent-projects', () => []);
   handle('varisdev:get-agent-notice', () => ({acknowledged: true}));
   handle('varisdev:get-update-status', () => ({
     phase: 'idle',
@@ -170,8 +171,68 @@ async function main() {
   );
   assert.ok(popup.top >= popup.buttonBottom, JSON.stringify(popup));
 
+  assert.deepEqual(
+    await evaluate(() => ({
+      headings: [...document.querySelectorAll('.app-menu-group > h2')].map(
+        heading => heading.textContent.trim(),
+      ),
+      project: [...document.querySelectorAll('.app-menu-project button')].map(
+        button => button.id,
+      ),
+      appearance: [
+        ...document.querySelectorAll(
+          '#app-menu-appearance-controls select, #app-menu-appearance-controls button',
+        ),
+      ].map(control => control.id),
+      settings: [...document.querySelectorAll('.app-menu-settings button')].map(
+        button => button.id,
+      ),
+      maintenance: [
+        ...document.querySelectorAll('.app-menu-maintenance button'),
+      ].map(button => button.id),
+      destructive:
+        document
+          .getElementById('close-session')
+          .classList.contains('danger-button') &&
+        document
+          .getElementById('close-session')
+          .parentElement.classList.contains('app-menu-danger-zone'),
+      destructiveSeparated:
+        getComputedStyle(document.getElementById('close-session').parentElement)
+          .borderTopStyle === 'solid',
+      labelled: [...document.querySelectorAll('.app-menu-group')].every(group =>
+        document.getElementById(group.getAttribute('aria-labelledby')),
+      ),
+    })),
+    {
+      headings: [
+        'Project & session',
+        'Appearance',
+        'Tools & settings',
+        'Maintenance',
+      ],
+      project: [
+        'new-session',
+        'start-session',
+        'resume-session',
+        'close-session',
+      ],
+      appearance: ['app-zoom', 'factory-theme', 'motion-toggle'],
+      settings: [
+        'open-session-settings',
+        'open-agent-models',
+        'open-commit-settings',
+        'open-accounts',
+      ],
+      maintenance: ['open-about'],
+      destructive: true,
+      destructiveSeparated: true,
+      labelled: true,
+    },
+  );
   await key('Tab');
-  assert.equal(await evaluate(() => document.activeElement.id), 'app-zoom');
+  assert.equal(await evaluate(() => document.activeElement.id), 'new-session');
+  await evaluate(() => document.getElementById('app-zoom').focus());
   await key('2');
   await waitFor(() => window.pidev.getZoom() !== 1);
   assert.equal(
@@ -226,7 +287,7 @@ async function main() {
     'app-menu-button',
   );
   report.cases.push(
-    'welcome menu supports keyboard zoom theme motion and Escape',
+    'grouped welcome menu supports keyboard zoom theme motion and Escape',
   );
 
   await menu();

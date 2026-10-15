@@ -1,6 +1,6 @@
 # Installation
 
-Use the [platform's install command](../README.md#install). Requires [Node.js](https://nodejs.org/) 24+ with npm.
+First, [download and install Node.js](https://nodejs.org/en/download) 24 or newer (npm is included). Open a new terminal, then use the [platform's install command](../README.md#install).
 
 On macOS, installation also adds **VarisDev** to `~/Applications` for Finder, Spotlight, and the Dock.
 

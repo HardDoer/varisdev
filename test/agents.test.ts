@@ -1541,7 +1541,7 @@ async function isolateToolSettings(t: TestContext) {
   });
 }
 
-void test('agent tools enforce live allowed models for explicit and inherited choices and refresh the schema before prompts', async t => {
+void test('agent tools enforce live allowed models and refresh schemas between turns without a new prompt', async t => {
   await isolateToolSettings(t);
   const workers = teamWorkers();
   const parent = agentParent('policy-live', workers.create);
@@ -1572,9 +1572,26 @@ void test('agent tools enforce live allowed models for explicit and inherited ch
   );
   await assert.rejects(parent.execute('agent_spawn', params), /not allowed/);
   assert.equal(workers.created.length, 0);
-  await saveToolSettings('agents', {allowedModels: [fullName]});
-  await parent.emit('before_agent_start');
+  const newlyAllowed = 'openai-codex/gpt-6.1-sol';
+  await saveToolSettings('agents', {allowedModels: [fullName, newlyAllowed]});
+  await parent.emit('turn_end');
   assert.ok(Check(parent.tools.get('agent_spawn')!.parameters, params));
+  assert.ok(
+    Check(parent.tools.get('agent_spawn')!.parameters, {
+      ...params,
+      model: newlyAllowed,
+    }),
+  );
+  assert.ok(
+    parent.tools.get('agent_spawn')!.description.includes(newlyAllowed),
+  );
+  const unchanged = parent.tools.get('agent_spawn');
+  await parent.emit('turn_end');
+  assert.equal(
+    parent.tools.get('agent_spawn'),
+    unchanged,
+    'Unchanged settings do not churn the tool registry',
+  );
   assert.match(
     parent.tools.get('agent_spawn')!.description,
     /Allowed models: openai-codex/,
@@ -1588,8 +1605,13 @@ void test('agent tools enforce live allowed models for explicit and inherited ch
     /not allowed/,
   );
   assert.equal(workers.byId.get(id)!.controlled.runs[0].signal.aborted, false);
+  await parent.emit('turn_end');
+  assert.equal(
+    Check(parent.tools.get('agent_spawn')!.parameters, params),
+    false,
+  );
   await saveToolSettings('agents', {allowedModels: null});
-  await parent.emit('before_agent_start');
+  await parent.emit('turn_end');
   assert.match(
     parent.tools.get('agent_spawn')!.description,
     /any model from the parent model registry/,

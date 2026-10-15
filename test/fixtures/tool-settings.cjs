@@ -184,6 +184,7 @@ async function main() {
     },
   });
   handle('pidev:get-state', () => hub);
+  handle('pidev:recent-projects', () => []);
   handle('pidev:prompt-session', (id, input) => {
     prompts.push({id, input, settings: JSON.parse(JSON.stringify(settings))});
     return {steering: [], followUp: []};

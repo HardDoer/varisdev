@@ -31,6 +31,7 @@ let resumeError;
 let modelDefaults;
 let defaultsError;
 let defaultsSaveError;
+let recentProjects;
 
 function features() {
   return {
@@ -152,6 +153,7 @@ function reset() {
       messageCount: 2,
     },
   ];
+  recentProjects = [directory, join(directory, 'other-project')];
   defaultsError = defaultsSaveError = undefined;
   modelDefaults = {
     model: {provider: 'fixture-other', id: 'large'},
@@ -171,6 +173,7 @@ function reset() {
 }
 
 ipcMain.handle('fixture:state', () => hub);
+ipcMain.handle('fixture:recent-projects', () => recentProjects);
 ipcMain.on('fixture:error', (_event, error) => rendererErrors.push(error));
 for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
   ipcMain.handle(`fixture:${method}`, async (_event, sessionId, request) => {
@@ -5885,6 +5888,114 @@ async function main() {
         {open: false, history: true, focused: true},
       );
       assert.ok(!calls.some(call => call.method === 'prompt'));
+    },
+  );
+
+  await run(
+    'Welcome shows recent projects and opens them without a folder picker',
+    async () => {
+      hub.sessions = [];
+      hub.selectedSessionId = undefined;
+      window.webContents.send('fixture:snapshot', hub);
+      await until(
+        () =>
+          !document.getElementById('welcome').hidden &&
+          document.querySelectorAll('#recent-projects-list button').length ===
+            2,
+        'Recent projects did not appear on the start screen',
+      );
+      const folders = await evaluate(() =>
+        [...document.querySelectorAll('#recent-projects-list button span')].map(
+          item => item.textContent,
+        ),
+      );
+      assert.deepEqual(folders, [directory, join(directory, 'other-project')]);
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('recent-projects');
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#recent-projects-list button').disabled,
+        ),
+        false,
+      );
+      creationError = 'Project folder is unavailable';
+      await evaluate(() =>
+        document.querySelector('#recent-projects-list button').click(),
+      );
+      await until(
+        () =>
+          !document.getElementById('app-error').hidden &&
+          !document.querySelector('#recent-projects-list button').disabled,
+        'Failed recent project did not allow retry',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('welcome').hidden),
+        false,
+      );
+      creationError = undefined;
+      creationDelay = 200;
+      await evaluate(() => {
+        const button = document.querySelector('#recent-projects-list button');
+        button.click();
+        button.click();
+      });
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        'Recent project was not opened',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession'),
+        [
+          {method: 'createSession', input: {cwd: directory}},
+          {method: 'createSession', input: {cwd: directory}},
+        ],
+      );
+      assert.equal(
+        calls.some(call => call.method === 'chooseFolder'),
+        false,
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('welcome').hidden),
+        true,
+      );
+      // Simulate projects opened through a second app instance rather than a
+      // renderer action. Returning home must fetch the newly saved history.
+      recentProjects = Array.from({length: 12}, (_, i) =>
+        join(directory, `external-project-${i}`),
+      );
+      hub.sessions = [];
+      window.webContents.send('fixture:snapshot', hub);
+      await until(
+        () =>
+          document.querySelectorAll('#recent-projects-list button').length ===
+          12,
+        'Returning to welcome did not refresh external project history',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#recent-projects-list strong').textContent,
+        ),
+        'external-project-0',
+      );
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.75);
+      await settle();
+      const layout = await evaluate(() => ({
+        headingTop: document
+          .getElementById('welcome-title')
+          .getBoundingClientRect().top,
+        panelTop: document.getElementById('welcome').getBoundingClientRect()
+          .top,
+      }));
+      assert.ok(
+        layout.headingTop >= layout.panelTop,
+        'The welcome heading remains reachable with twelve projects at high zoom',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('recent-projects-zoom');
     },
   );
 

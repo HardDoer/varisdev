@@ -6,6 +6,8 @@ import {
   drawIdleActivity,
 } from './parent-activities.js';
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
+import {factoryIdentity} from './factory-identity.js';
+import {createFactoryVisitors} from './factory-visitors.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
@@ -147,10 +149,21 @@ export function createParentFallback(container) {
   const window = document.defaultView;
   const controller = createParentMotion();
   const whip = createRobotWhip();
+  const visitors = createFactoryVisitors();
   const overlay = document.createElementNS(NS, 'svg');
   overlay.setAttribute('class', 'robot-whip-overlay');
   overlay.setAttribute('aria-hidden', 'true');
   overlay.setAttribute('focusable', 'false');
+  const visitorSvg = document.createElementNS(NS, 'svg');
+  visitorSvg.setAttribute('class', 'factory-visitors-fallback');
+  visitorSvg.setAttribute('viewBox', '0 0 240 180');
+  visitorSvg.setAttribute('aria-hidden', 'true');
+  visitorSvg.setAttribute('focusable', 'false');
+  const visitorGroup = document.createElementNS(NS, 'g');
+  visitorSvg.append(visitorGroup);
+  const visitorNotice = document.createElement('span');
+  visitorNotice.className = 'factory-away-notice';
+  visitorNotice.setAttribute('aria-live', 'polite');
   let agents = [];
   let recoilGlyph = null;
   function clearWhip() {
@@ -187,6 +200,7 @@ export function createParentFallback(container) {
       session?.id,
       targets().map(element => element.dataset.unitId),
       Boolean(reaction) ||
+        visitors.isAway(session?.id) ||
         !['rest', 'work'].includes(controller.pose().mode) ||
         session?.status === 'closed',
     );
@@ -211,6 +225,7 @@ export function createParentFallback(container) {
   let time = 0;
   let reaction = null;
   let visible = true;
+  let identity = factoryIdentity('');
 
   function paint(group, shapes) {
     shapes.sort((a, b) => a.depth - b.depth);
@@ -235,11 +250,112 @@ export function createParentFallback(container) {
     });
   }
 
+  function drawVisitors() {
+    const visiting = visitors
+      .visitorsAt(session?.id)
+      .filter(visitor => visitor.id !== session?.id);
+    const shapes = [];
+    for (const visitor of visiting) {
+      const source = factoryIdentity(visitor.id);
+      const accent = `var(--${source.accentKey})`;
+      const origin = 174 + (visitor.x + 5.05) * 7;
+      const g = primitives(shapes, origin, 0, visitor.yaw);
+      const moving = visitor.phase === 'arrive' || visitor.phase === 'depart';
+      const running = visitor.phase === 'depart';
+      const jump = visitor.jump || 0;
+      g.cylinder([0, 0.05, 0], [1.5, 0.03, 1.05], C.dark);
+      for (const [index, side] of [-1, 1].entries()) {
+        const phase = Math.sin(visitor.stride + index * Math.PI);
+        const footX = moving ? phase * (running ? 0.42 : 0.25) : 0;
+        const footY = jump + Math.max(0, phase) * (running ? 0.24 : 0.12);
+        g.box(
+          [footX + 0.1, 0.24 + footY, side * 0.34],
+          [0.68, 0.22, 0.4],
+          C.metal,
+        );
+        g.rod(
+          [footX, 0.34 + footY, side * 0.34],
+          [-0.1, 0.8 + jump, side * 0.34],
+          0.11,
+          C.dark,
+        );
+      }
+      g.box([0, 1.34 + jump, 0], [0.94, 0.86, 1], accent);
+      g.box([0.04, 2.17 + jump, 0], [1.06, 0.62, 1.14], C.metal);
+      g.box([0.59, 2.17 + jump, 0], [0.08, 0.35, 0.96], C.dark);
+      for (const side of [-1, 1]) {
+        g.box(
+          [0.64, 2.2 + jump, side * 0.27],
+          [0.04, 0.1 + visitor.surprise * 0.12, 0.19],
+          visitor.surprise ? C.amber : accent,
+          1,
+        );
+        const swing = moving
+          ? Math.sin(visitor.stride + (side === 1 ? Math.PI : 0))
+          : 0;
+        g.rod(
+          [0, 1.65 + jump, side * 0.62],
+          [-swing * 0.36, 1.05 + jump, side * 0.8],
+          0.1,
+          accent,
+        );
+      }
+    }
+    paint(visitorGroup, shapes);
+    visitorSvg.dataset.visitors = visiting.map(visitor => visitor.id).join(',');
+    if (visiting.length && !visitorSvg.parentNode) container.append(visitorSvg);
+    else if (!visiting.length) visitorSvg.remove();
+  }
+
   function render() {
     if (disposed || !station || !session) return;
     syncWhip();
-    const pose = controller.pose();
-    const lash = whip.pose();
+    drawVisitors();
+    const ownAway = visitors.isAway(session.id);
+    const awayMessage = visitors.awayMessage(session.id);
+    if (awayMessage) {
+      visitorNotice.textContent = awayMessage;
+      station.dataset.awayLabel = awayMessage;
+      station.classList.add('parent-is-away');
+      if (!visitorNotice.parentNode) station.append(visitorNotice);
+    } else {
+      visitorNotice.remove();
+      delete station.dataset.awayLabel;
+      station.classList.remove('parent-is-away');
+    }
+    const ownTravel = visitors
+      .visitorsAt(session.id)
+      .find(visitor => visitor.id === session.id);
+    robot.style.display = ownAway && !ownTravel ? 'none' : '';
+    if (ownAway && !ownTravel) {
+      svg.dataset.mode = 'away';
+      svg.dataset.activity = '';
+      svg.dataset.eyes = String(AWAKE_EYE_HEIGHT);
+      return;
+    }
+    const pose = ownTravel
+      ? {
+          mode:
+            ownTravel.phase === 'startled'
+              ? 'startled'
+              : ownTravel.phase === 'visit'
+                ? 'rest'
+                : ['depart', 'homecoming'].includes(ownTravel.phase)
+                  ? 'return'
+                  : 'walk',
+          activity: null,
+          elapsed: 0,
+          duration: 0,
+          x: ownTravel.x,
+          z: ownTravel.z,
+          yaw: ownTravel.yaw,
+          ground: 0,
+          stride: ownTravel.stride,
+          jump: ownTravel.jump,
+          surprise: ownTravel.surprise,
+        }
+      : controller.pose();
+    const lash = ownTravel ? null : whip.pose();
     const lashPose = lash ? whipPose(lash.age) : null;
     let whipHand;
     const idle = pose.activity
@@ -260,7 +376,9 @@ export function createParentFallback(container) {
     const moving = pose.mode === 'walk' || pose.mode === 'return';
     const running = pose.mode === 'return';
     const working = pose.mode === 'work';
-    const stop = reactionPose(reaction);
+    const stop = ownTravel
+      ? {jump: 0, surprise: 0, squash: 0}
+      : reactionPose(reaction);
     const surprise = Math.max(stop.surprise, pose.surprise);
     const jump = stop.jump + pose.jump;
     const bob = moving
@@ -454,17 +572,29 @@ export function createParentFallback(container) {
   function drawWorkstation() {
     const shapes = [];
     const g = primitives(shapes, 39);
+    const accent = `var(--${identity.accentKey})`;
     g.cylinder([0, 0.25, 0], [3.5, 0.25, 3.1], C.dim);
     g.box([1.95, 0.9, 0], [0.5, 1.25, 1.85], C.dim);
     g.box([1.85, 1.58, 0], [0.85, 0.18, 2.25], C.metal);
     g.box([2.05, 2.02, 0], [0.22, 0.85, 1.9], C.dark);
-    g.box([1.91, 2.02, 0], [0.04, 0.6, 1.58], C.cyan, 1);
+    g.box([1.91, 2.02, 0], [0.04, 0.6, 1.58], accent, 1);
     for (let row = 0; row < 3; row++)
       g.box(
         [1.88, 2.2 - row * 0.18, 0],
         [0.04, 0.04, 1.05 - row * 0.16],
         C.white,
         1,
+      );
+    for (let index = 0; index <= identity.roof; index++) {
+      const z = -1.1 + index * 1.1;
+      g.rod([-0.8, 3.2, z], [0.15, 3.65, z], 0.045, C.metal);
+      g.rod([0.15, 3.65, z], [1.05, 3.2, z], 0.045, accent);
+    }
+    for (let index = 0; index < identity.utilities; index++)
+      g.cylinder(
+        [-1.35, 0.65, -0.85 + index * 0.55],
+        [0.42, 1.05, 0.42],
+        index % 2 ? C.metal : accent,
       );
     paint(workstation, shapes);
   }
@@ -505,6 +635,9 @@ export function createParentFallback(container) {
         time += dt;
         syncWhip();
         if (!whip.pose()) controller.tick(dt);
+        visitors.observeLocalPose(session?.id, controller.pose());
+        visitors.tick(dt);
+        controller.setAway(visitors.isAway(session?.id));
         syncWhip();
         whip.tick(dt);
       }
@@ -538,11 +671,21 @@ export function createParentFallback(container) {
     clearWhip();
     svg.remove();
     glyph?.classList.remove('parent-fallback-glyph');
+    visitorNotice.remove();
+    station?.classList.remove('parent-is-away');
+    if (station) delete station.dataset.awayLabel;
     station = null;
     glyph = null;
   }
 
   return {
+    updateHub(hub) {
+      if (disposed) return;
+      visitors.update(hub);
+      controller.setAway(visitors.isAway(session?.id));
+      render();
+      schedule();
+    },
     update(data, selectedId) {
       if (disposed) return;
       const next = container.querySelector('.fallback-station.parent-session');
@@ -559,11 +702,17 @@ export function createParentFallback(container) {
       if (session?.id !== data?.session?.id) {
         reaction = null;
         time = 0;
+        identity = factoryIdentity(data?.session?.id);
+        svg.dataset.factoryIdentity = identity.token;
+        drawWorkstation();
       }
+      visitors.update(data?.sessions ? data : data?.hub || data);
       session = data?.session || null;
       agents = data?.agents || [];
       selected = selectedId === 'parent';
       controller.update(session);
+      visitors.observeLocalPose(session?.id, controller.pose());
+      controller.setAway(visitors.isAway(session?.id));
       if (!session || !station) stopFrame();
       render();
       schedule();
@@ -572,6 +721,7 @@ export function createParentFallback(container) {
       if (disposed) return;
       motion = Boolean(enabled);
       controller.setMotion(motion);
+      visitors.setMotion(motion);
       whip.setMotion(motion);
       if (motion) reaction = null;
       stopFrame();
@@ -581,7 +731,8 @@ export function createParentFallback(container) {
     prompt(sessionId) {
       if (disposed || sessionId !== session?.id) return;
       whip.cancel();
-      controller.prompt();
+      if (!visitors.prompt(sessionId)) controller.prompt();
+      controller.setAway(visitors.isAway(sessionId));
       render();
       schedule();
     },
@@ -614,8 +765,10 @@ export function createParentFallback(container) {
       observer?.disconnect();
       document.removeEventListener('visibilitychange', onVisibility);
       controller.dispose();
+      visitors.dispose();
       whip.dispose();
       clearWhip();
+      visitorSvg.remove();
       reaction = null;
       session = null;
       detach();

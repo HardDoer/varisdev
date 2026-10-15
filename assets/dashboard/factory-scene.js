@@ -9,6 +9,8 @@ import {
   drawIdleActivity,
 } from './parent-activities.js';
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
+import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
+import {createFactoryVisitors} from './factory-visitors.js';
 
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
@@ -335,12 +337,13 @@ class Geometry {
   }
 }
 
-function buildFactory(C) {
+function buildFactory(C, identity = factoryIdentity('')) {
   const g = new Geometry();
+  const F = factoryIdentityPalette(C, identity);
   // Floating cutaway foundation and the visible service plinth underneath.
   g.box([0, -0.66, 0], [21.5, 0.45, 12.1], C.dark);
-  g.box([0, -0.31, 0], [21.1, 0.28, 11.7], C.edge);
-  g.box([0, -0.13, 0], [20.7, 0.12, 11.3], C.floor);
+  g.box([0, -0.31, 0], [21.1, 0.28, 11.7], F.factoryEdge);
+  g.box([0, -0.13, 0], [20.7, 0.12, 11.3], F.factoryFloor);
   for (let x = -10; x <= 10; x += 1)
     g.box([x, -0.058, 0], [0.018, 0.014, 11], C.edge);
   for (let z = -5; z <= 5; z += 1)
@@ -377,9 +380,28 @@ function buildFactory(C) {
   g.box([0, 4.9, -5.3], [20.7, 0.3, 0.4], C.metal);
   g.box([0, 4.67, -5.08], [20, 0.06, 0.08], C.cyan, 0.85);
   for (let x = -9; x <= 9; x += 3) {
-    g.rod([x, 4.7, -5.3], [x + 0.9, 3.8, -5.3], 0.08, C.edge);
+    const lean = identity.gantry === 0 ? -0.9 : identity.gantry === 1 ? 0 : 0.9;
+    g.rod([x, 4.7, -5.3], [x + lean, 3.8, -5.3], 0.08, F.factoryEdge);
     g.box([x, 4.5, -4.8], [0.85, 0.12, 0.6], C.dark);
-    g.box([x, 4.42, -4.76], [0.68, 0.035, 0.42], C.white, 0.95);
+    g.box([x, 4.42, -4.76], [0.68, 0.035, 0.42], F.factoryAccent, 0.95);
+  }
+  // Session identity changes only overhead/rear service architecture, leaving
+  // every workstation and collision route in the same functional position.
+  for (let i = 0; i < identity.roof + 1; i++) {
+    const x = -1.8 + i * 3.6;
+    g.rod([x - 1.25, 4.58, -4.95], [x, 5.22, -4.95], 0.065, F.factoryMetal);
+    g.rod([x, 5.22, -4.95], [x + 1.25, 4.58, -4.95], 0.065, F.factoryMetal);
+    g.box([x, 5.25, -4.95], [1.7, 0.08, 0.18], F.factoryAccent, 0.45);
+  }
+  for (let i = 0; i < 4; i++) {
+    const x = -1.5 + i * 2.1;
+    const lit = (i + identity.stripePhase) % 4 === 0;
+    g.box(
+      [x, 1.05, -5.03],
+      [0.7, 0.055, 0.045],
+      lit ? F.factoryAccent : F.factoryEdge,
+      lit ? 0.75 : 0.1,
+    );
   }
   // Exposed plumbing and utility tanks on the command side.
   for (const y of [1.75, 2.16]) {
@@ -387,7 +409,10 @@ function buildFactory(C) {
     g.rod([-10.2, 0.2, -4.8], [-10.2, y, -4.8], 0.1, C.metal);
     for (const x of [-9, -7, -5]) g.box([x, y, -4.8], [0.09, 0.3, 0.3], C.dark);
   }
-  for (const x of [-9.3, -8.1]) {
+  for (const x of Array.from(
+    {length: identity.utilities},
+    (_, i) => -9.55 + i * 0.95,
+  )) {
     g.cylinder([x, 1, -3.7], [0.83, 1.85, 0.83], C.metal);
     g.cylinder([x, 1.73, -3.7], [0.9, 0.11, 0.9], C.dark);
     g.cylinder([x, 0.35, -3.7], [0.9, 0.13, 0.9], C.dark);
@@ -528,6 +553,9 @@ export function createFactoryScene(
     return null;
   }
   if (!gl) return null;
+  const defaultCanvasLabel =
+    canvas.getAttribute('aria-label') ||
+    'Factory view with a parent session and agents';
   const resources = {shaders: [], buffers: []};
   let program, attributes, uniforms;
   function releaseResources() {
@@ -578,7 +606,8 @@ export function createFactoryScene(
   let C = Object.fromEntries(
     Object.entries(COLORS).map(([key, color]) => [key, [...color]]),
   );
-  let factory = makeBuffer(buildFactory(C), gl.STATIC_DRAW);
+  let identity = factoryIdentity('');
+  let factory = makeBuffer(buildFactory(C, identity), gl.STATIC_DRAW);
   let dynamic = makeBuffer(new Geometry(), gl.DYNAMIC_DRAW);
   let glow = makeBuffer(new Geometry(), gl.DYNAMIC_DRAW);
   let disposed = false,
@@ -599,6 +628,7 @@ export function createFactoryScene(
   let reaction = null;
   const parentMotion = createParentMotion();
   const whip = createRobotWhip();
+  const visitors = createFactoryVisitors();
 
   function syncWhip() {
     const mode = parentMotion.pose().mode;
@@ -612,6 +642,7 @@ export function createFactoryScene(
         )
         .map(unit => unit.id),
       Boolean(reaction) ||
+        visitors.isAway(sessionId) ||
         !['rest', 'work'].includes(mode) ||
         snapshot?.session?.status === 'closed',
     );
@@ -744,8 +775,29 @@ export function createFactoryScene(
     return {surprise, jump, squash, wobble: Math.sin(p * TAU * 4) * surprise};
   }
 
-  function drawParentSession(sceneGeometry, sceneEffects) {
-    const pose = parentMotion.pose();
+  function drawParentSession(sceneGeometry, sceneEffects, visitor = null) {
+    const pose = visitor
+      ? {
+          mode:
+            visitor.phase === 'startled'
+              ? 'startled'
+              : visitor.phase === 'visit'
+                ? 'rest'
+                : ['depart', 'homecoming'].includes(visitor.phase)
+                  ? 'return'
+                  : 'walk',
+          activity: null,
+          elapsed: 0,
+          duration: 0,
+          x: visitor.x,
+          z: visitor.z,
+          yaw: visitor.yaw,
+          ground: 0,
+          stride: visitor.stride,
+          jump: visitor.jump,
+          surprise: visitor.surprise,
+        }
+      : parentMotion.pose();
     const idle = pose.activity
       ? idleActivityPose(pose.activity, pose.elapsed)
       : null;
@@ -763,12 +815,14 @@ export function createFactoryScene(
       : 0;
     const g = new Geometry(),
       fx = new Geometry();
-    const state = snapshot?.session?.status || 'idle';
+    const state = visitor?.status || snapshot?.session?.status || 'idle';
     const active =
-      pose.mode === 'work' && (state === 'running' || state === 'compacting');
+      !visitor &&
+      pose.mode === 'work' &&
+      (state === 'running' || state === 'compacting');
     const moving = pose.mode === 'walk' || pose.mode === 'return';
     const running = pose.mode === 'return';
-    const activity = snapshot?.session?.activity || '';
+    const activity = visitor ? '' : snapshot?.session?.activity || '';
     const tools =
       active &&
       /using|tool|running (bash|read|write|edit|agent_)/i.test(activity);
@@ -782,10 +836,12 @@ export function createFactoryScene(
         : moving
           ? Math.abs(Math.sin(pose.stride)) * (running ? 0.13 : 0.06)
           : 0;
-    const lash = whip.pose();
+    const lash = visitor ? null : whip.pose();
     const lashPose = lash ? whipPose(lash.age) : null;
     let whipHand;
-    const reactionPose = startlePose();
+    const reactionPose = visitor
+      ? {surprise: 0, jump: 0, squash: 0, wobble: 0}
+      : startlePose();
     const surprise = Math.max(reactionPose.surprise, pose.surprise);
     const jump = reactionPose.jump + pose.jump;
     const {squash, wobble} = reactionPose;
@@ -946,7 +1002,7 @@ export function createFactoryScene(
     }
     if (active)
       g.ring([x, 0.4, 0], 2.08, 0.024, color, 0.9, 48, 0.72, t * 0.28);
-    if (selected === 'parent')
+    if (!visitor && selected === 'parent')
       g.ring([x, 0.41, 0], 2.38, 0.075, C.selection, 1, 48);
     if (active) {
       fx.ring([x, 0.44, 0], 2.12, 0.085, color, 0.08, 40);
@@ -1035,12 +1091,14 @@ export function createFactoryScene(
         pose.z + dz * Math.cos(yaw) - dx * Math.sin(yaw),
       ];
     }
-    canvas.dataset.robotWhip = lash?.target || '';
     sceneGeometry.append(g, position, yaw, x);
     sceneEffects.append(fx, position, yaw, x);
-    canvas.dataset.parentMode = pose.mode;
-    canvas.dataset.parentActivity = pose.activity || '';
-    canvas.dataset.parentEyes = String(eyeHeight);
+    if (!visitor) {
+      canvas.dataset.robotWhip = lash?.target || '';
+      canvas.dataset.parentMode = pose.mode;
+      canvas.dataset.parentActivity = pose.activity || '';
+      canvas.dataset.parentEyes = String(eyeHeight);
+    }
     return {
       p: [pose.x, pose.ground + y + 4.0, pose.z],
       body: [pose.x, pose.ground + y + 1.6, pose.z],
@@ -1240,13 +1298,76 @@ export function createFactoryScene(
     const matrix = cameraMatrix(eye, target, aspect);
     const g = new Geometry(),
       fx = new Geometry();
-    const positions = [{id: 'parent', ...drawParentSession(g, fx)}];
+    const visiting = visitors.visitorsAt(sessionId);
+    const ownAway = visitors.isAway(sessionId);
+    const ownTravel = visiting.find(visitor => visitor.id === sessionId);
+    let parentPosition;
+    if (ownTravel) {
+      parentPosition = drawParentSession(g, fx, ownTravel);
+      canvas.dataset.robotWhip = '';
+      canvas.dataset.parentMode = ownTravel.phase;
+      canvas.dataset.parentActivity = '';
+      canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
+    } else if (!ownAway) parentPosition = drawParentSession(g, fx);
+    else {
+      parentPosition = {
+        p: [-6.25, 4.4, 0],
+        body: [-6.25, 1.6, 0],
+        whipStart: null,
+      };
+      // A holographic locator leaves the workstation visibly occupied by an
+      // away/return state instead of making the parent silently disappear.
+      const pulse = 0.8 + Math.sin(time * 2.4) * 0.12;
+      g.ring([-6.25, 0.42, 0], 2.18, 0.055, C.amber, pulse, 40);
+      g.ring([-6.25, 2.15, 0], 0.72, 0.028, C.amber, 0.85, 32);
+      g.rod([-6.25, 0.45, 0], [-6.25, 2.15, 0], 0.018, C.amber, 0.8);
+      g.rod([-6.75, 2.15, 0], [-5.78, 2.15, 0], 0.055, C.amber, 0.9);
+      g.rod([-5.78, 2.15, 0], [-6.08, 2.42, 0], 0.055, C.amber, 0.9);
+      g.rod([-5.78, 2.15, 0], [-6.08, 1.88, 0], 0.055, C.amber, 0.9);
+      canvas.dataset.robotWhip = '';
+      canvas.dataset.parentMode = 'away';
+      canvas.dataset.parentActivity = visitors.awayMessage(sessionId);
+      canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
+    }
+    const positions = [{id: 'parent', ...parentPosition}];
     units.forEach((unit, i) =>
       positions.push({
         id: unit.id,
         p: drawAgent(unit, g, fx, i),
         body: positionFor(unit),
       }),
+    );
+    for (const visitor of visiting) {
+      if (visitor === ownTravel) continue;
+      drawParentSession(g, fx, visitor);
+      const source = factoryIdentityPalette(C, factoryIdentity(visitor.id));
+      g.ring(
+        [visitor.x, 0.43, visitor.z],
+        2.34,
+        0.065,
+        source.factoryAccent,
+        0.95,
+        48,
+      );
+    }
+    canvas.dataset.factoryVisitors = visiting
+      .map(visitor => visitor.id)
+      .join(',');
+    canvas.dataset.parentAway = String(ownAway);
+    const parentAwayMessage = visitors.awayMessage(sessionId);
+    canvas.dataset.parentAwayLabel = parentAwayMessage;
+    const foreignNames = visiting
+      .filter(visitor => visitor.id !== sessionId)
+      .map(visitor => visitor.name || visitor.id);
+    const canvasDetails = [
+      parentAwayMessage ? `Parent: ${parentAwayMessage}` : '',
+      foreignNames.length ? `Visiting parents: ${foreignNames.join(', ')}` : '',
+    ].filter(Boolean);
+    canvas.setAttribute(
+      'aria-label',
+      canvasDetails.length
+        ? `${defaultCanvasLabel}. ${canvasDetails.join('. ')}.`
+        : defaultCanvasLabel,
     );
     const lash = whip.pose();
     const lashTarget = lash && positions.find(p => p.id === lash.target);
@@ -1336,12 +1457,20 @@ export function createFactoryScene(
         centerY: center.y,
       };
     });
-    const layout = anchors.map(({id, x, y, visible}) => ({id, x, y, visible}));
+    const awayMessage = visitors.awayMessage(sessionId);
+    const layout = anchors.map(({id, x, y, visible}) => ({
+      id,
+      x,
+      y,
+      visible,
+      away: id === 'parent' && Boolean(awayMessage),
+      detail: id === 'parent' ? awayMessage : '',
+    }));
     // Labels do not need subpixel DOM churn on a stationary scene.
     const key = layout
       .map(
         a =>
-          `${a.id}:${Math.round(a.x * width)}:${Math.round(a.y * height)}:${a.visible}`,
+          `${a.id}:${Math.round(a.x * width)}:${Math.round(a.y * height)}:${a.visible}:${a.detail}`,
       )
       .join('|');
     if (key !== lastLayout) {
@@ -1376,6 +1505,9 @@ export function createFactoryScene(
       time += dt;
       syncWhip();
       if (!whip.pose()) parentMotion.tick(dt);
+      visitors.observeLocalPose(sessionId, parentMotion.pose());
+      visitors.tick(dt);
+      parentMotion.setAway(visitors.isAway(sessionId));
       syncWhip();
       whip.tick(dt);
       const pose = parentMotion.pose();
@@ -1475,7 +1607,7 @@ export function createFactoryScene(
     program = null;
     try {
       initializeProgram();
-      factory = makeBuffer(buildFactory(C), gl.STATIC_DRAW);
+      factory = makeBuffer(buildFactory(C, identity), gl.STATIC_DRAW);
       dynamic = makeBuffer(new Geometry(), gl.DYNAMIC_DRAW);
       glow = makeBuffer(new Geometry(), gl.DYNAMIC_DRAW);
       contextLost = false;
@@ -1507,6 +1639,13 @@ export function createFactoryScene(
   schedule();
 
   return {
+    updateHub(hub) {
+      if (disposed) return;
+      visitors.update(hub);
+      parentMotion.setAway(visitors.isAway(sessionId));
+      render();
+      schedule();
+    },
     update(data, selectedId = 'parent') {
       if (disposed) return;
       const id = data?.session?.id;
@@ -1514,6 +1653,10 @@ export function createFactoryScene(
         reaction = null;
         stop();
         sessionId = id;
+        identity = factoryIdentity(id);
+        canvas.dataset.factoryIdentity = identity.token;
+        if (!contextLost)
+          upload(factory, buildFactory(C, identity), gl.STATIC_DRAW);
         firstSnapshot = true;
         previous = new Map();
         slots = new Map();
@@ -1522,7 +1665,10 @@ export function createFactoryScene(
         flashes = [];
         time = 0;
       }
+      visitors.update(data?.sessions ? data : data?.hub || data);
       parentMotion.update(data?.session);
+      visitors.observeLocalPose(id, parentMotion.pose());
+      parentMotion.setAway(visitors.isAway(id));
       snapshot = data;
       selected = selectedId;
       reconcile(data);
@@ -1556,7 +1702,7 @@ export function createFactoryScene(
       C = next;
       // Reuse the existing GPU buffer; context restoration rebuilds from C.
       if (!contextLost) {
-        upload(factory, buildFactory(C), gl.STATIC_DRAW);
+        upload(factory, buildFactory(C, identity), gl.STATIC_DRAW);
         render();
         schedule();
       }
@@ -1565,6 +1711,7 @@ export function createFactoryScene(
       if (disposed) return;
       motion = Boolean(enabled);
       parentMotion.setMotion(motion);
+      visitors.setMotion(motion);
       whip.setMotion(motion);
       if (motion) reaction = null;
       if (!canAnimate()) stop();
@@ -1574,7 +1721,8 @@ export function createFactoryScene(
     prompt(id) {
       if (disposed || id !== sessionId) return;
       whip.cancel();
-      parentMotion.prompt();
+      if (!visitors.prompt(id)) parentMotion.prompt();
+      parentMotion.setAway(visitors.isAway(id));
       render();
       schedule();
     },
@@ -1605,6 +1753,7 @@ export function createFactoryScene(
       disposed = true;
       reaction = null;
       parentMotion.dispose();
+      visitors.dispose();
       whip.dispose();
       stop();
       resizeObserver?.disconnect();
@@ -1617,6 +1766,11 @@ export function createFactoryScene(
       canvas.removeEventListener('webglcontextlost', onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
       canvas.style.cursor = '';
+      canvas.setAttribute('aria-label', defaultCanvasLabel);
+      delete canvas.dataset.factoryIdentity;
+      delete canvas.dataset.factoryVisitors;
+      delete canvas.dataset.parentAway;
+      delete canvas.dataset.parentAwayLabel;
       particles = [];
       dispatches = [];
       flashes = [];

@@ -504,6 +504,222 @@ void test('resuming a saved session waits for its successful close and preserves
   assert.equal(hub.snapshot().sessions[0].session.owned, true);
 });
 
+void test('resuming history replaces only other sessions from the same folder', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'varisdev-resume-replace-'));
+  const project = join(root, 'project');
+  const otherProject = join(root, 'other');
+  await Promise.all([mkdir(project), mkdir(otherProject)]);
+  const savedPath = join(project, 'saved.jsonl');
+  await writeFile(savedPath, 'saved history\n');
+  t.mock.method(SessionManager, 'list', async () => [
+    {
+      id: 'saved',
+      name: 'Saved',
+      firstMessage: 'Earlier work',
+      modified: new Date(),
+      messageCount: 1,
+      path: savedPath,
+    },
+  ]);
+  const sameFolder = controlledParent('same-folder', project);
+  const otherFolder = controlledParent('other-folder', otherProject);
+  const resumed = controlledParent('saved', project);
+  const hub = new DashboardHub(undefined, async request => {
+    assert.deepEqual(request.resume, {id: 'saved', path: savedPath});
+    return resumed.parent;
+  });
+  t.after(async () => {
+    await hub.close();
+    await rm(root, {recursive: true, force: true});
+  });
+  hub.adoptSession(sameFolder.parent);
+  hub.adoptSession(otherFolder.parent);
+  await hub.promptSession('same-folder', {prompt: 'Busy work'});
+  await until(() => sameFolder.runs.length === 1);
+
+  assert.deepEqual(
+    await hub.createSession({cwd: project, sessionId: 'saved'}),
+    {
+      id: 'saved',
+    },
+  );
+  assert.equal(sameFolder.closed, true);
+  assert.equal(otherFolder.closed, false);
+  assert.equal(resumed.closed, false);
+  assert.deepEqual(
+    hub.snapshot().sessions.map(item => item.session.id),
+    ['other-folder', 'saved'],
+  );
+
+  // Selecting the resumed session again keeps that target but still replaces
+  // another session subsequently opened in the same folder.
+  const anotherSameFolder = controlledParent('another-same-folder', project);
+  hub.adoptSession(anotherSameFolder.parent);
+  assert.deepEqual(
+    await hub.createSession({cwd: project, sessionId: 'saved'}),
+    {
+      id: 'saved',
+    },
+  );
+  assert.equal(resumed.closed, false);
+  assert.equal(anotherSameFolder.closed, true);
+  assert.equal(otherFolder.closed, false);
+});
+
+void test('resume creation and replacement-close failures preserve the old session', async t => {
+  const project = await mkdtemp(join(tmpdir(), 'varisdev-resume-failure-'));
+  const savedPath = join(project, 'saved.jsonl');
+  await writeFile(savedPath, 'saved history\n');
+  t.mock.method(SessionManager, 'list', async () => [
+    {
+      id: 'saved',
+      name: 'Saved',
+      firstMessage: 'Earlier work',
+      modified: new Date(),
+      messageCount: 1,
+      path: savedPath,
+    },
+  ]);
+  const old = controlledParent('old', project);
+  let failCreation = true;
+  const resumed = controlledParent('saved', project);
+  const hub = new DashboardHub(undefined, async () => {
+    if (failCreation) throw new Error('resume initialization failed');
+    return resumed.parent;
+  });
+  t.after(async () => {
+    await hub.close();
+    await rm(project, {recursive: true, force: true});
+  });
+  hub.adoptSession(old.parent);
+
+  await assert.rejects(
+    hub.createSession({cwd: project, sessionId: 'saved'}),
+    /resume initialization failed/,
+  );
+  assert.equal(old.closed, false);
+  assert.deepEqual(
+    hub.snapshot().sessions.map(item => item.session.id),
+    ['old'],
+  );
+
+  failCreation = false;
+  old.parent.close = async () => {
+    throw new Error('old session cleanup failed');
+  };
+  await assert.rejects(
+    hub.createSession({cwd: project, sessionId: 'saved'}),
+    /old session cleanup failed/,
+  );
+  assert.equal(resumed.closed, true);
+  assert.deepEqual(
+    hub.snapshot().sessions.map(item => item.session.id),
+    ['old'],
+  );
+  assert.match(
+    hub.snapshot().sessions[0].session.activity,
+    /Close failed: old session cleanup failed/,
+  );
+});
+
+void test('same-folder resumes serialize concurrent replacement choices', async t => {
+  const project = await mkdtemp(join(tmpdir(), 'varisdev-resume-concurrent-'));
+  const paths = {
+    first: join(project, 'first.jsonl'),
+    second: join(project, 'second.jsonl'),
+  };
+  await Promise.all(
+    Object.values(paths).map(path => writeFile(path, 'saved\n')),
+  );
+  t.mock.method(SessionManager, 'list', async () =>
+    Object.entries(paths).map(([id, path]) => ({
+      id,
+      name: id,
+      firstMessage: id,
+      modified: new Date(),
+      messageCount: 1,
+      path,
+    })),
+  );
+  const old = controlledParent('old', project);
+  const parents = {
+    first: controlledParent('first', project),
+    second: controlledParent('second', project),
+  };
+  let active = 0;
+  let maximum = 0;
+  const hub = new DashboardHub(undefined, async request => {
+    active++;
+    maximum = Math.max(maximum, active);
+    await nextTick();
+    active--;
+    return parents[request.resume!.id as keyof typeof parents].parent;
+  });
+  t.after(async () => {
+    await hub.close();
+    await rm(project, {recursive: true, force: true});
+  });
+  hub.adoptSession(old.parent);
+
+  const [first, second] = await Promise.all([
+    hub.createSession({cwd: project, sessionId: 'first'}),
+    hub.createSession({cwd: project, sessionId: 'second'}),
+  ]);
+  assert.deepEqual(first, {id: 'first'});
+  assert.deepEqual(second, {id: 'second'});
+  assert.equal(maximum, 1);
+  assert.equal(old.closed, true);
+  assert.equal(Number(parents.first.closed) + Number(parents.second.closed), 1);
+  const remaining = hub.snapshot().sessions.map(item => item.session.id);
+  assert.equal(remaining.length, 1);
+  assert.ok(remaining[0] === 'first' || remaining[0] === 'second');
+});
+
+void test('a same-folder resume can replace one of eight parents without exceeding capacity', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'varisdev-resume-capacity-'));
+  const project = join(root, 'project');
+  await mkdir(project);
+  const savedPath = join(project, 'saved.jsonl');
+  await writeFile(savedPath, 'saved\n');
+  t.mock.method(SessionManager, 'list', async () => [
+    {
+      id: 'saved',
+      name: 'Saved',
+      firstMessage: 'Saved',
+      modified: new Date(),
+      messageCount: 1,
+      path: savedPath,
+    },
+  ]);
+  const existing = controlledParent('replace-me', project);
+  const unrelated: ReturnType<typeof controlledParent>[] = [];
+  for (let index = 0; index < 7; index++) {
+    const cwd = join(root, `other-${index}`);
+    await mkdir(cwd);
+    unrelated.push(controlledParent(`other-${index}`, cwd));
+  }
+  const resumed = controlledParent('saved', project);
+  const hub = new DashboardHub(undefined, async () => resumed.parent);
+  t.after(async () => {
+    await hub.close();
+    await rm(root, {recursive: true, force: true});
+  });
+  hub.adoptSession(existing.parent);
+  for (const parent of unrelated) hub.adoptSession(parent.parent);
+
+  assert.equal(hub.snapshot().sessions.length, 8);
+  assert.deepEqual(
+    await hub.createSession({cwd: project, sessionId: 'saved'}),
+    {
+      id: 'saved',
+    },
+  );
+  assert.equal(existing.closed, true);
+  assert.equal(hub.snapshot().sessions.length, 8);
+  assert.ok(unrelated.every(parent => !parent.closed));
+  assert.equal(resumed.closed, false);
+});
+
 void test('closing during reload and abort waits for each operation without restoring removed sessions', async () => {
   for (const action of ['reload', 'abort'] as const) {
     const gate = Promise.withResolvers<void>();

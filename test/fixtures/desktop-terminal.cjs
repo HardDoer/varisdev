@@ -81,6 +81,7 @@ app
       browser.webContents.send('pidev:terminal', event),
     );
     handle('pidev:get-state', () => snapshot('first'));
+    handle('pidev:recent-projects', () => []);
     handle('pidev:open-file', (id, path) => openedFiles.push([id, path]));
     handle('varisdev:get-update-status', () => ({
       phase: 'idle',

@@ -440,9 +440,20 @@ export function registerAgentTools(
     });
 
   registerSpawn(null);
-  pi.on('before_agent_start', async () => {
-    registerSpawn((await readToolSettings()).agents.allowedModels);
-  });
+  let spawnPolicy = JSON.stringify(null);
+  const refreshSpawnPolicy = async () => {
+    const {allowedModels} = (await readToolSettings()).agents;
+    const policy = JSON.stringify(allowedModels);
+    if (policy === spawnPolicy) return;
+    registerSpawn(allowedModels);
+    spawnPolicy = policy;
+  };
+  pi.on('before_agent_start', refreshSpawnPolicy);
+  // before_agent_start runs once per prompt, not for tool continuations or
+  // steering within a run. Refresh at the completed-turn boundary, before Pi
+  // snapshots the next request's tool declarations and validation schemas.
+  // turn_start is too late for those declarations in the current SDK.
+  pi.on('turn_end', refreshSpawnPolicy);
 
   registerAgentListTool(pi, getManager);
   pi.registerTool({

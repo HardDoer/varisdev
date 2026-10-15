@@ -28,7 +28,11 @@ Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaul
 
 The GUI provides individual and collective cancellation. **Stop** stops the parent while its agents continue.
 
-Select a parent and click **Close session** beside **Context files**, or use **Menu → Close session**. Closing a desktop parent stops its work and agents, closes its embedded terminal, and frees its session slot. Saved history remains available through **Menu → Resume session**. Closing the last parent returns to **Open folder**. For a session attached from another terminal, **Close session** dismisses it from this window.
+Select a parent and click **Close session** beside **Context files**, or use **Menu → Close session**. Closing a desktop parent stops its work and agents, closes its embedded terminal, and frees its session slot. Saved history remains available through **Menu → Resume session**. Closing the last parent returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a session attached from another terminal, **Close session** dismisses it from this window.
+
+Resuming a saved session replaces other open sessions in the same folder, stopping their work and agents; sessions in other folders stay open. If the chosen session is already open, it is reused rather than duplicated. If the saved session cannot be loaded, the current sessions stay open.
+
+Each factory has a stable, theme-aware color and architectural variation. Idle parents can visit other open factories, then hurry back when prompted. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
 ## Commit and push
 

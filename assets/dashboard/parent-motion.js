@@ -41,6 +41,7 @@ export function createParentMotion() {
   let destination = HOME;
   let duration = 0;
   let pendingPrompt = false;
+  let away = false;
   let stopRemaining = 0;
   let seed = 1;
   let bag = [];
@@ -194,7 +195,7 @@ export function createParentMotion() {
       }
       const awaitingPrompt = pendingPrompt;
       if (active(status)) pendingPrompt = false;
-      if (!motion || status === 'closed') {
+      if (!motion || away || status === 'closed') {
         settle();
         return;
       }
@@ -207,7 +208,13 @@ export function createParentMotion() {
     },
 
     prompt() {
-      if (disposed || !initialized || status !== 'idle' || pendingPrompt)
+      if (
+        disposed ||
+        !initialized ||
+        away ||
+        status !== 'idle' ||
+        pendingPrompt
+      )
         return;
       stopRemaining = 0;
       if (wake()) pendingPrompt = true;
@@ -223,6 +230,7 @@ export function createParentMotion() {
         disposed ||
         !initialized ||
         !motion ||
+        away ||
         !Number.isFinite(dt) ||
         dt <= 0
       ) {
@@ -235,6 +243,15 @@ export function createParentMotion() {
         advance(step);
         remaining -= step;
       }
+    },
+
+    setAway(enabled) {
+      if (disposed || away === Boolean(enabled)) return;
+      away = Boolean(enabled);
+      pendingPrompt = false;
+      stopRemaining = 0;
+      settle();
+      if (away) enter('rest');
     },
 
     setMotion(enabled) {

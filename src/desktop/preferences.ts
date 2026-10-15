@@ -3,15 +3,40 @@ import {
   writeFileSync,
   mkdirSync,
   statSync,
+  realpathSync,
   renameSync,
   rmSync,
 } from 'node:fs';
 import {randomUUID} from 'node:crypto';
-import {isAbsolute, join} from 'node:path';
+import {isAbsolute, join, normalize} from 'node:path';
+
+const MAX_RECENT_PROJECTS = 12;
+const folderKey = (folder: string) =>
+  process.platform === 'win32' ? folder.toLowerCase() : folder;
+
+function recentFolders(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  return input
+    .filter((folder): folder is string => {
+      if (
+        typeof folder !== 'string' ||
+        folder.length > 4096 ||
+        !isAbsolute(folder) ||
+        seen.has(folderKey(normalize(folder)))
+      )
+        return false;
+      seen.add(folderKey(normalize(folder)));
+      return true;
+    })
+    .slice(0, MAX_RECENT_PROJECTS)
+    .map(folder => normalize(folder));
+}
 
 /** Desktop preferences live in the persistent VarisDev application profile. */
 export class DesktopPreferences {
   private lastFolder?: string;
+  private recentFolders: string[] = [];
   private agentNoticeSeen = false;
   private commitNoticeSeen = false;
   private readonly directory: string;
@@ -29,6 +54,9 @@ export class DesktopPreferences {
           isAbsolute(saved.lastFolder)
         )
           this.lastFolder = saved.lastFolder;
+        this.recentFolders = recentFolders(
+          'recentProjects' in saved ? saved.recentProjects : [this.lastFolder],
+        );
         this.agentNoticeSeen =
           'agentNoticeAcknowledged' in saved &&
           saved.agentNoticeAcknowledged === true;
@@ -51,10 +79,21 @@ export class DesktopPreferences {
     return fallback;
   }
 
+  recentProjects(): string[] {
+    return this.recentFolders.filter(folder => {
+      try {
+        return statSync(folder).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  }
+
   private save(
     lastFolder: string | undefined,
     agentNoticeAcknowledged: boolean,
     commitNoticeAcknowledged = this.commitNoticeSeen,
+    recentProjects = this.recentFolders,
   ): void {
     mkdirSync(this.directory, {recursive: true});
     const path = join(this.directory, 'settings.json');
@@ -63,7 +102,12 @@ export class DesktopPreferences {
       writeFileSync(
         temporary,
         JSON.stringify(
-          {lastFolder, agentNoticeAcknowledged, commitNoticeAcknowledged},
+          {
+            lastFolder,
+            recentProjects,
+            agentNoticeAcknowledged,
+            commitNoticeAcknowledged,
+          },
           null,
           2,
         ) + '\n',
@@ -74,12 +118,21 @@ export class DesktopPreferences {
       rmSync(temporary, {force: true});
     }
     this.lastFolder = lastFolder;
+    this.recentFolders = recentProjects;
     this.agentNoticeSeen = agentNoticeAcknowledged;
     this.commitNoticeSeen = commitNoticeAcknowledged;
   }
 
   rememberFolder(folder: string): void {
-    this.save(folder, this.agentNoticeSeen);
+    if (!isAbsolute(folder))
+      throw new Error('Choose an absolute project folder.');
+    try {
+      folder = realpathSync(folder);
+    } catch {
+      folder = normalize(folder);
+    }
+    const projects = recentFolders([folder, ...this.recentFolders]);
+    this.save(folder, this.agentNoticeSeen, this.commitNoticeSeen, projects);
   }
 
   agentNoticeAcknowledged(): boolean {

@@ -21,6 +21,7 @@
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link rel="stylesheet" href="session-history.css" />
+    <link rel="stylesheet" href="recent-projects.css" />
     <link
       rel="stylesheet"
       href="../../node_modules/@xterm/xterm/css/xterm.css"
@@ -350,6 +351,55 @@
               role="dialog"
               aria-labelledby="app-menu-button"
             >
+              <section
+                class="app-menu-group app-menu-project"
+                aria-labelledby="app-menu-project-heading"
+              >
+                <h2 id="app-menu-project-heading">Project &amp; session</h2>
+                <div class="app-menu-actions">
+                  <button
+                    id="new-session"
+                    class="primary-button"
+                    type="button"
+                  >
+                    Open folder
+                  </button>
+                  <button
+                    id="start-session"
+                    class="quiet-button"
+                    type="button"
+                    hidden
+                  >
+                    New session
+                  </button>
+                  <button
+                    id="resume-session"
+                    class="quiet-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-controls="session-history-dialog"
+                  >
+                    Resume session
+                  </button>
+                  <div class="app-menu-danger-zone">
+                    <button
+                      id="close-session"
+                      class="danger-button app-menu-destructive"
+                      type="button"
+                      hidden
+                    >
+                      Close session
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <section
+                class="app-menu-group app-menu-appearance"
+                aria-labelledby="app-menu-appearance-heading"
+              >
+                <h2 id="app-menu-appearance-heading">Appearance</h2>
+                <div id="app-menu-appearance-controls"></div>
+              </section>
               <label class="zoom-control" for="app-zoom">
                 Zoom
                 <select id="app-zoom" name="zoom" aria-label="Window zoom">
@@ -374,79 +424,83 @@
               >
                 Motion on
               </button>
-              <button
-                id="open-accounts"
-                class="quiet-button"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="accounts-dialog"
+              <section
+                class="app-menu-group app-menu-settings"
+                aria-labelledby="app-menu-settings-heading"
               >
-                Accounts
-              </button>
-              <button
-                id="open-agent-models"
-                class="quiet-button"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="tool-settings-dialog"
+                <h2 id="app-menu-settings-heading">Tools &amp; settings</h2>
+                <div
+                  class="app-menu-subgroup"
+                  role="group"
+                  aria-labelledby="app-menu-models-heading"
+                >
+                  <h3 id="app-menu-models-heading">Models &amp; automation</h3>
+                  <div class="app-menu-actions">
+                    <button
+                      id="open-session-settings"
+                      aria-label="Model defaults"
+                      title="Select defaults when starting a new session"
+                      class="quiet-button"
+                      type="button"
+                    >
+                      Model defaults
+                    </button>
+                    <button
+                      id="open-agent-models"
+                      class="quiet-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-controls="tool-settings-dialog"
+                    >
+                      Agent models
+                    </button>
+                    <button
+                      id="open-commit-settings"
+                      class="quiet-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-controls="tool-settings-dialog"
+                    >
+                      Commit settings
+                    </button>
+                  </div>
+                </div>
+                <div
+                  class="app-menu-subgroup"
+                  role="group"
+                  aria-labelledby="app-menu-account-heading"
+                >
+                  <h3 id="app-menu-account-heading">Account</h3>
+                  <div class="app-menu-actions">
+                    <button
+                      id="open-accounts"
+                      class="quiet-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-controls="accounts-dialog"
+                    >
+                      Accounts
+                    </button>
+                  </div>
+                </div>
+              </section>
+              <section
+                class="app-menu-group app-menu-maintenance"
+                aria-labelledby="app-menu-maintenance-heading"
               >
-                Agent models
-              </button>
-              <button
-                id="open-commit-settings"
-                class="quiet-button"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="tool-settings-dialog"
-              >
-                Commit settings
-              </button>
-              <button
-                id="open-session-settings"
-                aria-label="Model defaults"
-                title="Select defaults when starting a new session"
-                class="quiet-button"
-                type="button"
-              >
-                Model defaults
-              </button>
-              <button
-                id="start-session"
-                class="quiet-button"
-                type="button"
-                hidden
-              >
-                New session
-              </button>
-              <button
-                id="resume-session"
-                class="quiet-button"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="session-history-dialog"
-              >
-                Resume session
-              </button>
-              <button
-                id="close-session"
-                class="quiet-button"
-                type="button"
-                hidden
-              >
-                Close session
-              </button>
-              <button id="new-session" class="primary-button" type="button">
-                Open folder
-              </button>
-              <button
-                id="open-about"
-                class="quiet-button"
-                type="button"
-                aria-haspopup="dialog"
-                aria-controls="about-dialog"
-              >
-                About
-              </button>
+                <h2 id="app-menu-maintenance-heading">Maintenance</h2>
+                <div class="app-menu-actions">
+                  <button
+                    id="open-about"
+                    class="quiet-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-controls="about-dialog"
+                  >
+                    About VarisDev
+                  </button>
+                </div>
+              </section>
             </div>
           </div>
         </div>
@@ -455,9 +509,9 @@
           ><span class="orbit orbit-one"></span
           ><span class="orbit orbit-two"></span>
         </div>
-        <div>
-          <h2 id="welcome-title">Open a project folder.</h2>
-          <p>Select a folder to start a conversation.</p>
+        <div class="welcome-content">
+          <h2 id="welcome-title">Where shall we work?</h2>
+          <p>Pick a recent project or open a folder to start a conversation.</p>
           <button id="welcome-create" class="primary-button" type="button">
             Open folder
           </button>
@@ -470,6 +524,17 @@
           >
             Accounts
           </button>
+          <section
+            id="recent-projects"
+            class="recent-projects"
+            aria-labelledby="recent-projects-title"
+            hidden
+          >
+            <h3 id="recent-projects-title">Recent projects</h3>
+            <ul id="recent-projects-list" aria-label="Recent projects"></ul>
+            <p id="recent-projects-status" role="status"></p>
+            <p id="recent-projects-error" class="form-error" role="alert" hidden></p>
+          </section>
         </div>
       </section>
       <div id="factory-workspace" class="factory-workspace" hidden>

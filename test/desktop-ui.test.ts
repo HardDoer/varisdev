@@ -53,7 +53,7 @@ void test(
       process.env.DESKTOP_UI_CASE_PATTERN
         ? report.cases.length > 0
         : report.cases.length,
-      process.env.DESKTOP_UI_CASE_PATTERN ? true : 37,
+      process.env.DESKTOP_UI_CASE_PATTERN ? true : 38,
       'All renderer scenarios must execute',
     );
     for (const result of report.cases) {

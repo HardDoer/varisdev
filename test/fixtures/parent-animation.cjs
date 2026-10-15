@@ -276,6 +276,10 @@ async function main() {
           activity: canvas.dataset.parentActivity,
           eyes: Number(canvas.dataset.parentEyes),
           whip: canvas.dataset.robotWhip,
+          parentAway: canvas.dataset.parentAway,
+          awayLabel: canvas.dataset.parentAwayLabel,
+          canvasLabel: canvas.getAttribute('aria-label'),
+          visitors: canvas.dataset.factoryVisitors,
           centerX,
           hash,
           anchor,
@@ -474,6 +478,13 @@ async function main() {
         update(status) {
           data.session.status = status;
           scene.update(data, 'parent');
+        },
+        updateHub(sessions) {
+          scene.updateHub({
+            sessions: sessions.map(([id, status, name]) => ({
+              session: {id, status, name: name || id},
+            })),
+          });
         },
         mode: () => canvas.dataset.parentMode,
         inspect,
@@ -791,6 +802,73 @@ async function main() {
       await advance(1);
       assert.equal((await inspect()).hash, resumed.hash);
       assert.equal((await inspect()).pending, 1);
+    },
+  );
+
+  await run(
+    'an idle parent visits another open factory, disappears locally, and runs from the remote position all the way home when prompted',
+    async () => {
+      const home = await reset('visit-source');
+      await evaluate(() =>
+        window.fixture.updateHub([
+          ['visit-source', 'idle', 'Source factory'],
+          ['visit-target', 'idle', 'Target factory'],
+        ]),
+      );
+      const leaving = await evaluate(() => {
+        for (let frame = 0; frame < 1500; frame++) {
+          const pose = window.fixture.inspect();
+          if (pose.parentAway === 'true') return {...pose, frames: frame};
+          window.fixture.advance(1);
+        }
+        return window.fixture.inspect();
+      });
+      assert.equal(leaving.parentAway, 'true');
+      assert.match(leaving.awayLabel, /^Visiting Target factory$/);
+      assert.notEqual(leaving.centerX, home.centerX);
+      const offsite = await evaluate(() => {
+        for (let frame = 0; frame < 400; frame++) {
+          const pose = window.fixture.inspect();
+          if (pose.mode === 'away') return pose;
+          window.fixture.advance(1);
+        }
+        return window.fixture.inspect();
+      });
+      assert.equal(offsite.mode, 'away', 'the local workstation must be empty');
+      assert.match(offsite.canvasLabel, /Parent: Visiting Target factory/);
+      await evaluate(() => window.fixture.scene().prompt('visit-source'));
+      const startled = await inspect();
+      assert.equal(startled.mode, 'away');
+      assert.match(startled.awayLabel, /^Startled — returning from /);
+      const homecoming = await evaluate(() => {
+        for (let frame = 0; frame < 180; frame++) {
+          const pose = window.fixture.inspect();
+          if (pose.mode === 'homecoming') return pose;
+          window.fixture.advance(1);
+        }
+        return window.fixture.inspect();
+      });
+      finiteRendered(homecoming);
+      assert.equal(homecoming.parentAway, 'true');
+      assert.match(homecoming.awayLabel, /^Returning to own workstation$/);
+      assert.ok(
+        Math.abs(homecoming.centerX + 6.25) > 1,
+        'the robot must enter at the loading dock instead of teleporting home',
+      );
+      const returned = await evaluate(() => {
+        for (let frame = 0; frame < 180; frame++) {
+          const pose = window.fixture.inspect();
+          if (pose.parentAway === 'false') return pose;
+          window.fixture.advance(1);
+        }
+        return window.fixture.inspect();
+      });
+      finiteRendered(returned);
+      assert.equal(returned.parentAway, 'false');
+      assert.ok(Math.abs(returned.centerX + 6.25) < 0.001);
+      await evaluate(() =>
+        window.fixture.updateHub([['visit-source', 'idle', 'Source factory']]),
+      );
     },
   );
 

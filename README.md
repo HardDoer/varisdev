@@ -17,6 +17,14 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 
 ## Install
 
+### 1. [↓ Download Node.js](https://nodejs.org/en/download)
+
+**Install this first — Node.js 24 or newer is required.** The official installer includes npm and supports Windows, macOS, and Linux. Already installed? Continue to step 2.
+
+### 2. Install VarisDev
+
+Open a new terminal, then run the command for your platform:
+
 **macOS / Linux**
 
 ```sh
@@ -35,7 +43,7 @@ irm https://joonas.ninja/varisdev/install.ps1 | iex
 curl -fsSLo install.cmd https://joonas.ninja/varisdev/install.cmd && install.cmd
 ```
 
-Requires [Node.js](https://nodejs.org/) 24+.
+### 3. Launch VarisDev
 
 Open a new terminal and run `varisdev`. On Windows, you can also open VarisDev from the Start menu. On macOS, the installer adds VarisDev to `~/Applications`.
 

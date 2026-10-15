@@ -29,6 +29,10 @@ export interface SavedSession {
   messageCount: number;
 }
 
+export interface StartedSession {
+  id: string;
+}
+
 export type StoppedMessages = NonNullable<DashboardSnapshot['queue']>;
 
 export interface DashboardParent {
@@ -149,7 +153,12 @@ export class DashboardHub {
   private readonly sessions = new Map<string, Headquarters>();
   private readonly listeners = new Set<() => void>();
   private readonly creating = new Set<Promise<DashboardParent>>();
-  private readonly resuming = new Map<string, Promise<{id: string}>>();
+  private readonly creationCredits = new Map<
+    Promise<DashboardParent>,
+    number
+  >();
+  private readonly resuming = new Map<string, Promise<StartedSession>>();
+  private readonly resumeFolders = new Map<string, Promise<void>>();
   private readonly closingSessions = new Map<string, Promise<void>>();
   private readonly dismissedExternalSessions = new Set<string>();
   private readonly selectedSessionId?: string;
@@ -373,7 +382,7 @@ export class DashboardHub {
     }));
   }
 
-  async createSession(input: unknown): Promise<{id: string}> {
+  async createSession(input: unknown): Promise<StartedSession> {
     this.ensureOpen();
     const values = fields(input);
     const cwd = await sessionFolder(values.cwd);
@@ -387,29 +396,43 @@ export class DashboardHub {
           'This saved session is no longer available in this folder.',
         );
       this.ensureOpen();
-      const closing = this.closingSessions.get(id);
-      if (closing) {
-        try {
-          await closing;
-        } catch {
-          throw new DashboardInputError(
-            'This session did not close. Retry closing it before reopening.',
-          );
-        }
-        this.ensureOpen();
-      }
-      const opened = this.snapshot().sessions.find(
-        item => item.session.id === id && item.session.status !== 'closed',
-      );
-      if (opened) return {id};
-      const pending = this.resuming.get(id);
+      const key = `${cwd}\0${id}`;
+      const pending = this.resuming.get(key);
       if (pending) return pending;
-      const opening = this.startSession({cwd, resume: {id, path: saved.path}});
-      this.resuming.set(id, opening);
+      const opening = this.inResumeFolder(cwd, async () => {
+        const closing = this.closingSessions.get(id);
+        if (closing) {
+          try {
+            await closing;
+          } catch {
+            throw new DashboardInputError(
+              'This session did not close. Retry closing it before reopening.',
+            );
+          }
+          this.ensureOpen();
+        }
+        const opened = this.snapshot().sessions.find(
+          item => item.session.id === id && item.session.status !== 'closed',
+        );
+        const replacements = await this.resumeReplacements(cwd, id);
+        if (opened) {
+          const results = await Promise.allSettled(
+            replacements.map(replacement => this.closeReplacement(replacement)),
+          );
+          const failure = results.find(result => result.status === 'rejected');
+          if (failure?.status === 'rejected') throw failure.reason;
+          return {id};
+        }
+        return this.startSession(
+          {cwd, resume: {id, path: saved.path}},
+          replacements,
+        );
+      });
+      this.resuming.set(key, opening);
       try {
         return await opening;
       } finally {
-        this.resuming.delete(id);
+        if (this.resuming.get(key) === opening) this.resuming.delete(key);
       }
     }
     const name =
@@ -419,12 +442,102 @@ export class DashboardHub {
     return this.startSession({cwd, name});
   }
 
-  private async startSession(request: ParentRequest): Promise<{id: string}> {
+  private async inResumeFolder<T>(
+    cwd: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.resumeFolders.get(cwd);
+    const released = Promise.withResolvers<void>();
+    const queued = (previous ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => released.promise);
+    this.resumeFolders.set(cwd, queued);
+    if (previous) await previous.catch(() => {});
+    try {
+      this.ensureOpen();
+      return await action();
+    } finally {
+      released.resolve();
+      if (this.resumeFolders.get(cwd) === queued)
+        this.resumeFolders.delete(cwd);
+    }
+  }
+
+  private async resumeReplacements(
+    cwd: string,
+    targetId: string,
+  ): Promise<
+    Array<{id: string; entry?: Headquarters; external?: DashboardSnapshot}>
+  > {
+    const replacements: Array<{
+      id: string;
+      entry?: Headquarters;
+      external?: DashboardSnapshot;
+    }> = [];
+    const sameFolder = async (path: string): Promise<boolean> => {
+      if (path === cwd) return true;
+      try {
+        return (await realpath(path)) === cwd;
+      } catch {
+        return false;
+      }
+    };
+    if (
+      this.external?.session.id !== targetId &&
+      this.external &&
+      (await sameFolder(this.external.session.cwd))
+    )
+      replacements.push({
+        id: this.external.session.id,
+        external: this.external,
+      });
+    for (const [id, entry] of this.sessions) {
+      if (
+        id !== targetId &&
+        (await sameFolder(entry.state.snapshot().session.cwd))
+      )
+        replacements.push({id, entry});
+    }
+    return replacements;
+  }
+
+  private async closeReplacement(replacement: {
+    id: string;
+    entry?: Headquarters;
+    external?: DashboardSnapshot;
+  }): Promise<boolean> {
+    if (replacement.entry) {
+      if (this.sessions.get(replacement.id) !== replacement.entry) return false;
+      await this.closeSession(replacement.id);
+      return this.sessions.get(replacement.id) !== replacement.entry;
+    }
+    if (this.external !== replacement.external) return false;
+    await this.closeSession(replacement.id);
+    return this.external !== replacement.external;
+  }
+
+  private async startSession(
+    request: ParentRequest,
+    replacements: Array<{
+      id: string;
+      entry?: Headquarters;
+      external?: DashboardSnapshot;
+    }> = [],
+  ): Promise<StartedSession> {
     this.ensureOpen();
     const owned = [...this.sessions.values()].filter(
       entry => entry.parent,
     ).length;
-    if (owned + this.creating.size >= 8) {
+    const reservedCredits = [...this.creationCredits.values()].reduce(
+      (total, credit) => total + credit,
+      0,
+    );
+    const replacementCredit = replacements.some(
+      replacement => replacement.entry?.parent,
+    )
+      ? 1
+      : 0;
+    if (owned + this.creating.size - reservedCredits - replacementCredit >= 8) {
       throw new DashboardInputError(
         'The factory can hold eight parent sessions.',
       );
@@ -440,6 +553,7 @@ export class DashboardHub {
       return parent;
     });
     this.creating.add(creation);
+    this.creationCredits.set(creation, replacementCredit);
     try {
       const parent = await creation;
       if (this.closed) {
@@ -449,9 +563,37 @@ export class DashboardHub {
         );
       }
       const id = parent.state.snapshot().session.id;
-      if (this.sessions.has(id)) {
+      if (this.sessions.has(id) || this.external?.session.id === id) {
         await parent.close();
+        // A concurrent adoption/open of the requested saved session wins.
+        if (request.resume?.id === id) return {id};
         throw new DashboardInputError('This session is already open.');
+      }
+
+      const results = await Promise.allSettled(
+        replacements.map(replacement => this.closeReplacement(replacement)),
+      );
+      const replacementFailure = results.find(
+        result => result.status === 'rejected',
+      );
+      if (this.closed) {
+        await parent.close();
+        throw new DashboardInputError(
+          'The dashboard closed while starting the session.',
+        );
+      }
+      if (replacementFailure?.status === 'rejected') {
+        await parent.close();
+        throw replacementFailure.reason;
+      }
+      const remainingOwned = [...this.sessions.values()].filter(
+        entry => entry.parent,
+      ).length;
+      if (remainingOwned >= 8) {
+        await parent.close();
+        throw new DashboardInputError(
+          'The factory can hold eight parent sessions.',
+        );
       }
       if (this.external?.session.id === id) this.external = undefined;
       this.dismissedExternalSessions.delete(id);
@@ -459,6 +601,7 @@ export class DashboardHub {
       return {id};
     } finally {
       this.creating.delete(creation);
+      this.creationCredits.delete(creation);
     }
   }
 

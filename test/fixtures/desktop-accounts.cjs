@@ -122,6 +122,7 @@ async function main() {
     if (level >= 3) errors.push(message);
   });
   handle('pidev:get-state', () => hub);
+  handle('pidev:recent-projects', () => []);
   handle('varisdev:get-model-defaults', () => ({
     models: [],
     thinkingLevel: 'medium',

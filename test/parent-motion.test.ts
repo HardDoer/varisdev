@@ -304,6 +304,23 @@ void test('motion preference immediately settles and reenable respects status', 
   waitAtRest(controller);
 });
 
+void test('offsite visits hide local motion and reappear settled at the workstation', () => {
+  const controller = idleController();
+  until(controller, () => controller.pose().mode === 'walk');
+  controller.setAway(true);
+  const away = controller.pose();
+  assert.equal(away.mode, 'rest');
+  assert.equal(away.x, HOME);
+  advance(controller, 120);
+  controller.prompt();
+  assert.deepEqual(controller.pose(), away);
+  controller.update({id: 'parent-one', status: 'running'});
+  assert.equal(controller.pose().x, HOME);
+  controller.setAway(false);
+  assert.equal(controller.pose().mode, 'work');
+  assert.equal(controller.pose().x, HOME);
+});
+
 void test('invalid deltas are ignored, long gaps are bounded, and disposal freezes the controller', () => {
   const controller = idleController();
   const initial = controller.pose();

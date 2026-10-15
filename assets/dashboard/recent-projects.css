@@ -1,0 +1,57 @@
+.welcome {
+  /* Start alignment when zoom leaves too little room for centered content;
+     negative flex overflow otherwise makes the heading unreachable. */
+  align-items: safe center;
+  justify-content: safe center;
+}
+.welcome .welcome-content {
+  width: min(100%, 460px);
+  min-width: 0;
+}
+.recent-projects {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+.recent-projects h3 {
+  margin: 0 0 10px;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+#recent-projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: grid;
+  gap: 6px;
+  max-height: min(320px, 40vh);
+  overflow-y: auto;
+}
+#recent-projects-list:empty {
+  display: none;
+}
+.recent-project {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 10px 12px;
+  text-align: left;
+}
+.recent-project strong,
+.recent-project span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-project span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.welcome .recent-projects p {
+  margin: 8px 0 0;
+  font-size: 0.8125rem;
+}
+#recent-projects-status:empty {
+  display: none;
+}

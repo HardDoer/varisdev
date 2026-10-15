@@ -13,7 +13,8 @@ Set `VARISDEV_SETTINGS_DIR` to use another global configuration directory. No ex
 ## Sessions
 
 - **Menu → New session** replaces the selected parent with a fresh conversation in the same folder, stopping its work and agents. Other open parents are unchanged.
-- **Menu → Resume session** reopens saved conversations. Use **Choose folder** to browse another folder's history.
+- **Menu → Resume session** reopens saved conversations, replacing other open sessions in the same folder. Other projects stay open. Use **Choose folder** to browse another folder's history.
+- The start screen's **Recent projects** remembers up to twelve folders across app restarts.
 - **Menu → Close session** stops the selected parent and its agents without deleting saved history. For a session connected from a terminal, it only closes the app's view.
 - **Remove agent** clears a stopped or finished agent from the dashboard. It reappears if it resumes.
 
@@ -27,7 +28,7 @@ Use **Menu → Model defaults → Save defaults** to choose the model and thinki
 
 **Menu → Agent models** controls which models background agents may use. All registered models are allowed by default; choose **Only selected models** to restrict them.
 
-Agents inherit the parent's model and reasoning level unless explicitly configured. The inherited model must also be allowed. Restrictions apply across projects, including queued and resumed agents.
+Agents inherit the parent's model and reasoning level unless explicitly configured. The inherited model must also be allowed. Restrictions apply across projects, including queued and resumed agents. Changes refresh the agent tool's advertised choices before the next turn, including during an ongoing run; no new session is needed. Running workers keep their current model.
 
 For virtual models, the router's extension must also be loaded from the worker's project or global configuration.
 
