@@ -1,7 +1,6 @@
-FROM node:24-bookworm AS build
+FROM node:lts AS build
 WORKDIR /opt/varisdev
 
-# Release packaging does not need to download or launch Electron.
 COPY package.json package-lock.json ./
 COPY desktop/package.json desktop/package-lock.json ./desktop/
 RUN npm ci --ignore-scripts --no-audit --no-fund \
@@ -13,6 +12,5 @@ RUN npm run typecheck \
     && node --test test/web-install.test.ts test/release-web.test.ts \
     && npm run release:web -- /release
 
-# The deployment job copies this release from the selected registry image.
-FROM alpine:3.22 AS release
+FROM alpine:3.24.2 AS release
 COPY --from=build /release /release
