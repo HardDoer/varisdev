@@ -28,6 +28,9 @@ let creationError;
 let closeDelay;
 let closeError;
 let resumeError;
+let modelDefaults;
+let defaultsError;
+let defaultsSaveError;
 
 function features() {
   return {
@@ -149,6 +152,15 @@ function reset() {
       messageCount: 2,
     },
   ];
+  defaultsError = defaultsSaveError = undefined;
+  modelDefaults = {
+    model: {provider: 'fixture-other', id: 'large'},
+    thinkingLevel: 'high',
+    models: features().models.map(model => ({
+      ...model,
+      thinkingLevels: ['off', 'low', 'medium', 'high'],
+    })),
+  };
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
@@ -266,6 +278,18 @@ ipcMain.handle('fixture:features', async (_event, sessionId) => {
   if (delay) await new Promise(resolve => setTimeout(resolve, delay));
   if (failure) throw new Error(failure);
   return result;
+});
+ipcMain.handle('fixture:model-defaults', (_event, ...args) => {
+  assert.deepEqual(args, [], 'Defaults do not take a selected session');
+  if (defaultsError) throw new Error(defaultsError);
+  return modelDefaults;
+});
+ipcMain.handle('fixture:save-model-defaults', (_event, request) => {
+  calls.push({method: 'saveModelDefaults', request});
+  if (defaultsSaveError) throw new Error(defaultsSaveError);
+  modelDefaults.model = {provider: request.provider, id: request.modelId};
+  modelDefaults.thinkingLevel = request.thinkingLevel;
+  return modelDefaults;
 });
 ipcMain.handle('fixture:configure', (_event, sessionId, request) => {
   calls.push({method: 'configureSession', sessionId, request});
@@ -2411,149 +2435,189 @@ async function main() {
   );
 
   await run(
-    'model and thinking settings apply while idle and during active work',
+    'menu model defaults stay independent of idle, working, selected and closed sessions',
     async () => {
-      assert.deepEqual(
-        await evaluate(() => {
-          const model = document.getElementById('factory-model');
-          const effort = document.getElementById('factory-effort');
-          const modelBounds = model.getBoundingClientRect();
-          const effortBounds = effort.getBoundingClientRect();
-          return {
-            model: model.textContent,
-            effort: effort.textContent,
-            visible: effortBounds.width > 0 && effortBounds.height > 0,
-            beside:
-              effortBounds.left >= modelBounds.right &&
-              effortBounds.top < modelBounds.bottom &&
-              effortBounds.bottom > modelBounds.top,
-          };
-        }),
-        {
-          model: 'fixture/small',
-          effort: 'Effort: medium',
-          visible: true,
-          beside: true,
-        },
-      );
-      hub.sessions[0].session.status = 'idle';
-      await publish();
       await evaluate(() =>
         document.getElementById('open-session-settings').click(),
       );
       await until(
-        () =>
-          !document.getElementById('apply-session-settings').disabled &&
-          document.getElementById('session-model').options.length === 2,
-        'Idle model settings did not load',
-      );
-      assert.deepEqual(
-        await evaluate(() => ({
-          model: document.getElementById('session-model').value,
-          thinking: document.getElementById('session-thinking').value,
-        })),
-        {model: 'fixture/small', thinking: 'medium'},
-      );
-      await evaluate(() => {
-        document.getElementById('session-model').value = 'fixture-other/large';
-        document.getElementById('session-thinking').value = 'high';
-        document.getElementById('apply-session-settings').click();
-      });
-      await until(
         () => !document.getElementById('apply-session-settings').disabled,
-        'Applying model settings did not finish',
+        'Model defaults did not load',
       );
-      assert.deepEqual(calls, [
-        {
-          method: 'configureSession',
-          sessionId: 'alpha',
-          request: {
-            provider: 'fixture-other',
-            modelId: 'large',
-            thinkingLevel: 'high',
-          },
-        },
-      ]);
       assert.deepEqual(
         await evaluate(() => ({
           model: document.getElementById('session-model').value,
           thinking: document.getElementById('session-thinking').value,
-        })),
-        {model: 'fixture-other/large', thinking: 'high'},
-      );
-      assert.deepEqual(
-        await evaluate(() => ({
-          model: document.getElementById('factory-model').textContent,
-          effort: document.getElementById('factory-effort').textContent,
-        })),
-        {model: 'fixture-other/large', effort: 'Effort: high'},
-      );
-      hub.sessions[0].session.status = 'running';
-      await publish();
-      assert.deepEqual(
-        await evaluate(() => ({
-          model: document.getElementById('session-model').disabled,
-          thinking: document.getElementById('session-thinking').disabled,
-          apply: document.getElementById('apply-session-settings').disabled,
+          title: document.getElementById('session-settings-title').textContent,
+          description: document
+            .getElementById('model-defaults-description')
+            .textContent.trim(),
+          save: document
+            .getElementById('apply-session-settings')
+            .textContent.trim(),
           compact: document.getElementById('compact-session').disabled,
-          reload: document.getElementById('reload-session').disabled,
         })),
         {
-          model: false,
-          thinking: false,
-          apply: false,
+          model: 'fixture-other/large',
+          thinking: 'high',
+          title: 'Model defaults',
+          description: 'Select defaults when starting a new session.',
+          save: 'Save defaults',
           compact: true,
-          reload: true,
         },
       );
-      for (const request of [
-        {provider: 'fixture-other', modelId: 'large', thinkingLevel: 'low'},
-        {provider: 'fixture', modelId: 'small', thinkingLevel: 'medium'},
-      ]) {
+      for (const status of ['idle', 'running']) {
+        const request = {
+          provider: 'fixture',
+          modelId: 'small',
+          thinkingLevel: status === 'idle' ? 'low' : 'high',
+        };
         await evaluate(request => {
-          document.getElementById('session-model').value =
-            `${request.provider}/${request.modelId}`;
-          document.getElementById('session-thinking').value =
-            request.thinkingLevel;
+          const model = document.getElementById('session-model');
+          model.value = `${request.provider}/${request.modelId}`;
+          model.dispatchEvent(new Event('change'));
+          const effort = document.getElementById('session-thinking');
+          effort.value = request.thinkingLevel;
+          effort.dispatchEvent(new Event('change'));
         }, request);
-        // Streaming snapshots must preserve settings being edited.
+        hub.sessions[0].session.status = status;
+        hub.sessions[0].session.thinkingLevel = 'medium';
         await publish();
         await evaluate(() =>
           document.getElementById('apply-session-settings').click(),
         );
         await until(
           () => !document.getElementById('apply-session-settings').disabled,
-          'Applying settings during work did not finish',
+          'Save did not finish',
         );
-        assert.deepEqual(calls.at(-1), {
-          method: 'configureSession',
-          sessionId: 'alpha',
-          request,
-        });
-        assert.equal(hub.sessions[0].session.status, 'running');
+        assert.deepEqual(calls.at(-1), {method: 'saveModelDefaults', request});
+        assert.equal(hub.sessions[0].session.model, 'fixture/small');
+        assert.equal(hub.sessions[0].session.thinkingLevel, 'medium');
         assert.deepEqual(
           await evaluate(() => ({
             model: document.getElementById('factory-model').textContent,
             effort: document.getElementById('factory-effort').textContent,
+            saved: document.getElementById('model-defaults-status').textContent,
           })),
           {
-            model: `${request.provider}/${request.modelId}`,
-            effort: `Effort: ${request.thinkingLevel}`,
+            model: 'fixture/small',
+            effort: 'Effort: medium',
+            saved:
+              'Defaults saved for new sessions. Existing sessions are unchanged.',
           },
         );
       }
-      hub.sessions[0].session.status = 'idle';
+      await evaluate(() => {
+        document.getElementById('close-session-settings').click();
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click();
+      });
+      hub.sessions[1].session.model = 'fixture-other/large';
+      hub.sessions[1].session.thinkingLevel = 'off';
+      resources.get('beta').model = {provider: 'fixture-other', id: 'large'};
+      resources.get('beta').thinkingLevel = 'off';
+      await publish();
+      await evaluate(() =>
+        document.getElementById('open-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Defaults did not reopen',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          model: document.getElementById('session-model').value,
+          thinking: document.getElementById('session-thinking').value,
+        })),
+        {model: 'fixture/small', thinking: 'high'},
+      );
+      // A feature refresh for another session must not overwrite an unsaved default.
+      await evaluate(() => {
+        const thinking = document.getElementById('session-thinking');
+        thinking.value = 'low';
+        thinking.dispatchEvent(new Event('change'));
+      });
+      hub.sessions[1].session.thinkingLevel = 'medium';
+      await publish();
+      await settle();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-thinking').value),
+        'low',
+      );
+      defaultsSaveError = 'Could not save defaults';
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('model-defaults-error').hidden,
+        'Save error missing',
+      );
+      assert.equal(modelDefaults.thinkingLevel, 'high');
+      assert.equal(
+        await evaluate(() => document.getElementById('session-thinking').value),
+        'low',
+      );
+      defaultsSaveError = undefined;
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Save retry failed',
+      );
+      assert.equal(modelDefaults.thinkingLevel, 'low');
+      hub.sessions = [];
       await publish();
       assert.deepEqual(
         await evaluate(() => ({
-          compact: document.getElementById('compact-session').disabled,
-          reload: document.getElementById('reload-session').disabled,
+          open: document.getElementById('session-settings-dialog').open,
+          model: document.getElementById('session-model').value,
+          hidden: document.getElementById('open-session-settings').hidden,
+          disabled: document.getElementById('open-session-settings').disabled,
+          maintenance: document.getElementById('session-maintenance').hidden,
         })),
-        {compact: false, reload: false},
+        {
+          open: true,
+          model: 'fixture/small',
+          hidden: false,
+          disabled: false,
+          maintenance: true,
+        },
       );
       await evaluate(() =>
         document.getElementById('close-session-settings').click(),
       );
+      defaultsError = 'Could not read defaults';
+      await evaluate(() =>
+        document.getElementById('open-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('model-defaults-retry').hidden,
+        'Load failure must be retryable',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('apply-session-settings').disabled,
+        ),
+        true,
+      );
+      defaultsError = undefined;
+      await evaluate(() =>
+        document.getElementById('model-defaults-retry').click(),
+      );
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Load retry failed',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('session-thinking').value),
+        'low',
+      );
+      await evaluate(() =>
+        document.getElementById('close-session-settings').click(),
+      );
+      assert.ok(calls.every(call => call.method !== 'configureSession'));
     },
   );
 
@@ -3031,7 +3095,7 @@ async function main() {
           input: "Run command\n\nCommand:\nprintf 'First agent\\n'\npwd",
           open: true,
           composer: true,
-          settings: true,
+          settings: false,
           context: true,
           meter: true,
           steering: true,
@@ -3127,8 +3191,18 @@ async function main() {
         'Agent view shortcuts cannot act on the parent',
       );
       assert.equal(
-        await evaluate(() => !!document.querySelector('dialog[open]')),
-        false,
+        await evaluate(
+          () => document.getElementById('session-settings-dialog').open,
+        ),
+        true,
+        'App defaults remain available while inspecting an agent',
+      );
+      await until(
+        () => !document.getElementById('close-session-settings').disabled,
+        'Defaults finished loading',
+      );
+      await evaluate(() =>
+        document.getElementById('close-session-settings').click(),
       );
       assert.equal(
         await evaluate(
@@ -5000,7 +5074,7 @@ async function main() {
   );
 
   await run(
-    'New session uses the selected parent folder and keeps the working parent draft',
+    'New session closes the selected parent before creating in its folder',
     async () => {
       const currentFolder = join(directory, 'selected-parent-folder');
       hub.sessions[0].session.cwd = currentFolder;
@@ -5075,9 +5149,12 @@ async function main() {
       );
       assert.deepEqual(
         calls.filter(call =>
-          ['chooseFolder', 'createSession'].includes(call.method),
+          ['chooseFolder', 'closeSession', 'createSession'].includes(
+            call.method,
+          ),
         ),
         [
+          {method: 'closeSession', sessionId: 'alpha'},
           {
             method: 'createSession',
             input: {cwd: currentFolder},
@@ -5099,36 +5176,15 @@ async function main() {
           editor: '',
           messages: 0,
           focused: true,
-          parents: ['Alpha factory', 'Beta factory', 'Selected folder'],
+          parents: ['Beta factory', 'Selected folder'],
         },
-        'The fresh session starts empty alongside existing parents',
+        'The fresh session replaces the selected parent and leaves other parents open',
       );
       assert.equal(
-        hub.sessions.find(item => item.session.id === 'alpha').session.status,
-        'running',
+        hub.sessions.some(item => item.session.id === 'alpha'),
+        false,
       );
-      await evaluate(() =>
-        [...document.querySelectorAll('#parents button')]
-          .find(item => item.textContent.includes('Alpha factory'))
-          .click(),
-      );
-      await settle();
-      assert.deepEqual(
-        await evaluate(() => {
-          const editor = document.getElementById('parent-prompt');
-          return {
-            value: editor.value,
-            start: editor.selectionStart,
-            end: editor.selectionEnd,
-          };
-        }),
-        {
-          value: 'Keep this draft in the working parent',
-          start: 5,
-          end: 15,
-        },
-        'Starting another session preserves the previous parent draft',
-      );
+      assert.ok(archivedSessions.has('alpha'));
     },
   );
 
@@ -5176,7 +5232,7 @@ async function main() {
           disabled: document.getElementById('start-session').disabled,
           label: document.getElementById('start-session').textContent,
         })),
-        {disabled: false, label: 'New session'},
+        {disabled: false, label: 'Retry new session'},
       );
 
       creationDelay = 0;
@@ -5248,7 +5304,10 @@ async function main() {
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'closeSession'),
-        [{method: 'closeSession', sessionId: 'retry-parent'}],
+        [
+          {method: 'closeSession', sessionId: 'alpha'},
+          {method: 'closeSession', sessionId: 'retry-parent'},
+        ],
         'Repeated close clicks must share one request',
       );
       assert.deepEqual(
@@ -5270,17 +5329,57 @@ async function main() {
       await until(
         () =>
           document.getElementById('factory-title').textContent ===
-          'Alpha factory',
+          'Beta factory',
         'Close retry did not select a remaining parent',
       );
       assert.equal(
         calls.filter(call => call.method === 'closeSession').length,
-        2,
+        3,
       );
       assert.equal(
         await evaluate(() => document.getElementById('app-error').hidden),
         true,
         'Retry clears the previous close error',
+      );
+      // Even after the final parent closes, a failed replacement can be retried
+      // in its original folder rather than the launch folder.
+      const lastFolder = join(directory, 'last-parent-folder');
+      hub.sessions[0].session.cwd = lastFolder;
+      creationIds = ['last-replacement'];
+      creationError = 'Could not create the replacement';
+      await publish();
+      await evaluate(() => document.getElementById('start-session').click());
+      await until(
+        () =>
+          !document.getElementById('welcome').hidden &&
+          !document.getElementById('app-error').hidden,
+        'Replacement failure did not reach welcome',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          hidden: document.getElementById('start-session').hidden,
+          disabled: document.getElementById('start-session').disabled,
+          label: document.getElementById('start-session').textContent,
+        })),
+        {hidden: false, disabled: false, label: 'Retry new session'},
+      );
+      assert.deepEqual(calls.slice(-2), [
+        {method: 'closeSession', sessionId: 'beta'},
+        {method: 'createSession', input: {cwd: lastFolder}},
+      ]);
+      creationError = undefined;
+      await evaluate(() => document.getElementById('start-session').click());
+      await until(
+        () => !document.getElementById('factory-workspace').hidden,
+        'Retry did not leave welcome',
+      );
+      assert.deepEqual(calls.at(-1), {
+        method: 'createSession',
+        input: {cwd: lastFolder},
+      });
+      assert.deepEqual(
+        hub.sessions.map(item => item.session.id),
+        ['last-replacement'],
       );
     },
   );
@@ -5344,28 +5443,25 @@ async function main() {
           'Selected folder',
         '/new did not select the fresh parent',
       );
-      assert.deepEqual(calls, [{method: 'createSession', input: {cwd}}]);
+      assert.deepEqual(calls, [
+        {method: 'closeSession', sessionId: 'alpha'},
+        {method: 'createSession', input: {cwd}},
+      ]);
       const fresh = hub.sessions.find(
         item => item.session.id === 'command-parent',
       );
       assert.deepEqual(fresh.conversation, []);
       assert.equal(fresh.session.status, 'idle');
-      assert.equal(hub.sessions[0].session.status, 'running');
-      assert.equal(hub.sessions[0].agents[0].status, 'running');
-      assert.equal(hub.sessions[0].conversation.length, 3);
+      assert.equal(
+        hub.sessions.some(item => item.session.id === 'alpha'),
+        false,
+      );
+      assert.ok(archivedSessions.has('alpha'));
       assert.equal(
         await evaluate(() => document.getElementById('parent-prompt').value),
         '',
       );
-      await evaluate(() =>
-        [...document.querySelectorAll('#parents button')]
-          .find(button => button.textContent.includes('Alpha factory'))
-          .click(),
-      );
-      assert.equal(
-        await evaluate(() => document.getElementById('parent-prompt').value),
-        '',
-      );
+
       assert.equal(
         await evaluate(() => {
           const saved = JSON.parse(
@@ -5382,7 +5478,7 @@ async function main() {
   await run(
     '/new validates arguments, preserves failed or edited drafts, and allows retry',
     async () => {
-      creationError = 'The factory can hold eight parent sessions.';
+      closeError = 'Could not close the current session.';
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = '/new extra';
@@ -5408,11 +5504,11 @@ async function main() {
       });
       await until(
         () => !document.getElementById('app-error').hidden,
-        'Session creation failure must be visible',
+        'Session close failure must be visible',
       );
       assert.match(
         await evaluate(() => document.getElementById('app-error').textContent),
-        /eight parent sessions/,
+        /Could not close the current session/,
       );
       assert.equal(
         await evaluate(() => document.getElementById('parent-prompt').value),
@@ -5424,7 +5520,8 @@ async function main() {
         ),
         'Alpha factory',
       );
-      creationError = undefined;
+      assert.deepEqual(calls, [{method: 'closeSession', sessionId: 'alpha'}]);
+      closeError = undefined;
       creationDelay = 180;
       creationIds = ['retry-command-parent'];
       await evaluate(() => {
@@ -5445,16 +5542,21 @@ async function main() {
         '/new retry must select the fresh parent',
       );
       assert.deepEqual(calls, [
-        {method: 'createSession', input: {cwd: directory}},
+        {method: 'closeSession', sessionId: 'alpha'},
+        {method: 'closeSession', sessionId: 'alpha'},
         {method: 'createSession', input: {cwd: directory}},
       ]);
-      await evaluate(() =>
-        [...document.querySelectorAll('#parents button')]
-          .find(button => button.textContent.includes('Alpha factory'))
-          .click(),
+      assert.equal(
+        hub.sessions.some(item => item.session.id === 'alpha'),
+        false,
       );
       assert.equal(
-        await evaluate(() => document.getElementById('parent-prompt').value),
+        await evaluate(
+          () =>
+            JSON.parse(
+              localStorage.getItem('varisdev.composer-drafts.v1'),
+            ).find(([id]) => id === 'alpha')?.[1].value,
+        ),
         'Keep this edited draft',
       );
       await evaluate(() =>
@@ -5650,7 +5752,7 @@ async function main() {
           startHidden: true,
           closeHidden: true,
           commandsOpen: false,
-          settingsDisabled: true,
+          settingsDisabled: false,
           openFolder: 'Open folder',
         },
         'Parent-only actions are hidden when no parent remains',

@@ -10,6 +10,7 @@ import {initZoom} from './zoom.js';
 import {initUpdates} from './updates.js';
 import {initAccounts} from './accounts.js';
 import {initToolSettings} from './tool-settings.js';
+import {initModelDefaults} from './model-defaults.js';
 import {initAppMenu} from './app-menu.js';
 import {initSessionHistory} from './session-history.js';
 import {initAgentControls} from './agent-controls.js';
@@ -162,6 +163,8 @@ let conversationScrollFrame;
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
+// Keep the original folder when closing succeeds but creation needs a retry.
+let pendingReplacement;
 let expandedEditor = null;
 let pendingDraftPosition = null;
 const composingEditors = new Set();
@@ -1549,7 +1552,6 @@ function renderInspector() {
     unit.activity || (parent ? 'No current activity' : statusName(unit.status)),
   );
   $('back-to-parent').hidden = parent;
-  $('open-session-settings').hidden = !parent;
   $('tab-context').hidden = !parent;
   $('open-context').hidden = !parent;
   if (!parent) {
@@ -1826,17 +1828,30 @@ function renderSessionActions() {
   const session = snapshot()?.session;
   for (const id of ['new-session', 'welcome-create'])
     $(id).disabled = Boolean(creating);
-  $('start-session').disabled = Boolean(creating) || !session || !api;
-  $('start-session').title = session
-    ? `Start a new session in ${session.cwd}`
+  const replacementCwd = pendingReplacement?.cwd || session?.cwd;
+  $('start-session').hidden = !replacementCwd;
+  $('start-session').disabled =
+    Boolean(creating) ||
+    closingSessions.size > 0 ||
+    !replacementCwd ||
+    !api?.closeSession;
+  $('start-session').title = replacementCwd
+    ? `Start a new session in ${replacementCwd}`
     : '';
   text(
     $('start-session'),
-    creating === 'session' ? 'Creating…' : 'New session',
+    creating === 'session'
+      ? 'Creating…'
+      : pendingReplacement
+        ? 'Retry new session'
+        : 'New session',
   );
   for (const id of ['close-session', 'close-parent-session']) {
     $(id).disabled =
-      !session || !api?.closeSession || closingSessions.has(session.id);
+      Boolean(creating) ||
+      !session ||
+      !api?.closeSession ||
+      closingSessions.has(session.id);
     $(id).title = session
       ? session.owned
         ? `Close ${session.name} and stop its running work and agents`
@@ -1858,6 +1873,7 @@ async function openFolder() {
     if (!cwd) return;
     text($('new-session'), 'Opening…');
     const result = await api.createSession({cwd});
+    pendingReplacement = undefined;
     await selectOpenedSession(result.id);
   } catch (error) {
     showError(error);
@@ -1868,26 +1884,52 @@ async function openFolder() {
   }
 }
 async function startSession(submission) {
-  const cwd = snapshot()?.session.cwd;
-  if (creating || !api || !cwd) return;
+  const session = snapshot()?.session;
+  if (creating || closingSessions.size || !api?.closeSession) return;
+  const retrying =
+    pendingReplacement &&
+    (!submission || submission.id === pendingReplacement.id);
+  const replacement =
+    (retrying && pendingReplacement) ||
+    (session && {
+      id: session.id,
+      cwd: session.cwd,
+      submission,
+    });
+  if (!replacement) return;
   saveDraft();
+  saveConversationDisclosures();
   creating = 'session';
   $('app-error').hidden = true;
   renderSessionActions();
   try {
-    const result = await api.createSession({cwd});
-    if (submission) clearSubmittedDraft(submission.id, submission.draft);
+    if (!retrying) {
+      closingSessions.add(replacement.id);
+      render();
+      await api.closeSession(replacement.id);
+      pendingReplacement = replacement;
+      const version = snapshotVersion;
+      const hub = await api.getState();
+      if (version === snapshotVersion) receive(hub);
+      workspaceCache.delete(replacement.id);
+      pausedActivity.delete(replacement.id);
+    }
+    const result = await api.createSession({cwd: replacement.cwd});
+    pendingReplacement = undefined;
+    const submitted = replacement.submission;
+    if (submitted) clearSubmittedDraft(submitted.id, submitted.draft);
     await selectOpenedSession(result.id);
   } catch (error) {
     showError(error);
   } finally {
+    closingSessions.delete(replacement.id);
     creating = false;
-    renderSessionActions();
+    render();
   }
 }
 async function closeSession() {
   const id = state.sessionId;
-  if (!id || !api?.closeSession || closingSessions.has(id)) return;
+  if (creating || !id || !api?.closeSession || closingSessions.has(id)) return;
   saveDraft();
   saveConversationDisclosures();
   closingSessions.add(id);
@@ -2225,6 +2267,7 @@ const agentControls = initAgentControls({
     renderInspector();
   },
 });
+initModelDefaults({api});
 const appMenu = initAppMenu();
 const cleanupSessionHistory = initSessionHistory({
   api,

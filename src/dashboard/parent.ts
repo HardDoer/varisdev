@@ -375,7 +375,7 @@ export async function createDashboardParent(
     )
       throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
     if (model && (options.modelId !== undefined || model !== session.model))
-      await session.setModel(model, {persist: true});
+      await session.setModel(model);
     requireOpen();
     if (options.thinkingLevel !== undefined)
       session.setThinkingLevel(
@@ -459,8 +459,8 @@ export async function createDashboardParent(
       });
     await running.operation;
   };
-  // Pi refreshes model and effort before the next assistant turn. Its setters
-  // leave an active provider request alone and persist the new session settings.
+  // Pi refreshes model and effort before the next assistant turn. These changes
+  // belong only to this conversation; the menu edits startup defaults separately.
   const configurationAction = (options: SessionConfiguration) =>
     sessionAction(() => configure(options), true);
   return {

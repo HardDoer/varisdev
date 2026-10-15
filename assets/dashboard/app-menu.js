@@ -58,7 +58,6 @@ export function initAppMenu() {
   document.addEventListener('keydown', escape, true);
   return {
     place(hasSession) {
-      if (!hasSession) settings.hidden = true;
       start.hidden = closeSession.hidden = !hasSession;
       const slot = document.getElementById(
         hasSession ? 'inspector-actions' : 'welcome-actions',

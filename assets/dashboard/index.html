@@ -403,12 +403,12 @@
               </button>
               <button
                 id="open-session-settings"
-                aria-label="Model and settings"
-                title="Model and settings"
+                aria-label="Model defaults"
+                title="Select defaults when starting a new session"
                 class="quiet-button"
                 type="button"
               >
-                Model &amp; settings
+                Model defaults
               </button>
               <button
                 id="start-session"
@@ -1241,14 +1241,15 @@
     <dialog
       id="session-settings-dialog"
       aria-labelledby="session-settings-title"
+      aria-describedby="model-defaults-description"
     >
       <div class="dialog-heading">
-        <h2 id="session-settings-title">Model &amp; session</h2>
+        <h2 id="session-settings-title">Model defaults</h2>
         <button
           id="close-session-settings"
           class="quiet-button"
           type="button"
-          aria-label="Close model and session settings"
+          aria-label="Close model defaults"
         >
           ✕
         </button>
@@ -1262,20 +1263,44 @@
       >
         Accounts
       </button>
+      <p id="model-defaults-description">
+        Select defaults when starting a new session.
+      </p>
+      <p class="muted">
+        These are saved app defaults, not the selected session’s settings.
+        Existing and resumed sessions keep their own model and effort. Project
+        settings can override these defaults.
+      </p>
+      <p id="model-defaults-status" class="muted" role="status"></p>
       <form id="session-settings-form">
-        <label for="session-model">Model</label
+        <label for="session-model">Default model</label
         ><select id="session-model"></select>
-        <label for="session-thinking">Thinking level</label
+        <label for="session-thinking">Default thinking level (effort)</label
         ><select id="session-thinking"></select>
         <button
           id="apply-session-settings"
           class="primary-button"
           type="submit"
         >
-          Apply
+          Save defaults
         </button>
       </form>
-      <section class="session-maintenance">
+      <p id="model-defaults-error" class="form-error" role="alert" hidden></p>
+      <button
+        id="model-defaults-retry"
+        class="quiet-button"
+        type="button"
+        hidden
+      >
+        Retry loading defaults
+      </button>
+      <section id="session-maintenance" class="session-maintenance" hidden>
+        <h3>Current session</h3>
+        <p id="session-maintenance-name" class="muted"></p>
+        <p class="muted">
+          To change only this session’s model or effort, use /model or /thinking
+          in the prompt.
+        </p>
         <label for="compact-instructions"
           >Compaction instructions <span class="muted">optional</span></label
         >
@@ -1291,8 +1316,13 @@
             Reload skills &amp; extensions
           </button>
         </div>
+        <p
+          id="session-settings-error"
+          class="form-error"
+          role="alert"
+          hidden
+        ></p>
       </section>
-      <p id="session-settings-error" class="form-error" role="alert" hidden></p>
     </dialog>
     <dialog id="extension-dialog" aria-labelledby="extension-dialog-title">
       <form id="extension-dialog-form">

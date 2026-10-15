@@ -108,7 +108,6 @@ async function load(force = false, id = current?.session.id) {
       cache.set(id, result);
       if (selected()?.session.id === id) {
         renderCatalog();
-        renderSettings();
         renderSuggestions();
       }
       return result;
@@ -118,8 +117,6 @@ async function load(force = false, id = current?.session.id) {
       contextErrors.set(id, cause);
       if (selected()?.session.id === id) {
         $('commands-status').textContent = cause.message;
-        if ($('session-settings-dialog').open)
-          error($('session-settings-error'), cause);
       }
     })
     .finally(() => {
@@ -319,39 +316,6 @@ function renderSuggestions() {
   );
   container.hidden = suggestions.length === 0;
 }
-function renderSettings() {
-  const resource = features();
-  if (!resource) return;
-  const model = $('session-model');
-  const placeholder = node('option', '', 'Choose a model');
-  placeholder.value = '';
-  placeholder.disabled = true;
-  placeholder.selected = !resource.model;
-  model.replaceChildren(
-    ...(!resource.model ? [placeholder] : []),
-    ...resource.models.map(item => {
-      const option = node(
-        'option',
-        '',
-        `${item.name || item.id} · ${item.provider}`,
-      );
-      option.value = `${item.provider}/${item.id}`;
-      option.selected =
-        item.provider === resource.model?.provider &&
-        item.id === resource.model?.id;
-      return option;
-    }),
-  );
-  $('session-thinking').replaceChildren(
-    ...resource.thinkingLevels.map(level => {
-      const option = node('option', '', level);
-      option.value = level;
-      option.selected = level === resource.thinkingLevel;
-      return option;
-    }),
-  );
-  renderSettingsControls();
-}
 function canConfigureSession() {
   return (
     parentView &&
@@ -360,12 +324,9 @@ function canConfigureSession() {
   );
 }
 function renderSettingsControls() {
-  const resource = features();
-  const disabled = settingsBusy || !canConfigureSession() || !resource;
-  $('apply-session-settings').disabled = disabled || !$('session-model').value;
-  $('session-model').disabled = disabled || !resource?.models.length;
-  $('session-thinking').disabled = disabled || !resource?.thinkingLevels.length;
-  const idle = current?.session.status === 'idle';
+  $('session-maintenance').hidden = !parentView;
+  $('session-maintenance-name').textContent = current?.session.name || '';
+  const idle = parentView && current?.session.status === 'idle';
   $('compact-session').disabled = settingsBusy || !idle;
   $('reload-session').disabled =
     settingsBusy || !idle || !current?.session.owned;
@@ -383,15 +344,15 @@ async function updateSettings(action, requiresIdle = false) {
   const id = current.session.id;
   settingsBusy = true;
   $('session-settings-error').hidden = true;
-  renderSettings();
+  renderSettingsControls();
   try {
     await action(id);
     await load(true, id);
   } catch (cause) {
-    error($('session-settings-error'), cause);
+    if (current?.session.id === id) error($('session-settings-error'), cause);
   } finally {
     settingsBusy = false;
-    renderSettings();
+    renderSettingsControls();
   }
 }
 function renderExtensionUI(data) {
@@ -574,32 +535,6 @@ export function initSessionFeatures(options) {
     closeCommands();
   });
   $('command-search').addEventListener('input', renderCatalog);
-  $('open-session-settings').addEventListener('click', () => {
-    if (!parentView) return;
-    $('session-settings-error').hidden = true;
-    $('session-settings-dialog').showModal();
-    renderSettings();
-    void load(true);
-  });
-  $('close-session-settings').addEventListener('click', () =>
-    $('session-settings-dialog').close(),
-  );
-  $('session-model').addEventListener('change', renderSettingsControls);
-  $('session-settings-form').addEventListener('submit', event => {
-    event.preventDefault();
-    const model = features()?.models.find(
-      item => `${item.provider}/${item.id}` === $('session-model').value,
-    );
-    if (!model) return;
-    const thinkingLevel = $('session-thinking').value;
-    void updateSettings(id =>
-      api.configureSession(id, {
-        provider: model.provider,
-        modelId: model.id,
-        thinkingLevel,
-      }),
-    );
-  });
   $('compact-session').addEventListener(
     'click',
     () =>
@@ -669,11 +604,7 @@ export function initSessionFeatures(options) {
 export function renderSessionFeatures(data, options = {parent: true}) {
   parentView = !!data && options.parent;
   if (!parentView) {
-    for (const id of [
-      'commands-dialog',
-      'session-settings-dialog',
-      'extension-dialog',
-    ])
+    for (const id of ['commands-dialog', 'extension-dialog'])
       if ($(id).open) $(id).close();
     disposeTerminal();
     activeDialog = undefined;
@@ -685,10 +616,11 @@ export function renderSessionFeatures(data, options = {parent: true}) {
     clearTimeout(contextRefreshTimer);
     $('command-suggestions').hidden = true;
     $('open-commands').disabled = true;
-    $('open-session-settings').disabled = true;
+    renderSettingsControls();
     return;
   }
   const changedSession = current?.session.id !== data.session.id;
+  if (changedSession) $('session-settings-error').hidden = true;
   current = data;
   const conversation = JSON.stringify([
     data.session.id,
@@ -721,8 +653,7 @@ export function renderSessionFeatures(data, options = {parent: true}) {
   }
   const available = !!api?.sessionFeatures && data.session.status !== 'closed';
   $('open-commands').disabled = !available;
-  $('open-session-settings').disabled = !available;
-  if ($('session-settings-dialog').open) renderSettingsControls();
+  renderSettingsControls();
   renderContext();
   if (parentView) renderExtensionUI(data);
 }

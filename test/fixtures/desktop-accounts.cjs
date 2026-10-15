@@ -122,6 +122,10 @@ async function main() {
     if (level >= 3) errors.push(message);
   });
   handle('pidev:get-state', () => hub);
+  handle('varisdev:get-model-defaults', () => ({
+    models: [],
+    thinkingLevel: 'medium',
+  }));
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('varisdev:get-update-status', () => ({phase: 'idle'}));
   handle('varisdev:get-tool-models', getToolModels);

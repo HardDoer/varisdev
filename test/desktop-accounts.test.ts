@@ -10,6 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {DesktopAccounts, type AccountState} from '../src/desktop/accounts.ts';
+import {DesktopModelDefaults} from '../src/desktop/model-defaults.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 
 async function waitFor(check: () => boolean) {
@@ -153,6 +154,13 @@ void test(
       /Choose a model/,
     );
     await parent.configure({provider: 'openai', modelId: 'account-model'});
+    const defaults = new DesktopModelDefaults();
+    assert.equal((await defaults.get()).model, undefined);
+    await defaults.save({
+      provider: 'openai',
+      modelId: 'account-model',
+      thinkingLevel: 'off',
+    });
     const remembered = await createDashboardParent({cwd});
     parents.push(remembered);
     assert.deepEqual((await remembered.features()).model, {

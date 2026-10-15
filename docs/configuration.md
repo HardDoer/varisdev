@@ -6,7 +6,7 @@ For accounts, runtime settings, skills, and package commands, see [Pi's document
 
 ## Sessions
 
-Type **`/new`** in the parent composer and send it, or use **Menu → New session**, to start a fresh conversation in the current folder. The new parent starts with empty conversation history; the previous parent and its agents remain open. `/new` takes no arguments and does not require a selected model.
+Type **`/new`** in the parent composer and send it, or use **Menu → New session**, to start a fresh conversation in the current folder. The current parent closes and its running work and agents stop before the new parent opens with empty conversation history. Other open parents are unchanged. `/new` takes no arguments and does not require a selected model.
 
 Use **Menu → Resume session** to reopen a saved conversation in the current folder. Sessions appear newest first. Use **Choose folder** in the dialog to browse another folder's history.
 
@@ -16,7 +16,9 @@ Select a stopped or finished agent and click **Remove agent** to clear it from t
 
 ## Models
 
-Choose the parent model in **Menu → Model & settings**. VarisDev remembers your selection.
+Use **Menu → Model defaults** to select the model and thinking level for new sessions, then click **Save defaults**. The dialog shows saved app defaults, not the selected session's settings. Existing and resumed sessions keep their own choices; project settings can override app defaults.
+
+To change only the current session, send **`/model provider/model-id`** or **`/thinking high`** in its composer.
 
 ### llama.cpp
 
@@ -31,7 +33,7 @@ Adjust the directory, context size, and GPU options for your setup. Router mode 
 1. Open **Menu → Accounts**, select **llama.cpp**, and click **Connect server**.
 2. Enter the server URL, or leave it blank for `http://127.0.0.1:8080`. The API key is optional unless your server requires one.
 3. Send **`/llama`** in the parent composer. Select an unloaded model to load it, or a loaded model to unload it.
-4. Select a loaded model in **Menu → Model & settings**. Background agents can inherit it or use it through **Agent models**.
+4. Use **`/model llama.cpp/model-id`** to select a loaded model for the current session, or save it in **Menu → Model defaults** for new sessions. Background agents can inherit it or use it through **Agent models**.
 
 **Download model…** accepts a Hugging Face search or `owner/repository[:quantization]`. Select the repository and quantization; the server downloads the model. For gated repositories, grant access on Hugging Face and provide `HF_TOKEN` to the llama.cpp server. `HF_TOKEN` in VarisDev also authenticates its repository searches.
 
@@ -66,7 +68,7 @@ For a llama.cpp server at `http://127.0.0.1:8080`, add a provider like this to `
 
 Use the model ID reported by the server and a context size it supports. `local` is a placeholder for a server without authentication; replace it with your API key when required. For coding tools, use a model with tool calling support and enable the appropriate chat template in the server, such as llama.cpp's `--jinja` option.
 
-For Ollama, use `http://127.0.0.1:11434/v1` and its installed model tag, such as `llama3.1:8b`. After editing the configuration, open a new session and select the model in **Menu → Model & settings**.
+For Ollama, use `http://127.0.0.1:11434/v1` and its installed model tag, such as `llama3.1:8b`. After editing the configuration, choose the model in **Menu → Model defaults**, save, and start a new session.
 
 The **`/llama`** manager connects to the llama.cpp router configured above. Ollama and other custom providers use their own model management tools.
 
