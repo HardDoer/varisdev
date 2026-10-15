@@ -1119,12 +1119,6 @@ main > .welcome {
 .parent-controls textarea {
   font-size: 0.875rem;
 }
-.parent-controls form > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 9px;
-}
 .parent-controls .muted {
   flex: 1;
   font-size: 0.75rem;
@@ -1702,9 +1696,6 @@ dialog::backdrop {
   gap: 10px;
   margin-bottom: 9px;
 }
-.parent-controls form > .composer-heading {
-  margin-top: 0;
-}
 .composer-heading label {
   color: var(--text);
   font-size: 0.875rem;
@@ -1748,18 +1739,6 @@ dialog::backdrop {
   touch-action: none;
   background: transparent;
 }
-.composer-resize-handle::before {
-  content: '';
-  display: block;
-  width: 56px;
-  height: 4px;
-  margin: auto;
-  border-radius: 3px;
-  background: var(--mint);
-}
-.composer-resize-handle:hover {
-  background: var(--line);
-}
 .composer-resize-handle:focus-visible {
   outline: 2px solid var(--mint);
   outline-offset: 3px;
@@ -1774,9 +1753,11 @@ dialog::backdrop {
   font-size: 1rem;
 }
 .parent-controls .composer-actions {
+  display: flex;
   justify-content: end;
   align-items: center;
   gap: 8px;
+  margin-top: 9px;
 }
 #prompt-recipient {
   font-weight: 650;

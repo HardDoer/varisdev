@@ -1315,6 +1315,7 @@ async function main() {
             composer: rect(composer),
             panel: rect(panel),
             editor: rect(editor),
+            form: rect(document.getElementById('prompt-form')),
             send: rect(send),
             inspector: rect(inspector),
             overview: rect(overview),
@@ -1370,6 +1371,15 @@ async function main() {
         assert.ok(
           geometry.composer.top >= geometry.panel.bottom - 1,
           JSON.stringify(geometry),
+        );
+        assert.ok(
+          Math.abs(geometry.editor.left - geometry.form.left) <= 1 &&
+            Math.abs(geometry.editor.right - geometry.form.right) <= 1,
+          'Prompt field must fill the available form width',
+        );
+        assert.ok(
+          geometry.send.top >= geometry.editor.bottom,
+          'Prompt actions must sit below the field',
         );
         assert.ok(geometry.editor.height >= 40, JSON.stringify(geometry));
         assert.ok(
@@ -4366,9 +4376,15 @@ async function main() {
       const expanded = await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         const bounds = editor.getBoundingClientRect();
+        const form = document
+          .getElementById('prompt-form')
+          .getBoundingClientRect();
         return {
           font: parseFloat(getComputedStyle(editor).fontSize),
           fills: bounds.height > innerHeight * 0.5,
+          fillsWidth:
+            Math.abs(bounds.left - form.left) <= 1 &&
+            Math.abs(bounds.right - form.right) <= 1,
           fits:
             bounds.top >= 0 &&
             bounds.bottom <= innerHeight &&
@@ -4384,6 +4400,7 @@ async function main() {
       assert.deepEqual(expanded, {
         font: mainFont,
         fills: true,
+        fillsWidth: true,
         fits: true,
         open: true,
         hints: false,
