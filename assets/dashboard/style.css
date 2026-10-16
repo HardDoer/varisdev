@@ -10,6 +10,22 @@
   --cyan: #75d9ff;
   --amber: #ffcb7a;
   --red: #ff9397;
+  --violet: #d1b7ff;
+  --rose: #ffb4da;
+  --accent: var(--mint);
+  --link: var(--mint);
+  --heading: var(--text);
+  --code: var(--cyan);
+  --message-user: var(--cyan);
+  --message-assistant: var(--mint);
+  --action-read: var(--cyan);
+  --action-edit: var(--amber);
+  --action-command: var(--violet);
+  --action-web: var(--cyan);
+  --action-agent: var(--mint);
+  --action-media: var(--rose);
+  --diff-add: var(--mint);
+  --diff-remove: var(--red);
   --selection-bg: #b9e8ff;
   --selection-text: #102735;
   --selection-border: #75d9ff;
@@ -71,7 +87,7 @@ input:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
 a:focus-visible {
-  outline: 2px solid var(--mint);
+  outline: 2px solid var(--focus, var(--accent));
   outline-offset: 3px;
 }
 input,
@@ -96,7 +112,7 @@ h1 {
   font-weight: 650;
 }
 h1 span {
-  color: var(--mint);
+  color: var(--accent);
 }
 h2 {
   font-size: 1.25rem;
@@ -139,7 +155,7 @@ pre {
   left: 16px;
   top: -60px;
   z-index: 20;
-  background: var(--mint);
+  background: var(--accent);
   color: #071c19;
   padding: 10px;
 }
@@ -166,9 +182,9 @@ pre {
   font-size: 0.875rem;
 }
 .primary-button {
-  background: var(--mint);
+  background: var(--accent);
   color: #09281f;
-  border-color: var(--mint);
+  border-color: var(--accent);
   padding: 10px 16px;
   font-weight: 700;
 }
@@ -501,9 +517,9 @@ main > .welcome {
 }
 .effort-badge {
   padding: 4px 8px;
-  border: 1px solid var(--mint);
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  color: var(--mint);
+  color: var(--accent);
   font-size: 0.75rem;
   font-weight: 650;
   white-space: nowrap;
@@ -823,10 +839,10 @@ main > .welcome {
   overflow-wrap: anywhere;
 }
 #inspector[data-conversation-kind='parent'] {
-  --conversation-accent: var(--cyan);
+  --conversation-accent: var(--message-user);
 }
 #inspector[data-conversation-kind='agent'] {
-  --conversation-accent: var(--mint);
+  --conversation-accent: var(--action-agent);
 }
 #inspector[data-conversation-kind] .inspector-heading {
   background: linear-gradient(
@@ -880,8 +896,8 @@ main > .welcome {
   border-bottom: 2px solid transparent;
 }
 .inspector-tabs button[aria-selected='true'] {
-  color: var(--mint);
-  border-bottom-color: var(--mint);
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 .inspector-tabs span {
   color: var(--muted);
@@ -944,7 +960,7 @@ main > .welcome {
 }
 .feed-toolbar input {
   width: auto;
-  accent-color: var(--mint);
+  accent-color: var(--accent);
   vertical-align: middle;
 }
 .live-feed {
@@ -1405,32 +1421,33 @@ dialog::backdrop {
 }
 .conversation-message.user {
   border-left-width: 4px;
-  border-color: var(--cyan);
+  border-color: var(--message-user);
   background: var(--input, var(--panel));
 }
 .conversation-message[data-action='assistant'] {
   margin: 22px 0;
   padding: 18px 20px;
-  border-color: color-mix(in srgb, var(--mint) 65%, var(--line));
-  border-left: 5px solid var(--mint);
+  border-color: color-mix(in srgb, var(--message-assistant) 65%, var(--line));
+  border-left: 5px solid var(--message-assistant);
   background: linear-gradient(
     115deg,
-    color-mix(in srgb, var(--mint) 9%, var(--panel)),
+    color-mix(in srgb, var(--message-assistant) 9%, var(--panel)),
     var(--panel-raised)
   );
   box-shadow:
     0 4px 16px color-mix(in srgb, var(--bg) 45%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--mint) 8%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--message-assistant) 8%, transparent);
 }
 .conversation-message[data-action='assistant'] .conversation-message-header {
   padding-bottom: 10px;
   margin-bottom: 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--mint) 24%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--message-assistant) 24%, transparent);
 }
 .conversation-message[data-action='assistant']
   .conversation-message-header
   strong {
-  color: var(--mint);
+  color: var(--message-assistant);
   font-size: 1rem;
 }
 .conversation-message[data-action='assistant'] .conversation-text {
@@ -1441,23 +1458,29 @@ dialog::backdrop {
   font-size: 1rem;
   line-height: 1.7;
 }
-[data-action='user'],
-[data-action='read'],
-[data-action='web'] {
-  --action-color: var(--cyan);
+[data-action='user'] {
+  --action-color: var(--message-user);
 }
-[data-action='assistant'],
+[data-action='assistant'] {
+  --action-color: var(--message-assistant);
+}
+[data-action='read'] {
+  --action-color: var(--action-read);
+}
+[data-action='web'] {
+  --action-color: var(--action-web);
+}
 [data-action='agent'] {
-  --action-color: var(--mint);
+  --action-color: var(--action-agent);
 }
 [data-action='edit'] {
-  --action-color: var(--amber);
+  --action-color: var(--action-edit);
 }
 [data-action='command'] {
-  --action-color: var(--violet);
+  --action-color: var(--action-command);
 }
 [data-action='media'] {
-  --action-color: var(--rose);
+  --action-color: var(--action-media);
 }
 [data-action='tool'],
 [data-action='session'] {
@@ -1489,10 +1512,10 @@ dialog::backdrop {
   font-size: 0.75rem;
 }
 .conversation-message.user .conversation-message-header strong {
-  color: var(--cyan);
+  color: var(--message-user);
 }
 .conversation-streaming {
-  color: var(--mint);
+  color: var(--message-assistant);
   font-size: 0.75rem;
 }
 .conversation-notice,
@@ -1663,7 +1686,7 @@ dialog::backdrop {
   overflow: auto;
 }
 .steering-messages h3 {
-  color: var(--mint);
+  color: var(--accent);
   font-size: 0.875rem;
 }
 .steering-messages ol {
@@ -1672,7 +1695,7 @@ dialog::backdrop {
   list-style: none;
 }
 .steering-messages li {
-  border-left: 3px solid var(--mint);
+  border-left: 3px solid var(--accent);
   padding: 4px 10px;
   margin-top: 6px;
 }
@@ -1740,7 +1763,7 @@ dialog::backdrop {
   background: transparent;
 }
 .composer-resize-handle:focus-visible {
-  outline: 2px solid var(--mint);
+  outline: 2px solid var(--focus, var(--accent));
   outline-offset: 3px;
 }
 .parent-controls textarea {
@@ -1761,7 +1784,7 @@ dialog::backdrop {
 }
 #prompt-recipient {
   font-weight: 650;
-  color: var(--mint);
+  color: var(--message-assistant);
 }
 .mission-editor.editor-expanded {
   position: fixed;
@@ -2021,7 +2044,7 @@ dialog::backdrop {
 }
 .command-suggestion[aria-selected='true'] {
   background: var(--selected, var(--panel-raised));
-  color: var(--mint);
+  color: var(--accent);
 }
 .command-suggestion strong {
   min-width: 120px;
@@ -2063,7 +2086,7 @@ dialog::backdrop {
   justify-content: space-between;
 }
 .command-choice-title strong {
-  color: var(--mint);
+  color: var(--action-command);
   font-size: 1rem;
 }
 .command-description,
@@ -2185,7 +2208,7 @@ dialog::backdrop {
   display: block;
   height: 100%;
   width: var(--used, 0%);
-  background: var(--mint);
+  background: var(--accent);
 }
 .token-meter.over-budget i {
   background: var(--amber);
@@ -2250,17 +2273,6 @@ dialog::backdrop {
 .usage-metrics div:nth-child(4) dd {
   color: var(--red);
 }
-.token-budget-label {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 0.875rem;
-  margin-top: 16px;
-}
-.token-budget-label input {
-  max-width: 170px;
-  padding: 6px 9px;
-}
 .token-explanation {
   padding-left: 18px;
   font-size: 0.875rem;
@@ -2310,7 +2322,7 @@ dialog::backdrop {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--cyan);
+  color: var(--link);
 }
 .app-error {
   position: fixed;
@@ -2338,7 +2350,7 @@ dialog::backdrop {
   min-width: 780px;
 }
 select:focus-visible {
-  outline: 2px solid var(--mint);
+  outline: 2px solid var(--focus, var(--accent));
   outline-offset: 3px;
 }
 .usage-unit-label {
@@ -2376,7 +2388,7 @@ select:focus-visible {
   align-items: center;
   gap: 7px;
   white-space: nowrap;
-  color: var(--mint);
+  color: var(--status-running);
   font-size: 0.75rem;
 }
 .processing-state > i {
@@ -2389,7 +2401,7 @@ select:focus-visible {
   animation: processing-turn 0.9s linear infinite;
 }
 .processing-state.paused {
-  color: var(--amber);
+  color: var(--status-queued);
 }
 .processing-state.paused > i,
 .conversation-activity.paused .activity-dot {
@@ -2405,10 +2417,10 @@ select:focus-visible {
   align-items: center;
   gap: 9px;
   padding: 9px 12px;
-  border: 1px solid var(--mint);
+  border: 1px solid var(--status-running);
   border-radius: 14px 14px 3px 14px;
   background: var(--panel);
-  color: var(--mint);
+  color: var(--status-running);
   box-shadow: 0 4px 18px #0004;
   animation: processing-float 2.2s ease-in-out infinite;
 }
@@ -2581,7 +2593,7 @@ select:focus-visible {
 }
 .context-preview summary {
   cursor: pointer;
-  color: var(--mint);
+  color: var(--link);
 }
 .context-preview pre {
   max-height: 320px;
@@ -2608,12 +2620,12 @@ select:focus-visible {
   font-size: 0.8rem;
 }
 .composer-tab.selected {
-  border-bottom-color: var(--mint);
+  border-bottom-color: var(--accent);
   color: var(--text);
   background: var(--panel);
 }
 .composer-tab:hover {
-  color: var(--mint);
+  color: var(--accent);
 }
 
 #terminal-sessions {
@@ -2634,7 +2646,7 @@ select:focus-visible {
   margin-top: 6px;
 }
 .conversation-text a {
-  color: var(--mint);
+  color: var(--link);
   text-decoration: underline;
   cursor: pointer;
 }

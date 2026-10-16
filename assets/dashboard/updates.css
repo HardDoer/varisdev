@@ -1,6 +1,6 @@
 #updates-button {
   white-space: nowrap;
-  border-color: var(--mint);
+  border-color: var(--accent);
 }
 #updates-dialog {
   width: min(440px, calc(100vw - 48px));

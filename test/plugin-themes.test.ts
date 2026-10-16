@@ -102,7 +102,7 @@ void test('installed global and project packages expose declarative themes witho
   assert.equal(globalOnly.themes.length, 1);
 });
 
-void test('plugins can inherit every shipped theme', async t => {
+void test('plugins can inherit and override every shipped palette', async t => {
   const f = await fixture(t);
   await writeFile(
     join(f.plugin, 'package.json'),
@@ -114,7 +114,12 @@ void test('plugins can inherit every shipped theme', async t => {
   for (const theme of THEMES) {
     await writeFile(
       join(f.plugin, `themes/${theme.id}.json`),
-      JSON.stringify({id: theme.id, name: theme.name, base: theme.id}),
+      JSON.stringify({
+        id: theme.id,
+        name: theme.name,
+        base: theme.id,
+        colors: theme.colors,
+      }),
     );
   }
   const result = await loadPluginThemes(f);
@@ -122,6 +127,10 @@ void test('plugins can inherit every shipped theme', async t => {
   assert.deepEqual(
     result.themes.map(theme => theme.base),
     THEMES.map(theme => theme.id),
+  );
+  assert.deepEqual(
+    result.themes.map(theme => theme.colors),
+    THEMES.map(theme => theme.colors),
   );
 });
 

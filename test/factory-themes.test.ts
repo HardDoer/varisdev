@@ -60,6 +60,33 @@ void test('catalog includes green, warm dark, and varied light themes with compl
   }
 });
 
+void test('plugin role overrides inherit the base and take precedence over legacy palette overrides', () => {
+  const base = THEMES.find(theme => theme.id === 'dracula')!;
+  const plugin = pluginTheme({
+    base: base.id,
+    colors: {
+      mint: '#abcdef',
+      cyan: '#fedcba',
+      accent: '#112233',
+      'message-assistant': '#aabbcc',
+    },
+  });
+  assert.equal(plugin.colors.accent, '#112233');
+  assert.equal(plugin.colors['message-assistant'], '#aabbcc');
+  assert.equal(plugin.colors['action-agent'], '#abcdef');
+  assert.equal(plugin.colors['action-read'], '#fedcba');
+  assert.equal(plugin.colors.code, '#fedcba');
+  assert.equal(plugin.colors.link, '#fedcba');
+  assert.equal(pluginTheme({colors: {mint: '#abcdef'}}).colors.link, '#abcdef');
+  assert.equal(
+    pluginTheme({colors: {cyan: '#fedcba', link: '#112233'}}).colors.link,
+    '#112233',
+  );
+  assert.equal(plugin.colors['action-command'], base.colors['action-command']);
+  assert.equal(plugin.colors.heading, base.colors.heading);
+  assert.deepEqual(plugin.scenePalette.mint, [171 / 255, 205 / 255, 239 / 255]);
+});
+
 void test('shipped theme CSS matches the palette definitions', async () => {
   const css = await readFile(
     new URL('../assets/dashboard/themes.css', import.meta.url),
@@ -93,6 +120,20 @@ for (const theme of THEMES) {
       'red',
       'violet',
       'rose',
+      'accent',
+      'link',
+      'heading',
+      'code',
+      'message-user',
+      'message-assistant',
+      'action-read',
+      'action-edit',
+      'action-command',
+      'action-web',
+      'action-agent',
+      'action-media',
+      'diff-add',
+      'diff-remove',
       'status-running',
       'status-queued',
       'status-completed',
@@ -105,7 +146,7 @@ for (const theme of THEMES) {
         );
       }
     }
-    assert.ok(contrast(colors['accent-text'], colors.mint) >= 4.5);
+    assert.ok(contrast(colors['accent-text'], colors.accent) >= 4.5);
     assert.ok(
       contrast(colors['selection-text'], colors['selection-bg']) >= 4.5,
     );

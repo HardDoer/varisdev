@@ -98,7 +98,13 @@ Each file describes a palette and optionally a stylesheet:
   "id": "midnight",
   "name": "Midnight",
   "base": "nord",
-  "colors": {"bg": "#121c2b", "mint": "#a0f0d0", "focus": "#e9c989"},
+  "colors": {
+    "bg": "#121c2b",
+    "accent": "#a0f0d0",
+    "message-assistant": "#e9c989",
+    "action-command": "#c9a7e8",
+    "focus": "#e9c989"
+  },
   "stylesheet": "./midnight.css"
 }
 ```
@@ -106,6 +112,8 @@ Each file describes a palette and optionally a stylesheet:
 `base` is `factory`, `nord`, `dracula`, `catppuccin-mocha`, `forest`, `moss`, `kimbie-dark`, `solarized-light`, `mint-paper`, `glacier`, `rose-quartz`, or `high-contrast`. Omitted colors inherit from the base. Colors use six digit hex values. The interface palette also supplies matching factory colors; optional `scenePalette` overrides individual scene colors.
 
 Available interface colors are `bg`, `panel`, `panel-raised`, `input`, `line`, `text`, `muted`, `mint`, `cyan`, `amber`, `red`, `violet`, `rose`, `focus`, `accent-text`, `hover`, `selected`, `selection-bg`, `selection-text`, `selection-border`, `status-running`, `status-queued`, `status-completed`, `danger`, `scene`, `scene-glow`, and `page-glow`.
+
+Role colors are `accent` (buttons and active controls), `link`, `heading`, `code`, `message-user`, `message-assistant`, `action-read`, `action-edit`, `action-command`, `action-web`, `action-agent`, `action-media`, `diff-add`, and `diff-remove`. These can vary independently. `accent-text` is the text on filled accent buttons. Legacy named palette overrides provide role defaults; explicit role colors take precedence. Links use a legacy `cyan` override before `mint`.
 
 Scene overrides are `floor`, `edge`, `dark`, `metal`, `shell`, `white`, `mint`, `cyan`, `amber`, `red`, `dim`, `screen`, `selection`, `running`, `queued`, and `completed`.
 

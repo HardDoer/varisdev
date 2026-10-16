@@ -61,6 +61,12 @@
 .visualization-markdown > :last-child {
   margin-bottom: 0;
 }
+.visualization-markdown code {
+  color: var(--code);
+}
+.visualization-markdown .markdown-link {
+  color: var(--link);
+}
 .visualization-markdown pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -73,7 +79,7 @@
 }
 .visualization-progress progress {
   max-width: 100%;
-  accent-color: var(--mint);
+  accent-color: var(--accent);
 }
 .visualization-errors {
   color: var(--muted);

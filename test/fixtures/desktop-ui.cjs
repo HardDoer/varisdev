@@ -4216,7 +4216,7 @@ async function main() {
   );
 
   await run(
-    'Tokens shows measured input output cache cost zero usage and a visual budget',
+    'Tokens shows measured input output cache cost zero usage and context usage',
     async () => {
       hub.sessions[0].session.context = {
         tokens: 3200,
@@ -4332,39 +4332,6 @@ async function main() {
         },
       );
       assert.match(counts.call, /Requested bash/);
-      await evaluate(() => {
-        const target = document.getElementById('token-budget');
-        target.value = '1500';
-        target.dispatchEvent(new Event('input', {bubbles: true}));
-      });
-      assert.deepEqual(
-        await evaluate(() => {
-          const meter = document.getElementById('token-budget-meter');
-          return {
-            visible: !meter.hidden,
-            over: meter.classList.contains('over-budget'),
-            used: meter.getAttribute('aria-valuenow'),
-            max: meter.getAttribute('aria-valuemax'),
-            width: meter.style.getPropertyValue('--used'),
-          };
-        }),
-        {visible: true, over: true, used: '2000', max: '1500', width: '100%'},
-      );
-      await evaluate(() => {
-        const target = document.getElementById('token-budget');
-        target.value = '4000';
-        target.dispatchEvent(new Event('input', {bubbles: true}));
-      });
-      assert.deepEqual(
-        await evaluate(() => {
-          const meter = document.getElementById('token-budget-meter');
-          return {
-            over: meter.classList.contains('over-budget'),
-            width: meter.style.getPropertyValue('--used'),
-          };
-        }),
-        {over: false, width: '50%'},
-      );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
         for (const [width, height] of [
           [1100, 760],
@@ -4402,7 +4369,6 @@ async function main() {
           cost: document.getElementById('usage-cost').textContent,
           contextHidden: document.getElementById('usage-context-section')
             .hidden,
-          target: document.getElementById('token-budget').value,
           call: document.querySelector('#usage-calls .usage-call-link')
             .textContent,
         })),
@@ -4411,7 +4377,6 @@ async function main() {
           totals: [3000, 100, 150, 50, 3300],
           cost: '$0.0123',
           contextHidden: true,
-          target: '',
           call: 'Requested read',
         },
       );
@@ -4436,9 +4401,8 @@ async function main() {
           ),
           contextHidden: document.getElementById('usage-context-section')
             .hidden,
-          target: document.getElementById('token-budget').value,
         })),
-        {total: 2000, contextHidden: false, target: '4000'},
+        {total: 2000, contextHidden: false},
       );
       hub.sessions[0].usage = {
         input: 0,
@@ -4479,11 +4443,7 @@ async function main() {
           context: '0',
         },
       );
-      assert.deepEqual(
-        calls,
-        [],
-        'Viewing usage and setting a budget must stay local',
-      );
+      assert.deepEqual(calls, [], 'Viewing usage must stay local');
     },
   );
 
@@ -4629,6 +4589,20 @@ async function main() {
   await run(
     'menu theme selector is visible and applies and remembers every palette',
     async () => {
+      hub.sessions[0].conversation.push(
+        ...['read', 'edit', 'browse', 'agent_spawn', 'openai_image'].map(
+          toolName => ({
+            id: `theme-${toolName}`,
+            role: 'tool',
+            toolName,
+            at,
+            input: 'src/example.ts',
+            text: 'Completed',
+            status: 'completed',
+          }),
+        ),
+      );
+      await publish();
       await evaluate(() => {
         if (!document.getElementById('app-menu-panel').matches(':popover-open'))
           document.getElementById('app-menu-button').click();
@@ -4641,11 +4615,42 @@ async function main() {
       assert.equal(themes.length, 12);
       const backgrounds = new Set();
       for (const id of themes) {
-        const result = await evaluate(id => {
+        const result = await evaluate(async id => {
+          const {THEMES} = await import('./themes.js');
+          const colors = THEMES.find(theme => theme.id === id).colors;
           const select = document.getElementById('factory-theme');
           select.value = id;
           select.dispatchEvent(new Event('change', {bubbles: true}));
+          const roles = [
+            ['#new-session', 'backgroundColor', 'accent'],
+            ['#tab-conversation', 'color', 'accent'],
+            ['.inspector-heading h2', 'color', 'heading'],
+            [
+              "#conversation [data-action='user'] strong",
+              'color',
+              'message-user',
+            ],
+            [
+              "#conversation [data-action='assistant'] strong",
+              'color',
+              'message-assistant',
+            ],
+            ...['read', 'edit', 'command', 'web', 'agent', 'media'].map(
+              action => [
+                `#conversation [data-action='${action}'] .action-label`,
+                'color',
+                `action-${action}`,
+              ],
+            ),
+          ];
           return {
+            roles: roles.map(([selector, property, role]) => ({
+              role,
+              actual: getComputedStyle(document.querySelector(selector))[
+                property
+              ],
+              expected: `rgb(${[1, 3, 5].map(offset => parseInt(colors[role].slice(offset, offset + 2), 16)).join(', ')})`,
+            })),
             selected: document.documentElement.dataset.theme,
             visible:
               select.getBoundingClientRect().height > 0 &&
@@ -4658,6 +4663,8 @@ async function main() {
         assert.equal(result.selected, id);
         assert.equal(result.stored, id);
         assert.equal(result.visible, true);
+        for (const {role, actual, expected} of result.roles)
+          assert.equal(actual, expected, `${id}: ${role}`);
         backgrounds.add(result.background);
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
           await screenshot(`theme-${id}`);

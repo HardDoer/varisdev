@@ -1,10 +1,9 @@
-/* global document, localStorage */
+/* global document */
 const $ = id => document.getElementById(id);
 const number = value => new Intl.NumberFormat().format(value || 0);
 const cost = value => `$${(value || 0).toFixed(4)}`;
 let current;
 let reveal;
-const targets = new Map();
 const selectedUnits = new Map();
 let latest;
 
@@ -21,38 +20,12 @@ function meter(id, used, limit) {
   element.setAttribute('aria-valuemax', String(limit || 1));
   element.classList.toggle('over-budget', limit > 0 && used > limit);
 }
-function budget() {
-  if (!current) return;
-  const target = targets.get(current.session.id) || 0;
-  $('token-budget-meter').hidden = !target;
-  $('token-budget-description').hidden = !target;
-  meter('token-budget-meter', current.usage?.totalTokens || 0, target);
-  setText(
-    'token-budget-description',
-    `${number(current.usage?.totalTokens)} of ${number(target)} tokens · visual target only`,
-  );
-}
 export function initUsage(onReveal) {
   reveal = onReveal;
   $('usage-unit').addEventListener('change', () => {
     if (!latest) return;
     selectedUnits.set(latest.session.id, $('usage-unit').value);
     renderUsage(latest);
-  });
-  $('token-budget').addEventListener('input', () => {
-    if (!current) return;
-    const value = Number($('token-budget').value);
-    const target = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-    targets.set(current.session.id, target);
-    try {
-      localStorage.setItem(
-        `varisdev-token-target:${current.session.id}`,
-        String(target),
-      );
-    } catch {
-      // Targets remain available for this window when storage is unavailable.
-    }
-    budget();
   });
 }
 export function renderUsage(snapshot) {
@@ -90,21 +63,6 @@ export function renderUsage(snapshot) {
   $('usage-context-section').hidden = !!worker;
   const changedSession = current?.session.id !== data.session.id;
   current = data;
-  if (changedSession) {
-    let target = targets.get(data.session.id);
-    if (target === undefined) {
-      try {
-        target =
-          Number(
-            localStorage.getItem(`varisdev-token-target:${data.session.id}`),
-          ) || 0;
-      } catch {
-        target = 0;
-      }
-      targets.set(data.session.id, target);
-    }
-    $('token-budget').value = target > 0 ? String(target) : '';
-  }
   const usage = data.usage || {};
   const context = data.session.context;
   setText('usage-recipient', `Model usage for ${data.session.name}`);
@@ -193,5 +151,4 @@ export function renderUsage(snapshot) {
   $('usage-empty').hidden = calls.length > 0;
   $('usage-table').hidden = calls.length === 0;
   $('usage-truncated').hidden = !usage.truncated;
-  budget();
 }

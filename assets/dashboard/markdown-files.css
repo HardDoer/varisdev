@@ -29,15 +29,15 @@
   cursor: grabbing;
 }
 #markdown-heading:focus-visible {
-  outline: 2px solid var(--mint);
+  outline: 2px solid var(--focus);
   outline-offset: 4px;
 }
 #markdown-panel[data-locked='true'] #markdown-heading {
   cursor: default;
 }
 #markdown-lock[aria-pressed='true'] {
-  color: var(--mint);
-  border-color: var(--mint);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 #markdown-resize {
   position: absolute;
@@ -66,7 +66,7 @@
   opacity: 0.3;
 }
 #markdown-updated {
-  color: var(--mint);
+  color: var(--accent);
   font-size: 11px;
 }
 #markdown-updated.is-updated {
@@ -74,12 +74,12 @@
 }
 @keyframes markdown-update {
   from {
-    background: var(--mint);
+    background: var(--accent);
     color: var(--bg);
   }
   to {
     background: transparent;
-    color: var(--mint);
+    color: var(--accent);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -154,8 +154,8 @@
   font-size: 12px;
 }
 #markdown-tabs [aria-selected='true'] {
-  border-color: var(--mint);
-  color: var(--mint);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 #markdown-document {
   display: flex;
@@ -207,12 +207,12 @@
   flex-shrink: 0;
   margin-top: 12px;
   font-size: 12px;
-  color: var(--mint);
+  color: var(--accent);
 }
 #markdown-progress progress {
   width: 95px;
   height: 8px;
-  accent-color: var(--mint);
+  accent-color: var(--accent);
 }
 #markdown-disk-status,
 #markdown-error,
@@ -260,6 +260,7 @@
 #markdown-preview h6 {
   margin: 18px 0 8px;
   line-height: 1.35;
+  color: var(--heading);
 }
 #markdown-preview > :first-child {
   margin-top: 0;
@@ -293,7 +294,7 @@
   height: 14px;
   padding: 0;
   margin: 0 8px 0 0;
-  accent-color: var(--mint);
+  accent-color: var(--accent);
   opacity: 1;
 }
 #markdown-preview code {
@@ -301,7 +302,7 @@
     12px/1.6 Menlo,
     Consolas,
     monospace;
-  color: var(--cyan);
+  color: var(--code);
 }
 #markdown-preview pre {
   overflow-x: auto;
@@ -313,7 +314,7 @@
 #markdown-preview blockquote {
   margin: 12px 0;
   padding-left: 12px;
-  border-left: 3px solid var(--mint);
+  border-left: 3px solid var(--heading);
   color: var(--muted);
 }
 #markdown-preview hr {
@@ -321,5 +322,5 @@
   border-top: 1px solid var(--line);
 }
 .markdown-link {
-  color: var(--cyan);
+  color: var(--link);
 }
