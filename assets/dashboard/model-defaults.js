@@ -1,6 +1,6 @@
 /* global document */
 
-export function initModelDefaults({api}) {
+export function initModelDefaults({api, selected}) {
   const $ = id => document.getElementById(id);
   const dialog = $('session-settings-dialog');
   let state;
@@ -136,21 +136,33 @@ export function initModelDefaults({api}) {
     if (busy || $('apply-session-settings').disabled) return;
     const model = selectedModel();
     if (!model) return;
+    // Keep the target fixed if selection changes while defaults are being saved.
+    const current = selected?.()?.session;
+    const target =
+      current?.controllable && current.status !== 'closed'
+        ? {id: current.id, name: current.name}
+        : undefined;
+    const configuration = {
+      provider: model.provider,
+      modelId: model.id,
+      thinkingLevel: draft.thinkingLevel,
+    };
+    let saved = false;
     busy = true;
     failure = message = '';
     renderControls();
     try {
-      receive(
-        await api.saveModelDefaults({
-          provider: model.provider,
-          modelId: model.id,
-          thinkingLevel: draft.thinkingLevel,
-        }),
-      );
-      message =
-        'Defaults saved for new sessions. Existing sessions are unchanged.';
+      receive(await api.saveModelDefaults(configuration));
+      saved = true;
+      if (target) await api.configureSession(target.id, configuration);
+      message = target
+        ? `Defaults saved and applied to ${target.name}. Other open sessions are unchanged.`
+        : 'Defaults saved for new sessions.';
     } catch (error) {
-      failure = error.message || String(error);
+      const detail = error.message || String(error);
+      failure = saved
+        ? `Defaults saved, but could not apply them to ${target.name}: ${detail}`
+        : detail;
     } finally {
       busy = false;
       renderControls();

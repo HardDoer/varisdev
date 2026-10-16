@@ -22,7 +22,7 @@ Set `VARISDEV_SETTINGS_DIR` to use another global configuration directory. No ex
 
 Use **Menu → Accounts** to connect providers. For server setup, see Pi's [custom models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) and [llama.cpp](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/llama-cpp.md) documentation.
 
-Use **Menu → Model defaults → Save defaults** to choose the model and thinking level for new sessions. Existing and resumed sessions keep their own choices. The dialog's **Current session** controls apply only to the selected parent.
+Use **Menu → Model defaults → Save defaults** to save the model and thinking level for new sessions and immediately apply both to the selected open session. Other open sessions and saved conversations keep their own choices. The dialog's **Current session** controls apply only to the selected parent.
 
 ### Agent models
 

@@ -31,6 +31,8 @@ let resumeError;
 let modelDefaults;
 let defaultsError;
 let defaultsSaveError;
+let defaultsSaveGate;
+let configurationError;
 let recentProjects;
 
 function features() {
@@ -154,7 +156,11 @@ function reset() {
     },
   ];
   recentProjects = [directory, join(directory, 'other-project')];
-  defaultsError = defaultsSaveError = undefined;
+  defaultsError =
+    defaultsSaveError =
+    defaultsSaveGate =
+    configurationError =
+      undefined;
   modelDefaults = {
     model: {provider: 'fixture-other', id: 'large'},
     thinkingLevel: 'high',
@@ -287,15 +293,17 @@ ipcMain.handle('fixture:model-defaults', (_event, ...args) => {
   if (defaultsError) throw new Error(defaultsError);
   return modelDefaults;
 });
-ipcMain.handle('fixture:save-model-defaults', (_event, request) => {
+ipcMain.handle('fixture:save-model-defaults', async (_event, request) => {
   calls.push({method: 'saveModelDefaults', request});
   if (defaultsSaveError) throw new Error(defaultsSaveError);
+  await defaultsSaveGate?.promise;
   modelDefaults.model = {provider: request.provider, id: request.modelId};
   modelDefaults.thinkingLevel = request.thinkingLevel;
   return modelDefaults;
 });
 ipcMain.handle('fixture:configure', (_event, sessionId, request) => {
   calls.push({method: 'configureSession', sessionId, request});
+  if (configurationError) throw new Error(configurationError);
   const resource = resources.get(sessionId);
   resource.model = {provider: request.provider, id: request.modelId};
   resource.thinkingLevel = request.thinkingLevel;
@@ -2437,7 +2445,7 @@ async function main() {
   );
 
   await run(
-    'menu model defaults stay independent of idle, working, selected and closed sessions',
+    'menu model defaults apply to the selected idle or working session and also save without an open session',
     async () => {
       await evaluate(() =>
         document.getElementById('open-session-settings').click(),
@@ -2463,7 +2471,8 @@ async function main() {
           model: 'fixture-other/large',
           thinking: 'high',
           title: 'Model defaults',
-          description: 'Select defaults when starting a new session.',
+          description:
+            'Save defaults and apply them to the selected open session.',
           save: 'Save defaults',
           compact: true,
         },
@@ -2492,9 +2501,16 @@ async function main() {
           () => !document.getElementById('apply-session-settings').disabled,
           'Save did not finish',
         );
-        assert.deepEqual(calls.at(-1), {method: 'saveModelDefaults', request});
+        assert.deepEqual(calls.slice(-2), [
+          {method: 'saveModelDefaults', request},
+          {method: 'configureSession', sessionId: 'alpha', request},
+        ]);
         assert.equal(hub.sessions[0].session.model, 'fixture/small');
-        assert.equal(hub.sessions[0].session.thinkingLevel, 'medium');
+        assert.equal(
+          hub.sessions[0].session.thinkingLevel,
+          request.thinkingLevel,
+        );
+        assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
         assert.deepEqual(
           await evaluate(() => ({
             model: document.getElementById('factory-model').textContent,
@@ -2503,9 +2519,9 @@ async function main() {
           })),
           {
             model: 'fixture/small',
-            effort: 'Effort: medium',
+            effort: `Effort: ${request.thinkingLevel}`,
             saved:
-              'Defaults saved for new sessions. Existing sessions are unchanged.',
+              'Defaults saved and applied to Alpha factory. Other open sessions are unchanged.',
           },
         );
       }
@@ -2556,6 +2572,8 @@ async function main() {
         'Save error missing',
       );
       assert.equal(modelDefaults.thinkingLevel, 'high');
+      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
+      assert.equal(calls.at(-1).method, 'saveModelDefaults');
       assert.equal(
         await evaluate(() => document.getElementById('session-thinking').value),
         'low',
@@ -2569,6 +2587,8 @@ async function main() {
         'Save retry failed',
       );
       assert.equal(modelDefaults.thinkingLevel, 'low');
+      assert.equal(hub.sessions[1].session.thinkingLevel, 'low');
+      assert.equal(hub.sessions[0].session.thinkingLevel, 'high');
       hub.sessions = [];
       await publish();
       assert.deepEqual(
@@ -2586,6 +2606,30 @@ async function main() {
           disabled: false,
           maintenance: true,
         },
+      );
+      const before = calls.length;
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Saving without a session did not finish',
+      );
+      assert.deepEqual(calls.slice(before), [
+        {
+          method: 'saveModelDefaults',
+          request: {
+            provider: 'fixture',
+            modelId: 'small',
+            thinkingLevel: 'low',
+          },
+        },
+      ]);
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('model-defaults-status').textContent,
+        ),
+        'Defaults saved for new sessions.',
       );
       await evaluate(() =>
         document.getElementById('close-session-settings').click(),
@@ -2619,7 +2663,115 @@ async function main() {
       await evaluate(() =>
         document.getElementById('close-session-settings').click(),
       );
-      assert.ok(calls.every(call => call.method !== 'configureSession'));
+      assert.deepEqual(
+        calls
+          .filter(call => call.method === 'configureSession')
+          .map(call => call.sessionId),
+        ['alpha', 'alpha', 'beta'],
+      );
+    },
+  );
+
+  await run(
+    'model defaults initialize a blank session, pin the save target and report apply failures separately',
+    async () => {
+      delete hub.sessions[0].session.model;
+      hub.sessions[0].session.thinkingLevel = 'off';
+      hub.sessions[0].session.status = 'idle';
+      delete resources.get('alpha').model;
+      resources.get('alpha').thinkingLevel = 'off';
+      await publish();
+      await evaluate(() =>
+        document.getElementById('open-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Defaults did not load for the blank session',
+      );
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () =>
+          !document.getElementById('apply-session-settings').disabled &&
+          document.getElementById('factory-effort').textContent ===
+            'Effort: high',
+        'Defaults did not reach the model-less selected session',
+      );
+      assert.equal(hub.sessions[0].session.model, 'fixture-other/large');
+      assert.equal(hub.sessions[0].session.thinkingLevel, 'high');
+      assert.equal(hub.sessions[1].session.model, 'fixture/small');
+      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
+
+      defaultsSaveGate = Promise.withResolvers();
+      await evaluate(() => {
+        const thinking = document.getElementById('session-thinking');
+        thinking.value = 'low';
+        thinking.dispatchEvent(new Event('change'));
+        document.getElementById('apply-session-settings').click();
+        [...document.querySelectorAll('#parents button')]
+          .find(item => item.textContent.includes('Beta factory'))
+          .click();
+      });
+      defaultsSaveGate.resolve();
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Delayed defaults save did not finish',
+      );
+      assert.equal(calls.at(-1).sessionId, 'alpha');
+      assert.equal(hub.sessions[0].session.thinkingLevel, 'low');
+      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-effort').textContent,
+        ),
+        'Effort: medium',
+      );
+
+      configurationError = 'Authentication is not configured for this model.';
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('model-defaults-error').hidden,
+        'Apply failure was not reported',
+      );
+      assert.equal(modelDefaults.thinkingLevel, 'low');
+      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
+      assert.match(
+        await evaluate(
+          () => document.getElementById('model-defaults-error').textContent,
+        ),
+        /Defaults saved, but could not apply them to Beta factory: .*Authentication/,
+      );
+      configurationError = undefined;
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () =>
+          !document.getElementById('apply-session-settings').disabled &&
+          document.getElementById('model-defaults-error').hidden,
+        'Retrying the apply failure did not succeed',
+      );
+      assert.equal(hub.sessions[1].session.model, 'fixture-other/large');
+      assert.equal(hub.sessions[1].session.thinkingLevel, 'low');
+      hub.sessions[1].session.status = 'closed';
+      hub.sessions[1].session.controllable = false;
+      await publish();
+      const before = calls.length;
+      await evaluate(() =>
+        document.getElementById('apply-session-settings').click(),
+      );
+      await until(
+        () => !document.getElementById('apply-session-settings').disabled,
+        'Saving with a closed selection did not finish',
+      );
+      assert.equal(calls.length, before + 1);
+      assert.equal(calls.at(-1).method, 'saveModelDefaults');
+      await evaluate(() =>
+        document.getElementById('close-session-settings').click(),
+      );
     },
   );
 

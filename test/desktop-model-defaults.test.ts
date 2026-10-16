@@ -168,6 +168,34 @@ void test('missing defaults do not select a model and unavailable saved defaults
   assert.equal((await service.get()).thinkingLevel, 'high');
 });
 
+void test('saved defaults can immediately initialize a selected model-less session without changing other parents', async t => {
+  const {cwd, parents, settings, service} = await fixture(t);
+  const selected = await createDashboardParent({cwd});
+  parents.push(selected);
+  const other = await createDashboardParent({cwd});
+  parents.push(other);
+  assert.equal(selected.state.snapshot().session.model, undefined);
+  assert.equal(selected.state.snapshot().session.thinkingLevel, 'off');
+  const configuration = {provider, modelId: 'reasoning', thinkingLevel: 'high'};
+  await service.save(configuration);
+  await selected.configure(configuration);
+  assert.equal(
+    selected.state.snapshot().session.model,
+    `${provider}/reasoning`,
+  );
+  assert.equal(selected.state.snapshot().session.thinkingLevel, 'high');
+  assert.equal((await selected.features()).thinkingLevel, 'high');
+  assert.equal(selected.restartSnapshot().thinkingLevel, 'high');
+  assert.equal(other.state.snapshot().session.model, undefined);
+  assert.equal(other.state.snapshot().session.thinkingLevel, 'off');
+  assert.equal(settings().defaultModel, 'reasoning');
+  assert.equal(settings().defaultThinkingLevel, 'high');
+  const next = await createDashboardParent({cwd});
+  parents.push(next);
+  assert.equal(next.state.snapshot().session.model, `${provider}/reasoning`);
+  assert.equal(next.state.snapshot().session.thinkingLevel, 'high');
+});
+
 void test('new parents use saved defaults while live and resumed selections stay independent', async t => {
   const {cwd, parents, settings, service} = await fixture(t);
   const initial = {provider, modelId: 'reasoning', thinkingLevel: 'high'};

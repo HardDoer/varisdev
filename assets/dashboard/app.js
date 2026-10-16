@@ -2283,7 +2283,7 @@ const agentControls = initAgentControls({
     renderInspector();
   },
 });
-initModelDefaults({api});
+initModelDefaults({api, selected: snapshot});
 const appMenu = initAppMenu();
 const recentProjects = initRecentProjects({api, open: openFolder});
 const cleanupSessionHistory = initSessionHistory({
