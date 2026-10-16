@@ -23,8 +23,6 @@ contextBridge.exposeInMainWorld('pidev', {
       throw new TypeError('Zoom must be between 25% and 500%.');
     webFrame.setZoomFactor(factor);
   },
-  getModelDefaults: () => invoke('varisdev:get-model-defaults'),
-  saveModelDefaults: input => invoke('varisdev:save-model-defaults', input),
   getToolSettings: sessionId => invoke('varisdev:get-tool-settings', sessionId),
   saveToolSettings: (section, value, sessionId) =>
     invoke('varisdev:save-tool-settings', section, value, sessionId),

@@ -890,7 +890,7 @@ void test('workspace diff includes staged, unstaged and untracked files without 
   assert.equal(await readFile(join(cwd, 'tracked.txt'), 'utf8'), 'working\n');
 });
 
-void test('native feature controls allow live configuration and keep maintenance idle-only', async t => {
+void test('native feature controls stay live during compaction and keep reload idle-only', async t => {
   const current = controlledParent('features', process.cwd());
   const catalog = features();
   catalog.commands.push({
@@ -912,7 +912,9 @@ void test('native feature controls allow live configuration and keep maintenance
   };
   current.parent.compact = async instructions => {
     actions.push(instructions);
+    current.parent.state.updateSession({status: 'compacting'});
     await compacting.promise;
+    current.parent.state.updateSession({status: 'idle'});
   };
   current.parent.reload = async () => {
     actions.push('reload');
@@ -929,7 +931,6 @@ void test('native feature controls allow live configuration and keep maintenance
     'skill:build',
   );
   await hub.configureSession('features', {thinkingLevel: 'high'});
-  await assert.rejects(hub.compactSession('features'), /idle/);
   await assert.rejects(hub.reloadSession('features'), /idle/);
   assert.equal(hub.snapshot().sessions[0].session.status, 'running');
   current.runs[0].resolve();
@@ -948,16 +949,22 @@ void test('native feature controls allow live configuration and keep maintenance
     hub.configureSession('features', {unknown: true}),
     /Unknown/,
   );
+  await assert.rejects(
+    hub.configureSession('features', {persist: true}),
+    /Choose/,
+  );
+  await assert.rejects(
+    hub.configureSession('features', {thinkingLevel: 'high', persist: 'yes'}),
+    /boolean/,
+  );
+
   const compact = hub.compactSession('features', ' Keep decisions ');
-  await assert.rejects(
-    hub.promptSession('features', {prompt: 'During compaction'}),
-    /updating/,
-  );
+  await hub.promptSession('features', {prompt: '/model fixture/model'});
+  await until(() => current.runs.length === 2);
+  current.runs[1].resolve();
+  current.parent.state.updateSession({status: 'compacting'});
   await assert.rejects(hub.reloadSession('features'), /idle/);
-  await assert.rejects(
-    hub.configureSession('features', {thinkingLevel: 'high'}),
-    /idle/,
-  );
+  await hub.configureSession('features', {thinkingLevel: 'high'});
   compacting.resolve();
   await compact;
   await hub.reloadSession('features');
@@ -965,6 +972,7 @@ void test('native feature controls allow live configuration and keep maintenance
     {thinkingLevel: 'high'},
     {provider: 'fixture', modelId: 'model', thinkingLevel: 'high'},
     'Keep decisions',
+    {thinkingLevel: 'high'},
     'reload',
   ]);
   await assert.rejects(hub.sessionFeatures('missing'), /Unknown/);
@@ -1015,6 +1023,30 @@ void test('native extension dialogs appear in hub snapshots and receive validate
   );
   assert.ok(changes >= 2);
   assert.equal(current.runs.length, 1);
+  const thinking = current.parent.ui.selectThinking({
+    currentLevel: 'off',
+    availableLevels: ['off', 'high'],
+    defaultLevel: 'high',
+  });
+  await until(
+    () => !!hub.snapshot().sessions[0].ui!.dialogs[0]?.actions?.length,
+  );
+  const selector = hub.snapshot().sessions[0].ui!.dialogs[0];
+  assert.deepEqual(
+    selector.actions?.map(action => action.id),
+    ['default', 'session'],
+  );
+  for (const invalid of [
+    {action: 'unknown'},
+    {action: 'default', extra: true},
+    {action: 1},
+  ])
+    await assert.rejects(
+      hub.respondToDialog('dialogs', selector.id, invalid),
+      /action/,
+    );
+  await hub.respondToDialog('dialogs', selector.id, {action: 'default'});
+  assert.deepEqual(await thinking, {thinkingLevel: 'off', persist: true});
   current.parent.ui.context.addAutocompleteProvider(provider => provider);
   const editorId = hub.snapshot().sessions[0].ui!.extensionEditor!.id;
   await hub.respondToDialog('dialogs', editorId, 'Current draft');

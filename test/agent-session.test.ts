@@ -31,6 +31,7 @@ import {
 import {DashboardState} from '../src/dashboard/state.ts';
 import type {ModelUsage} from '../src/usage.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
+import {saveToolSettings} from '../src/tools/settings.ts';
 
 function toolContext(ctx: ExtensionContext): ExtensionToolContext {
   return Object.assign(ctx, {
@@ -760,12 +761,16 @@ void test(
         },
       ],
     });
+    await saveToolSettings('agents', {
+      allowedModels: ['openai-codex/gpt-5.6-sol'],
+    });
     const ctx = {
       cwd,
       hasUI: false,
       model: registry.find('openai-codex', 'gpt-5.6-sol')!,
       modelRegistry: registry,
       isIdle: () => true,
+      isProjectTrusted: () => false,
       sessionManager: {getSessionId: () => 'messaging-parent'},
     } as unknown as ExtensionContext;
     const executeCtx = toolContext(ctx);

@@ -1,32 +1,13 @@
 import type {AnyModel, Provider} from '@earendil-works/pi-ai';
 import {
-  ModelRuntime,
-  type CreateAgentSessionOptions,
+  type ModelRuntime,
   type ExtensionContext,
-  type LoadExtensionsResult,
 } from '@earendil-works/pi-coding-agent';
-import {join} from 'node:path';
 
 const VIRTUAL_MODEL_API = 'pi-virtual';
 
 function isVirtualModel(model: AnyModel): boolean {
   return model.api === VIRTUAL_MODEL_API;
-}
-
-/**
- * Register virtual models early enough for initial model selection.
- *
- * Pi normally drains this queue when it binds a session. VarisDev resolves the
- * startup model before then, so its parent and worker setup call this helper
- * immediately after creating their ModelRuntime instead.
- */
-export function flushPendingVirtualModelRegistrations(
-  extensionRuntime: LoadExtensionsResult['runtime'],
-  modelRuntime: Pick<ModelRuntime, 'registerVirtualModel'>,
-): void {
-  for (const {definition} of extensionRuntime.pendingVirtualModelRegistrations)
-    modelRuntime.registerVirtualModel(definition);
-  extensionRuntime.pendingVirtualModelRegistrations = [];
 }
 
 function providerIds(
@@ -67,6 +48,7 @@ function bridgeProvider(
     // composed there. Optional deferred operations remain on the native view.
     refreshModels: undefined,
     auth: {
+      ...provider.auth,
       apiKey: {
         name: 'Parent session',
         async check() {
@@ -118,42 +100,4 @@ export function registerParentModelProviders(
     registered.push(providerId);
   }
   return registered;
-}
-
-/**
- * Create a worker-local runtime backed by every configured parent provider.
- *
- * Virtual definitions are registered separately from the worker's ResourceLoader
- * so their route callbacks receive the worker ExtensionContext. Parent-only
- * inline virtual factories must therefore also be supplied to the worker loader;
- * Pi does not expose registered route definitions through ModelRegistry.
- * Copying all configured physical catalogs lets routes cross providers.
- */
-export async function createWorkerModelRuntime(
-  modelRegistry: ExtensionContext['modelRegistry'],
-  model: NonNullable<CreateAgentSessionOptions['model']>,
-  directory: string,
-): Promise<ModelRuntime> {
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(directory, 'auth.json'),
-    modelsPath: null,
-    refreshOnCreate: false,
-  });
-  const registered = registerParentModelProviders(modelRegistry, modelRuntime);
-
-  // A virtual selection is supplied only by the worker's extension queue. Its
-  // provider may intentionally have no physical catalog to bridge.
-  if (model.api !== VIRTUAL_MODEL_API && !registered.includes(model.provider)) {
-    throw new Error(`Parent model provider is unavailable: ${model.provider}`);
-  }
-
-  // registerNativeProvider refreshes asynchronously. Establish a deterministic
-  // local availability snapshot before createAgentSession validates/restores.
-  if (registered.length > 0) {
-    await modelRuntime.refresh({
-      allowNetwork: false,
-      providers: registered,
-    });
-  }
-  return modelRuntime;
 }

@@ -1,6 +1,5 @@
-import {join} from 'node:path';
-import {getAgentDir, type ModelRuntime} from '@earendil-works/pi-coding-agent';
-import {createDesktopModelRuntime} from '../llama.ts';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {createGlobalModelRuntime} from './model-runtime.ts';
 import {
   readToolSettings,
   saveToolSettings,
@@ -16,6 +15,7 @@ export interface ToolSettingsModel {
 export interface ToolSettingsState {
   settings: ToolSettings;
   models: ToolSettingsModel[];
+  diagnostics?: string[];
 }
 
 interface ToolSettingsDependencies {
@@ -28,6 +28,7 @@ interface ToolSettingsDependencies {
 /** Tool preferences use the selected session's registry, including extensions. */
 export class DesktopToolSettings {
   private runtime?: Promise<Pick<ModelRuntime, 'refresh' | 'getModels'>>;
+  private readonly diagnostics = new Set<string>();
   private saving: Promise<unknown> = Promise.resolve();
   private readonly dependencies: ToolSettingsDependencies;
 
@@ -40,18 +41,17 @@ export class DesktopToolSettings {
     if (sessionId !== undefined) {
       models = (await this.dependencies.sessionFeatures(sessionId)).models;
     } else {
-      this.runtime ??= (
-        this.dependencies.createRuntime
-          ? this.dependencies.createRuntime()
-          : createDesktopModelRuntime({
-              authPath: join(getAgentDir(), 'auth.json'),
-              modelsPath: join(getAgentDir(), 'models.json'),
-              allowModelNetwork: false,
-            })
-      ).catch(error => {
-        this.runtime = undefined;
-        throw error;
-      });
+      if (!this.runtime) {
+        this.diagnostics.clear();
+        this.runtime = (
+          this.dependencies.createRuntime
+            ? this.dependencies.createRuntime()
+            : createGlobalModelRuntime(message => this.diagnostics.add(message))
+        ).catch(error => {
+          this.runtime = undefined;
+          throw error;
+        });
+      }
       const runtime = await this.runtime;
       await runtime.refresh({allowNetwork: false});
       models = runtime.getModels();
@@ -61,7 +61,13 @@ export class DesktopToolSettings {
 
   async getToolSettings(sessionId?: string): Promise<ToolSettingsState> {
     const models = await this.models(sessionId);
-    return {settings: await readToolSettings(), models};
+    return {
+      settings: await readToolSettings(),
+      models,
+      ...(sessionId === undefined && this.diagnostics.size
+        ? {diagnostics: [...this.diagnostics]}
+        : {}),
+    };
   }
 
   saveToolSettings(
@@ -70,7 +76,8 @@ export class DesktopToolSettings {
     sessionId?: string,
   ): Promise<ToolSettingsState> {
     const operation = this.saving.then(async () => {
-      const {settings, models} = await this.getToolSettings(sessionId);
+      const {settings, models, diagnostics} =
+        await this.getToolSettings(sessionId);
       const known = new Set(
         models.map(model => `${model.provider}/${model.id}`),
       );
@@ -100,7 +107,11 @@ export class DesktopToolSettings {
         }
       }
       await saveToolSettings(section, value);
-      return {settings: await readToolSettings(), models};
+      return {
+        settings: await readToolSettings(),
+        models,
+        ...(diagnostics ? {diagnostics} : {}),
+      };
     });
     this.saving = operation.catch(() => {});
     return operation;

@@ -15,7 +15,7 @@ import {
   createNavigationReceiver,
 } from './native-commands.js';
 import {initToolSettings} from './tool-settings.js';
-import {initModelDefaults} from './model-defaults.js';
+import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
 import {initSessionHistory} from './session-history.js';
 import {initRecentProjects} from './recent-projects.js';
@@ -1841,6 +1841,13 @@ async function selectOpenedSession(id) {
 }
 function renderSessionActions() {
   const session = snapshot()?.session;
+  $('open-session-settings').disabled =
+    !api?.promptSession ||
+    !session ||
+    !canControl(session) ||
+    session.status === 'closed' ||
+    stopping.has(session.id) ||
+    closingSessions.has(session.id);
   recentProjects.setBusy(Boolean(creating));
   for (const id of ['new-session', 'welcome-create'])
     $(id).disabled = Boolean(creating);
@@ -1999,6 +2006,9 @@ async function sendPrompt(event) {
     return;
   saveDraft();
   const submitted = {...promptDrafts.get(id)};
+  const command = parseSlashCommand(prompt);
+  const native = command && nativeCommand(command.name);
+  let animated = false;
   sending.add(id);
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
@@ -2014,16 +2024,19 @@ async function sendPrompt(event) {
       return;
     }
     if (!(await toolSettings.beforePrompt(prompt))) return;
-    if (session.status === 'idle') {
+    if (!native && session.status === 'idle') {
       if (stopEffectSession === id) clearStopEffect();
       (scene || fallbackScene)?.prompt(id);
+      animated = true;
     }
     await api.promptSession(id, {prompt});
-    pausedActivity.delete(id);
-    if (stopEffectSession === id) clearStopEffect();
+    if (!native) {
+      pausedActivity.delete(id);
+      if (stopEffectSession === id) clearStopEffect();
+    }
     clearSubmittedDraft(id, submitted);
   } catch (error) {
-    (scene || fallbackScene)?.cancelPrompt(id);
+    if (animated) (scene || fallbackScene)?.cancelPrompt(id);
     if (id === state.sessionId) showError(error, $('prompt-error'));
     else showError(error);
   } finally {
@@ -2351,7 +2364,25 @@ const agentControls = initAgentControls({
     renderInspector();
   },
 });
-initModelDefaults({api, selected: snapshot});
+$('open-session-settings').addEventListener('click', async () => {
+  const session = snapshot()?.session;
+  if (
+    !api?.promptSession ||
+    !session ||
+    !canControl(session) ||
+    session.status === 'closed' ||
+    stopping.has(session.id) ||
+    closingSessions.has(session.id)
+  )
+    return;
+  selectUnit('parent');
+  $('app-error').hidden = true;
+  try {
+    await api.promptSession(session.id, {prompt: '/model'});
+  } catch (error) {
+    showError(error);
+  }
+});
 const appMenu = initAppMenu();
 const recentProjects = initRecentProjects({api, open: openFolder});
 const cleanupSessionHistory = initSessionHistory({

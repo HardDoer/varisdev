@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {copyFile, mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
@@ -56,7 +56,7 @@ void test('app catalog reads Pi models and refreshes local custom models', async
   });
   const initial = await service.getToolSettings();
   assert.deepEqual(initial.settings, {
-    agents: {allowedModels: null},
+    agents: {allowedModels: []},
     commit: {model: null, thinkingLevel: null},
   });
   assert.ok(initial.models.some(model => model.provider === 'openai'));
@@ -69,11 +69,57 @@ void test('app catalog reads Pi models and refreshes local custom models', async
   const refreshed = await service.getToolSettings();
   assert.ok(refreshed.models.some(model => model.id === 'local/two'));
   assert.ok(!refreshed.models.some(model => model.id === 'local/one'));
+  await service.saveToolSettings('agents', {
+    allowedModels: ['desktop-fixture/local/two'],
+  });
   const saved = await service.saveToolSettings('commit', {
     model: 'desktop-fixture/local/two',
     thinkingLevel: 'medium',
   });
   assert.equal(saved.settings.commit.model, 'desktop-fixture/local/two');
+});
+
+void test('healthy global extension models remain selectable with extension diagnostics', async t => {
+  const {directory} = await fixture(t);
+  await mkdir(join(directory, 'extensions'));
+  await copyFile(
+    new URL('./fixtures/global-model-catalog.js', import.meta.url),
+    join(directory, 'extensions', 'catalog.js'),
+  );
+  await writeFile(
+    join(directory, 'extensions', 'broken.js'),
+    'export default () => { throw new Error("Broken catalog extension"); };',
+  );
+  const service = new DesktopToolSettings({
+    sessionFeatures: async sessionId => {
+      assert.equal(sessionId, 'session');
+      return {models: [first]};
+    },
+  });
+  const ids = ['global-extension/physical', 'global-extension-router/route'];
+  const initial = await service.getToolSettings();
+  assert.match(
+    initial.diagnostics?.join('\n') ?? '',
+    /Broken catalog extension/,
+  );
+  const catalog = initial.models;
+  for (const id of ids)
+    assert.ok(catalog.some(model => `${model.provider}/${model.id}` === id));
+  await service.saveToolSettings('agents', {allowedModels: ids});
+  for (const model of ids) {
+    const saved = await service.saveToolSettings('commit', {
+      model,
+      thinkingLevel: 'high',
+    });
+    assert.equal(saved.settings.commit.model, model);
+    assert.deepEqual(saved.diagnostics, initial.diagnostics);
+  }
+  const selected = await service.getToolSettings('session');
+  assert.deepEqual(selected.models, [first]);
+  assert.equal(selected.diagnostics, undefined);
+  const persisted = await readToolSettings();
+  assert.deepEqual(persisted.agents.allowedModels, ids);
+  assert.equal(persisted.commit.model, ids[1]);
 });
 
 void test('session extension IDs and live saved settings are returned', async t => {
@@ -149,6 +195,10 @@ void test('commit selection and agent allowlist stay consistent across saves', a
   );
   await assert.rejects(
     service.saveToolSettings('agents', {allowedModels: [secondId]}, 'session'),
+  );
+  await assert.rejects(
+    service.saveToolSettings('agents', {allowedModels: []}, 'session'),
+    /Commit settings first/,
   );
   assert.equal((await readToolSettings()).commit.model, firstId);
   assert.deepEqual((await readToolSettings()).agents.allowedModels, [firstId]);
@@ -228,5 +278,33 @@ void test('stale session errors propagate without using the app catalog or savin
     service.saveToolSettings('agents', {allowedModels: [firstId]}, 'closed'),
     /Unknown parent session/,
   );
-  assert.equal((await readToolSettings()).agents.allowedModels, null);
+  assert.deepEqual((await readToolSettings()).agents.allowedModels, []);
+});
+
+void test('desktop settings start empty and persist clearing explicit model choices', async t => {
+  const {service} = await fixture(t);
+  assert.deepEqual(
+    (await service.getToolSettings('session')).settings.agents.allowedModels,
+    [],
+  );
+  await service.saveToolSettings(
+    'agents',
+    {allowedModels: [firstId, secondId]},
+    'session',
+  );
+  const saved = await service.saveToolSettings(
+    'agents',
+    {allowedModels: []},
+    'session',
+  );
+  assert.deepEqual(saved.settings.agents.allowedModels, []);
+  assert.deepEqual((await readToolSettings()).agents.allowedModels, []);
+  await assert.rejects(
+    service.saveToolSettings(
+      'commit',
+      {model: firstId, thinkingLevel: null},
+      'session',
+    ),
+    /No agent models selected.*Menu → Agent models/,
+  );
 });

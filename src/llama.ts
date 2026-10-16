@@ -4,6 +4,7 @@ import {
   getPackageDir,
   ModelRuntime,
   type CreateModelRuntimeOptions,
+  type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import type {Provider} from '@earendil-works/pi-ai';
 
@@ -74,12 +75,17 @@ export function llamaModules(): Promise<LlamaModules> {
   return modules;
 }
 
+/** Let Pi load its provider and command under the builtin:llama.cpp resource. */
+export const officialLlamaExtension: ExtensionFactory = async pi => {
+  const extension = await import(
+    pathToFileURL(join(getPackageDir(), 'dist/extensions/llama/index.js')).href
+  );
+  await extension.default(pi);
+};
+
+/** Provider extensions are registered by Pi's services after resource selection. */
 export async function createDesktopModelRuntime(
   options: CreateModelRuntimeOptions,
 ): Promise<ModelRuntime> {
-  const runtime = await ModelRuntime.create(options);
-  const {createLlamaProvider} = await llamaModules();
-  runtime.registerNativeProvider(createLlamaProvider().provider);
-  await runtime.refresh({providers: [LLAMA_PROVIDER], allowNetwork: false});
-  return runtime;
+  return ModelRuntime.create(options);
 }

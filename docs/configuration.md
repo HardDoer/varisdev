@@ -8,22 +8,22 @@ Commands, accounts, models, settings, skills, prompts, and packages work as in P
 
 Type `/` in the conversation composer or open **Commands**. Built-in commands are handled by VarisDev, not sent to the model as prompts. Extensions retain their Pi command handlers and arguments; their supported UI requests use the same desktop dialog wrapper.
 
-| Commands | Desktop behavior |
-| --- | --- |
-| `/thinking [level]`, `/model [provider/model]` | Open a selection dialog when no argument is supplied; otherwise apply the value directly to this session. |
-| `/settings` | Open session settings with current values and native selectors. This is separate from **Model defaults**, which configures new sessions. |
-| `/scoped-models` | Configure the session's model selection scope, not the background-agent model allowlist. |
-| `/login [provider]`, `/logout [provider]` | Open account management. Authentication and sign-out remain explicit user actions. |
-| `/new`, `/resume` | Use the desktop session creation and saved-session workflows. |
-| `/name [name]`, `/session` | Rename the session or show its information in a dialog. |
-| `/tree`, `/fork`, `/clone`, `/import [path]` | Navigate conversation branches, fork or duplicate a conversation, or import a saved JSONL session. |
-| `/compact [instructions]`, `/reload` | Compact context or reload resources. |
-| `/copy`, `/export [path]` | Copy the last assistant message or export HTML/JSONL. |
-| `/share`, `/bug [description]` | Review sharing or private Pi bug-report details before explicitly authorizing an upload. Provider/service credentials or GitHub CLI authentication may be required. |
-| `/trust` | Save project trust for future sessions. |
-| `/hotkeys`, `/changelog`, `/quit` | Show desktop shortcuts, read the bundled Pi changelog, or confirm application exit. |
+| Commands                                        | Desktop behavior                                                                                                                                                    |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/thinking [level]`, `/model [model or search]` | Open Pi's selector, or apply an exact match to this session.                                                                                                        |
+| `/settings`                                     | Open session settings with current values and selectors.                                                                                                            |
+| `/scoped-models`                                | Configure the session's model selection scope, not the background-agent model allowlist.                                                                            |
+| `/login [provider]`, `/logout [provider]`       | Open account management. Authentication and sign-out remain explicit user actions.                                                                                  |
+| `/new`, `/resume`                               | Use the desktop session creation and saved-session workflows.                                                                                                       |
+| `/name [name]`, `/session`                      | Rename the session or show its information in a dialog.                                                                                                             |
+| `/tree`, `/fork`, `/clone`, `/import [path]`    | Navigate conversation branches, fork or duplicate a conversation, or import a saved JSONL session.                                                                  |
+| `/compact [instructions]`, `/reload`            | Compact context or reload resources.                                                                                                                                |
+| `/copy`, `/export [path]`                       | Copy the last assistant message or export HTML/JSONL.                                                                                                               |
+| `/share`, `/bug [description]`                  | Review sharing or private Pi bug-report details before explicitly authorizing an upload. Provider/service credentials or GitHub CLI authentication may be required. |
+| `/trust`                                        | Save project trust for future sessions.                                                                                                                             |
+| `/hotkeys`, `/changelog`, `/quit`               | Show desktop shortcuts, read the bundled Pi changelog, or confirm application exit.                                                                                 |
 
-Cancelling a picker leaves its value unchanged. Model and thinking changes affect the next model request, not an already-streaming response. Branch changes and other session maintenance require the session to be idle. Terminal appearance settings are not desktop themes; VarisDev's appearance is controlled through **Menu → Theme**.
+Model and thinking changes take effect on the next model request. `/reload` requires an idle session. Branch changes stop active work when applied. Terminal appearance settings are not desktop themes; VarisDev's appearance is controlled through **Menu → Theme**.
 
 ## Settings directory
 
@@ -43,11 +43,13 @@ Set `VARISDEV_SETTINGS_DIR` to use another global configuration directory. No ex
 
 Use **Menu → Accounts** to connect providers. For server setup, see Pi's [custom models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) and [llama.cpp](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/llama-cpp.md) documentation.
 
-Use **Menu → Model defaults → Save defaults** to save the model and thinking level for new sessions and immediately apply both to the selected open session. Other open sessions and saved conversations keep their own choices. The dialog's **Current session** controls apply only to the selected parent.
+**Menu → Model** runs `/model`. Pi's selector provides **Apply to session** and **Make as default**. Applying changes the current session; making it the default also saves the choice for new sessions. Use `/thinking` to change effort.
+
+For sessions attached from a terminal, open picker dialogs in that terminal. Exact `/model provider/model` and `/thinking level` commands also work from the desktop.
 
 ### Agent models
 
-**Menu → Agent models** controls which models background agents may use. All registered models are allowed by default; choose **Only selected models** to restrict them.
+**Menu → Agent models** controls which models background agents may use. Select the allowed models; fresh settings start with none selected.
 
 Agents inherit the parent's model and reasoning level unless explicitly configured. The inherited model must also be allowed. Restrictions apply across projects, including queued and resumed agents. Changes refresh the agent tool's advertised choices before the next turn, including during an ongoing run; no new session is needed. Running workers keep their current model.
 
@@ -69,11 +71,11 @@ Request parameters or these environment variables override saved choices:
 
 ## Desktop storage
 
-| Platform | Default directory |
-| --- | --- |
-| macOS | `~/Library/Application Support/VarisDev/` |
-| Windows | `%LOCALAPPDATA%/VarisDev/` |
-| Linux | `$XDG_DATA_HOME/varisdev/`, or `~/.local/share/varisdev/` |
+| Platform | Default directory                                         |
+| -------- | --------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/VarisDev/`                 |
+| Windows  | `%LOCALAPPDATA%/VarisDev/`                                |
+| Linux    | `$XDG_DATA_HOME/varisdev/`, or `~/.local/share/varisdev/` |
 
 `VARISDEV_DATA_DIR` overrides this directory. It holds desktop preferences, logs, and downloaded application updates.
 

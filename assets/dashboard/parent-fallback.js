@@ -9,6 +9,7 @@ import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
 import {createFactoryVisitors} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
+import {drawCleanupBot} from './robot-cleanup.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
@@ -36,16 +37,19 @@ const rotate = (p, yaw) => [
 
 // The shared activity geometry uses x forward, y up, and z across the arms.
 // Project those same primitives into the icon instead of maintaining SVG props.
-function primitives(shapes, originX, ground = 0, yaw = 0) {
+function primitives(shapes, originX, ground = 0, yaw = 0, home = null) {
   const world = p => {
     const q = rotate(p, yaw);
     q[1] += ground;
     return q;
   };
-  const project = p => [
-    originX + p[0] * 6 + p[2] * 20,
-    143 - p[1] * 23 - p[0] * 4 + p[2] * 3,
-  ];
+  const project = p =>
+    home
+      ? [
+          home.x + (p[0] * 0.3 - p[2] * 0.9) * home.unit,
+          home.y - p[1] * home.unit + p[2] * home.unit * 0.1,
+        ]
+      : [originX + p[0] * 6 + p[2] * 20, 143 - p[1] * 23 - p[0] * 4 + p[2] * 3];
   const depth = p => p[0] + p[1] * 0.6 - p[2] * 0.5;
   const path = (points, color, stroke = null, width = 0, shade = 0) => {
     const vertices = points.map(world);
@@ -109,7 +113,12 @@ function primitives(shapes, originX, ground = 0, yaw = 0) {
     polygon(top, color);
   };
   const rod = (a, b, radius, color) =>
-    path([a, b], color, color, Math.max(0.6, radius * 40));
+    path(
+      [a, b],
+      color,
+      color,
+      Math.max(0.6, radius * (home ? home.unit * 2 : 40)),
+    );
   const ring = (p, radius, thickness, color, emission = 0, segments = 28) => {
     for (let i = 0; i < segments; i++) {
       const at = j => [
@@ -162,6 +171,7 @@ export function createParentFallback(container) {
   }
   const floorEffects = effectLayer('robot-floor-effects');
   const debrisEffects = effectLayer('robot-debris-effects');
+  const cleanupEffects = effectLayer('robot-cleanup-effects');
   const overlay = document.createElementNS(NS, 'svg');
   overlay.setAttribute('class', 'robot-whip-overlay');
   overlay.setAttribute('aria-hidden', 'true');
@@ -213,6 +223,8 @@ export function createParentFallback(container) {
       session?.id,
       whipTargets().map(element => element.dataset.unitId),
       Boolean(reaction) ||
+        damage.pose('parent').surprise > 0 ||
+        damage.pose('parent').flinch > 0 ||
         damage.pose('parent').phase !== 'alive' ||
         damage.pose('parent').offset.some(value => Math.abs(value) > 0.025) ||
         visitors.isAway(session?.id) ||
@@ -242,6 +254,7 @@ export function createParentFallback(container) {
   let lastTime = null;
   let time = 0;
   let reaction = null;
+  let damagedParentPose = null;
   let visible = true;
   let identity = factoryIdentity('');
 
@@ -297,11 +310,31 @@ export function createParentFallback(container) {
   function clearCaneStyle(element) {
     if (!element) return;
     if (element === robot) element.removeAttribute('transform');
-    for (const property of ['left', 'top', 'rotate', 'clip-path', 'visibility'])
+    for (const property of [
+      'left',
+      'top',
+      'rotate',
+      'clip-path',
+      'visibility',
+      '--damage-eye-height',
+    ])
       element.style.removeProperty(property);
-    element.classList.remove('robot-damage-body');
-    delete element.dataset.damage;
-    delete element.dataset.damagePhase;
+    element.classList.remove(
+      'robot-damage-body',
+      'robot-cane-surprised',
+      'robot-damage-corpse',
+    );
+    for (const key of [
+      'damage',
+      'damagePhase',
+      'damageSurprise',
+      'damageFlinch',
+      'damageCollapse',
+      'cleanupPhase',
+      'damageVisible',
+      'corpseOffset',
+    ])
+      delete element.dataset[key];
   }
 
   function clearDamageVisuals() {
@@ -313,13 +346,7 @@ export function createParentFallback(container) {
     clearCaneStyle(robot);
     floorEffects.remove();
     debrisEffects.remove();
-  }
-
-  function settleDamage() {
-    // Hidden scenes must never resume with an invisible, half-replaced unit.
-    damage.setMotion(false);
-    damage.setMotion(motion);
-    clearDamageVisuals();
+    cleanupEffects.remove();
   }
 
   const effectPath = (d, fill, stroke = C.dark, width = 0.8) => ({
@@ -446,7 +473,8 @@ export function createParentFallback(container) {
   function applyDamage() {
     const bounds = container.getBoundingClientRect();
     const floors = [],
-      fragments = [];
+      fragments = [],
+      cleanupShapes = [];
     const activeIds = new Set(agents.map(agent => agent.id));
     const elements = new Map([['parent', robot]]);
     for (const station of container.querySelectorAll(
@@ -528,55 +556,62 @@ export function createParentFallback(container) {
       element.dataset.damage = String(number(pose.damage));
       element.dataset.damagePhase = pose.phase;
       element.style.visibility = pose.visible ? '' : 'hidden';
-      const [x, y, z] = pose.offset;
-      const angle =
-        ((pose.rotation[0] - pose.rotation[2] * 0.35) * 180) / Math.PI;
+      const collapse = pose.collapse || 0;
+      const corpse = ['exploding', 'wrecked', 'cleanup'].includes(pose.phase);
+      element.dataset.damageSurprise = String(number(pose.surprise || 0));
+      element.dataset.damageFlinch = String(number(pose.flinch || 0));
+      element.dataset.damageCollapse = String(number(collapse));
+      element.dataset.cleanupPhase = pose.cleanup?.phase || '';
+      element.dataset.damageVisible = String(pose.visible);
+      element.dataset.corpseOffset = (pose.corpseOffset || [0, 0, 0])
+        .map(number)
+        .join(',');
+      element.classList.toggle(
+        'robot-cane-surprised',
+        !corpse && pose.surprise > 0,
+      );
+      element.classList.toggle('robot-damage-corpse', corpse);
+      element.style.setProperty(
+        '--damage-eye-height',
+        `${number(3 + (pose.surprise || 0) * 5)}px`,
+      );
+      const [x, y, z] = pose.offset.map(
+        (value, axis) => value + (pose.corpseOffset?.[axis] || 0),
+      );
+      const angle = corpse
+        ? collapse * 90
+        : ((pose.rotation[0] - pose.rotation[2] * 0.35) * 180) / Math.PI;
+      const radians = (angle * Math.PI) / 180;
+      const floorShift = (width, height) =>
+        (height -
+          Math.abs(width * Math.sin(radians)) -
+          Math.abs(height * Math.cos(radians))) /
+        2;
       const rise =
         pose.phase === 'replacing'
           ? Math.max(0, Math.min(1, 1 + pose.lift / 3.4))
           : 1;
       if (element === robot) {
         const dx = (x * 0.3 - z * 0.9) * 23,
-          dy = -y * 23 + (1 - rise) * local.height;
+          dy =
+            -y * 23 +
+            (1 - rise) * local.height +
+            floorShift(local.width, local.height);
         element.setAttribute(
           'transform',
           `translate(${number(dx)} ${number(dy)}) rotate(${number(angle)} ${number(local.x + local.width / 2)} ${number(local.y + local.height / 2)})`,
         );
       } else {
         element.style.left = `${number((x * 0.3 - z * 0.9) * unit)}px`;
-        element.style.top = `${number(-y * unit + (1 - rise) * rect.height)}px`;
+        element.style.top = `${number(-y * unit + (1 - rise) * rect.height + floorShift(rect.width, rect.height))}px`;
         element.style.rotate = `${number(angle)}deg`;
       }
       if (rise < 1)
         element.style.clipPath = `inset(0 0 ${number((1 - rise) * 100)}% 0)`;
       if (pose.phase === 'replacing') drawHatch(floors, visual.home, pose.door);
-      if (motion && pose.blast > 0 && pose.phaseAge < 0.45) {
-        const progress = pose.phaseAge / 0.45;
-        const fade = Math.min(pose.blast, 1 - progress);
-        const cx = visual.home.x + (x * 0.3 - z * 0.9) * unit;
-        const cy = visual.home.y - (1.6 + y) * unit + z * unit * 0.1;
-        const radius = (0.3 + progress * 1.7) * unit;
-        fragments.push({
-          ...effectPath(
-            `M${number(cx - radius)} ${number(cy)} a${number(radius)} ${number(radius)} 0 1 0 ${number(radius * 2)} 0 a${number(radius)} ${number(radius)} 0 1 0 ${number(-radius * 2)} 0`,
-            'none',
-            C.amber,
-            Math.max(1.2, unit * 0.08),
-          ),
-          opacity: fade * 0.65,
-        });
-        const core = (0.45 - progress * 0.3) * unit;
-        const points = Array.from({length: 12}, (_, i) => {
-          const r = core * (i % 2 ? 0.5 : 1);
-          return [
-            cx + Math.cos((i * TAU) / 12) * r,
-            cy + Math.sin((i * TAU) / 12) * r,
-          ];
-        });
-        fragments.push({
-          ...effectPath(polygonPath(points), C.amber, 'none', 0),
-          opacity: fade ** 2 * 0.6,
-        });
+      if (pose.cleanup) {
+        const g = primitives(cleanupShapes, 0, 0, 0, visual.home);
+        drawCleanupBot(g, g, C, pose.cleanup);
       }
     }
     for (const fragment of pieces) {
@@ -616,6 +651,7 @@ export function createParentFallback(container) {
     for (const [layer, shapes] of [
       [floorEffects, floors],
       [debrisEffects, fragments],
+      [cleanupEffects, cleanupShapes],
     ]) {
       layer.setAttribute(
         'viewBox',
@@ -712,7 +748,16 @@ export function createParentFallback(container) {
     if (disposed || !station || !session) return;
     syncWhip();
     drawVisitors();
-    const ownAway = visitors.isAway(session.id);
+    const parentDamage = damage.pose('parent');
+    const corpse = ['exploding', 'wrecked', 'cleanup'].includes(
+      parentDamage.phase,
+    );
+    const caneSurprise = parentDamage.surprise || 0;
+    const damagePaused =
+      parentDamage.phase !== 'alive' ||
+      caneSurprise > 0 ||
+      parentDamage.flinch > 0;
+    const ownAway = !damagePaused && visitors.isAway(session.id);
     const awayMessage = visitors.awayMessage(session.id);
     if (awayMessage) {
       visitorNotice.textContent = awayMessage;
@@ -729,8 +774,7 @@ export function createParentFallback(container) {
       .find(visitor => visitor.id === session.id);
     robot.style.display = ownAway && !ownTravel ? 'none' : '';
     ground.style.display = robot.style.display;
-    ground.style.visibility =
-      damage.pose('parent').phase === 'alive' ? '' : 'hidden';
+    ground.style.visibility = parentDamage.phase === 'alive' ? '' : 'hidden';
     if (ownAway && !ownTravel) {
       applyDamage();
       svg.dataset.mode = 'away';
@@ -738,7 +782,7 @@ export function createParentFallback(container) {
       svg.dataset.eyes = String(AWAKE_EYE_HEIGHT);
       return;
     }
-    const pose = ownTravel
+    const currentPose = ownTravel
       ? {
           mode:
             ownTravel.phase === 'startled'
@@ -760,14 +804,20 @@ export function createParentFallback(container) {
           surprise: ownTravel.surprise,
         }
       : controller.pose();
-    const lash = ownTravel ? null : whip.pose();
+    if (!damagePaused) damagedParentPose = null;
+    else if (!damagedParentPose) damagedParentPose = {...currentPose};
+    const pose = damagedParentPose || currentPose;
+    const lash = ownTravel || damagePaused ? null : whip.pose();
     const lashPose = lash ? whipPose(lash.age) : null;
     let whipHand;
-    const idle = pose.activity
-      ? idleActivityPose(pose.activity, pose.elapsed)
-      : null;
+    const idle =
+      !damagePaused && pose.activity
+        ? idleActivityPose(pose.activity, pose.elapsed)
+        : null;
     const relaxed =
-      pose.mode === 'rest' && !reaction ? relaxedIdlePose(time, motion) : null;
+      pose.mode === 'rest' && !reaction && !damagePaused
+        ? relaxedIdlePose(time, motion)
+        : null;
     const blend = idle
       ? Math.max(
           0,
@@ -778,14 +828,18 @@ export function createParentFallback(container) {
           ),
         )
       : 0;
-    const moving = pose.mode === 'walk' || pose.mode === 'return';
+    const moving =
+      !damagePaused && (pose.mode === 'walk' || pose.mode === 'return');
     const running = pose.mode === 'return';
-    const working = pose.mode === 'work';
-    const stop = ownTravel
-      ? {jump: 0, surprise: 0, squash: 0}
-      : reactionPose(reaction);
-    const surprise = Math.max(stop.surprise, pose.surprise);
-    const jump = stop.jump + pose.jump;
+    const working = !damagePaused && pose.mode === 'work';
+    const stop =
+      ownTravel || damagePaused
+        ? {jump: 0, surprise: 0, squash: 0}
+        : reactionPose(reaction);
+    const surprise = corpse
+      ? 0
+      : Math.max(stop.surprise, pose.surprise, caneSurprise);
+    const jump = damagePaused ? 0 : stop.jump + pose.jump;
     const bob = moving
       ? Math.abs(Math.sin(pose.stride)) * (running ? 0.13 : 0.06)
       : working && motion
@@ -796,7 +850,8 @@ export function createParentFallback(container) {
       jump +
       stop.squash +
       (idle?.lift || 0) * blend +
-      (relaxed?.lift || 0);
+      (relaxed?.lift || 0) -
+      (corpse ? 0 : parentDamage.flinch || 0) * 0.16;
     const base = 0.4 + lift;
     const color = surprise ? C.amber : working ? C.cyan : C.mint;
     const origin = 57 + (pose.x - HOME) * 8.8;
@@ -835,18 +890,21 @@ export function createParentFallback(container) {
     g.box([0, base + 1.55, 0], [1.45, 1.12, 1.52], C.shell);
     g.box([0.75, base + 1.54, 0], [0.09, 0.84, 1.15], C.edge);
     g.box([0.82, base + 1.62, 0], [0.05, 0.28, 0.68], C.dark);
-    g.box([0.85, base + 1.62, 0], [0.04, 0.1, 0.46], color, 1);
+    if (!corpse) g.box([0.85, base + 1.62, 0], [0.04, 0.1, 0.46], color, 1);
     g.cylinder([0, base + 2.22, 0], [0.56, 0.34, 0.56], C.dark);
     g.box([0, base + 2.72, 0], [1.65, 0.88, 1.9], C.shell);
     g.box([0.83, base + 2.68, 0], [0.12, 0.58, 1.65], C.dark);
-    const eyeHeight = relaxed?.eyeHeight || AWAKE_EYE_HEIGHT;
+    const eyeHeight = corpse
+      ? 0
+      : (relaxed?.eyeHeight || AWAKE_EYE_HEIGHT) + surprise * 0.15;
     for (const side of [-1, 1]) {
-      g.box(
-        [0.92, base + 2.72, side * 0.42],
-        [0.04, eyeHeight + surprise * 0.15, 0.3 + surprise * 0.08],
-        surprise ? C.white : color,
-        1,
-      );
+      if (!corpse)
+        g.box(
+          [0.92, base + 2.72, side * 0.42],
+          [0.04, eyeHeight, 0.3 + surprise * 0.08],
+          surprise ? C.white : color,
+          1,
+        );
       g.box([0, base + 2.65, side * 1.02], [0.5, 0.48, 0.22], C.metal);
     }
     if (surprise)
@@ -862,7 +920,12 @@ export function createParentFallback(container) {
       0.035,
       C.metal,
     );
-    g.octagon([-0.53, base + 3.67, -0.48], [0.19, 0.16, 0.19], color, 1);
+    g.octagon(
+      [-0.53, base + 3.67, -0.48],
+      [0.19, 0.16, 0.19],
+      corpse ? C.metal : color,
+      corpse ? 0 : 1,
+    );
     for (const [i, side] of [-1, 1].entries()) {
       const shoulder = [0, base + 1.94, side * 0.96];
       const relaxedArm = relaxed?.arms[i];
@@ -895,8 +958,13 @@ export function createParentFallback(container) {
         hand = mix(hand, at(lashPose.hand), lashPose.blend);
         whipHand = [...hand];
       }
-      elbow = mix(elbow, [-0.15, base + 2.6, side * 1.65], surprise);
-      hand = mix(hand, [0.25, base + 3.55, side * 1.95], surprise);
+      const raisedArms = corpse
+        ? 0
+        : Math.max(stop.surprise, damagePaused ? 0 : pose.surprise);
+      elbow = mix(elbow, [-0.15, base + 2.6, side * 1.65], raisedArms);
+      hand = mix(hand, [0.25, base + 3.55, side * 1.95], raisedArms);
+      elbow = mix(elbow, [0.5, base + 1.95, side * 1.23], caneSurprise);
+      hand = mix(hand, [1.04, base + 2.65, side * 0.85], caneSurprise);
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
       g.octagon(elbow, [0.4, 0.36, 0.4], C.dark);
@@ -973,8 +1041,13 @@ export function createParentFallback(container) {
       }
     }
     applyDamage();
-    svg.dataset.mode = reaction ? 'startled' : pose.mode;
-    svg.dataset.activity = pose.activity || '';
+    svg.dataset.mode =
+      parentDamage.phase !== 'alive'
+        ? parentDamage.phase
+        : caneSurprise || reaction
+          ? 'startled'
+          : pose.mode;
+    svg.dataset.activity = damagePaused ? '' : pose.activity || '';
     svg.dataset.eyes = String(eyeHeight);
   }
 
@@ -1049,6 +1122,8 @@ export function createParentFallback(container) {
         if (
           !whip.pose() &&
           parentDamage.phase === 'alive' &&
+          !parentDamage.surprise &&
+          !parentDamage.flinch &&
           !parentDamage.offset.some(value => Math.abs(value) > 0.025)
         )
           controller.tick(dt);
@@ -1069,8 +1144,7 @@ export function createParentFallback(container) {
   }
   function onVisibility() {
     stopFrame();
-    if (document.hidden) settleDamage();
-    else {
+    if (!document.hidden) {
       render();
       schedule();
     }
@@ -1080,10 +1154,7 @@ export function createParentFallback(container) {
     ? new window.IntersectionObserver(entries => {
         visible = entries.some(entry => entry.isIntersecting);
         if (visible) schedule();
-        else {
-          settleDamage();
-          stopFrame();
-        }
+        else stopFrame();
       })
     : null;
   observer?.observe(container);
@@ -1091,7 +1162,7 @@ export function createParentFallback(container) {
   function detach() {
     whip.cancel();
     clearWhip();
-    settleDamage();
+    clearDamageVisuals();
     svg.remove();
     glyph?.classList.remove('parent-fallback-glyph');
     visitorNotice.remove();
@@ -1124,6 +1195,7 @@ export function createParentFallback(container) {
       }
       if (session?.id !== data?.session?.id) {
         reaction = null;
+        damagedParentPose = null;
         clearDamageVisuals();
         damage.reset();
         time = 0;
@@ -1149,6 +1221,7 @@ export function createParentFallback(container) {
       visitors.setMotion(motion);
       whip.setMotion(motion);
       damage.setMotion(motion);
+      damagedParentPose = null;
       if (motion) reaction = null;
       clearDamageVisuals();
       stopFrame();
@@ -1211,6 +1284,7 @@ export function createParentFallback(container) {
       clearDamageVisuals();
       visitorSvg.remove();
       reaction = null;
+      damagedParentPose = null;
       session = null;
       detach();
     },

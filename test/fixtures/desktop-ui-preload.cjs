@@ -18,9 +18,6 @@ contextBridge.exposeInMainWorld('pidev', {
   workspace: sessionId => ipcRenderer.invoke('fixture:workspace', sessionId),
   readMarkdown: (sessionId, path) =>
     ipcRenderer.invoke('fixture:read-markdown', sessionId, path),
-  getModelDefaults: () => ipcRenderer.invoke('fixture:model-defaults'),
-  saveModelDefaults: input =>
-    ipcRenderer.invoke('fixture:save-model-defaults', input),
   sessionFeatures: sessionId =>
     ipcRenderer.invoke('fixture:features', sessionId),
   configureSession: (sessionId, input) =>

@@ -22,13 +22,11 @@
   overflow-wrap: anywhere;
 }
 #tool-settings-content > label,
-#agent-model-settings > label,
 #commit-model-settings > label:not(.tool-model-option) {
   display: block;
   margin: 16px 0 8px;
 }
 #tool-settings-search,
-#agent-model-mode,
 #commit-thinking {
   width: 100%;
   min-width: 0;

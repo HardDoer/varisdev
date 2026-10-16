@@ -566,7 +566,7 @@ void test('session workers cancel again if a prompt starts after cancellation du
 });
 
 void test('agent tools select registered models and effort without adding parent prompts', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, null);
   t.mock.timers.enable({apis: ['setTimeout']});
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
@@ -619,6 +619,7 @@ void test('agent tools select registered models and effort without adding parent
     hasUI: false,
     ui: {notify: (message: string) => notices.push(message)},
     isIdle: () => true,
+    isProjectTrusted: () => false,
     get model() {
       return parentModel;
     },
@@ -646,6 +647,7 @@ void test('agent tools select registered models and effort without adding parent
   };
   const command = (args: string) =>
     commands.get('agents')!.handler(args, ctx as ExtensionCommandContext);
+  await events.get('before_agent_start')!({}, ctx);
   try {
     const spawned = await execute('agent_spawn', {
       name: 'Review',
@@ -660,6 +662,7 @@ void test('agent tools select registered models and effort without adding parent
     assert.equal(typeof agentToolsExtension, 'function');
     assert.deepEqual(workerOptions, {
       cwd: ctx.cwd,
+      projectTrustOverride: false,
       name: 'Review',
       instructions: undefined,
       model: selectedModel,
@@ -825,7 +828,7 @@ void test('agent tools select registered models and effort without adding parent
 });
 
 void test('worker messaging identifies senders, validates recipients, and stays in its parent session', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, ['openai-codex/gpt-5.5']);
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
   const notifications: Array<{
@@ -869,6 +872,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     cwd: process.cwd(),
     hasUI: false,
     isIdle: () => true,
+    isProjectTrusted: () => false,
     model,
     modelRegistry: {
       find: (provider: string, id: string) =>
@@ -1074,6 +1078,7 @@ function agentParent(
     hasUI: true,
     ui: {setStatus: (_key: string, status?: string) => statuses.push(status)},
     isIdle: () => idle,
+    isProjectTrusted: () => false,
     model,
     modelRegistry: {
       find: (provider: string, id: string) =>
@@ -1155,7 +1160,7 @@ function teamWorkers() {
 }
 
 void test('parent activity and interruption never turn inbox messages into prompts', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
   const workers = teamWorkers();
   const parent = agentParent('interrupted-parent', workers.create);
   t.after(() => parent.shutdown());
@@ -1198,7 +1203,7 @@ void test('parent activity and interruption never turn inbox messages into promp
 });
 
 void test('every session shutdown closes running and queued workers', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
   for (const reason of ['quit', 'reload', 'new', 'resume', 'fork']) {
     const workers = teamWorkers();
     const parent = agentParent(`ordinary-${reason}`, workers.create);
@@ -1313,7 +1318,7 @@ void test('cleaned agents release the session capacity for later commands', asyn
 });
 
 void test('controller observes activity and inbox with copied state and resets without stale workers', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
   const workers = teamWorkers();
   const parent = agentParent('observed-parent', workers.create);
   t.after(() => parent.shutdown());
@@ -1530,7 +1535,10 @@ async function untilPolicy(condition: () => boolean) {
   }
 }
 
-async function isolateToolSettings(t: TestContext) {
+async function isolateToolSettings(
+  t: TestContext,
+  allowedModels?: string[] | null,
+) {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-agent-policy-'));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
@@ -1539,6 +1547,8 @@ async function isolateToolSettings(t: TestContext) {
     else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(directory, {recursive: true, force: true});
   });
+  if (allowedModels !== undefined)
+    await saveToolSettings('agents', {allowedModels});
 }
 
 void test('agent tools enforce live allowed models and refresh schemas between turns without a new prompt', async t => {
@@ -1629,7 +1639,7 @@ void test('agent tools enforce live allowed models and refresh schemas between t
 });
 
 void test('model policy is checked when queued workers start, including initialized and resumed workers', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
   const workers = teamWorkers();
   const parent = agentParent('policy-queue', workers.create);
   t.after(() => parent.shutdown());
@@ -1674,7 +1684,7 @@ void test('model policy is checked when queued workers start, including initiali
 });
 
 void test('parent and peer messages cannot resume completed agents with disallowed models', async t => {
-  await isolateToolSettings(t);
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
   const workers = teamWorkers();
   const parent = agentParent('policy-resume', workers.create);
   t.after(() => parent.shutdown());
@@ -1711,4 +1721,52 @@ void test('parent and peer messages cannot resume completed agents with disallow
   await untilPolicy(
     () => workers.byId.get(recipient)!.controlled.runs.length === 2,
   );
+});
+
+void test('fresh and cleared agent policies deny explicit and inherited models without an empty schema enum', async t => {
+  await isolateToolSettings(t);
+  const workers = teamWorkers();
+  const parent = agentParent('policy-empty', workers.create);
+  t.after(() => parent.shutdown());
+  const model = 'openai-codex/gpt-5.6-sol';
+  const params = {name: 'Explicit', task: 'Must not start', model};
+  const assertEmptyPolicy = async () => {
+    const tool = parent.tools.get('agent_spawn')!;
+    assert.match(
+      tool.description,
+      /No agent models selected.*Menu → Agent models/,
+    );
+    const schema = tool.parameters as {
+      properties: {model: {enum?: string[]; description: string}};
+    };
+    assert.equal(Object.hasOwn(schema.properties.model, 'enum'), false);
+    assert.match(
+      schema.properties.model.description,
+      /No agent models selected.*Menu → Agent models/,
+    );
+    await assert.rejects(
+      parent.spawn('Inherited denied'),
+      /No agent models selected.*Choose a model in Menu → Agent models/,
+    );
+    await assert.rejects(
+      parent.execute('agent_spawn', params),
+      /No agent models selected.*Choose a model in Menu → Agent models/,
+    );
+    assert.equal(workers.created.length, 0);
+  };
+  await parent.emit('before_agent_start');
+  await assertEmptyPolicy();
+  await saveToolSettings('agents', {allowedModels: [model]});
+  await parent.emit('turn_end');
+  assert.deepEqual(
+    (
+      parent.tools.get('agent_spawn')!.parameters as {
+        properties: {model: {enum: string[]}};
+      }
+    ).properties.model.enum,
+    [model],
+  );
+  await saveToolSettings('agents', {allowedModels: []});
+  await parent.emit('turn_end');
+  await assertEmptyPolicy();
 });

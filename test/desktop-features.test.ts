@@ -4,7 +4,11 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
-import {ModelRegistry, ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {
+  ModelRegistry,
+  ModelRuntime,
+  ProjectTrustStore,
+} from '@earendil-works/pi-coding-agent';
 import {
   createDashboardParent,
   type DesktopDashboardParent,
@@ -30,6 +34,11 @@ async function commandDialog(parent: DesktopDashboardParent, text: string) {
     () => parent.ui.snapshot().dialogs.length > 0,
     `${text} opens a native dialog`,
   );
+  if (parent.ui.snapshot().dialogs[0].kind === 'terminal')
+    await waitFor(
+      () => Boolean(parent.ui.snapshot().dialogs[0]?.terminal?.revision),
+      `${text} renders its SDK component`,
+    );
   return {operation, dialog: parent.ui.snapshot().dialogs[0]};
 }
 
@@ -44,6 +53,7 @@ async function fixture(t: TestContext, configuredVarisdev = false) {
   const responseGates: Array<ReturnType<typeof Promise.withResolvers<void>>> =
     [];
   t.after(async () => {
+    for (const parent of parents) parent.ui.cancelDialogs();
     for (const gate of responseGates) gate.resolve();
     await Promise.all(parents.map(parent => parent.close()));
     process.title = title;
@@ -151,6 +161,7 @@ export default function(pi) {
     }),
   );
   const requests: Request[] = [];
+  const cancelledRequests: Request[] = [];
   let responseGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
   const holdNextResponse = () => {
     responseGate = Promise.withResolvers<void>();
@@ -170,7 +181,21 @@ export default function(pi) {
       requests.push(request);
       const gate = responseGate;
       responseGate = undefined;
-      await gate?.promise;
+      if (gate && options?.signal) {
+        const {signal} = options;
+        const cancelled = Promise.withResolvers<void>();
+        const abort = () => {
+          cancelledRequests.push(request);
+          cancelled.reject(signal.reason);
+        };
+        signal.addEventListener('abort', abort, {once: true});
+        if (signal.aborted) abort();
+        try {
+          await Promise.race([gate.promise, cancelled.promise]);
+        } finally {
+          signal.removeEventListener('abort', abort);
+        }
+      } else await gate?.promise;
       if (JSON.stringify(request.messages).includes('EXTENSION MODEL REQUEST'))
         await delay(20);
       const summary = JSON.stringify(request.messages).includes(
@@ -228,6 +253,7 @@ export default function(pi) {
     })),
   });
   const registry = new ModelRegistry(runtime);
+  new ProjectTrustStore(agentDir).set(cwd, true);
   const parent = await createDashboardParent(
     {cwd, name: 'Feature fixture'},
     {
@@ -241,6 +267,7 @@ export default function(pi) {
     parent,
     cwd,
     requests,
+    cancelledRequests,
     holdNextResponse,
     settingsPath,
     settings,
@@ -557,84 +584,81 @@ void test(
 );
 
 void test(
-  'native thinking and model selectors preselect current values, apply changes and cancel without model requests',
+  'SDK thinking and model selectors apply explicit session or default actions and cancel without model requests',
   {timeout: 15000},
   async t => {
-    const {parent, requests} = await fixture(t);
+    const {parent, requests, settingsPath} = await fixture(t);
     const transcript = parent.state.snapshot().conversation;
+    const actions = [
+      {id: 'default', label: 'Make as default'},
+      {id: 'session', label: 'Apply to session'},
+    ];
+    const search = async (query: string) => {
+      const dialog = parent.ui.snapshot().dialogs[0];
+      const revision = dialog.terminal!.revision;
+      parent.ui.respond(dialog.id, query);
+      await waitFor(
+        () => parent.ui.snapshot().dialogs[0]?.terminal?.revision !== revision,
+        'Typing updates the SDK selector',
+      );
+    };
     const thinking = await commandDialog(parent, '/thinking');
-    assert.equal(thinking.dialog.kind, 'select');
+    assert.equal(thinking.dialog.kind, 'terminal');
     assert.equal(thinking.dialog.title, 'Thinking level');
-    assert.equal(thinking.dialog.selected, 'low');
-    assert.deepEqual(
-      thinking.dialog.options,
-      (await parent.features()).thinkingLevels,
-    );
-    parent.ui.respond(thinking.dialog.id, 'high');
+    assert.deepEqual(thinking.dialog.actions, actions);
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'low');
+    await search('high');
+    parent.ui.respond(thinking.dialog.id, {action: 'session'});
     await thinking.operation;
     assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
+    assert.equal(
+      JSON.parse(await readFile(settingsPath, 'utf8')).defaultThinkingLevel,
+      undefined,
+    );
 
     const cancelledThinking = await commandDialog(parent, '/thinking');
-    assert.equal(cancelledThinking.dialog.selected, 'high');
     parent.ui.respond(cancelledThinking.dialog.id);
     await cancelledThinking.operation;
     assert.equal((await parent.features()).thinkingLevel, 'high');
 
     const model = await commandDialog(parent, '/model');
-    assert.equal(model.dialog.kind, 'select');
-    assert.equal(model.dialog.title, 'Select model: provider');
-    assert.equal(model.dialog.selected, 'desktop-fixture');
-    assert.ok(model.dialog.options!.includes('configured-fixture'));
-    parent.ui.respond(model.dialog.id, 'desktop-fixture');
-    await waitFor(
-      () => parent.ui.snapshot().dialogs[0]?.title === 'Select model',
-      'Provider selection opens the model selector',
-    );
-    const selection = parent.ui.snapshot().dialogs[0];
-    assert.equal(selection.kind, 'select');
-    assert.equal(selection.searchable, true);
-    assert.equal(selection.selected, 'desktop-fixture/first-model');
-    assert.deepEqual(selection.options, [
-      'desktop-fixture/first-model',
-      'desktop-fixture/second-model',
-    ]);
-    parent.ui.respond(selection.id, 'desktop-fixture/second-model');
+    assert.equal(model.dialog.kind, 'terminal');
+    assert.equal(model.dialog.title, 'Model');
+    assert.deepEqual(model.dialog.actions, actions);
+    assert.equal((await parent.features()).model?.id, 'first-model');
+    await search('second-model');
+    parent.ui.respond(model.dialog.id, {action: 'session'});
     await model.operation;
     assert.deepEqual((await parent.features()).model, {
       provider: 'desktop-fixture',
       id: 'second-model',
     });
-
-    const cancelledProvider = await commandDialog(parent, '/model');
-    parent.ui.respond(cancelledProvider.dialog.id);
-    await cancelledProvider.operation;
-    const cancelledModel = await commandDialog(parent, '/model');
-    parent.ui.respond(cancelledModel.dialog.id, 'desktop-fixture');
-    await waitFor(
-      () => parent.ui.snapshot().dialogs[0]?.title === 'Select model',
-      'Model selector reopens with the current model',
+    assert.equal(
+      JSON.parse(await readFile(settingsPath, 'utf8')).defaultModel,
+      undefined,
     );
-    const currentModel = parent.ui.snapshot().dialogs[0];
-    assert.equal(currentModel.selected, 'desktop-fixture/second-model');
-    parent.ui.respond(currentModel.id);
+
+    const savedModel = await commandDialog(parent, '/model');
+    parent.ui.respond(savedModel.dialog.id, {action: 'default'});
+    await savedModel.operation;
+    const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+    assert.equal(saved.defaultProvider, 'desktop-fixture');
+    assert.equal(saved.defaultModel, 'second-model');
+    assert.equal((await parent.features()).model?.id, 'second-model');
+
+    const cancelledModel = await commandDialog(parent, '/model');
+    parent.ui.respond(cancelledModel.dialog.id);
     await cancelledModel.operation;
     assert.equal((await parent.features()).model?.id, 'second-model');
 
-    // Stop must also cancel a queued follow-on dialog, not just remove its DOM.
     for (const command of ['/thinking', '/model']) {
       const stopped = await commandDialog(parent, command);
       await parent.abort();
       await stopped.operation;
-      parent.ui.respond(stopped.dialog.id, 'low');
+      parent.ui.respond(stopped.dialog.id, {action: 'default'});
       await delay(20);
       assert.deepEqual(parent.ui.snapshot().dialogs, []);
     }
-    const stoppedBetweenMenus = await commandDialog(parent, '/model');
-    parent.ui.respond(stoppedBetweenMenus.dialog.id, 'desktop-fixture');
-    await parent.abort();
-    await stoppedBetweenMenus.operation;
-    await delay(20);
-    assert.deepEqual(parent.ui.snapshot().dialogs, []);
     assert.equal((await parent.features()).thinkingLevel, 'high');
     assert.equal((await parent.features()).model?.id, 'second-model');
     assert.deepEqual(parent.state.snapshot().conversation, transcript);
@@ -643,14 +667,15 @@ void test(
       parent.prompt('/thinking unsupported'),
       /Thinking level/,
     );
-    await assert.rejects(
-      parent.prompt('/model missing'),
-      /\/model provider\/model/,
-    );
-    await assert.rejects(
-      parent.prompt('/model missing/model'),
-      /Model is unavailable/,
-    );
+    for (const command of ['/model missing', '/model missing/model']) {
+      const empty = await commandDialog(parent, command);
+      assert.ok(empty.dialog.terminal!.output.includes('No matching models'));
+      parent.ui.respond(empty.dialog.id, {action: 'default'});
+      assert.equal(parent.ui.snapshot().dialogs.length, 1);
+      parent.ui.respond(empty.dialog.id);
+      await empty.operation;
+      assert.equal((await parent.features()).model?.id, 'second-model');
+    }
     const stoppedBeforeOpen = parent.prompt('/model');
     await parent.abort();
     await stoppedBeforeOpen;
@@ -662,10 +687,11 @@ void test(
       modelId: 'configured-model',
     });
     const unsupportedThinking = await commandDialog(parent, '/thinking');
-    assert.deepEqual(unsupportedThinking.dialog.options, ['off']);
-    assert.equal(unsupportedThinking.dialog.selected, 'off');
-    parent.ui.respond(unsupportedThinking.dialog.id);
+    assert.equal(unsupportedThinking.dialog.kind, 'terminal');
+    assert.deepEqual((await parent.features()).thinkingLevels, ['off']);
+    parent.ui.respond(unsupportedThinking.dialog.id, {action: 'session'});
     await unsupportedThinking.operation;
+    assert.equal((await parent.features()).thinkingLevel, 'off');
     assert.equal(requests.length, 0);
   },
 );
@@ -817,7 +843,6 @@ void test(
       }),
       /Thinking level/,
     );
-    await assert.rejects(parent.compact(), /already working/);
     await assert.rejects(parent.reload(), /already working/);
     assert.equal(finished, false);
     assert.equal(requests.length, 1);
@@ -853,12 +878,40 @@ void test(
 );
 
 void test(
-  'extension commands submit before execution, retain dialogs and editors, reject busy actions and report UI errors',
+  'live compact command reaches Pi and interrupts the active provider request',
+  {timeout: 15000},
+  async t => {
+    const {parent, requests, cancelledRequests, holdNextResponse} =
+      await fixture(t);
+    holdNextResponse();
+    const running = parent.prompt('Continue working until interrupted.');
+    void running.catch(() => {});
+    await waitFor(
+      () => requests.length === 1,
+      'The active provider request starts',
+    );
+    assert.equal(parent.state.snapshot().session.status, 'running');
+    await assert.rejects(
+      parent.prompt('/compact Preserve the live fixture decision.'),
+      /Nothing to compact/,
+    );
+    await running;
+    assert.deepEqual(cancelledRequests, [requests[0]]);
+    assert.equal(requests.length, 1);
+    assert.equal(parent.state.snapshot().session.status, 'idle');
+  },
+);
+
+void test(
+  'extension commands retain dialogs and editors, reject reload while busy and report UI errors',
   {timeout: 15000},
   async t => {
     const {parent, cwd, requests} = await fixture(t);
     const operation = parent.prompt('/fixture-command command arguments');
-    while (!parent.ui.snapshot().dialogs.length) await delay(5);
+    await waitFor(
+      () => parent.ui.snapshot().dialogs.length > 0,
+      'The project extension opens its confirmation',
+    );
     assert.equal(
       await readFile(join(cwd, 'command-started.txt'), 'utf8'),
       'command arguments',
@@ -866,7 +919,6 @@ void test(
     await assert.rejects(parent.reload(), /already working/);
     await parent.configure({thinkingLevel: 'high'});
     assert.equal((await parent.features()).thinkingLevel, 'high');
-    await assert.rejects(parent.compact(), /already working/);
     const dialog = parent.ui.snapshot().dialogs[0];
     assert.equal(dialog.kind, 'confirm');
     assert.equal(dialog.message, 'command arguments');
@@ -933,12 +985,18 @@ void test(
       parent.ui.snapshot().notifications.some(item => item.type === 'error'),
     );
     const pending = parent.prompt('/fixture-command abort me');
-    while (!parent.ui.snapshot().dialogs.length) await delay(5);
+    await waitFor(
+      () => parent.ui.snapshot().dialogs.length > 0,
+      'The extension opens a dialog before Stop',
+    );
     await parent.abort();
     await pending;
     assert.deepEqual(parent.ui.snapshot().dialogs, []);
     const afterAbort = parent.prompt('/fixture-command after abort');
-    while (!parent.ui.snapshot().dialogs.length) await delay(5);
+    await waitFor(
+      () => parent.ui.snapshot().dialogs.length > 0,
+      'The extension opens a new dialog after Stop',
+    );
     parent.ui.respond(parent.ui.snapshot().dialogs[0].id, false);
     await afterAbort;
     const composer = parent.ui.snapshot().editor;

@@ -54,7 +54,8 @@ function renderTerminal(request) {
     });
     terminalView.open($('extension-dialog-terminal'));
     terminalView.onData(value => {
-      if (!activeDialog || activeDialog.kind !== 'terminal') return;
+      if (!activeDialog || activeDialog.kind !== 'terminal' || dialogBusy)
+        return;
       void api
         .respondToDialog(activeDialog.sessionId, activeDialog.id, value)
         .catch(cause => error($('extension-dialog-error'), cause));
@@ -320,37 +321,29 @@ function renderSuggestions() {
   );
   container.hidden = suggestions.length === 0;
 }
-function canConfigureSession() {
+function canRunCommand(name) {
   return (
     parentView &&
-    current &&
-    ['idle', 'running'].includes(current.session.status)
+    current?.session.controllable &&
+    (current.session.status === 'idle' ||
+      (['running', 'compacting'].includes(current.session.status) &&
+        nativeCommands.find(command => command.name === name)?.live))
   );
 }
 function renderSettingsControls() {
   $('session-maintenance').hidden = !parentView;
   $('session-maintenance-name').textContent = current?.session.name || '';
-  const idle = parentView && current?.session.status === 'idle';
-  $('compact-session').disabled = settingsBusy || !idle;
-  $('reload-session').disabled =
-    settingsBusy || !idle || !current?.session.owned;
-  $('reload-session').title = current?.session.owned
-    ? ''
-    : 'Use /reload in the attached terminal session.';
+  $('compact-session').disabled = settingsBusy || !canRunCommand('compact');
+  $('reload-session').disabled = settingsBusy || !canRunCommand('reload');
 }
-async function updateSettings(action, requiresIdle = false) {
-  if (
-    settingsBusy ||
-    !canConfigureSession() ||
-    (requiresIdle && current.session.status !== 'idle')
-  )
-    return;
+async function runSessionCommand(name, args = '') {
+  if (settingsBusy || !canRunCommand(name)) return;
   const id = current.session.id;
   settingsBusy = true;
   $('session-settings-error').hidden = true;
   renderSettingsControls();
   try {
-    await action(id);
+    await api.promptSession(id, {prompt: `/${name}${args ? ` ${args}` : ''}`});
     await load(true, id);
   } catch (cause) {
     if (current?.session.id === id) error($('session-settings-error'), cause);
@@ -411,6 +404,7 @@ function renderExtensionUI(data) {
     activeDialog.id === request?.id
   ) {
     renderTerminal(request);
+    renderDialogActions();
     return;
   }
   const dialog = $('extension-dialog');
@@ -435,6 +429,7 @@ function renderExtensionUI(data) {
   $('submit-extension-dialog').disabled = false;
   $('submit-extension-dialog').hidden = request.kind === 'terminal';
   $('extension-dialog-terminal').hidden = request.kind !== 'terminal';
+  renderDialogActions();
   dialog.classList.toggle('terminal-dialog', request.kind === 'terminal');
   $('cancel-extension-dialog').disabled = false;
   $('cancel-extension-dialog').textContent =
@@ -473,15 +468,51 @@ function renderExtensionUI(data) {
           : 'submit-extension-dialog';
   $(target).focus();
 }
+function renderDialogActions() {
+  const actions =
+    activeDialog?.kind === 'terminal' ? activeDialog.actions || [] : [];
+  $('extension-dialog-actions').hidden = !actions.length;
+  for (const button of $('extension-dialog-actions').querySelectorAll(
+    'button',
+  )) {
+    const action = actions.find(item => item.id === button.dataset.action);
+    button.hidden = !action;
+    button.disabled = dialogBusy;
+    if (action) button.textContent = action.label;
+  }
+}
+async function respondAction(action) {
+  const request = activeDialog;
+  if (
+    dialogBusy ||
+    request?.kind !== 'terminal' ||
+    !request.actions?.some(item => item.id === action)
+  )
+    return;
+  dialogBusy = true;
+  renderDialogActions();
+  $('cancel-extension-dialog').disabled = true;
+  try {
+    await api.respondToDialog(request.sessionId, request.id, {action});
+  } catch (cause) {
+    error($('extension-dialog-error'), cause);
+  } finally {
+    dialogBusy = false;
+    renderDialogActions();
+    $('cancel-extension-dialog').disabled = false;
+    if (activeDialog?.id === request.id) terminalView?.focus();
+  }
+}
 function renderDialogOptions() {
   const request = activeDialog;
   if (!request || request.kind !== 'select') {
     $('extension-dialog-select').replaceChildren();
+    $('extension-dialog-empty').hidden = true;
     return;
   }
   const select = $('extension-dialog-select');
   const needle = request.searchable
-    ? $('extension-dialog-search').value.toLocaleLowerCase()
+    ? $('extension-dialog-search').value.trim().toLocaleLowerCase()
     : '';
   const values = (request.options || []).filter(value =>
     value.toLocaleLowerCase().includes(needle),
@@ -496,6 +527,10 @@ function renderDialogOptions() {
   const preferred = request.selection || request.selected;
   if (values.includes(preferred)) select.value = preferred;
   else if (values.length) select.selectedIndex = 0;
+  $('extension-dialog-empty').hidden = values.length > 0;
+  $('extension-dialog-empty').textContent = needle
+    ? 'No options match your search.'
+    : 'No options available.';
   $('submit-extension-dialog').disabled = dialogBusy || !values.length;
 }
 async function respond(cancelled) {
@@ -580,18 +615,11 @@ export function initSessionFeatures(options) {
   $('compact-session').addEventListener(
     'click',
     () =>
-      void updateSettings(
-        id =>
-          api.compactSession(
-            id,
-            $('compact-instructions').value.trim() || undefined,
-          ),
-        true,
-      ),
+      void runSessionCommand('compact', $('compact-instructions').value.trim()),
   );
   $('reload-session').addEventListener(
     'click',
-    () => void updateSettings(id => api.reloadSession(id), true),
+    () => void runSessionCommand('reload'),
   );
   $('parent-prompt').addEventListener('input', () => {
     suggestionIndex = 0;
@@ -634,6 +662,11 @@ export function initSessionFeatures(options) {
     if (activeDialog?.kind === 'select')
       activeDialog.selection = $('extension-dialog-select').value;
   });
+  for (const button of $('extension-dialog-actions').querySelectorAll('button'))
+    button.addEventListener(
+      'click',
+      () => void respondAction(button.dataset.action),
+    );
   $('extension-dialog-form').addEventListener('submit', event => {
     event.preventDefault();
     void respond(false);

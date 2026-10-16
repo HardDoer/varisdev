@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import type {AddressInfo} from 'node:net';
-import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {ModelRegistry} from '@earendil-works/pi-coding-agent';
 import {DesktopAccounts} from '../src/desktop/accounts.ts';
-import {createDesktopModelRuntime} from '../src/llama.ts';
+import {createGlobalModelRuntime} from '../src/desktop/model-runtime.ts';
 import {createSessionWorker} from '../src/agents/session.ts';
 import {
   createDashboardParent,
@@ -173,8 +173,23 @@ async function fixture(t: TestContext) {
     );
     assert.equal(accounts.snapshot().error, undefined);
   }
-  async function parent() {
-    const result = await createDashboardParent({cwd});
+  async function parent(argv?: string[]) {
+    const result = await createDashboardParent(
+      {cwd},
+      undefined,
+      argv
+        ? {
+            cwd,
+            agentDir,
+            sessionDir: join(agentDir, 'sessions'),
+            entries: [],
+            leafId: null,
+            thinkingLevel: 'off',
+            tools: [],
+            argv,
+          }
+        : undefined,
+    );
     parents.push(result);
     return result;
   }
@@ -233,14 +248,61 @@ void test('llama.cpp environment configuration discovers loaded models without s
   );
 });
 
+void test('disabling builtin:llama.cpp removes its provider from global accounts and its desktop command', async t => {
+  const f = await fixture(t);
+  await writeFile(
+    join(f.agentDir, 'settings.json'),
+    JSON.stringify({extensions: ['-builtin:llama.cpp']}),
+  );
+  process.env.LLAMA_BASE_URL = f.url;
+  f.models[0].status.value = 'loaded';
+  const runtime = await createGlobalModelRuntime();
+  assert.equal(runtime.getProvider('llama.cpp'), undefined);
+  assert.equal(
+    (await f.accounts.get()).providers.some(
+      provider => provider.id === 'llama.cpp',
+    ),
+    false,
+  );
+  const features = await (await f.parent()).features();
+  assert.equal(
+    features.commands.some(command => command.name === 'llama'),
+    false,
+  );
+  assert.equal(
+    features.models.some(model => model.provider === 'llama.cpp'),
+    false,
+  );
+  assert.equal(
+    f.requests.some(request => request.path === '/models'),
+    false,
+  );
+});
+
+void test('--no-extensions removes the desktop llama provider and command through SDK resource selection', async t => {
+  const f = await fixture(t);
+  process.env.LLAMA_BASE_URL = f.url;
+  f.models[0].status.value = 'loaded';
+  const features = await (await f.parent(['--no-extensions'])).features();
+  assert.equal(
+    features.commands.some(command => command.name === 'llama'),
+    false,
+  );
+  assert.equal(
+    features.models.some(model => model.provider === 'llama.cpp'),
+    false,
+  );
+  assert.equal(
+    f.requests.some(request => request.path === '/models'),
+    false,
+  );
+});
+
 void test('background agents use the configured llama.cpp provider and server credentials', async t => {
   const f = await fixture(t);
   await f.connect('worker-server-key');
   f.models[0].status.value = 'loaded';
-  const runtime = await createDesktopModelRuntime({
-    authPath: join(f.agentDir, 'auth.json'),
-    modelsPath: join(f.agentDir, 'models.json'),
-  });
+  const runtime = await createGlobalModelRuntime();
   await runtime.refresh({providers: ['llama.cpp'], allowNetwork: true});
   const registry = new ModelRegistry(runtime);
   const model = registry.find('llama.cpp', 'fixture-gguf');

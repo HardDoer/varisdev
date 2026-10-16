@@ -144,10 +144,6 @@ async function main() {
   handle('pidev:recent-projects', () => []);
   handle('varisdev:get-agent-notice', () => ({acknowledged: true}));
   handle('varisdev:get-update-status', () => ({phase: 'idle'}));
-  handle('varisdev:get-model-defaults', () => ({
-    models: [],
-    thinkingLevel: 'off',
-  }));
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('varisdev:get-accounts', accounts);
   handle('varisdev:account-start', () => {

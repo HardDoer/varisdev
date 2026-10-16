@@ -172,6 +172,15 @@
   text-overflow: ellipsis;
 }
 @media (max-width: 950px) {
+  .inspector-heading > .inspector-title-row {
+    gap: 6px;
+  }
+  #application-controls {
+    gap: 6px;
+  }
+  #application-controls > button {
+    padding-inline: 6px;
+  }
   #processing-state-text {
     display: none;
   }

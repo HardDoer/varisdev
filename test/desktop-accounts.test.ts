@@ -8,9 +8,8 @@ import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
-import {ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {ModelRuntime, SettingsManager} from '@earendil-works/pi-coding-agent';
 import {DesktopAccounts, type AccountState} from '../src/desktop/accounts.ts';
-import {DesktopModelDefaults} from '../src/desktop/model-defaults.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 
 async function waitFor(check: () => boolean) {
@@ -53,6 +52,13 @@ async function fixture(t: TestContext) {
     modelsPath: join(agentDir, 'models.json'),
     allowModelNetwork: false,
   });
+  const originalRefresh = runtime.refresh.bind(runtime);
+  const refresh = t.mock.method(
+    runtime,
+    'refresh',
+    (options: Parameters<ModelRuntime['refresh']>[0]) =>
+      originalRefresh({...options, allowNetwork: false}),
+  );
   const states: AccountState[] = [];
   const opened: string[] = [];
   const parents: Array<Awaited<ReturnType<typeof createDashboardParent>>> = [];
@@ -79,9 +85,11 @@ async function fixture(t: TestContext) {
   return {
     accounts,
     runtime,
+    refresh,
     states,
     opened,
     authPath,
+    agentDir,
     existing,
     cwd,
     reply,
@@ -93,8 +101,17 @@ void test(
   'GUI credentials persist and an already open parent can use them without restart',
   {timeout: 20000},
   async t => {
-    const {accounts, states, authPath, existing, cwd, reply, parents} =
-      await fixture(t);
+    const {
+      accounts,
+      runtime,
+      states,
+      authPath,
+      agentDir,
+      existing,
+      cwd,
+      reply,
+      parents,
+    } = await fixture(t);
     const parent = await createDashboardParent({cwd});
     parents.push(parent);
     const requests: string[] = [];
@@ -146,20 +163,26 @@ void test(
       ...existing,
       openai: {type: 'api_key', key: 'fixture-provider-key'},
     });
-    const unselected = await createDashboardParent({cwd});
-    parents.push(unselected);
-    assert.equal((await unselected.features()).model, undefined);
-    await assert.rejects(
-      unselected.prompt('Do not pick a model for me'),
-      /Choose a model/,
+    const signedInParent = await createDashboardParent({cwd});
+    parents.push(signedInParent);
+    const selected = (await signedInParent.features()).model;
+    assert.ok(selected);
+    assert.ok(
+      (await runtime.getAvailable()).some(
+        model =>
+          model.provider === selected.provider && model.id === selected.id,
+      ),
+      'Pi selects an available model after sign-in',
     );
     await parent.configure({provider: 'openai', modelId: 'account-model'});
-    const defaults = new DesktopModelDefaults();
-    assert.equal((await defaults.get()).model, undefined);
-    await defaults.save({
+    const defaults = SettingsManager.create(cwd, agentDir);
+    assert.equal(defaults.getDefaultProvider(), undefined);
+    assert.equal(defaults.getDefaultModel(), undefined);
+    await parent.configure({
       provider: 'openai',
       modelId: 'account-model',
       thinkingLevel: 'off',
+      persist: true,
     });
     const remembered = await createDashboardParent({cwd});
     parents.push(remembered);
@@ -185,14 +208,21 @@ void test(
 );
 
 void test('OAuth selection, browser links, device codes and manual prompts use SDK flows', async t => {
-  const {accounts, runtime, opened, reply, authPath, states} = await fixture(t);
+  const {accounts, runtime, refresh, opened, reply, authPath, states} =
+    await fixture(t);
   const original = runtime.getProvider('openai-codex')!;
   runtime.registerNativeProvider({
     ...original,
     auth: {
       oauth: {
         ...original.auth.oauth!,
-        async login(interaction) {
+        async login(interaction, options) {
+          assert.equal(options?.agentName, 'VarisDev');
+          assert.match(
+            options!.getDeviceId!(),
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+          );
+          assert.equal(options!.getDeviceId!(), options!.getDeviceId!());
           assert.equal(
             await interaction.prompt({
               type: 'select',
@@ -246,15 +276,24 @@ void test('OAuth selection, browser links, device codes and manual prompts use S
   reply('example');
   await waitFor(() => accounts.snapshot().prompt?.type === 'manual_code');
   assert.equal(accounts.snapshot().deviceCode, 'ABCD-EFGH');
+  assert.deepEqual(opened, ['https://provider.invalid/authorize']);
+  await accounts.openLink(accounts.snapshot().attempt!.id, 1);
   assert.deepEqual(opened, [
     'https://provider.invalid/authorize',
     'https://provider.invalid/device',
   ]);
-  await accounts.openLink(accounts.snapshot().attempt!.id, 0);
-  assert.equal(opened.length, 3);
   reply('private-code');
   await waitFor(() => !accounts.snapshot().attempt);
   assert.equal(accounts.snapshot().error, undefined);
+  assert.ok(
+    refresh.mock.calls.some(
+      call =>
+        call.arguments[0]?.allowNetwork === true &&
+        call.arguments[0]?.providers?.[0] === 'openai-codex' &&
+        call.arguments[0]?.signal instanceof AbortSignal,
+    ),
+    'Successful login refreshes only the signed-in provider through the SDK',
+  );
   assert.equal(
     JSON.parse(await readFile(authPath, 'utf8'))['openai-codex'].type,
     'oauth',
@@ -264,6 +303,402 @@ void test('OAuth selection, browser links, device codes and manual prompts use S
     /private-(?:code|access|refresh)/,
   );
   assert.deepEqual(accounts.snapshot().links, []);
+});
+
+void test('OAuth login persists one installation ID across simultaneous accounts, retries and recreation', async t => {
+  const {accounts, runtime, agentDir, states} = await fixture(t);
+  const settingsPath = join(agentDir, 'settings.json');
+  await writeFile(settingsPath, JSON.stringify({theme: 'light'}));
+  t.mock.method(globalThis, 'fetch', async () => {
+    assert.fail('Account identity integration must not use the network');
+  });
+  const observed: string[] = [];
+  let finish!: () => void;
+  const ready = new Promise<void>(resolve => {
+    finish = resolve;
+  });
+  const login: ModelRuntime['login'] = async (
+    provider,
+    method,
+    interaction,
+    options,
+  ) => {
+    assert.equal(provider, 'openai');
+    assert.equal(method, 'oauth');
+    assert.equal(interaction.signal?.aborted, false);
+    assert.equal(options?.agentName, 'VarisDev');
+    const id = options!.getDeviceId!();
+    assert.match(
+      id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    assert.equal(options!.getDeviceId!(), id);
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+    assert.equal(settings.deviceId, id, 'ID must be saved before login starts');
+    assert.equal(settings.theme, 'light');
+    observed.push(id);
+    await ready;
+    throw new Error('Retry sign-in');
+  };
+  t.mock.method(runtime, 'login', login);
+  const recreate = () =>
+    new DesktopAccounts({
+      createRuntime: async () => runtime,
+      changed: state => states.push(state),
+      openBrowser: async () => assert.fail('No real OAuth browser flow'),
+    });
+  const simultaneous = recreate();
+  t.after(() => simultaneous.dispose());
+  accounts.start('openai', 'oauth');
+  simultaneous.start('openai', 'oauth');
+  await waitFor(() => observed.length === 2);
+  assert.equal(observed[0], observed[1]);
+  assert.throws(() => accounts.start('openai', 'oauth'), /Finish or cancel/);
+  finish();
+  await waitFor(
+    () => !accounts.snapshot().attempt && !simultaneous.snapshot().attempt,
+  );
+  assert.equal(accounts.snapshot().error, 'Retry sign-in');
+  accounts.start('openai', 'oauth');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(observed.length, 3);
+  await accounts.dispose();
+  const recreated = recreate();
+  t.after(() => recreated.dispose());
+  recreated.start('openai', 'oauth');
+  await waitFor(() => !recreated.snapshot().attempt);
+  assert.equal(observed.length, 4);
+  assert.deepEqual(observed, Array(4).fill(observed[0]));
+  assert.equal(
+    JSON.parse(await readFile(settingsPath, 'utf8')).deviceId,
+    observed[0],
+  );
+  assert.doesNotMatch(JSON.stringify(states), /unrelated-credential/);
+});
+
+void test('installation settings failures prevent OAuth and allow a later retry', async t => {
+  const {accounts, runtime, agentDir} = await fixture(t);
+  const settingsPath = join(agentDir, 'settings.json');
+  await writeFile(settingsPath, 'invalid settings');
+  const implementation: ModelRuntime['login'] = async (
+    _provider,
+    _method,
+    _interaction,
+    options,
+  ) => {
+    options!.getDeviceId!();
+    throw new Error('Reached login');
+  };
+  const login = t.mock.method(runtime, 'login', implementation);
+  accounts.start('openai', 'oauth');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(
+    accounts.snapshot().error,
+    'Could not read installation settings.',
+  );
+  assert.equal(login.mock.callCount(), 1);
+  await writeFile(settingsPath, '{}');
+  accounts.start('openai', 'oauth');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(login.mock.callCount(), 2);
+  assert.equal(accounts.snapshot().error, 'Reached login');
+});
+
+void test('default account runtime uses SDK global extension providers and built-in auth overrides', async t => {
+  const {agentDir, authPath, existing} = await fixture(t);
+  const refresh = ModelRuntime.prototype.refresh;
+  t.mock.method(
+    ModelRuntime.prototype,
+    'refresh',
+    function (
+      this: ModelRuntime,
+      options: Parameters<ModelRuntime['refresh']>[0],
+    ) {
+      return refresh.call(this, {...options, allowNetwork: false});
+    },
+  );
+  await mkdir(join(agentDir, 'extensions'));
+  await writeFile(
+    join(agentDir, 'extensions', 'accounts.js'),
+    `
+    export default pi => {
+      pi.registerProvider('openai', {
+        name: 'Extension OpenAI',
+        models: [],
+        async refreshModels() { return []; },
+        oauth: {
+          name: 'Extension OAuth',
+          async login(callbacks) {
+            const choice = await callbacks.onSelect({message: 'Account', options: [{id: 'custom', label: 'Custom account'}]});
+            if (choice !== 'custom') throw new Error('Wrong account choice');
+            const value = await callbacks.onPrompt({message: 'Blank for default', allowEmpty: true});
+            if (value !== '') throw new Error('Expected provider default');
+            return {access: 'extension-access', refresh: 'extension-refresh', expires: Date.now() + 3600000};
+          },
+          async refreshToken(credential) { return credential; },
+          getApiKey(credential) { return credential.access; },
+        },
+      });
+      pi.registerProvider({
+        id: 'native-account', name: 'Native account', getModels: () => [],
+        stream() { throw new Error('Unused'); },
+        streamSimple() { throw new Error('Unused'); },
+        auth: {apiKey: {
+          name: 'Native key',
+          async login(interaction) {
+            return {type: 'api_key', key: await interaction.prompt({type: 'secret', message: 'Native secret'})};
+          },
+          async resolve({credential}) { return credential ? {auth: {apiKey: credential.key}} : undefined; },
+        }},
+      });
+    }
+  `,
+  );
+  t.mock.method(globalThis, 'fetch', async () => {
+    assert.fail('Extension account integration must not use the network');
+  });
+  const states: AccountState[] = [];
+  const accounts = new DesktopAccounts({
+    changed: state => states.push(state),
+    openBrowser: async () => assert.fail('No real browser authorization'),
+  });
+  t.after(() => accounts.dispose());
+  const initial = await accounts.get();
+  assert.equal(
+    initial.providers.find(provider => provider.id === 'openai')?.name,
+    'Extension OpenAI',
+  );
+  assert.equal(
+    initial.providers.find(provider => provider.id === 'native-account')
+      ?.apiKey,
+    true,
+  );
+  const respond = (value: string) => {
+    const state = accounts.snapshot();
+    accounts.respond(state.attempt!.id, state.prompt!.id, value);
+  };
+  accounts.start('native-account', 'api_key');
+  await waitFor(() => accounts.snapshot().prompt?.message === 'Native secret');
+  respond('native-private-key');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(accounts.snapshot().error, undefined);
+  accounts.start('openai', 'oauth');
+  await waitFor(() => accounts.snapshot().prompt?.type === 'select');
+  respond('custom');
+  await waitFor(
+    () => accounts.snapshot().prompt?.message === 'Blank for default',
+  );
+  respond('');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(accounts.snapshot().error, undefined);
+  const stored = JSON.parse(await readFile(authPath, 'utf8'));
+  assert.deepEqual(stored.other, existing.other);
+  assert.equal(stored['native-account'].key, 'native-private-key');
+  assert.equal(stored.openai.access, 'extension-access');
+  assert.doesNotMatch(
+    JSON.stringify(states),
+    /native-private-key|extension-access|extension-refresh/,
+  );
+});
+
+for (const [name, source] of [
+  ['loading', 'export default () => { throw new Error("Broken extension"); };'],
+  ['registration', 'export default pi => pi.registerProvider({id: ""});'],
+]) {
+  void test(`global account runtime reports SDK extension ${name} errors and keeps healthy providers usable`, async t => {
+    const {agentDir, authPath} = await fixture(t);
+    await mkdir(join(agentDir, 'extensions'));
+    await writeFile(join(agentDir, 'extensions', 'broken.js'), source);
+    const accounts = new DesktopAccounts({
+      changed: () => {},
+      openBrowser: async () => {},
+    });
+    t.after(() => accounts.dispose());
+    const state = await accounts.get();
+    assert.ok(
+      state.providers.some(
+        provider =>
+          provider.id === 'openai' && provider.oauth && provider.apiKey,
+      ),
+    );
+    assert.match(state.diagnostics!.join('\n'), /broken\.js/);
+    accounts.start('other', 'logout');
+    await waitFor(() => !accounts.snapshot().attempt);
+    assert.equal(accounts.snapshot().error, undefined);
+    assert.match(accounts.snapshot().diagnostics!.join('\n'), /broken\.js/);
+    assert.deepEqual(JSON.parse(await readFile(authPath, 'utf8')), {});
+  });
+}
+
+void test('all OAuth provider variants receive SDK login options without creating an unused device ID', async t => {
+  const {accounts, runtime, agentDir} = await fixture(t);
+  const settingsPath = join(agentDir, 'settings.json');
+  await writeFile(settingsPath, 'unused invalid settings');
+  const visited: string[] = [];
+  const login: ModelRuntime['login'] = async (
+    provider,
+    method,
+    _interaction,
+    options,
+  ) => {
+    assert.equal(method, 'oauth');
+    assert.equal(typeof options?.getDeviceId, 'function');
+    assert.equal(options?.agentName, 'VarisDev');
+    visited.push(provider);
+    return {
+      type: 'oauth',
+      access: 'private-token',
+      refresh: 'private-refresh',
+      expires: 0,
+    };
+  };
+  t.mock.method(runtime, 'login', login);
+  const providers = runtime
+    .getProviders()
+    .filter(provider => provider.auth.oauth);
+  assert.ok(providers.some(provider => provider.id === 'openai'));
+  assert.ok(providers.some(provider => provider.id === 'openai-codex'));
+  assert.ok(providers.some(provider => provider.id === 'github-copilot'));
+  for (const provider of providers) {
+    accounts.start(provider.id, 'oauth');
+    await waitFor(() => !accounts.snapshot().attempt);
+    assert.equal(accounts.snapshot().error, undefined, provider.id);
+  }
+  assert.deepEqual(
+    visited,
+    providers.map(provider => provider.id),
+  );
+  assert.equal(await readFile(settingsPath, 'utf8'), 'unused invalid settings');
+});
+
+void test('provider prompts receive empty defaults and raw strings without adapter validation', async t => {
+  const {accounts, runtime, reply, states} = await fixture(t);
+  const provider = runtime.getProvider('github-copilot')!;
+  runtime.registerNativeProvider({
+    ...provider,
+    auth: {
+      oauth: {
+        ...provider.auth.oauth!,
+        async login(interaction) {
+          assert.equal(
+            await interaction.prompt({
+              type: 'text',
+              message: 'Blank for default domain',
+            }),
+            '',
+          );
+          assert.equal(
+            await interaction.prompt({type: 'secret', message: 'Optional key'}),
+            '',
+          );
+          assert.equal(
+            await interaction.prompt({
+              type: 'manual_code',
+              message: 'Continue',
+            }),
+            '',
+          );
+          assert.equal(
+            await interaction.prompt({type: 'text', message: 'Exact value'}),
+            '  raw input  ',
+          );
+          interaction.notify({
+            type: 'info',
+            message: 'Provider accepted defaults.',
+          });
+          return {
+            type: 'oauth',
+            access: 'private-token',
+            refresh: 'private-refresh',
+            expires: Date.now() + 3600000,
+          };
+        },
+      },
+    },
+  });
+  accounts.start(provider.id, 'oauth');
+  for (const message of [
+    'Blank for default domain',
+    'Optional key',
+    'Continue',
+    'Exact value',
+  ]) {
+    await waitFor(() => accounts.snapshot().prompt?.message === message);
+    assert.equal(accounts.snapshot().prompt?.allowEmpty, true);
+    reply(message === 'Exact value' ? '  raw input  ' : '');
+  }
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(accounts.snapshot().error, undefined);
+  assert.ok(
+    states.some(state => state.message === 'Provider accepted defaults.'),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(states),
+    /private-token|private-refresh|\[redacted\]/,
+  );
+});
+
+void test('stored credentials for unavailable providers remain visible and can be logged out through the SDK', async t => {
+  const {accounts, authPath} = await fixture(t);
+  const state = await accounts.get();
+  assert.deepEqual(
+    state.providers.find(provider => provider.id === 'other'),
+    {
+      id: 'other',
+      name: 'other',
+      oauth: false,
+      apiKey: false,
+      stored: true,
+      status: 'API key saved',
+    },
+  );
+  accounts.start('other', 'logout');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(accounts.snapshot().error, undefined);
+  assert.equal(accounts.snapshot().message, 'Signed out of other.');
+  assert.deepEqual(JSON.parse(await readFile(authPath, 'utf8')), {});
+  assert.equal(
+    accounts.snapshot().providers.some(provider => provider.id === 'other'),
+    false,
+  );
+});
+
+void test('catalog refresh failures preserve the SDK login result and do not expose provider errors', async t => {
+  const {accounts, runtime, authPath, states, reply} = await fixture(t);
+  const originalRefresh = runtime.refresh.bind(runtime);
+  t.mock.method(
+    runtime,
+    'refresh',
+    async (options: Parameters<ModelRuntime['refresh']>[0]) => {
+      if (options?.allowNetwork) {
+        assert.deepEqual(options.providers, ['openai']);
+        return {
+          aborted: false,
+          errors: new Map([
+            ['openai', new Error('private-refresh-credential')],
+          ]),
+        };
+      }
+      return originalRefresh(options);
+    },
+  );
+  accounts.start('openai', 'api_key');
+  await waitFor(() => Boolean(accounts.snapshot().prompt));
+  reply('saved-api-key');
+  await waitFor(() => !accounts.snapshot().attempt);
+  assert.equal(accounts.snapshot().message, 'API key saved for OpenAI.');
+  assert.equal(
+    accounts.snapshot().error,
+    'Credentials saved, but the model catalog could not be refreshed.',
+  );
+  assert.equal(
+    JSON.parse(await readFile(authPath, 'utf8')).openai.key,
+    'saved-api-key',
+  );
+  assert.doesNotMatch(
+    JSON.stringify(states),
+    /private-refresh-credential|saved-api-key/,
+  );
 });
 
 void test('cancellation, stale replies, callback races and failures preserve credentials', async t => {

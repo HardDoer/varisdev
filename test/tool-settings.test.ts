@@ -28,14 +28,17 @@ async function isolate(t: TestContext) {
   return join(directory, 'varisdev', 'tool-settings.json');
 }
 
-void test('tool settings default to inheritance and persist independent sections with deduplicated model IDs', async t => {
+void test('tool settings default to no allowed models and persist independent sections with deduplicated model IDs', async t => {
   const path = await isolate(t);
   const defaults = {
-    agents: {allowedModels: null},
+    agents: {allowedModels: []},
     commit: {model: null, thinkingLevel: null},
   };
   assert.deepEqual(await readToolSettings(), defaults);
-  await assertAgentModelAllowed('custom/organization/model');
+  await assert.rejects(
+    assertAgentModelAllowed('custom/organization/model'),
+    /No agent models selected.*Choose a model in Menu → Agent models/,
+  );
   await saveToolSettings('agents', {
     allowedModels: ['custom/organization/model', 'custom/organization/model'],
   });
@@ -89,7 +92,6 @@ void test('invalid shapes and IDs fail without changing saved settings', async t
     ['agents', []],
     ['agents', {}],
     ['agents', {allowedModels: null, extra: true}],
-    ['agents', {allowedModels: []}],
     ['agents', {allowedModels: 'p/m'}],
     ['agents', {allowedModels: Array(513).fill('p/m')}],
     ['agents', {allowedModels: Array(1)}],
@@ -118,7 +120,16 @@ void test('invalid shapes and IDs fail without changing saved settings', async t
 
 void test('cross-section conflicts are rejected inside the write queue and later valid saves succeed', async t => {
   await isolate(t);
+  await saveToolSettings('agents', {allowedModels: ['p/a']});
   await saveToolSettings('commit', {model: 'p/a', thinkingLevel: null});
+  await assert.rejects(
+    saveToolSettings('agents', {allowedModels: []}),
+    /Commit settings first/,
+  );
+  assert.deepEqual(await readToolSettings(), {
+    agents: {allowedModels: ['p/a']},
+    commit: {model: 'p/a', thinkingLevel: null},
+  });
   await assert.rejects(
     saveToolSettings('agents', {allowedModels: ['p/b']}),
     /Commit settings first/,
@@ -143,7 +154,7 @@ void test('malformed persisted data fails closed rather than allowing every mode
     '{broken',
     '{}',
     JSON.stringify({
-      agents: {allowedModels: []},
+      agents: {allowedModels: [false]},
       commit: {model: null, thinkingLevel: null},
     }),
   ]) {
@@ -159,4 +170,34 @@ void test('malformed persisted data fails closed rather than allowing every mode
     );
     assert.equal(await readFile(path, 'utf8'), content);
   }
+});
+
+void test('empty selections persist and deny models while legacy null stays readable', async t => {
+  const path = await isolate(t);
+  await mkdir(join(path, '..'), {recursive: true});
+  await writeFile(
+    path,
+    JSON.stringify({
+      agents: {allowedModels: null},
+      commit: {model: null, thinkingLevel: null},
+    }),
+  );
+  assert.equal((await readToolSettings()).agents.allowedModels, null);
+  await assertAgentModelAllowed('p/a');
+  await saveToolSettings('agents', {allowedModels: ['p/a']});
+  await saveToolSettings('agents', {allowedModels: []});
+  assert.deepEqual((await readToolSettings()).agents.allowedModels, []);
+  assert.deepEqual(
+    JSON.parse(await readFile(path, 'utf8')).agents.allowedModels,
+    [],
+  );
+  await assert.rejects(
+    assertAgentModelAllowed('p/a'),
+    /No agent models selected.*Menu → Agent models/,
+  );
+  await assert.rejects(
+    saveToolSettings('commit', {model: 'p/a', thinkingLevel: null}),
+    /No agent models selected.*Menu → Agent models/,
+  );
+  assert.equal((await readToolSettings()).commit.model, null);
 });

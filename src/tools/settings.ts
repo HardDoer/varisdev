@@ -17,7 +17,7 @@ const writes = new Map<string, Promise<void>>();
 const settingsPath = () =>
   join(getAgentDir(), 'varisdev', 'tool-settings.json');
 const defaults = (): ToolSettings => ({
-  agents: {allowedModels: null},
+  agents: {allowedModels: []},
   commit: {model: null, thinkingLevel: null},
 });
 
@@ -49,14 +49,8 @@ function modelId(value: unknown): string {
 function agents(value: unknown): ToolSettings['agents'] {
   const {allowedModels} = object(value, ['allowedModels']);
   if (allowedModels === null) return {allowedModels: null};
-  if (
-    !Array.isArray(allowedModels) ||
-    allowedModels.length === 0 ||
-    allowedModels.length > 512
-  )
-    throw new Error(
-      'Choose between 1 and 512 allowed models in Menu → Agent models, or use null to allow all models.',
-    );
+  if (!Array.isArray(allowedModels) || allowedModels.length > 512)
+    throw new Error('Choose up to 512 allowed models in Menu → Agent models.');
   return {allowedModels: [...new Set(Array.from(allowedModels, modelId))]};
 }
 
@@ -149,6 +143,10 @@ export async function assertAgentModelAllowed(
 ): Promise<void> {
   modelId(model);
   const {allowedModels} = (settings ?? (await readToolSettings())).agents;
+  if (allowedModels?.length === 0)
+    throw new Error(
+      'No agent models selected. Choose a model in Menu → Agent models.',
+    );
   if (allowedModels !== null && !allowedModels.includes(model))
     throw new Error(
       `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Agent models. Allowed models: ${allowedModels.join(', ')}.`,

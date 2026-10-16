@@ -14,10 +14,12 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {
   ModelRegistry,
   ModelRuntime,
+  ProjectTrustStore,
   SessionManager,
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
+import {saveToolSettings} from '../src/tools/settings.ts';
 import type {AgentSessionController} from '../src/agents/team.ts';
 import {observeDashboardSession} from '../src/dashboard/observe.ts';
 import type {DashboardState} from '../src/dashboard/state.ts';
@@ -228,8 +230,12 @@ void test(
     );
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}}),
+      JSON.stringify({retry: {enabled: false}, steeringMode: 'all'}),
     );
+    new ProjectTrustStore(agentDir).set(otherCwd, true);
+    await saveToolSettings('agents', {
+      allowedModels: [`${providerId}/dashboard-model`],
+    });
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(0, '127.0.0.1', resolve);
@@ -995,8 +1001,8 @@ void test(
     assert.equal(
       JSON.parse(await readFile(join(agentDir, 'settings.json'), 'utf8'))
         .steeringMode,
-      undefined,
-      'Desktop steering policy does not change the saved Pi settings',
+      'all',
+      'Explicit steering preferences remain in Pi settings',
     );
 
     // Standalone desktop parents select the user's configured model and auth.

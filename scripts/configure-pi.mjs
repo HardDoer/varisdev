@@ -1,5 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
+import {fileURLToPath, URL} from 'node:url';
+import process from 'node:process';
 
 /** Give the private Pi runtime its own project settings and resource directory. */
 export async function configureBundledPi(desktop) {
@@ -14,4 +16,13 @@ export async function configureBundledPi(desktop) {
     configDir: '.varisdev',
   };
   await writeFile(path, JSON.stringify(manifest, null, 2) + '\n');
+}
+
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  await configureBundledPi(
+    fileURLToPath(new URL('../desktop/', import.meta.url)),
+  );
 }

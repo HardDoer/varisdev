@@ -29,6 +29,10 @@ const sdk = '@earendil-works/pi-coding-agent';
 const execute = promisify(execFile);
 const initialRevision = 'a'.repeat(40);
 const nextRevision = 'b'.repeat(40);
+async function updateReady(manager: RuntimeManager): Promise<void> {
+  const state = await manager.update();
+  assert.equal(state.phase, 'ready', state.error);
+}
 async function put(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), {recursive: true});
   await writeFile(path, contents);
@@ -79,7 +83,14 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
   const temp = await realpath(
     await mkdtemp(join(tmpdir(), 'varisdev-update-test-')),
   );
-  t.after(() => rm(temp, {recursive: true, force: true}));
+  const previousNodeExecutable = process.env.VARISDEV_NODE_EXECUTABLE;
+  process.env.VARISDEV_NODE_EXECUTABLE = process.execPath;
+  t.after(async () => {
+    if (previousNodeExecutable === undefined)
+      delete process.env.VARISDEV_NODE_EXECUTABLE;
+    else process.env.VARISDEV_NODE_EXECUTABLE = previousNodeExecutable;
+    await rm(temp, {recursive: true, force: true});
+  });
   const installRoot = join(temp, 'package');
   const dataDir = join(temp, 'data');
   await appFiles(installRoot, '0.1.0', '0.85.1');
@@ -234,7 +245,7 @@ void test('full application update installs new code, dependencies and runtime a
 for (const failure of ['git', 'npm', 'compile', 'import']) {
   void test(`failed ${failure} preserves the active application and removes its partial install`, async t => {
     const f = await fixture(t);
-    assert.equal((await f.manager.update()).phase, 'ready');
+    await updateReady(f.manager);
     const previous = await f.manager.currentRoot();
     const pointer = await readFile(join(f.dataDir, 'active.json'), 'utf8');
     f.revision = 'c'.repeat(40);
@@ -257,7 +268,7 @@ void test('checks compare Git revisions even without a version bump and retain k
   const f = await fixture(t);
   f.latest = '0.1.0';
   assert.equal((await f.manager.check()).phase, 'available');
-  assert.equal((await f.manager.update()).phase, 'ready');
+  await updateReady(f.manager);
   const relaunched = new RuntimeManager({
     ...f.options,
     runningRoot: await f.manager.currentRoot(),
@@ -295,7 +306,7 @@ void test('updates remember Git access and fall back to HTTPS when SSH is unavai
     },
   };
   const manager = new RuntimeManager({...f.options, hooks});
-  assert.equal((await manager.update()).phase, 'ready');
+  await updateReady(manager);
   assert.deepEqual(sources, [
     'ssh://git@github.com/HardDoer/varisdev.git',
     'https://github.com/HardDoer/varisdev.git',
@@ -389,7 +400,7 @@ void test('live locks time out, and dead or incomplete owners are recovered', as
   await put(join(lock, 'owner.json'), '{partial');
   const old = new Date(Date.now() - 60000);
   await utimes(lock, old, old);
-  assert.equal((await f.manager.update()).phase, 'ready');
+  await updateReady(f.manager);
 });
 
 void test('invalid pointers and changed base installations fall back safely; legacy runtime pointers still load', async t => {
@@ -405,7 +416,7 @@ void test('invalid pointers and changed base installations fall back safely; leg
     }),
   );
   assert.equal(await f.manager.currentRoot(), f.installRoot);
-  assert.equal((await f.manager.update()).phase, 'ready');
+  await updateReady(f.manager);
   const active = await f.manager.currentRoot();
   const pointer = JSON.parse(
     await readFile(join(f.dataDir, 'active.json'), 'utf8'),
@@ -441,7 +452,7 @@ void test('a running app detects external updates and clears restart status afte
     runningRoot: f.installRoot,
   });
   assert.equal((await desktop.check()).restartRequired, false);
-  assert.equal((await f.manager.update()).phase, 'ready');
+  await updateReady(f.manager);
   assert.equal((await desktop.check()).restartRequired, true);
   const relaunched = new RuntimeManager({
     ...f.options,

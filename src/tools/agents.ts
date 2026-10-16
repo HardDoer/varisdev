@@ -328,7 +328,9 @@ export function registerAgentTools(
         'Start a background agent with its own conversation. ' +
         (allowedModels === null
           ? 'Accepts any model from the parent model registry in provider/model format. '
-          : `Allowed models: ${allowedModels.join(', ')}. Change these in Menu → Agent models. `) +
+          : allowedModels.length === 0
+            ? 'No agent models selected. Choose a model in Menu → Agent models before spawning an agent. '
+            : `Allowed models: ${allowedModels.join(', ')}. Change these in Menu → Agent models. `) +
         'Inherits the selected parent model when omitted; requires a model choice when the parent has none. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',
@@ -338,12 +340,14 @@ export function registerAgentTools(
           ...spawnSchema.properties,
           model: {
             ...spawnSchema.properties.model,
-            ...(allowedModels === null ? {} : {enum: allowedModels}),
+            ...(allowedModels?.length ? {enum: allowedModels} : {}),
             description:
               'Model in provider/model format. Inherits the selected parent model when omitted.' +
               (allowedModels === null
                 ? ''
-                : ` Allowed models: ${allowedModels.join(', ')}. Inherited models must also be allowed.`),
+                : allowedModels.length === 0
+                  ? ' No agent models selected. Choose a model in Menu → Agent models.'
+                  : ` Allowed models: ${allowedModels.join(', ')}. Inherited models must also be allowed.`),
           },
         },
       },
@@ -378,6 +382,8 @@ export function registerAgentTools(
           );
         const workerOptions = {
           cwd,
+          projectTrustOverride:
+            cwd === resolve(ctx.cwd) ? ctx.isProjectTrusted() : undefined,
           name: params.name,
           instructions: params.instructions,
           model,
@@ -439,8 +445,8 @@ export function registerAgentTools(
       },
     });
 
-  registerSpawn(null);
-  let spawnPolicy = JSON.stringify(null);
+  registerSpawn([]);
+  let spawnPolicy = JSON.stringify([]);
   const refreshSpawnPolicy = async () => {
     const {allowedModels} = (await readToolSettings()).agents;
     const policy = JSON.stringify(allowedModels);

@@ -10,7 +10,7 @@ import type {
 import {registerCommitCommand} from '../src/commit.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, selectModels = true) {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-commit-'));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
@@ -32,6 +32,10 @@ async function setup(t: TestContext) {
     },
     {provider: 'p', id: 'simple', reasoning: false},
   ];
+  if (selectModels)
+    await saveToolSettings('agents', {
+      allowedModels: models.map(model => `${model.provider}/${model.id}`),
+    });
   const ctx = {
     model: models[0],
     modelRegistry: {
@@ -119,6 +123,7 @@ void test('/commit reads saved model and effort on each invocation, including in
 
 void test('/commit rejects unavailable models, disallowed inheritance and stale explicit policy without dispatch', async t => {
   const fixture = await setup(t);
+  await saveToolSettings('agents', {allowedModels: ['missing/model']});
   await saveToolSettings('commit', {
     model: 'missing/model',
     thinkingLevel: null,
@@ -158,5 +163,14 @@ void test('/commit surfaces SDK effort limits and missing parent selection befor
   await assert.rejects(fixture.run(), /max is unsupported/);
   fixture.ctx.model = undefined;
   await assert.rejects(fixture.run(), /Choose a parent model/);
+  assert.equal(fixture.messages.length, 0);
+});
+
+void test('/commit requires an agent model selection with fresh settings', async t => {
+  const fixture = await setup(t, false);
+  await assert.rejects(
+    fixture.run(),
+    /No agent models selected.*Choose a model in Menu → Agent models/,
+  );
   assert.equal(fixture.messages.length, 0);
 });

@@ -40,6 +40,7 @@ export interface SessionFeatures {
 }
 
 export interface SessionConfiguration {
+  persist?: boolean;
   provider?: string;
   modelId?: string;
   thinkingLevel?: string;

@@ -8,7 +8,7 @@ The [project board example](../examples/project-board/) provides a tool, a `/pro
 varisdev install /absolute/path/to/project-board --local
 ```
 
-Use **Menu → Model defaults → Current session → Reload skills & extensions** in an idle parent session. Ask for `project_board`, or run `/project-board PLAN.md`. Open **Menu → Theme** to choose Ink. Agents load the project's installed plugins when they start.
+Run `/reload` to load the plugin. Ask for `project_board`, or run `/project-board PLAN.md`. Open **Menu → Theme** to choose Ink. Agents load the project's installed plugins when they start.
 
 ## Conversation visuals
 

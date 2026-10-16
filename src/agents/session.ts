@@ -1,6 +1,8 @@
 import {
-  createAgentSession,
-  DefaultResourceLoader,
+  createAgentSessionServices,
+  createAgentSessionFromServices,
+  ModelRuntime,
+  resolveModelScopeWithDiagnostics,
   getAgentDir,
   SessionManager,
   SettingsManager,
@@ -15,10 +17,8 @@ import {registerProjectTools} from '../tools/index.ts';
 import {createBuiltinExtensions} from '../builtin-extensions.ts';
 import {createAppResourceFilter} from '../dashboard/resources.ts';
 import type {AgentWorker} from './orchestrator.ts';
-import {
-  createWorkerModelRuntime,
-  flushPendingVirtualModelRegistrations,
-} from './model-runtime.ts';
+import {registerParentModelProviders} from './model-runtime.ts';
+import {projectTrustReloadOptions} from '../dashboard/project-trust.ts';
 import {WorkerConversation} from './conversation.ts';
 import {
   modelUsage,
@@ -36,6 +36,7 @@ interface WorkerOptions {
   model: NonNullable<CreateAgentSessionOptions['model']>;
   modelRegistry: ExtensionContext['modelRegistry'];
   thinkingLevel: CreateAgentSessionOptions['thinkingLevel'];
+  projectTrustOverride?: boolean;
   agentToolsExtension: ExtensionFactory;
 }
 
@@ -228,41 +229,66 @@ export async function createSessionWorker(
     options.id,
   );
   await mkdir(directory, {recursive: true});
-  const settingsManager = SettingsManager.create(options.cwd, agentDir);
+  const settingsManager = SettingsManager.create(options.cwd, agentDir, {
+    projectTrusted: false,
+  });
   const resources = createAppResourceFilter(
     settingsManager,
     options.cwd,
     agentDir,
   );
-  const loader = new DefaultResourceLoader({
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(directory, 'auth.json'),
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
+  const services = await createAgentSessionServices({
     cwd: options.cwd,
     agentDir,
     settingsManager: resources.settingsManager,
-    noThemes: true,
-    noPromptTemplates: true,
-    extensionFactories: [
-      ...createBuiltinExtensions(),
-      registerProjectTools,
-      options.agentToolsExtension,
-    ],
-    appendSystemPrompt: [
-      `You are the delegated agent ${JSON.stringify(options.name)}. Your agent ID is ${options.id}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
-      'Your conversation contains the delegated task and steering messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
-      'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to store a message for the parent to read with agent_inbox. This does not notify or wake the parent. Put your final result in your final answer; avoid duplicating it through agent_send. Your name and ID are attached automatically. Peer messages steer active work at the next turn boundary; completed agents resume their conversation to handle them.',
-      ...(options.instructions ? [options.instructions] : []),
-    ],
+    modelRuntime,
+    resourceLoaderReloadOptions: projectTrustReloadOptions(
+      options.cwd,
+      agentDir,
+      settingsManager,
+      options.projectTrustOverride,
+    ),
+    resourceLoaderOptions: {
+      noThemes: true,
+      noPromptTemplates: true,
+      extensionFactories: [
+        ...createBuiltinExtensions(),
+        registerProjectTools,
+        options.agentToolsExtension,
+      ],
+      appendSystemPrompt: [
+        `You are the delegated agent ${JSON.stringify(options.name)}. Your agent ID is ${options.id}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
+        'Your conversation contains the delegated task and steering messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
+        'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to store a message for the parent to read with agent_inbox. This does not notify or wake the parent. Put your final result in your final answer; avoid duplicating it through agent_send. Your name and ID are attached automatically. Peer messages steer active work at the next turn boundary; completed agents resume their conversation to handle them.',
+        ...(options.instructions ? [options.instructions] : []),
+      ],
+    },
   });
-  await loader.reload();
-  const sessionManager = SessionManager.create(options.cwd, directory);
-  const modelRuntime = await createWorkerModelRuntime(
+  services.settingsManager = settingsManager;
+  const errors = services.diagnostics.filter(item => item.type === 'error');
+  if (errors.length)
+    throw new Error(errors.map(item => item.message).join('\n'));
+  // Bind physical providers after the worker's extension registrations so their
+  // requests retain the parent's runtime credentials. Virtual routes stay local.
+  const providers = registerParentModelProviders(
     options.modelRegistry,
-    options.model,
-    directory,
-  );
-  flushPendingVirtualModelRegistrations(
-    loader.getExtensions().runtime,
     modelRuntime,
   );
+  if (
+    options.model.api !== 'pi-virtual' &&
+    !providers.includes(options.model.provider)
+  )
+    throw new Error(
+      `Parent model provider is unavailable: ${options.model.provider}`,
+    );
+  if (providers.length)
+    await modelRuntime.refresh({allowNetwork: false, providers});
+  const sessionManager = SessionManager.create(options.cwd, directory);
   if (
     options.model.api === 'pi-virtual' &&
     !modelRuntime.getModel(options.model.provider, options.model.id)
@@ -270,13 +296,15 @@ export async function createSessionWorker(
     throw new Error(
       `Virtual model ${options.model.provider}/${options.model.id} is not registered in this worker. Load its extension in the worker's project or global settings.`,
     );
-  const {session} = await createAgentSession({
-    cwd: options.cwd,
+  const patterns = settingsManager.getEnabledModels();
+  const scope = patterns?.length
+    ? await resolveModelScopeWithDiagnostics(patterns, modelRuntime)
+    : undefined;
+  const {session} = await createAgentSessionFromServices({
+    services,
+    scopedModels: scope?.scopedModels,
     model: options.model,
-    modelRuntime,
     thinkingLevel: options.thinkingLevel,
-    settingsManager,
-    resourceLoader: loader,
     sessionManager,
   });
   const worker = sessionWorker(session, join(directory, 'result.txt'));

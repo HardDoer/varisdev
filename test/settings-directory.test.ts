@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {execFile as execFileCallback} from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
@@ -11,6 +12,9 @@ import {
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {test, type TestContext} from 'node:test';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import {promisify} from 'node:util';
+import {configureBundledPi} from '../scripts/configure-pi.mjs';
 import {
   configureSettings,
   settingsDirectory,
@@ -70,11 +74,81 @@ void test('Pi directory overrides cannot redirect the bundled runtime', async t 
   assert.equal(configured.VARISDEV_CODING_AGENT_DIR, f.agent);
   assert.equal(configured.VARISDEV_CODING_AGENT_SESSION_DIR, undefined);
   assert.equal(configured.PI_PACKAGE_DIR, undefined);
-  // A deliberately launched standalone Pi child still receives its own paths.
-  assert.equal(configured.PI_CODING_AGENT_DIR, pi);
-  assert.equal(configured.PI_CODING_AGENT_SESSION_DIR, join(pi, 'sessions'));
+  assert.equal(configured.PI_CODING_AGENT_DIR, f.agent);
+  assert.equal(configured.PI_CODING_AGENT_SESSION_DIR, undefined);
   assert.deepEqual(configureSettings(configured), configured);
   assert.deepEqual(await readdir(f.home), []);
+});
+
+void test('bootstrap keeps unbranded and private SDK path lookups in VarisDev without initializing files', async t => {
+  const f = await fixture(t);
+  const execFile = promisify(execFileCallback);
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  for (const override of [undefined, join(f.home, 'custom-agent')]) {
+    const env = configureSettings({
+      ...process.env,
+      ...f.env,
+      VARISDEV_SETTINGS_DIR: override ?? '',
+      PI_CODING_AGENT_DIR: join(f.home, '.pi', 'agent'),
+      VARISDEV_CODING_AGENT_DIR: join(f.home, 'inherited-agent'),
+      PI_CODING_AGENT_SESSION_DIR: join(f.home, '.pi', 'sessions'),
+      VARISDEV_CODING_AGENT_SESSION_DIR: join(f.home, 'inherited-sessions'),
+    });
+    const expected = override ?? f.agent;
+    for (const prefix of ['', 'desktop/']) {
+      const config = pathToFileURL(
+        join(
+          root,
+          prefix,
+          'node_modules/@earendil-works/pi-coding-agent/dist/config.js',
+        ),
+      ).href;
+      const {stdout} = await execFile(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+          const config = await import(${JSON.stringify(config)});
+          console.log(JSON.stringify({
+            agent: config.getAgentDir(), auth: config.getAuthPath(),
+            settings: config.getSettingsPath(), models: config.getModelsPath(),
+            sessionOverride: process.env[config.ENV_SESSION_DIR] ?? null,
+          }));
+        `,
+        ],
+        {env},
+      );
+      assert.deepEqual(JSON.parse(stdout), {
+        agent: expected,
+        auth: join(expected, 'auth.json'),
+        settings: join(expected, 'settings.json'),
+        models: join(expected, 'models.json'),
+        sessionOverride: null,
+      });
+    }
+    assert.deepEqual(await readdir(f.home), []);
+  }
+});
+
+void test('private SDK configuration preserves package metadata and the standalone SDK', async t => {
+  const f = await fixture(t);
+  const relative = 'node_modules/@earendil-works/pi-coding-agent/package.json';
+  const privateManifest = join(f.home, 'desktop', relative);
+  const stockManifest = join(f.home, relative);
+  const original = {
+    name: 'sdk-fixture',
+    version: '1.0.0',
+    piConfig: {configDir: '.pi', other: true},
+  };
+  await f.put(privateManifest, JSON.stringify(original));
+  await f.put(stockManifest, JSON.stringify(original));
+  await configureBundledPi(join(f.home, 'desktop'));
+  assert.deepEqual(JSON.parse(await readFile(privateManifest, 'utf8')), {
+    ...original,
+    piConfig: {...original.piConfig, name: 'varisdev', configDir: '.varisdev'},
+  });
+  assert.deepEqual(JSON.parse(await readFile(stockManifest, 'utf8')), original);
 });
 
 void test('legacy flat VarisDev profiles migrate without changing originals or Pi', async t => {

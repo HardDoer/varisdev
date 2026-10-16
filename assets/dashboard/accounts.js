@@ -69,7 +69,12 @@ export function initAccounts(api) {
           ? 'Replace with API key'
           : 'Enter API key';
     $('accounts-message').textContent = state.message;
-    $('accounts-error').textContent = failure || state.error || '';
+    $('accounts-error').textContent = [
+      failure || state.error,
+      ...(state.diagnostics || []),
+    ]
+      .filter(Boolean)
+      .join('\n');
     $('accounts-error').hidden = !$('accounts-error').textContent;
     $('accounts-device').hidden = !state.deviceCode;
     $('accounts-device-code').value = state.deviceCode || '';
@@ -148,7 +153,6 @@ export function initAccounts(api) {
   async function open(options = {}) {
     const menu = $('app-menu-panel');
     if (menu.matches(':popover-open')) menu.hidePopover();
-    $('session-settings-dialog').close();
     logoutProvider = undefined;
     if (!dialog.open) dialog.showModal();
     await run(() => api.getAccounts());
@@ -204,7 +208,7 @@ export function initAccounts(api) {
     element.addEventListener(event, callback);
     listeners.push(() => element.removeEventListener(event, callback));
   }
-  for (const id of ['open-accounts', 'welcome-accounts', 'settings-accounts'])
+  for (const id of ['open-accounts', 'welcome-accounts'])
     listen(id, 'click', () => void open());
   listen('accounts-provider', 'change', () => {
     logoutProvider = undefined;

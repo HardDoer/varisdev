@@ -9,7 +9,7 @@ let browser;
 const reads = [];
 const writes = [];
 let settings = {
-  agents: {allowedModels: null},
+  agents: {allowedModels: []},
   commit: {model: null, thinkingLevel: null},
 };
 const models = [
@@ -265,16 +265,22 @@ async function main() {
   await click('tool-settings-retry');
   await waitFor(() => !document.getElementById('tool-settings-content').hidden);
   assert.equal(reads.at(-1), 'project');
-  assert.equal(
-    await evaluate(() => document.getElementById('agent-model-mode').value),
-    'all',
-  );
-  await change('agent-model-mode', 'selected');
-  assert.equal(
-    await evaluate(
-      () => document.getElementById('tool-settings-save').disabled,
-    ),
-    true,
+  assert.deepEqual(
+    await evaluate(() => ({
+      mode: Boolean(document.getElementById('agent-model-mode')),
+      choices: [
+        ...document.querySelectorAll('#tool-settings-models input'),
+      ].map(input => ({checked: input.checked, disabled: input.disabled})),
+      saveDisabled: document.getElementById('tool-settings-save').disabled,
+    })),
+    {
+      mode: false,
+      choices: [
+        {checked: false, disabled: false},
+        {checked: false, disabled: false},
+      ],
+      saveDisabled: false,
+    },
   );
   await search('swift');
   assert.equal(
@@ -306,7 +312,7 @@ async function main() {
   saveError = 'Disk is read only';
   await click('tool-settings-save');
   await waitFor(() => !document.getElementById('tool-settings-error').hidden);
-  assert.deepEqual(settings.agents, {allowedModels: null});
+  assert.deepEqual(settings.agents, {allowedModels: []});
   assert.equal(
     await evaluate(
       () => document.querySelector('#tool-settings-models input').checked,
@@ -324,7 +330,7 @@ async function main() {
     true,
   );
   report.cases.push(
-    'lazy catalog, load retry, search, nonempty validation and save failure preservation',
+    'lazy catalog, load retry, explicit deselected defaults, search and save failure preservation',
   );
 
   hub.sessions[1].agents = [agent()];
@@ -492,9 +498,9 @@ async function main() {
   await click('commit-inherit-model');
   await save();
   await open('agents');
-  await change('agent-model-mode', 'all');
+  await selectModel('alpha/small');
   await save();
-  assert.deepEqual(settings.agents, {allowedModels: null});
+  assert.deepEqual(settings.agents, {allowedModels: []});
   await open('commit');
   assert.equal(
     await evaluate(
@@ -503,11 +509,23 @@ async function main() {
           '#tool-settings-models input[value="beta/large"]',
         ).disabled,
     ),
-    false,
+    true,
   );
   await click('tool-settings-close');
+  settings.agents.allowedModels = null;
+  await open('agents');
+  assert.equal(
+    await evaluate(
+      () =>
+        document.querySelectorAll('#tool-settings-models input:checked').length,
+    ),
+    0,
+    'Legacy all-model settings open as an explicit empty draft',
+  );
+  await save();
+  assert.deepEqual(settings.agents, {allowedModels: []});
   report.cases.push(
-    'unavailable saved models stay visible and removable; all-models default restores choices',
+    'unavailable saved models stay removable; empty and legacy selections require explicit choices',
   );
 
   acknowledged = false;
@@ -561,6 +579,9 @@ async function main() {
     'notice read failure retries after spawn; Escape persists acknowledgment once',
   );
 
+  await open('agents');
+  await selectModel('beta/large');
+  await save();
   await submit('/commitment inspect');
   await waitFor(() => document.getElementById('parent-prompt').value === '');
   assert.equal(prompts.length, 1);

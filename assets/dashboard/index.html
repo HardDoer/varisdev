@@ -69,7 +69,8 @@
       <p id="about-credit">VarisDev by Joonas Nousiainen 2026</p>
       <p>Open source under the MIT License.</p>
       <p>
-        Built on Pi, the open-source coding harness by Mario Zechner and contributors.
+        Built on Pi, the open-source coding harness by Mario Zechner and
+        contributors.
       </p>
     </dialog>
     <dialog id="updates-dialog" aria-labelledby="updates-title">
@@ -198,13 +199,6 @@
         <p id="tool-settings-description"></p>
         <p id="tool-settings-loading" role="status">Loading models from Pi…</p>
         <div id="tool-settings-content" hidden>
-          <div id="agent-model-settings">
-            <label for="agent-model-mode">Allowed models</label>
-            <select id="agent-model-mode">
-              <option value="all">All available models (default)</option>
-              <option value="selected">Only selected models</option>
-            </select>
-          </div>
           <div id="commit-model-settings" hidden>
             <label for="commit-thinking">Thinking level</label>
             <select id="commit-thinking">
@@ -462,12 +456,14 @@
                   <div class="app-menu-actions">
                     <button
                       id="open-session-settings"
-                      aria-label="Model defaults"
-                      title="Select defaults when starting a new session"
+                      aria-label="Model"
+                      aria-haspopup="dialog"
+                      aria-controls="extension-dialog"
+                      title="Choose the session model"
                       class="quiet-button"
                       type="button"
                     >
-                      Model defaults
+                      Model
                     </button>
                     <button
                       id="open-agent-models"
@@ -1345,70 +1341,9 @@
         <div id="available-tools"></div>
       </details>
       <div id="resource-diagnostics" class="form-error" hidden></div>
-    </dialog>
-    <dialog
-      id="session-settings-dialog"
-      aria-labelledby="session-settings-title"
-      aria-describedby="model-defaults-description"
-    >
-      <div class="dialog-heading">
-        <h2 id="session-settings-title">Model defaults</h2>
-        <button
-          id="close-session-settings"
-          class="quiet-button"
-          type="button"
-          aria-label="Close model defaults"
-        >
-          ✕
-        </button>
-      </div>
-      <button
-        id="settings-accounts"
-        class="quiet-button"
-        type="button"
-        aria-haspopup="dialog"
-        aria-controls="accounts-dialog"
-      >
-        Accounts
-      </button>
-      <p id="model-defaults-description">
-        Save defaults and apply them to the selected open session.
-      </p>
-      <p class="muted">
-        Other open sessions keep their own model and effort. New sessions use
-        these defaults unless project settings override them. Resumed sessions
-        keep their saved choices.
-      </p>
-      <p id="model-defaults-status" class="muted" role="status"></p>
-      <form id="session-settings-form">
-        <label for="session-model">Default model</label
-        ><select id="session-model"></select>
-        <label for="session-thinking">Default thinking level (effort)</label
-        ><select id="session-thinking"></select>
-        <button
-          id="apply-session-settings"
-          class="primary-button"
-          type="submit"
-        >
-          Save defaults
-        </button>
-      </form>
-      <p id="model-defaults-error" class="form-error" role="alert" hidden></p>
-      <button
-        id="model-defaults-retry"
-        class="quiet-button"
-        type="button"
-        hidden
-      >
-        Retry loading defaults
-      </button>
       <section id="session-maintenance" class="session-maintenance" hidden>
         <h3>Current session</h3>
         <p id="session-maintenance-name" class="muted"></p>
-        <p class="muted">
-          To change only this session’s model or effort, use /model or /thinking
-          in the prompt.
-        </p>
         <label for="compact-instructions"
           >Compaction instructions <span class="muted">optional</span></label
         >
@@ -1461,6 +1396,7 @@
           hidden
           aria-label="Choose an option"
         ></select>
+        <p id="extension-dialog-empty" class="muted" role="status" hidden></p>
         <div
           id="extension-dialog-terminal"
           hidden
@@ -1472,6 +1408,24 @@
           role="alert"
           hidden
         ></p>
+        <div id="extension-dialog-actions" class="dialog-footer" hidden>
+          <button
+            id="extension-dialog-action-default"
+            class="quiet-button"
+            type="button"
+            data-action="default"
+          >
+            Make as default
+          </button>
+          <button
+            id="extension-dialog-action-session"
+            class="primary-button"
+            type="button"
+            data-action="session"
+          >
+            Apply to session
+          </button>
+        </div>
         <div class="dialog-footer">
           <button
             id="cancel-extension-dialog"

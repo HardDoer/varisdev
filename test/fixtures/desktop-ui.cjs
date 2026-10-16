@@ -28,11 +28,6 @@ let creationError;
 let closeDelay;
 let closeError;
 let resumeError;
-let modelDefaults;
-let defaultsError;
-let defaultsSaveError;
-let defaultsSaveGate;
-let configurationError;
 let recentProjects;
 
 function features() {
@@ -156,19 +151,6 @@ function reset() {
     },
   ];
   recentProjects = [directory, join(directory, 'other-project')];
-  defaultsError =
-    defaultsSaveError =
-    defaultsSaveGate =
-    configurationError =
-      undefined;
-  modelDefaults = {
-    model: {provider: 'fixture-other', id: 'large'},
-    thinkingLevel: 'high',
-    models: features().models.map(model => ({
-      ...model,
-      thinkingLevels: ['off', 'low', 'medium', 'high'],
-    })),
-  };
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
@@ -197,6 +179,34 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
       }
       window.webContents.send('fixture:snapshot', hub);
     }
+    if (method === 'prompt' && request.prompt === '/model') {
+      target.ui ||= {dialogs: [], notifications: [], statuses: []};
+      target.ui.dialogs = [
+        {
+          id: 'native-model',
+          kind: 'terminal',
+          title: 'Model',
+          actions: [
+            {id: 'default', label: 'Make as default'},
+            {id: 'session', label: 'Apply to session'},
+          ],
+          terminal: {
+            columns: 100,
+            rows: 28,
+            output:
+              '\x1bcModel picker\r\n> \r\nfixture/small\r\nfixture-other/large',
+            revision: 1,
+          },
+        },
+      ];
+      window.webContents.send('fixture:snapshot', hub);
+      return;
+    }
+    if (
+      method === 'prompt' &&
+      /^\/(?:compact|reload)(?:\s|$)/.test(request.prompt)
+    )
+      return;
     if (
       method === 'prompt' &&
       ['/thinking', '/settings'].includes(request.prompt)
@@ -313,30 +323,6 @@ ipcMain.handle('fixture:features', async (_event, sessionId) => {
   if (failure) throw new Error(failure);
   return result;
 });
-ipcMain.handle('fixture:model-defaults', (_event, ...args) => {
-  assert.deepEqual(args, [], 'Defaults do not take a selected session');
-  if (defaultsError) throw new Error(defaultsError);
-  return modelDefaults;
-});
-ipcMain.handle('fixture:save-model-defaults', async (_event, request) => {
-  calls.push({method: 'saveModelDefaults', request});
-  if (defaultsSaveError) throw new Error(defaultsSaveError);
-  await defaultsSaveGate?.promise;
-  modelDefaults.model = {provider: request.provider, id: request.modelId};
-  modelDefaults.thinkingLevel = request.thinkingLevel;
-  return modelDefaults;
-});
-ipcMain.handle('fixture:configure', (_event, sessionId, request) => {
-  calls.push({method: 'configureSession', sessionId, request});
-  if (configurationError) throw new Error(configurationError);
-  const resource = resources.get(sessionId);
-  resource.model = {provider: request.provider, id: request.modelId};
-  resource.thinkingLevel = request.thinkingLevel;
-  const target = hub.sessions.find(item => item.session.id === sessionId);
-  target.session.model = `${request.provider}/${request.modelId}`;
-  target.session.thinkingLevel = request.thinkingLevel;
-  window.webContents.send('fixture:snapshot', hub);
-});
 for (const method of ['compact', 'reload']) {
   ipcMain.handle(`fixture:${method}`, (_event, sessionId, instructions) => {
     calls.push({method: `${method}Session`, sessionId, instructions});
@@ -346,7 +332,17 @@ ipcMain.handle('fixture:dialog', (_event, sessionId, dialogId, value) => {
   calls.push({method: 'respondToDialog', sessionId, dialogId, value});
   const target = hub.sessions.find(item => item.session.id === sessionId);
   const dialog = target.ui.dialogs.find(item => item.id === dialogId);
-  if (dialogId === 'native-thinking' && dialog?.options.includes(value)) {
+  if (
+    dialogId === 'native-model' &&
+    value &&
+    typeof value === 'object' &&
+    dialog?.actions.some(action => action.id === value.action)
+  ) {
+    if (!dialog.keepOpen) target.ui.dialogs = [];
+  } else if (
+    dialogId === 'native-thinking' &&
+    dialog?.options.includes(value)
+  ) {
     target.session.thinkingLevel = value;
     resources.get(sessionId).thinkingLevel = value;
     target.ui.dialogs = [];
@@ -2529,11 +2525,11 @@ async function main() {
           request: {prompt: command},
         });
         assert.equal(
-          await evaluate(
-            () => document.getElementById('session-settings-dialog').open,
+          await evaluate(() =>
+            document.getElementById('session-settings-dialog'),
           ),
-          false,
-          '/settings must not open the startup model defaults editor',
+          null,
+          'The separate model defaults editor must be removed',
         );
         if (command === '/thinking') {
           assert.deepEqual(
@@ -2600,333 +2596,143 @@ async function main() {
   );
 
   await run(
-    'menu model defaults apply to the selected idle or working session and also save without an open session',
+    'Menu Model shares the session model picker during active work and preserves the draft',
     async () => {
-      await evaluate(() =>
-        document.getElementById('open-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Model defaults did not load',
-      );
-      assert.deepEqual(
-        await evaluate(() => ({
-          model: document.getElementById('session-model').value,
-          thinking: document.getElementById('session-thinking').value,
-          title: document.getElementById('session-settings-title').textContent,
-          description: document
-            .getElementById('model-defaults-description')
-            .textContent.trim(),
-          save: document
-            .getElementById('apply-session-settings')
-            .textContent.trim(),
-          compact: document.getElementById('compact-session').disabled,
-        })),
-        {
-          model: 'fixture-other/large',
-          thinking: 'high',
-          title: 'Model defaults',
-          description:
-            'Save defaults and apply them to the selected open session.',
-          save: 'Save defaults',
-          compact: true,
-        },
-      );
-      for (const status of ['idle', 'running']) {
-        const request = {
-          provider: 'fixture',
-          modelId: 'small',
-          thinkingLevel: status === 'idle' ? 'low' : 'high',
-        };
-        await evaluate(request => {
-          const model = document.getElementById('session-model');
-          model.value = `${request.provider}/${request.modelId}`;
-          model.dispatchEvent(new Event('change'));
-          const effort = document.getElementById('session-thinking');
-          effort.value = request.thinkingLevel;
-          effort.dispatchEvent(new Event('change'));
-        }, request);
+      const draft = 'Unsent model menu draft';
+      await evaluate(draft => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = draft;
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      }, draft);
+      for (const [status, action] of [
+        ['idle', 'default'],
+        ['running', 'session'],
+        ['compacting', 'session'],
+      ]) {
         hub.sessions[0].session.status = status;
-        hub.sessions[0].session.thinkingLevel = 'medium';
+        if (status === 'running') {
+          hub.sessions[0].agents = [
+            {
+              id: 'model-worker',
+              name: 'Model worker',
+              task: 'Keep working',
+              model: 'fixture/small',
+              status: 'running',
+              activity: 'Working',
+              createdAt: at,
+              startedAt: at,
+              conversation: [],
+            },
+          ];
+          hub.sessions[0].totalAgents = 1;
+        }
         await publish();
-        await evaluate(() =>
-          document.getElementById('apply-session-settings').click(),
-        );
+        if (status === 'running')
+          await evaluate(() =>
+            document.querySelector('#active-workers button').click(),
+          );
+        await evaluate(() => {
+          document.getElementById('app-menu-button').click();
+          document.getElementById('open-session-settings').click();
+        });
         await until(
-          () => !document.getElementById('apply-session-settings').disabled,
-          'Save did not finish',
+          () =>
+            document.getElementById('extension-dialog').open &&
+            document.getElementById('extension-dialog-title').textContent ===
+              'Model',
+          'Menu Model did not open the session model picker',
         );
-        assert.deepEqual(calls.slice(-2), [
-          {method: 'saveModelDefaults', request},
-          {method: 'configureSession', sessionId: 'alpha', request},
-        ]);
-        assert.equal(hub.sessions[0].session.model, 'fixture/small');
-        assert.equal(
-          hub.sessions[0].session.thinkingLevel,
-          request.thinkingLevel,
-        );
-        assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
+        assert.deepEqual(calls.at(-1), {
+          method: 'prompt',
+          sessionId: 'alpha',
+          request: {prompt: '/model'},
+        });
         assert.deepEqual(
           await evaluate(() => ({
-            model: document.getElementById('factory-model').textContent,
-            effort: document.getElementById('factory-effort').textContent,
-            saved: document.getElementById('model-defaults-status').textContent,
+            draft: document.getElementById('parent-prompt').value,
+            oldDialog: document.getElementById('session-settings-dialog'),
+            oldAPI: typeof window.pidev.getModelDefaults,
+            terminal: !document.getElementById('extension-dialog-terminal')
+              .hidden,
+            parentView: !document.getElementById('parent-controls').hidden,
+            actions: [
+              ...document.querySelectorAll('#extension-dialog-actions button'),
+            ]
+              .filter(item => !item.hidden)
+              .map(item => item.textContent.trim()),
+            continueHidden: document.getElementById('submit-extension-dialog')
+              .hidden,
           })),
           {
-            model: 'fixture/small',
-            effort: `Effort: ${request.thinkingLevel}`,
-            saved:
-              'Defaults saved and applied to Alpha factory. Other open sessions are unchanged.',
+            draft,
+            oldDialog: null,
+            oldAPI: 'undefined',
+            terminal: true,
+            parentView: true,
+            actions: ['Make as default', 'Apply to session'],
+            continueHidden: true,
           },
         );
+        assert.equal(hub.sessions[0].session.status, status);
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR && status === 'idle')
+          await screenshot('model-selector');
+        await evaluate(
+          action =>
+            document
+              .getElementById(`extension-dialog-action-${action}`)
+              .click(),
+          action,
+        );
+        await until(
+          () => !document.getElementById('extension-dialog').open,
+          'The selector action did not settle',
+        );
+        assert.deepEqual(calls.at(-1), {
+          method: 'respondToDialog',
+          sessionId: 'alpha',
+          dialogId: 'native-model',
+          value: {action},
+        });
       }
+      hub.sessions[0].session.status = 'running';
+      await publish();
       await evaluate(() => {
-        document.getElementById('close-session-settings').click();
-        [...document.querySelectorAll('#parents button')]
-          .find(item => item.textContent.includes('Beta factory'))
-          .click();
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/model';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
       });
-      hub.sessions[1].session.model = 'fixture-other/large';
-      hub.sessions[1].session.thinkingLevel = 'off';
-      resources.get('beta').model = {provider: 'fixture-other', id: 'large'};
-      resources.get('beta').thinkingLevel = 'off';
-      await publish();
-      await evaluate(() =>
-        document.getElementById('open-session-settings').click(),
-      );
       await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Defaults did not reopen',
+        () => document.getElementById('extension-dialog').open,
+        '/model did not open the same picker',
       );
-      assert.deepEqual(
-        await evaluate(() => ({
-          model: document.getElementById('session-model').value,
-          thinking: document.getElementById('session-thinking').value,
-        })),
-        {model: 'fixture/small', thinking: 'high'},
-      );
-      // A feature refresh for another session must not overwrite an unsaved default.
-      await evaluate(() => {
-        const thinking = document.getElementById('session-thinking');
-        thinking.value = 'low';
-        thinking.dispatchEvent(new Event('change'));
+      assert.deepEqual(calls.at(-1), {
+        method: 'prompt',
+        sessionId: 'alpha',
+        request: {prompt: '/model'},
       });
-      hub.sessions[1].session.thinkingLevel = 'medium';
-      await publish();
-      await settle();
-      assert.equal(
-        await evaluate(() => document.getElementById('session-thinking').value),
-        'low',
-      );
-      defaultsSaveError = 'Could not save defaults';
+      hub.sessions[0].ui.dialogs[0].keepOpen = true;
       await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
+        document.getElementById('extension-dialog-action-default').click(),
       );
       await until(
-        () => !document.getElementById('model-defaults-error').hidden,
-        'Save error missing',
-      );
-      assert.equal(modelDefaults.thinkingLevel, 'high');
-      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
-      assert.equal(calls.at(-1).method, 'saveModelDefaults');
-      assert.equal(
-        await evaluate(() => document.getElementById('session-thinking').value),
-        'low',
-      );
-      defaultsSaveError = undefined;
-      await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Save retry failed',
-      );
-      assert.equal(modelDefaults.thinkingLevel, 'low');
-      assert.equal(hub.sessions[1].session.thinkingLevel, 'low');
-      assert.equal(hub.sessions[0].session.thinkingLevel, 'high');
-      hub.sessions = [];
-      await publish();
-      assert.deepEqual(
-        await evaluate(() => ({
-          open: document.getElementById('session-settings-dialog').open,
-          model: document.getElementById('session-model').value,
-          hidden: document.getElementById('open-session-settings').hidden,
-          disabled: document.getElementById('open-session-settings').disabled,
-          maintenance: document.getElementById('session-maintenance').hidden,
-        })),
-        {
-          open: true,
-          model: 'fixture/small',
-          hidden: false,
-          disabled: false,
-          maintenance: true,
-        },
-      );
-      const before = calls.length;
-      await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Saving without a session did not finish',
-      );
-      assert.deepEqual(calls.slice(before), [
-        {
-          method: 'saveModelDefaults',
-          request: {
-            provider: 'fixture',
-            modelId: 'small',
-            thinkingLevel: 'low',
-          },
-        },
-      ]);
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('model-defaults-status').textContent,
-        ),
-        'Defaults saved for new sessions.',
-      );
-      await evaluate(() =>
-        document.getElementById('close-session-settings').click(),
-      );
-      defaultsError = 'Could not read defaults';
-      await evaluate(() =>
-        document.getElementById('open-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('model-defaults-retry').hidden,
-        'Load failure must be retryable',
+        () =>
+          !document.getElementById('extension-dialog-action-default').disabled,
+        'The pending action did not finish',
       );
       assert.equal(
-        await evaluate(
-          () => document.getElementById('apply-session-settings').disabled,
-        ),
+        await evaluate(() => document.getElementById('extension-dialog').open),
         true,
+        'An action without a selection must leave the picker open',
       );
-      defaultsError = undefined;
       await evaluate(() =>
-        document.getElementById('model-defaults-retry').click(),
+        document.getElementById('cancel-extension-dialog').click(),
       );
       await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Load retry failed',
+        () => !document.getElementById('extension-dialog').open,
+        'Cancel did not close the picker',
       );
-      assert.equal(
-        await evaluate(() => document.getElementById('session-thinking').value),
-        'low',
-      );
-      await evaluate(() =>
-        document.getElementById('close-session-settings').click(),
-      );
-      assert.deepEqual(
-        calls
-          .filter(call => call.method === 'configureSession')
-          .map(call => call.sessionId),
-        ['alpha', 'alpha', 'beta'],
-      );
-    },
-  );
-
-  await run(
-    'model defaults initialize a blank session, pin the save target and report apply failures separately',
-    async () => {
-      delete hub.sessions[0].session.model;
-      hub.sessions[0].session.thinkingLevel = 'off';
-      hub.sessions[0].session.status = 'idle';
-      delete resources.get('alpha').model;
-      resources.get('alpha').thinkingLevel = 'off';
-      await publish();
-      await evaluate(() =>
-        document.getElementById('open-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Defaults did not load for the blank session',
-      );
-      await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
-      );
-      await until(
-        () =>
-          !document.getElementById('apply-session-settings').disabled &&
-          document.getElementById('factory-effort').textContent ===
-            'Effort: high',
-        'Defaults did not reach the model-less selected session',
-      );
-      assert.equal(hub.sessions[0].session.model, 'fixture-other/large');
-      assert.equal(hub.sessions[0].session.thinkingLevel, 'high');
-      assert.equal(hub.sessions[1].session.model, 'fixture/small');
-      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
-
-      defaultsSaveGate = Promise.withResolvers();
-      await evaluate(() => {
-        const thinking = document.getElementById('session-thinking');
-        thinking.value = 'low';
-        thinking.dispatchEvent(new Event('change'));
-        document.getElementById('apply-session-settings').click();
-        [...document.querySelectorAll('#parents button')]
-          .find(item => item.textContent.includes('Beta factory'))
-          .click();
-      });
-      defaultsSaveGate.resolve();
-      await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Delayed defaults save did not finish',
-      );
-      assert.equal(calls.at(-1).sessionId, 'alpha');
-      assert.equal(hub.sessions[0].session.thinkingLevel, 'low');
-      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('factory-effort').textContent,
-        ),
-        'Effort: medium',
-      );
-
-      configurationError = 'Authentication is not configured for this model.';
-      await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('model-defaults-error').hidden,
-        'Apply failure was not reported',
-      );
-      assert.equal(modelDefaults.thinkingLevel, 'low');
-      assert.equal(hub.sessions[1].session.thinkingLevel, 'medium');
-      assert.match(
-        await evaluate(
-          () => document.getElementById('model-defaults-error').textContent,
-        ),
-        /Defaults saved, but could not apply them to Beta factory: .*Authentication/,
-      );
-      configurationError = undefined;
-      await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
-      );
-      await until(
-        () =>
-          !document.getElementById('apply-session-settings').disabled &&
-          document.getElementById('model-defaults-error').hidden,
-        'Retrying the apply failure did not succeed',
-      );
-      assert.equal(hub.sessions[1].session.model, 'fixture-other/large');
-      assert.equal(hub.sessions[1].session.thinkingLevel, 'low');
-      hub.sessions[1].session.status = 'closed';
-      hub.sessions[1].session.controllable = false;
-      await publish();
-      const before = calls.length;
-      await evaluate(() =>
-        document.getElementById('apply-session-settings').click(),
-      );
-      await until(
-        () => !document.getElementById('apply-session-settings').disabled,
-        'Saving with a closed selection did not finish',
-      );
-      assert.equal(calls.length, before + 1);
-      assert.equal(calls.at(-1).method, 'saveModelDefaults');
-      await evaluate(() =>
-        document.getElementById('close-session-settings').click(),
-      );
+      assert.equal(hub.sessions[0].session.status, 'running');
     },
   );
 
@@ -3549,7 +3355,6 @@ async function main() {
         document.dispatchEvent(
           new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}),
         );
-        document.getElementById('open-session-settings').click();
         document.getElementById('open-commands').click();
         document.querySelector('#conversation details summary').click();
         [...document.querySelectorAll('#active-workers button')]
@@ -3561,20 +3366,6 @@ async function main() {
         calls,
         [],
         'Agent view shortcuts cannot act on the parent',
-      );
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('session-settings-dialog').open,
-        ),
-        true,
-        'App defaults remain available while inspecting an agent',
-      );
-      await until(
-        () => !document.getElementById('close-session-settings').disabled,
-        'Defaults finished loading',
-      );
-      await evaluate(() =>
-        document.getElementById('close-session-settings').click(),
       );
       assert.equal(
         await evaluate(
@@ -4391,12 +4182,10 @@ async function main() {
       );
       hub.sessions[0].session.status = 'idle';
       await publish();
-      await evaluate(() =>
-        document.getElementById('open-session-settings').click(),
-      );
+      await evaluate(() => document.getElementById('open-commands').click());
       await until(
         () => !document.getElementById('reload-session').disabled,
-        'Settings did not load',
+        'Session commands did not load',
       );
       resources.get('alpha').contextFiles = [doc('after-reload')];
       await evaluate(() => document.getElementById('reload-session').click());
@@ -4408,12 +4197,13 @@ async function main() {
       );
       assert.ok(
         calls.some(
-          call => call.method === 'reloadSession' && call.sessionId === 'alpha',
+          call =>
+            call.method === 'prompt' &&
+            call.sessionId === 'alpha' &&
+            call.request.prompt === '/reload',
         ),
       );
-      await evaluate(() =>
-        document.getElementById('close-session-settings').click(),
-      );
+      await evaluate(() => document.getElementById('close-commands').click());
     },
   );
 
@@ -6133,7 +5923,7 @@ async function main() {
           startHidden: true,
           closeHidden: true,
           commandsOpen: false,
-          settingsDisabled: false,
+          settingsDisabled: true,
           openFolder: 'Open folder',
         },
         'Parent-only actions are hidden when no parent remains',

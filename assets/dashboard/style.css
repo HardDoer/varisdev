@@ -2122,12 +2122,11 @@ dialog::backdrop {
 .resource-tool span {
   color: var(--muted);
 }
-#session-settings-dialog label {
+.session-maintenance label {
   display: block;
   margin: 14px 0 6px;
   font-size: 0.875rem;
 }
-#session-settings-dialog select,
 #extension-dialog-select {
   width: 100%;
   padding: 9px 12px;

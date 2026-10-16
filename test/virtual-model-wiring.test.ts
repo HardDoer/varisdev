@@ -1,16 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import type {AnyModel, Provider} from '@earendil-works/pi-ai';
-import type {
-  ExtensionContext,
-  LoadExtensionsResult,
-  ModelRuntime,
-  VirtualModelDefinition,
-} from '@earendil-works/pi-coding-agent';
-import {
-  flushPendingVirtualModelRegistrations,
-  registerParentModelProviders,
-} from '../src/agents/model-runtime.ts';
+import type {ExtensionContext} from '@earendil-works/pi-coding-agent';
+import {registerParentModelProviders} from '../src/agents/model-runtime.ts';
 
 function model(provider: string, id: string, api = 'openai-completions') {
   return {provider, id, api} as AnyModel;
@@ -69,28 +61,39 @@ void test('worker provider bridge includes configured cross-provider route targe
   assert.deepEqual(registered[0].getAllModels?.(), [chat]);
 });
 
-void test('pending virtual registrations flush before VarisDev model lookup', () => {
-  const definition = {
-    provider: 'router',
-    id: 'auto',
-    name: 'Auto',
-    route() {
-      throw new Error('Routing is outside this wiring test.');
+void test('worker bridge preserves native subscription auth and delegates credential resolution', async () => {
+  const chat = model('subscription', 'chat');
+  const oauth = {
+    name: 'Subscription',
+    isSubscription: true,
+  } as NonNullable<Provider['auth']['oauth']>;
+  const native = {...provider('subscription', [chat]), auth: {oauth}};
+  const auth = {auth: {apiKey: 'parent-runtime-key'}};
+  let resolutions = 0;
+  const registry = {
+    getAll: () => [chat],
+    getModelsOfType: () => [],
+    getProviderAuthStatus: () => ({configured: true}),
+    isUsingOAuth: () => true,
+    getProvider: () => native,
+    getProviderAuth: async (id: string) => {
+      assert.equal(id, 'subscription');
+      resolutions++;
+      return auth;
     },
-  } satisfies VirtualModelDefinition;
-  const extensionRuntime = {
-    pendingVirtualModelRegistrations: [
-      {definition, extensionPath: '/extensions/router.ts'},
-    ],
-  } as unknown as LoadExtensionsResult['runtime'];
-  const registered: VirtualModelDefinition[] = [];
-
-  flushPendingVirtualModelRegistrations(extensionRuntime, {
-    registerVirtualModel(value) {
-      registered.push(value);
+  } as unknown as ExtensionContext['modelRegistry'];
+  let bridge: Provider | undefined;
+  registerParentModelProviders(registry, {
+    registerNativeProvider(value) {
+      bridge = value;
     },
-  } as Pick<ModelRuntime, 'registerVirtualModel'>);
-
-  assert.deepEqual(registered, [definition]);
-  assert.deepEqual(extensionRuntime.pendingVirtualModelRegistrations, []);
+  });
+  assert.equal(bridge!.auth.oauth, oauth);
+  assert.equal(bridge!.auth.oauth!.isSubscription, true);
+  const input = {signal: new AbortController().signal} as Parameters<
+    NonNullable<Provider['auth']['apiKey']>['resolve']
+  >[0];
+  assert.deepEqual(await bridge!.auth.apiKey!.check!(input), {type: 'oauth'});
+  assert.equal(await bridge!.auth.apiKey!.resolve(input), auth);
+  assert.equal(resolutions, 1);
 });

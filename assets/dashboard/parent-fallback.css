@@ -74,7 +74,8 @@
 /* All motion comes from the bounded shared physics clock, never CSS loops.
    The doors sit below the body so a clipped replacement rises out of the pit. */
 .robot-floor-effects,
-.robot-debris-effects {
+.robot-debris-effects,
+.robot-cleanup-effects {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -91,11 +92,19 @@
   z-index: 4;
 }
 
+.robot-cleanup-effects {
+  z-index: 3;
+}
+
 .robot-damage-body {
   z-index: 2;
   transform-origin: center;
   transition: none !important;
   animation: none !important;
+}
+
+.parent-fallback-robot .robot-damage-body {
+  transform-origin: 0 0;
 }
 
 .robot-glyph > .robot-damage-marks {
@@ -115,7 +124,8 @@
 @media (prefers-reduced-motion: reduce) {
   .factory-visitors-fallback,
   .robot-floor-effects,
-  .robot-debris-effects {
+  .robot-debris-effects,
+  .robot-cleanup-effects {
     display: none;
   }
 }
@@ -128,4 +138,31 @@
   overflow: visible;
   pointer-events: none;
   z-index: 3;
+}
+
+.robot-glyph.robot-cane-surprised > i {
+  height: var(--damage-eye-height);
+  top: 7px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--text) 40%,
+    transparent 40% 60%,
+    var(--text) 60%
+  );
+  box-shadow: none;
+}
+
+.robot-glyph.robot-damage-corpse > i {
+  visibility: hidden;
+}
+
+.robot-glyph.robot-damage-corpse::before {
+  background: var(--muted);
+  box-shadow: none;
+}
+
+.fallback-station:has(.robot-cane-surprised)::after,
+.fallback-station:has(.robot-damage-corpse)::after {
+  visibility: hidden;
 }

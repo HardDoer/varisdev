@@ -49,7 +49,6 @@ import {DesktopTerminals} from './terminal.ts';
 import {openConversationFile} from './files.ts';
 import {DesktopAccounts} from './accounts.ts';
 import {DesktopToolSettings} from './tool-settings.ts';
-import {DesktopModelDefaults} from './model-defaults.ts';
 import {getToolModels, saveToolModel} from '../tools/model-selection.ts';
 import {
   hasConversationImage,
@@ -123,7 +122,6 @@ const hub = new DashboardHub(
   request => createDashboardParent(request),
   launchCwd,
 );
-const modelDefaults = new DesktopModelDefaults();
 const toolSettings = new DesktopToolSettings({
   sessionFeatures: sessionId => hub.sessionFeatures(sessionId),
 });
@@ -159,7 +157,6 @@ const sessionActions = new Set([
   'pidev:configure-session',
   'pidev:compact-session',
   'pidev:reload-session',
-  'varisdev:save-model-defaults',
 ]);
 let attachedSessionId: string | undefined;
 const requests = new ExternalSessionRequests(
@@ -246,8 +243,6 @@ function installHandlers(): void {
   handle('pidev:desktop-command', (action, input) =>
     desktopCommands.execute(action, input),
   );
-  handle('varisdev:get-model-defaults', () => modelDefaults.get());
-  handle('varisdev:save-model-defaults', input => modelDefaults.save(input));
   handle('varisdev:get-tool-settings', sessionId =>
     toolSettings.getToolSettings(
       sessionId === undefined ? undefined : id(sessionId),

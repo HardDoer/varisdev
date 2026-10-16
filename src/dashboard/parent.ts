@@ -1,19 +1,16 @@
 import {
-  createAgentSession,
-  DefaultResourceLoader,
+  createAgentSessionServices,
+  createAgentSessionFromServices,
   getAgentDir,
-  ModelRegistry,
   parseArgs,
+  resolveModelScopeWithDiagnostics,
   SessionManager,
   SettingsManager,
   type CreateAgentSessionOptions,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import {join, resolve} from 'node:path';
-import {
-  flushPendingVirtualModelRegistrations,
-  registerParentModelProviders,
-} from '../agents/model-runtime.ts';
+import {join} from 'node:path';
+import {registerParentModelProviders} from '../agents/model-runtime.ts';
 import type {AgentSessionController} from '../agents/team.ts';
 import {registerCommitCommand} from '../commit.ts';
 import {registerAgentTools} from '../tools/agents.ts';
@@ -31,6 +28,7 @@ import type {DashboardState} from './state.ts';
 import type {DesktopStartup} from '../desktop/startup.ts';
 import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
 import {createAppResourceFilter} from './resources.ts';
+import {projectTrustReloadOptions} from './project-trust.ts';
 import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
 import {createLlamaExtension} from './llama.ts';
 import {createBuiltinExtensions} from '../builtin-extensions.ts';
@@ -68,7 +66,9 @@ export async function createDashboardParent(
       : SessionManager.create(request.cwd);
   if (request.resume && sessionManager.getSessionId() !== request.resume.id)
     throw new Error('This saved session is no longer available.');
-  const settingsManager = SettingsManager.create(request.cwd, agentDir);
+  const settingsManager = SettingsManager.create(request.cwd, agentDir, {
+    projectTrusted: false,
+  });
   const resources = createAppResourceFilter(
     settingsManager,
     request.cwd,
@@ -88,51 +88,63 @@ export async function createDashboardParent(
     state?.record('error', message);
   };
   const llama = createLlamaExtension();
-  const loader = new DefaultResourceLoader({
-    ...resourceOptions,
-    additionalExtensionPaths: resources.paths(
-      resourceOptions.additionalExtensionPaths ?? [],
-    ),
-    additionalSkillPaths: resources.paths(
-      resourceOptions.additionalSkillPaths ?? [],
-    ),
-    additionalPromptTemplatePaths: resources.paths(
-      resourceOptions.additionalPromptTemplatePaths ?? [],
-    ),
-    additionalThemePaths: resources.paths(
-      resourceOptions.additionalThemePaths ?? [],
-    ),
-    cwd: request.cwd,
-    agentDir,
-    settingsManager: resources.settingsManager,
-    extensionFactories: [
-      ...createBuiltinExtensions(),
-      llama.extension,
-      pi => {
-        registerProjectTools(pi);
-        control = registerAgentTools(pi);
-        registerCommitCommand(pi);
-        showCustomMessage = observeDashboardSession(
-          pi,
-          control,
-          (current, ctx) => {
-            state = current;
-            context = ctx;
-          },
-          state,
-        );
-      },
-    ],
-  });
-  await loader.reload();
-  for (const [name, value] of args?.unknownFlags ?? [])
-    loader.getExtensions().runtime.flagValues.set(name, value);
   const modelRuntime = await createDesktopModelRuntime({
     authPath: join(agentDir, 'auth.json'),
     modelsPath: join(agentDir, 'models.json'),
     refreshOnCreate: !inherited,
   });
-  if (inherited && modelRuntime) {
+  const services = await createAgentSessionServices({
+    cwd: request.cwd,
+    agentDir,
+    settingsManager: resources.settingsManager,
+    modelRuntime,
+    extensionFlagValues: args?.unknownFlags,
+    resourceLoaderReloadOptions: projectTrustReloadOptions(
+      request.cwd,
+      agentDir,
+      settingsManager,
+      args?.projectTrustOverride,
+      report,
+    ),
+    resourceLoaderOptions: {
+      ...resourceOptions,
+      additionalExtensionPaths: resources.paths(
+        resourceOptions.additionalExtensionPaths ?? [],
+      ),
+      additionalSkillPaths: resources.paths(
+        resourceOptions.additionalSkillPaths ?? [],
+      ),
+      additionalPromptTemplatePaths: resources.paths(
+        resourceOptions.additionalPromptTemplatePaths ?? [],
+      ),
+      additionalThemePaths: resources.paths(
+        resourceOptions.additionalThemePaths ?? [],
+      ),
+      extensionFactories: [
+        ...createBuiltinExtensions(),
+        {name: LLAMA_PROVIDER, factory: llama.extension, builtin: true},
+        pi => {
+          registerProjectTools(pi);
+          control = registerAgentTools(pi);
+          registerCommitCommand(pi);
+          showCustomMessage = observeDashboardSession(
+            pi,
+            control,
+            (current, ctx) => {
+              state = current;
+              context = ctx;
+            },
+            state,
+          );
+        },
+      ],
+    },
+  });
+  const loader = services.resourceLoader;
+  // Resource deduplication applies to discovery; the session retains its settings.
+  services.settingsManager = settingsManager;
+  for (const diagnostic of services.diagnostics) report(diagnostic.message);
+  if (inherited) {
     const providers = registerParentModelProviders(
       inherited.modelRegistry,
       modelRuntime,
@@ -140,85 +152,32 @@ export async function createDashboardParent(
     if (providers.length)
       await modelRuntime.refresh({allowNetwork: false, providers});
   }
-  if (modelRuntime) {
-    // Extension providers must be available before selecting a saved default.
-    // Pi also flushes this queue while binding extensions, but that is too late
-    // for createAgentSession's initial model selection.
-    const runtime = loader.getExtensions().runtime;
-    for (const {name, config} of runtime.pendingProviderRegistrations)
-      modelRuntime.registerProvider(name, config);
-    runtime.pendingProviderRegistrations = [];
-    for (const {provider} of runtime.pendingNativeProviderRegistrations)
-      modelRuntime.registerNativeProvider(provider);
-    runtime.pendingNativeProviderRegistrations = [];
-    flushPendingVirtualModelRegistrations(runtime, modelRuntime);
-  }
-  const startupModel =
-    startup?.model && modelRuntime
-      ? new ModelRegistry(modelRuntime).find(
-          startup.model.provider,
-          startup.model.id,
-        )
-      : undefined;
-  if (startup?.model && !startupModel) {
-    if (resolve(startup.agentDir) === resolve(agentDir))
-      throw new Error(
-        `Could not restore model ${startup.model.provider}/${startup.model.id}.`,
-      );
+  const startupModel = startup?.model
+    ? modelRuntime.getModel(startup.model.provider, startup.model.id)
+    : undefined;
+  if (startup?.model && !startupModel)
     report(
-      `The previous model ${startup.model.provider}/${startup.model.id} is not configured in VarisDev. Select a model to continue.`,
+      `Could not restore model ${startup.model.provider}/${startup.model.id}.`,
     );
-  }
   if (args?.apiKey && startupModel)
-    await modelRuntime!.setRuntimeApiKey(startupModel.provider, args.apiKey);
-  const savedProvider = settingsManager.getDefaultProvider();
-  const savedModelId = settingsManager.getDefaultModel();
-  const savedModel =
-    savedProvider && savedModelId
-      ? modelRuntime.getModel(savedProvider, savedModelId)
-      : undefined;
-  // Pi otherwise picks a provider's preset or its first authenticated model.
-  // Suppress that fallback only during creation; saved/user choices still work.
-  const availableModels = modelRuntime.getAvailableSnapshot;
-  modelRuntime.getAvailableSnapshot = () => [];
-  let created: Awaited<ReturnType<typeof createAgentSession>>;
-  try {
-    created = await createAgentSession({
-      cwd: request.cwd,
-      agentDir,
-      model:
-        inherited?.model ??
-        startupModel ??
-        (request.resume || startup?.model ? undefined : savedModel),
-      modelRuntime,
-      thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
-      tools: startup?.tools,
-      excludeTools: args?.excludeTools,
-      settingsManager,
-      resourceLoader: loader,
-      sessionManager,
-    });
-  } finally {
-    modelRuntime.getAvailableSnapshot = availableModels;
-  }
-  const {session} = created;
-  // Agent core supplies an unknown/unknown placeholder when no model was chosen.
-  if (
-    (startup?.model && !startupModel) ||
-    (session.model?.provider === 'unknown' && session.model.id === 'unknown')
-  )
-    Reflect.set(session.agent.state, 'model', undefined);
+    await modelRuntime.setRuntimeApiKey(startupModel.provider, args.apiKey);
+  const patterns = args?.models ?? settingsManager.getEnabledModels();
+  const scope = patterns?.length
+    ? await resolveModelScopeWithDiagnostics(patterns, modelRuntime)
+    : undefined;
+  for (const diagnostic of scope?.diagnostics ?? []) report(diagnostic.message);
+  const {session, modelFallbackMessage} = await createAgentSessionFromServices({
+    services,
+    model: inherited?.model ?? startupModel,
+    thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
+    scopedModels: scope?.scopedModels,
+    tools: startup?.tools,
+    excludeTools: args?.excludeTools,
+    sessionManager,
+  });
+  if (modelFallbackMessage) report(modelFallbackMessage);
   // SDK initialization can append model metadata to an otherwise blank branch.
   if (startup?.leafId) sessionManager.branch(startup.leafId);
-  // Preserve VarisDev's default while honoring explicit queue preferences.
-  const applyQueueSettings = () => {
-    session.agent.steeringMode =
-      settingsManager.getProjectSettings().steeringMode ??
-      settingsManager.getGlobalSettings().steeringMode ??
-      'all';
-    session.agent.followUpMode = settingsManager.getFollowUpMode();
-  };
-  applyQueueSettings();
   const refreshAutocomplete = () =>
     ui.configureBaseAutocomplete(
       request.cwd,
@@ -228,7 +187,6 @@ export async function createDashboardParent(
     diagnostics.length = 0;
     await session.reload({
       beforeSessionStart: async () => {
-        applyQueueSettings();
         ui.resetExtensions();
         refreshAutocomplete();
       },
@@ -309,23 +267,27 @@ export async function createDashboardParent(
     operation: Promise<void>;
     trackExtensionOperations: boolean;
     extensionOperations: Promise<void>[];
+    countsAsRun: boolean;
   }
   const activePrompts = new Set<PromptRun>();
-  let extensionPrompt: PromptRun | undefined;
+  const extensionPrompts = new Set<PromptRun>();
   let maintaining = false;
   // Extension commands can start model turns without returning their promises.
   const sendUserMessage = session.sendUserMessage.bind(session);
   session.sendUserMessage = (...args) => {
     const operation = sendUserMessage(...args);
-    if (extensionPrompt?.trackExtensionOperations)
-      extensionPrompt.extensionOperations.push(operation);
+    for (const prompt of extensionPrompts)
+      if (prompt.trackExtensionOperations)
+        prompt.extensionOperations.push(operation);
     return operation;
   };
   const sendCustomMessage = session.sendCustomMessage.bind(session);
   session.sendCustomMessage = (message, options) => {
     const operation = sendCustomMessage(message, options);
-    if (options?.triggerTurn && extensionPrompt?.trackExtensionOperations)
-      extensionPrompt.extensionOperations.push(operation);
+    if (options?.triggerTurn)
+      for (const prompt of extensionPrompts)
+        if (prompt.trackExtensionOperations)
+          prompt.extensionOperations.push(operation);
     return operation;
   };
   const preserveQueue = () => {
@@ -400,12 +362,12 @@ export async function createDashboardParent(
     )
       throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
     if (model && (options.modelId !== undefined || model !== session.model))
-      await session.setModel(model, {persist: false});
+      await session.setModel(model, {persist: options.persist});
     requireOpen();
     if (options.thinkingLevel !== undefined)
       session.setThinkingLevel(
         options.thinkingLevel as Parameters<typeof session.setThinkingLevel>[0],
-        {persist: false},
+        {persist: options.persist},
       );
     state!.updateSession({
       model: session.model
@@ -474,17 +436,20 @@ export async function createDashboardParent(
     allowRunning = false,
   ) => {
     requireOpen();
-    if (maintaining || session.isCompacting)
-      throw new Error('This session is updating. Try again when it is idle.');
-    if (!allowRunning) requireIdle();
+    if (!allowRunning) {
+      if (maintaining || session.isCompacting)
+        throw new Error('This session is updating. Try again when it is idle.');
+      requireIdle();
+    }
     const running = {
       cancelled: false,
       controller: new AbortController(),
       operation: Promise.resolve(),
       trackExtensionOperations: false,
       extensionOperations: [] as Promise<void>[],
+      countsAsRun: false,
     };
-    maintaining = true;
+    if (!allowRunning) maintaining = true;
     activePrompts.add(running);
     running.operation = Promise.resolve()
       .then(async () => {
@@ -492,12 +457,11 @@ export async function createDashboardParent(
       })
       .finally(() => {
         activePrompts.delete(running);
-        maintaining = false;
+        if (!allowRunning) maintaining = false;
       });
     await running.operation;
   };
-  // Pi refreshes model and effort before the next assistant turn. These changes
-  // belong only to this conversation; the menu edits startup defaults separately.
+  // Pi applies model and effort changes before the next assistant turn.
   const configurationAction = (options: SessionConfiguration) =>
     sessionAction(() => configure(options), true);
   return {
@@ -517,19 +481,26 @@ export async function createDashboardParent(
     },
     configure: configurationAction,
     lastAssistantText: () => session.getLastAssistantText(),
-    compact: instructions => sessionAction(() => session.compact(instructions)),
+    compact: instructions =>
+      sessionAction(() => session.compact(instructions), true),
     reload: () => sessionAction(reload),
     async prompt(text, images) {
       requireOpen();
-      if (maintaining || session.isCompacting)
+      const parsed = parseSlashCommand(text);
+      const name = parsed?.name;
+      const args = parsed?.args ?? '';
+      const local = name ? nativeCommand(name) : undefined;
+      const extension = name && session.extensionRunner.getCommand(name);
+      if (maintaining && !local?.live && !extension)
         throw new Error('This session is updating. Try again when it is idle.');
-      const steering = activePrompts.size > 0;
+      const steering = [...activePrompts].some(prompt => prompt.countsAsRun);
       const running: PromptRun = {
         cancelled: false,
         controller: new AbortController(),
         operation: Promise.resolve(),
         trackExtensionOperations: false,
         extensionOperations: [],
+        countsAsRun: !local,
       };
       activePrompts.add(running);
       running.operation = Promise.resolve()
@@ -541,18 +512,16 @@ export async function createDashboardParent(
               aborting = stop().catch(() => {});
           });
           try {
-            const parsed = parseSlashCommand(text);
-            const name = parsed?.name;
-            const args = parsed?.args ?? '';
             if (
               name?.startsWith('skill:') &&
               !settingsManager.getEnableSkillCommands()
             )
               throw new Error('Skill commands are disabled in settings.');
-            const local = name ? nativeCommand(name) : undefined;
-            const extension = name && session.extensionRunner.getCommand(name);
             if (local) {
-              if (steering && !local.live)
+              if (
+                !local.live &&
+                (steering || session.isStreaming || session.isCompacting)
+              )
                 throw new Error(
                   'Wait until this session is idle to run this command.',
                 );
@@ -561,12 +530,10 @@ export async function createDashboardParent(
             }
             if (!session.model && !extension)
               throw new Error(
-                'Choose a model in Menu → Model & settings before sending a prompt.',
+                'Choose a model in Menu → Model before sending a prompt.',
               );
             if (extension) {
-              if (extensionPrompt)
-                throw new Error('An extension command is already running.');
-              extensionPrompt = running;
+              extensionPrompts.add(running);
               running.trackExtensionOperations = true;
             }
             if (steering && !session.isStreaming && !extension) {
@@ -620,7 +587,7 @@ export async function createDashboardParent(
           } finally {
             unsubscribe();
             await aborting;
-            if (extensionPrompt === running) extensionPrompt = undefined;
+            extensionPrompts.delete(running);
           }
         })
         .finally(() => activePrompts.delete(running));

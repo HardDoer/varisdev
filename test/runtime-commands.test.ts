@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, relative, resolve} from 'node:path';
 import {test} from 'node:test';
 import {pathToFileURL} from 'node:url';
-import type {AuthInteraction} from '@earendil-works/pi-ai';
+import type {AuthInteraction, LoginOptions} from '@earendil-works/pi-ai';
 import {
   CommandCancelledError,
   runAccountCommand,
@@ -47,34 +47,60 @@ function accountFixture() {
     },
     {id: 'ambient', name: 'Ambient', auth: {apiKey: {}}},
   ];
+  const agentDir = '/users/test/.varisdev/agent';
+  const settings = {
+    getOrCreateDeviceId() {
+      calls.push(['getOrCreateDeviceId']);
+      return 'installation-device-id';
+    },
+    async flush() {
+      calls.push(['flush']);
+    },
+    drainErrors: () => [] as {error: Error}[],
+  };
   let login: (
     provider: string,
     interaction: AuthInteraction,
+    options: LoginOptions,
   ) => Promise<void> = async () => {};
+  const runtime = {
+    getProviders: () => providers,
+    async login(
+      provider: string,
+      type: string,
+      interaction: AuthInteraction,
+      options: LoginOptions,
+    ) {
+      calls.push(['login', provider, type]);
+      await login(provider, interaction, options);
+    },
+    async logout(provider: string) {
+      calls.push(['logout', provider]);
+    },
+  };
   const sdk = {
-    getAgentDir: () => '/isolated/agent',
+    getAgentDir: () => agentDir,
+    SettingsManager: {
+      create(cwd: string, directory: string, options: unknown) {
+        calls.push(['settings', cwd, directory, options]);
+        return settings;
+      },
+    },
     ModelRuntime: {
       async create(options: unknown) {
         calls.push(['create', options]);
-        return {
-          getProviders: () => providers,
-          async login(
-            provider: string,
-            type: string,
-            interaction: AuthInteraction,
-          ) {
-            calls.push(['login', provider, type]);
-            await login(provider, interaction);
-          },
-          async logout(provider: string) {
-            calls.push(['logout', provider]);
-          },
-        };
+        return runtime;
       },
     },
   } as unknown as CommandSDK;
   const dependencies: CommandDependencies = {
     loadSDK: async () => sdk,
+    createGlobalModelRuntime: async root => {
+      calls.push(['global', root]);
+      return runtime as unknown as Awaited<
+        ReturnType<CommandSDK['ModelRuntime']['create']>
+      >;
+    },
     write: text => output.push(text),
     prompt: async () => '1',
     openBrowser: async () => {},
@@ -83,31 +109,116 @@ function accountFixture() {
     output,
     calls,
     dependencies,
+    agentDir,
+    settings,
+    providers,
     setLogin: (handler: typeof login) => {
       login = handler;
     },
   };
 }
 
-void test('login lists interactive providers and selects OAuth with normal auth paths', async () => {
+void test('login lists providers from the shared app runtime and selects OAuth', async () => {
   const fixture = accountFixture();
   await runAccountCommand('/runtime', 'login', [], fixture.dependencies);
   assert.deepEqual(fixture.calls[1], ['login', 'cloud', 'oauth']);
-  assert.deepEqual(fixture.calls[0], [
-    'create',
-    {
-      authPath: join('/isolated/agent', 'auth.json'),
-      modelsPath: join('/isolated/agent', 'models.json'),
-      allowModelNetwork: false,
-      refreshOnCreate: false,
-      signal:
-        fixture.calls[0][1] &&
-        (fixture.calls[0][1] as {signal: AbortSignal}).signal,
-    },
-  ]);
+  assert.deepEqual(fixture.calls[0], ['global', '/runtime']);
   assert.match(fixture.output.join('\n'), /varisdev login <provider>/);
   assert.match(fixture.output.join('\n'), /Cloud \(cloud\)/);
   assert.doesNotMatch(fixture.output.join('\n'), /Ambient/);
+});
+
+void test('login delegates configured extension and llama providers to the shared runtime', async () => {
+  const fixture = accountFixture();
+  for (const [id, name] of [
+    ['global-extension', 'Extension provider'],
+    ['llama-server', 'llama.cpp server'],
+  ]) {
+    fixture.providers.push({
+      id,
+      name,
+      auth: {apiKey: {login: async () => ({})}},
+    });
+    await runAccountCommand('/runtime', 'login', [id], fixture.dependencies);
+    assert.deepEqual(fixture.calls.at(-1), ['login', id, 'api_key']);
+  }
+  assert.equal(
+    fixture.calls.some(call => call[0] === 'create'),
+    false,
+  );
+});
+
+void test('shared runtime initialization failures stop login without falling back to bare providers', async () => {
+  const fixture = accountFixture();
+  fixture.dependencies.createGlobalModelRuntime = async () => {
+    throw new Error('Pi runtime initialization failed');
+  };
+  await assert.rejects(
+    runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies),
+    /VarisDev runtime initialization failed/,
+  );
+  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(fixture.output, []);
+});
+
+void test('shared runtime diagnostics use sanitized output while healthy providers remain usable', async () => {
+  const fixture = accountFixture();
+  const create = fixture.dependencies.createGlobalModelRuntime!;
+  let report: ((message: string) => void) | undefined;
+  fixture.dependencies.createGlobalModelRuntime = async (
+    root,
+    onDiagnostic,
+  ) => {
+    report = onDiagnostic;
+    onDiagnostic?.('Pi could not load one extension');
+    return create(root, onDiagnostic);
+  };
+  fixture.dependencies.prompt = async () => 'private-key';
+  fixture.setLogin(async (_provider, interaction) => {
+    await interaction.prompt({type: 'secret', message: 'API key'});
+    report?.('Pi diagnostic containing private-key');
+  });
+  await runAccountCommand('/runtime', 'login', ['key'], fixture.dependencies);
+  assert.deepEqual(fixture.output, [
+    'VarisDev could not load one extension',
+    'VarisDev diagnostic containing [redacted]',
+    'Signed in to Key provider.',
+  ]);
+});
+
+void test('login dynamically loads the app runtime from the private desktop build', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'varisdev-command-runtime-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const modulePath = join(root, 'desktop/build/src/desktop/model-runtime.js');
+  await mkdir(dirname(modulePath), {recursive: true});
+  await writeFile(join(root, 'package.json'), JSON.stringify({type: 'module'}));
+  await writeFile(
+    modulePath,
+    `
+    export const calls = [];
+    export async function createGlobalModelRuntime(onDiagnostic) {
+      onDiagnostic?.('Pi extension warning');
+      return {
+        getProviders: () => [{id: 'configured', name: 'Configured', auth: {apiKey: {login() {}}}}],
+        async login(provider, method, interaction, options) {
+          calls.push([provider, method, options.agentName, typeof options.getDeviceId]);
+        },
+      };
+    }
+  `,
+  );
+  const fixture = accountFixture();
+  fixture.dependencies.createGlobalModelRuntime = undefined;
+  await runAccountCommand(root, 'login', ['configured'], fixture.dependencies);
+  const module = await import(pathToFileURL(modulePath).href);
+  assert.deepEqual(module.calls, [
+    ['configured', 'api_key', 'VarisDev', 'function'],
+  ]);
+  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(fixture.output, [
+    'VarisDev extension warning',
+    'Signed in to Configured.',
+  ]);
 });
 
 void test('API key login overrides OAuth and redacts secrets in errors and progress', async () => {
@@ -137,7 +248,7 @@ void test('API key login overrides OAuth and redacts secrets in errors and progr
   assert.deepEqual(fixture.output, ['VarisDev storing [redacted]']);
 });
 
-void test('OAuth shows browser and device links when browser opening fails', async () => {
+void test('OAuth opens only explicit auth URLs and displays device codes when browser opening fails', async () => {
   const fixture = accountFixture();
   const opened: string[] = [];
   fixture.dependencies.openBrowser = async url => {
@@ -162,10 +273,7 @@ void test('OAuth shows browser and device links when browser opening fails', asy
     });
   });
   await runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies);
-  assert.deepEqual(opened, [
-    'https://example.test/login',
-    'https://example.test/device',
-  ]);
+  assert.deepEqual(opened, ['https://example.test/login']);
   assert.match(fixture.output.join('\n'), /https:\/\/example.test\/login/);
   assert.match(fixture.output.join('\n'), /Code: ABCD/);
   assert.doesNotMatch(fixture.output.join('\n'), /\bpi\b/i);
@@ -218,12 +326,12 @@ void test('logout delegates one provider and login rejects unsupported providers
 });
 
 void test('account storage errors retain the original auth path while branding prose', async () => {
-  const authPath = join('/users/pi/.pi/agent', 'auth.json');
+  const authPath = join('/users/pi/.varisdev/agent', 'auth.json');
   const fixture = accountFixture();
   const load = fixture.dependencies.loadSDK!;
   fixture.dependencies.loadSDK = async root => ({
     ...(await load(root)),
-    getAgentDir: () => '/users/pi/.pi/agent',
+    getAgentDir: () => '/users/pi/.varisdev/agent',
     ModelRuntime: {
       async create(options) {
         assert.equal(options.authPath, authPath);
@@ -232,7 +340,7 @@ void test('account storage errors retain the original auth path while branding p
     },
   });
   await assert.rejects(
-    runAccountCommand('/runtime', 'login', ['key'], fixture.dependencies),
+    runAccountCommand('/runtime', 'logout', ['key'], fixture.dependencies),
     {message: `VarisDev cannot read ${authPath}: EACCES`},
   );
   assert.deepEqual(fixture.output, []);
@@ -271,64 +379,184 @@ async function isolatedSDK() {
   return {directory, agentDir, cwd, sdk};
 }
 
-void test('bundled SDK login and logout preserve other credentials in an isolated auth.json', async t => {
-  const {directory, agentDir, sdk} = await isolatedSDK();
-  t.after(() => rm(directory, {recursive: true, force: true}));
-  const authPath = join(agentDir, 'auth.json');
-  const existing = {other: {type: 'api_key', key: 'existing-secret'}};
-  await writeFile(authPath, JSON.stringify(existing));
-  const output: string[] = [];
-  const load = async () =>
-    ({
+void test('login supplies lazy installation options from the private SDK and flushes only when requested', async () => {
+  const fixture = accountFixture();
+  fixture.setLogin(async (_provider, _interaction, options) => {
+    assert.equal(options.agentName, 'VarisDev');
+    assert.equal(options.getDeviceId?.(), 'installation-device-id');
+    assert.equal(options.getDeviceId?.(), 'installation-device-id');
+  });
+  await runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies);
+  assert.deepEqual(fixture.calls.slice(2), [
+    ['settings', fixture.agentDir, fixture.agentDir, {projectTrusted: false}],
+    ['getOrCreateDeviceId'],
+    ['getOrCreateDeviceId'],
+    ['flush'],
+  ]);
+  assert.equal(fixture.output.at(-1), 'Signed in to Cloud.');
+});
+
+void test('API key login, logout, and OAuth without a device ID leave installation settings untouched', async () => {
+  const fixture = accountFixture();
+  fixture.setLogin(async (_provider, _interaction, options) => {
+    assert.equal(typeof options.getDeviceId, 'function');
+  });
+  await runAccountCommand('/runtime', 'login', ['key'], fixture.dependencies);
+  await runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies);
+  await runAccountCommand(
+    '/runtime',
+    'logout',
+    ['removed-provider'],
+    fixture.dependencies,
+  );
+  assert.deepEqual(
+    fixture.calls.map(call => call[0]),
+    ['global', 'login', 'global', 'login', 'create', 'logout'],
+  );
+  assert.deepEqual(fixture.calls.at(-1), ['logout', 'removed-provider']);
+});
+
+void test('provider prompts receive empty secrets and optional text unchanged', async () => {
+  const fixture = accountFixture();
+  fixture.dependencies.prompt = async () => '';
+  fixture.setLogin(async (_provider, interaction) => {
+    assert.equal(
+      await interaction.prompt({type: 'secret', message: 'Optional key'}),
+      '',
+    );
+    assert.equal(
+      await interaction.prompt({type: 'text', message: 'Optional host'}),
+      '',
+    );
+    assert.equal(
+      await interaction.prompt({type: 'manual_code', message: 'Optional code'}),
+      '',
+    );
+  });
+  await runAccountCommand('/runtime', 'login', ['key'], fixture.dependencies);
+  assert.equal(fixture.output.at(-1), 'Signed in to Key provider.');
+});
+
+void test('prompt cancellation can end one OAuth prompt while the provider completes login', async () => {
+  const fixture = accountFixture();
+  const controller = new AbortController();
+  fixture.dependencies.prompt = async (_prompt, signal) => {
+    assert.equal(signal.aborted, false);
+    controller.abort();
+    return 'callback-won';
+  };
+  fixture.setLogin(async (_provider, interaction) => {
+    await assert.rejects(
+      interaction.prompt({
+        type: 'manual_code',
+        message: 'Authorization code',
+        signal: controller.signal,
+      }),
+      CommandCancelledError,
+    );
+    assert.equal(interaction.signal?.aborted, false);
+  });
+  await runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies);
+  assert.equal(fixture.output.at(-1), 'Signed in to Cloud.');
+});
+
+void test('installation settings flush after cancellation and preserve the cancellation result', async () => {
+  const fixture = accountFixture();
+  const controller = new AbortController();
+  fixture.dependencies.signal = controller.signal;
+  fixture.setLogin(async (_provider, interaction, options) => {
+    options.getDeviceId?.();
+    controller.abort();
+    await interaction.prompt({
+      type: 'manual_code',
+      message: 'Authorization code',
+    });
+  });
+  await assert.rejects(
+    runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies),
+    CommandCancelledError,
+  );
+  assert.deepEqual(fixture.calls.at(-1), ['flush']);
+  assert.deepEqual(fixture.output, []);
+});
+
+void test('installation settings errors prevent success and retain credential commit status', async () => {
+  const fixture = accountFixture();
+  fixture.settings.drainErrors = () => [
+    {error: new Error('Pi settings unreadable')},
+  ];
+  fixture.setLogin(async (_provider, _interaction, options) => {
+    options.getDeviceId?.();
+  });
+  await assert.rejects(
+    runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies),
+    /VarisDev settings unreadable/,
+  );
+  assert.equal(
+    fixture.calls.some(call => call[0] === 'getOrCreateDeviceId'),
+    false,
+  );
+  assert.deepEqual(fixture.output, []);
+
+  fixture.settings.drainErrors = () => [];
+  fixture.settings.flush = async () => {
+    fixture.settings.drainErrors = () => [
+      {error: new Error('Pi settings write failed')},
+    ];
+  };
+  await assert.rejects(
+    runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies),
+    /Signed in to Cloud, but the installation ID could not be saved: VarisDev settings write failed/,
+  );
+  assert.deepEqual(fixture.output, []);
+});
+
+void test('SDK synchronization failures retain login and orphan logout commit status', async () => {
+  const fixture = accountFixture();
+  class SynchronizationError extends Error {}
+  const load = fixture.dependencies.loadSDK!;
+  fixture.dependencies.loadSDK = async root => ({
+    ...(await load(root)),
+    CredentialSynchronizationError:
+      SynchronizationError as unknown as CommandSDK['CredentialSynchronizationError'],
+  });
+  fixture.setLogin(async (_provider, interaction) => {
+    fixture.dependencies.prompt = async () => 'private-key';
+    await interaction.prompt({type: 'secret', message: 'API key'});
+    throw new SynchronizationError('Pi snapshot failed for private-key');
+  });
+  await assert.rejects(
+    runAccountCommand('/runtime', 'login', ['cloud'], fixture.dependencies),
+    /Signed in to Cloud, but local model state could not be synchronized: VarisDev snapshot failed for \[redacted\]/,
+  );
+  const previousLoad = fixture.dependencies.loadSDK;
+  fixture.dependencies.loadSDK = async root => {
+    const sdk = await previousLoad(root);
+    const create = sdk.ModelRuntime.create;
+    return {
       ...sdk,
-      getAgentDir: () => agentDir,
       ModelRuntime: {
-        async create(options: Parameters<typeof sdk.ModelRuntime.create>[0]) {
-          assert.equal(options?.authPath, authPath);
-          const runtime = await sdk.ModelRuntime.create({
-            ...options,
-            modelsPath: null,
-          });
-          const provider = runtime.getProvider('anthropic')!;
-          runtime.registerNativeProvider({
-            ...provider,
-            auth: {
-              apiKey: {
-                ...provider.auth.apiKey!,
-                async login(interaction) {
-                  return {
-                    type: 'api_key',
-                    key: await interaction.prompt({
-                      type: 'secret',
-                      message: 'API key',
-                    }),
-                  };
-                },
-              },
+        async create(options) {
+          return {
+            ...(await create(options)),
+            async logout() {
+              throw new SynchronizationError('Pi snapshot failed');
             },
-          });
-          return runtime;
+          };
         },
       },
-    }) as unknown as CommandSDK;
-  const dependencies = {
-    loadSDK: load,
-    write: (text: string) => output.push(text),
-    prompt: async () => 'new-secret',
+    };
   };
-  await runAccountCommand(
-    directory,
-    'login',
-    ['anthropic', '--api-key'],
-    dependencies,
+  await assert.rejects(
+    runAccountCommand(
+      '/runtime',
+      'logout',
+      ['removed-provider'],
+      fixture.dependencies,
+    ),
+    /Signed out of removed-provider, but local model state could not be synchronized: VarisDev snapshot failed/,
   );
-  assert.deepEqual(JSON.parse(await readFile(authPath, 'utf8')), {
-    ...existing,
-    anthropic: {type: 'api_key', key: 'new-secret'},
-  });
-  await runAccountCommand(directory, 'logout', ['anthropic'], dependencies);
-  assert.deepEqual(JSON.parse(await readFile(authPath, 'utf8')), existing);
-  assert.doesNotMatch(output.join('\n'), /secret/);
+  assert.deepEqual(fixture.output, []);
 });
 
 void test('bundled package manager persists user and local plugins without replacing registry or settings', async t => {
@@ -484,6 +712,7 @@ function terminalAccountProcess(simulateSignal = false) {
     try {
       await runAccountCommand('/isolated', 'login', [], {
         loadSDK: async () => ({getAgentDir: () => '/isolated', ModelRuntime: {create: async () => runtime}}),
+        createGlobalModelRuntime: async () => runtime,
       });
     } catch (error) {
       console.log(error.message);

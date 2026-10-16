@@ -1,10 +1,11 @@
 /* global process, __dirname, document, Event, localStorage, setTimeout, innerHeight */
 const assert = require('node:assert/strict');
-const {mkdirSync, readFileSync, writeFileSync} = require('node:fs');
+const {existsSync, mkdirSync, readFileSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
+const standalonePiDir = process.env.PI_CODING_AGENT_DIR;
 const root = resolve(
   process.env.VARISDEV_TEST_PACKAGE_DIR || join(__dirname, '../..'),
 );
@@ -73,7 +74,11 @@ async function main() {
     auth: {
       oauth: {
         ...provider.auth.oauth,
-        async login(interaction) {
+        async login(interaction, options) {
+          assert.equal(options.agentName, 'VarisDev');
+          const id = options.getDeviceId();
+          assert.match(id, /^[0-9a-f-]{36}$/i);
+          assert.equal(options.getDeviceId(), id);
           interaction.notify({
             type: 'device_code',
             userCode: 'ABCD-EFGH',
@@ -123,10 +128,6 @@ async function main() {
   });
   handle('pidev:get-state', () => hub);
   handle('pidev:recent-projects', () => []);
-  handle('varisdev:get-model-defaults', () => ({
-    models: [],
-    thinkingLevel: 'medium',
-  }));
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('varisdev:get-update-status', () => ({phase: 'idle'}));
   handle('varisdev:get-tool-models', getToolModels);
@@ -158,6 +159,20 @@ async function main() {
       document.getElementById('accounts-provider').options.length > 0 &&
       !document.getElementById('accounts-provider').disabled,
   );
+  browser.webContents.send('varisdev:accounts', {
+    ...accounts.snapshot(),
+    diagnostics: ['Fixture extension could not be loaded.'],
+  });
+  await waitFor(() =>
+    document
+      .getElementById('accounts-error')
+      .textContent.includes('Fixture extension could not be loaded.'),
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('accounts-provider').disabled),
+    false,
+  );
+  await accounts.get();
   await select('openai');
   await evaluate(() => document.getElementById('accounts-key').click());
   await waitFor(() => !document.getElementById('accounts-form').hidden);
@@ -249,12 +264,12 @@ async function main() {
     await evaluate(() => document.getElementById('accounts-device-code').value),
     'ABCD-EFGH',
   );
-  assert.equal(opened[0], 'https://provider.invalid/device');
+  assert.deepEqual(opened, []);
   await evaluate(() =>
     document.getElementById('accounts-links').firstElementChild.click(),
   );
   await waitFor(() => !document.getElementById('accounts-submit').disabled);
-  assert.equal(opened.length, 2);
+  assert.deepEqual(opened, ['https://provider.invalid/device']);
   await evaluate(() => {
     document.getElementById('accounts-input').value = 'invalid-private-code';
     document.getElementById('accounts-form').requestSubmit();
@@ -283,6 +298,12 @@ async function main() {
     JSON.parse(readFileSync(authPath, 'utf8'))['openai-codex'].access,
     'private-access',
   );
+  const installationId = JSON.parse(
+    readFileSync(join(agentDir, 'settings.json'), 'utf8'),
+  ).deviceId;
+  assert.match(installationId, /^[0-9a-f-]{36}$/i);
+  assert.equal(existsSync(join(standalonePiDir, 'settings.json')), false);
+  assert.equal(existsSync(join(standalonePiDir, 'auth.json')), false);
   report.cases.push(
     'browser sign-in shows device code, provider errors and retry without exposing credentials',
   );
@@ -342,20 +363,12 @@ async function main() {
   await waitFor(() => !document.getElementById('factory-workspace').hidden);
   await evaluate(() => {
     document.getElementById('app-menu-button').click();
-    document.getElementById('open-session-settings').click();
+    document.getElementById('open-accounts').click();
   });
-  await waitFor(() => document.getElementById('session-settings-dialog').open);
-  await evaluate(() => document.getElementById('settings-accounts').click());
   await waitFor(
     () =>
       document.getElementById('accounts-dialog').open &&
       !document.getElementById('accounts-provider').disabled,
-  );
-  assert.equal(
-    await evaluate(
-      () => document.getElementById('session-settings-dialog').open,
-    ),
-    false,
   );
   assert.equal(
     await evaluate(
@@ -367,7 +380,7 @@ async function main() {
   );
   assert.deepEqual(errors, []);
   report.cases.push(
-    'account controls remain reachable from model settings in an open parent session',
+    'account controls remain reachable from the app menu in an open parent session',
   );
   await evaluate(() => {
     document.getElementById('tool-models').open = true;

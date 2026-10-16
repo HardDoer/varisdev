@@ -10,7 +10,10 @@ import {
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
-import {SessionManager} from '@earendil-works/pi-coding-agent';
+import {
+  ProjectTrustStore,
+  SessionManager,
+} from '@earendil-works/pi-coding-agent';
 import {DashboardHub} from '../src/dashboard/hub.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 
@@ -85,6 +88,7 @@ for (const extensionProvider of [false, true])
       };`,
         );
       }
+      new ProjectTrustStore(agentDir).set(cwd, true);
       const usage = {
         input: 10,
         output: 10,

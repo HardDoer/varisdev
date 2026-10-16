@@ -18,6 +18,7 @@ import {createDashboardParent} from '../src/dashboard/parent.ts';
 import type {DashboardParent} from '../src/dashboard/hub.ts';
 import type {ConversationMessage} from '../src/conversation.ts';
 import {loadPluginThemes} from '../src/desktop/plugin-themes.ts';
+import {saveToolSettings} from '../src/tools/settings.ts';
 
 async function until(predicate: () => boolean, description: string) {
   const deadline = Date.now() + 5000;
@@ -92,6 +93,9 @@ void test(
       retry: {enabled: false},
     });
     await writeFile(settingsPath, settings);
+    await saveToolSettings('agents', {
+      allowedModels: [`${providerId}/board-model`],
+    });
     await writeFile(
       join(cwd, 'PLAN.md'),
       '# Project plan\n\n- [x] Load the plugin\n- [ ] Review its board\n',
@@ -204,6 +208,10 @@ void test(
     assert.equal(toolMessage?.status, 'completed');
     assertBoard(toolMessage, imagePath);
     await parent.prompt('spawn-board-agent to show the same project board.');
+    const spawned = parent.state
+      .snapshot()
+      .conversation.findLast(message => message.toolName === 'agent_spawn');
+    assert.equal(spawned?.status, 'completed', JSON.stringify(spawned));
     await until(
       () =>
         parent.state

@@ -234,7 +234,12 @@ async function main() {
         const fixture = damageFixture;
         if (damageRenderer === 'webgl') {
           const state = JSON.parse(fixture.canvas.dataset.robotDamage || '{}')[id];
-          return {...state, debris: Number(fixture.canvas.dataset.robotDebris || 0),
+          const cleaners = JSON.parse(fixture.canvas.dataset.robotCleanup || '[]');
+          return {...state, cleaners,
+            cleanerGeometry: fixture.dynamicHash(),
+            eyes: Number(fixture.canvas.dataset.parentEyes),
+            corpseTransform: JSON.stringify([state?.corpseOffset, state?.rotation, state?.collapse]),
+            debris: Number(fixture.canvas.dataset.robotDebris || 0),
             target: fixture.scene.caneTargets().some(target => target.id === id),
             geometry: fixture.dynamicHash()};
         }
@@ -243,6 +248,16 @@ async function main() {
           : fixture.host.querySelector('.agent .robot-glyph');
         return {damage: Number(element?.dataset.damage || 0),
           phase: element?.dataset.damagePhase || 'alive',
+          surprise: Number(element?.dataset.damageSurprise || 0),
+          flinch: Number(element?.dataset.damageFlinch || 0),
+          collapse: Number(element?.dataset.damageCollapse || 0),
+          visible: element?.dataset.damageVisible !== 'false',
+          corpseOffset: (element?.dataset.corpseOffset || '0,0,0').split(',').map(Number),
+          cleanupPhase: element?.dataset.cleanupPhase || '',
+          cleaners: [...fixture.host.querySelector('.robot-cleanup-effects')?.children || []].map(node => node.outerHTML),
+          cleanerGeometry: fixture.host.querySelector('.robot-cleanup-effects')?.innerHTML || '',
+          eyes: Number(fixture.host.querySelector('.parent-fallback-robot')?.dataset.eyes),
+          corpseTransform: element?.getAttribute('transform') || '',
           debris: fixture.host.querySelector('.robot-debris-effects')?.children.length || 0,
           target: fixture.scene.caneTargets().some(target => target.id === id),
           marks: element?.querySelector('.robot-damage-marks')?.children.length || 0,
@@ -285,6 +300,10 @@ async function main() {
           damageSnapshot();
           return damageState();
         },
+        damageSettle() {
+          advance(24);
+          return damageState();
+        },
         damageExplode() {
           let hits = 1;
           while (hits < 6 && damageState().phase === 'alive') {
@@ -297,12 +316,40 @@ async function main() {
           advance(4);
           return damageState();
         },
-        damageReplacing() {
+        damageWrecked() {
+          advance(16);
+          return damageState();
+        },
+        damageResting() {
           advance(20);
           return damageState();
         },
-        damageRise() {
+        damageArrive() {
+          advance(30);
+          return damageState();
+        },
+        damageArriveMid() {
+          advance(20);
+          return damageState();
+        },
+        damageLoad() {
+          advance(20);
+          return damageState();
+        },
+        damageLeave() {
           advance(24);
+          return damageState();
+        },
+        damageCargo() {
+          advance(16);
+          return damageState();
+        },
+        damageReplacing() {
+          advance(40);
+          return damageState();
+        },
+        damageRise() {
+          advance(20);
           return damageState();
         },
         damageFresh() {
@@ -328,28 +375,32 @@ async function main() {
           const staticReplacement = damageState();
           scene.setMotion(true);
           for (let index = 0; index < 4; index++) scene.hitWithCane('drone', -1, 2.2);
-          const removedHadDebris = damageState('drone').debris > 0;
+          advance(80);
+          const removedHadCleaner = damageState('drone').cleaners.length > 0;
           damageSnapshot('damage-session', []);
           const removal = {target: scene.caneTargets().some(target => target.id === 'drone'),
-            debris: damageState().debris};
+            debris: damageState().debris, cleaners: damageState().cleaners.length};
           for (let index = 0; index < 4; index++) scene.hitWithCane('parent', 1, 2.2);
+          advance(80);
           const switchingDead = damageState().phase;
           damageSnapshot('new-session');
           const switched = damageState();
           for (let index = 0; index < 4; index++) scene.hitWithCane('parent', 1, 2.2);
+          advance(80);
           const beforeMotionOff = damageState().phase;
           scene.setMotion(false);
           const motionOffReplacement = damageState();
           scene.setMotion(true);
           for (let index = 0; index < 4; index++) scene.hitWithCane('parent', 1, 2.2);
+          advance(80);
           const disposingDead = damageState().phase;
           scene.dispose();
           const disposed = {targets: scene.caneTargets(), pending: callbacks.size,
-            effects: host.querySelectorAll('.robot-floor-effects, .robot-debris-effects, .robot-damage-marks').length,
-            diagnostics: damageFixture.canvas?.hasAttribute('data-robot-damage') || false};
+            effects: host.querySelectorAll('.robot-floor-effects, .robot-debris-effects, .robot-cleanup-effects, .robot-damage-marks').length,
+            diagnostics: Boolean(damageFixture.canvas?.hasAttribute('data-robot-damage') || damageFixture.canvas?.hasAttribute('data-robot-cleanup'))};
           damageFixture.dispose();
           damageFixture = null;
-          return {still, staticFrozen, staticSnapshot, staticReplacement, removedHadDebris, removal,
+          return {still, staticFrozen, staticSnapshot, staticReplacement, removedHadCleaner, removal,
             switchingDead, switched, beforeMotionOff, motionOffReplacement, disposingDead, disposed};
         },
         screenshotHolstered() {
@@ -969,7 +1020,7 @@ async function main() {
   );
 
   await run(
-    'WebGL exposes finite body targets and renders cane recoil',
+    'WebGL exposes body targets and bounded cane flinches',
     async () => {
       const result = await evaluate('webglRecoil');
       assert.deepEqual(result.targets.map(target => target.id).sort(), [
@@ -982,17 +1033,17 @@ async function main() {
       assert.equal(result.noStaticRecoil, true);
       assert.equal(result.accepted, true);
       assert.equal(result.invalid, false);
-      assert.equal(result.changed, true, 'The recoil must reach GPU geometry');
+      assert.equal(result.changed, true, 'The flinch must reach GPU geometry');
       assert.equal(
         result.animated,
         true,
-        'The recoil must animate over real frames',
+        'The flinch must animate over real frames',
       );
     },
   );
 
   await run(
-    'SVG fallback exposes body targets and cleans up recoil',
+    'SVG fallback exposes body targets and clears short flinches',
     async () => {
       const result = await evaluate('fallbackRecoil');
       assert.deepEqual(result.targets.map(target => target.id).sort(), [
@@ -1023,7 +1074,7 @@ async function main() {
   for (const renderer of ['WebGL', 'Fallback']) {
     await run(
       renderer +
-        ' damage explodes once, replaces through a hatch, and cleans up',
+        ' grounded surprise, resting corpse, cleanup and replacement lifecycle',
       async () => {
         const capture = async phase => {
           if (!process.env.CANE_SCREENSHOT_DIR) return;
@@ -1049,27 +1100,55 @@ async function main() {
             initial.geometry,
             'Damage must reach rendered geometry',
           );
-          const airborne = await evaluate('damageAdvance');
-          assert.notEqual(
-            airborne.geometry,
-            hit.geometry,
-            'Physical tumble must animate',
+          assert.equal(hit.surprise, 1);
+          assert.ok(hit.flinch > 0);
+          assert.ok(
+            hit.eyes > initial.eyes,
+            'Surprise must enlarge the rendered eyes',
           );
-          await capture('damaged-airborne');
+          if (renderer === 'WebGL') {
+            assert.equal(hit.offset[1], 0);
+            assert.ok(hit.offset.every(value => Math.abs(value) <= 0.15));
+            assert.ok(hit.rotation.every(value => Math.abs(value) <= 0.2));
+          }
+          const flinch = await evaluate('damageAdvance');
+          assert.notEqual(
+            flinch.geometry,
+            hit.geometry,
+            'The crouch and guard must animate',
+          );
+          assert.ok(flinch.flinch < hit.flinch);
+          assert.equal(flinch.surprise, 1);
+          await capture('grounded-surprise');
           const snapshot = await evaluate('damageSnapshot');
           assert.equal(
             snapshot.damage,
             hit.damage,
             'A normal session snapshot must not heal damage',
           );
-          const dead = await evaluate('damageExplode');
+          assert.equal(snapshot.surprise, flinch.surprise);
+          const settled = await evaluate('damageSettle');
+          assert.equal(settled.flinch, 0);
+          assert.equal(settled.surprise, 0);
           assert.ok(
-            dead.hits >= 4 && dead.hits <= 5,
-            'Four or five strongest hits must destroy a robot',
+            settled.eyes < hit.eyes - 0.05 &&
+              Math.abs(settled.eyes - initial.eyes) < 0.04,
+            'Surprise eye widening ends while normal idle motion continues',
+          );
+          assert.equal(settled.damage, hit.damage);
+          const dead = await evaluate('damageExplode');
+          assert.equal(
+            dead.hits,
+            4,
+            'Four strongest hits must destroy a robot',
           );
           assert.equal(dead.phase, 'exploding');
+          assert.equal(dead.visible, true);
           assert.equal(dead.target, false);
-          assert.ok(dead.debris > 10, 'Destruction must emit real fragments');
+          assert.ok(
+            dead.debris > 0 && dead.debris <= 48,
+            'Destruction emits bounded small fragments',
+          );
           const rejected = await evaluate('damageHit');
           assert.equal(rejected.accepted, false);
           assert.equal(
@@ -1079,14 +1158,73 @@ async function main() {
           );
           const explosionFrame = await evaluate('damageExplosionFrame');
           assert.equal(explosionFrame.phase, 'exploding');
-          assert.ok(explosionFrame.debris > 10);
-          await capture('explosion');
+          assert.ok(explosionFrame.collapse > dead.collapse);
+          await capture('collapse');
           const deadSnapshot = await evaluate('damageSnapshot');
           assert.equal(deadSnapshot.phase, 'exploding');
           assert.equal(deadSnapshot.target, false);
+          const wreck = await evaluate('damageWrecked');
+          assert.equal(wreck.phase, 'wrecked');
+          assert.equal(wreck.visible, true);
+          assert.equal(wreck.collapse, 1);
+          assert.equal(wreck.target, false);
+          const resting = await evaluate('damageResting');
+          assert.equal(resting.phase, 'wrecked');
+          assert.equal(
+            resting.corpseTransform,
+            wreck.corpseTransform,
+            'The corpse rests on the floor',
+          );
+          assert.deepEqual(resting.corpseOffset, wreck.corpseOffset);
+          assert.equal(resting.cleaners.length, 0);
+          await capture('wrecked');
+          const arrive = await evaluate('damageArrive');
+          const cleanupPhase = state =>
+            state.cleanup?.phase || state.cleanupPhase;
+          assert.equal(arrive.phase, 'cleanup');
+          assert.equal(cleanupPhase(arrive), 'arrive');
+          assert.ok(arrive.cleaners.length > 0, 'A cleanup robot must render');
+          assert.deepEqual(arrive.corpseOffset, wreck.corpseOffset);
+          await capture('cleaner-arrive');
+          const approaching = await evaluate('damageArriveMid');
+          assert.equal(cleanupPhase(approaching), 'arrive');
+          assert.notEqual(
+            approaching.cleanerGeometry,
+            arrive.cleanerGeometry,
+            'Cleaner geometry must approach',
+          );
+          assert.equal(approaching.corpseTransform, wreck.corpseTransform);
+          const load = await evaluate('damageLoad');
+          assert.equal(cleanupPhase(load), 'load');
+          assert.deepEqual(
+            load.corpseOffset,
+            wreck.corpseOffset,
+            'Cargo stays still before grasp',
+          );
+          assert.equal(load.target, false);
+          await capture('cleaner-loading');
+          const leave = await evaluate('damageLeave');
+          assert.equal(cleanupPhase(leave), 'leave');
+          assert.equal(leave.visible, true);
+          await capture('cleaner-leave');
+          const cargo = await evaluate('damageCargo');
+          assert.equal(cleanupPhase(cargo), 'leave');
+          assert.notDeepEqual(cargo.corpseOffset, leave.corpseOffset);
+          assert.notEqual(
+            cargo.corpseTransform,
+            leave.corpseTransform,
+            'Rendered corpse must follow its cleaner',
+          );
+          assert.notEqual(cargo.cleanerGeometry, leave.cleanerGeometry);
+          const cargoSnapshot = await evaluate('damageSnapshot');
+          assert.equal(cargoSnapshot.phase, 'cleanup');
+          assert.deepEqual(cargoSnapshot.corpseOffset, cargo.corpseOffset);
+          assert.equal((await evaluate('damageHit')).accepted, false);
+          await capture('cleaner-cargo');
           const replacing = await evaluate('damageReplacing');
           assert.equal(replacing.phase, 'replacing');
           assert.equal(replacing.target, false);
+          assert.equal(replacing.cleaners.length, 0);
           const rising = await evaluate('damageRise');
           assert.equal(rising.phase, 'replacing');
           assert.equal(
@@ -1136,18 +1274,24 @@ async function main() {
           assert.equal(lifecycle.staticReplacement.damage, 0);
           assert.equal(lifecycle.staticReplacement.target, true);
           assert.equal(lifecycle.staticReplacement.debris, 0);
-          assert.equal(lifecycle.removedHadDebris, true);
-          assert.deepEqual(lifecycle.removal, {target: false, debris: 0});
-          assert.equal(lifecycle.switchingDead, 'exploding');
+          assert.equal(lifecycle.removedHadCleaner, true);
+          assert.deepEqual(lifecycle.removal, {
+            target: false,
+            debris: 0,
+            cleaners: 0,
+          });
+          assert.equal(lifecycle.switchingDead, 'cleanup');
           assert.equal(lifecycle.switched.damage, 0);
           assert.equal(lifecycle.switched.phase, 'alive');
           assert.equal(lifecycle.switched.debris, 0);
-          assert.equal(lifecycle.beforeMotionOff, 'exploding');
+          assert.equal(lifecycle.switched.cleaners.length, 0);
+          assert.equal(lifecycle.beforeMotionOff, 'cleanup');
           assert.equal(lifecycle.motionOffReplacement.phase, 'alive');
           assert.equal(lifecycle.motionOffReplacement.damage, 0);
           assert.equal(lifecycle.motionOffReplacement.target, true);
           assert.equal(lifecycle.motionOffReplacement.debris, 0);
-          assert.equal(lifecycle.disposingDead, 'exploding');
+          assert.equal(lifecycle.motionOffReplacement.cleaners.length, 0);
+          assert.equal(lifecycle.disposingDead, 'cleanup');
           assert.deepEqual(lifecycle.disposed, {
             targets: [],
             pending: 0,

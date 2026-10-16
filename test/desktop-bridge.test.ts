@@ -775,7 +775,8 @@ void test('feature catalogs and configuration results cross source IPC with sess
   assert.equal(live.model?.id, 'model');
   assert.equal(live.thinkingLevel, 'low');
   assert.equal(desktop.current!.snapshot().session.status, 'running');
-  await assert.rejects(requests.request('compact', 'features-primary'), /idle/);
+  await requests.request('compact', 'features-primary');
+  assert.deepEqual(source.compacted, ['Keep the plan', undefined]);
   source.setIdle(true);
   await source.emit('agent_settled');
   assert.deepEqual(source.messages.at(-1), {

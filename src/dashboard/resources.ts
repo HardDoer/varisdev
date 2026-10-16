@@ -9,6 +9,7 @@ import {
   resolve,
   sep,
 } from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {
   CONFIG_DIR_NAME,
   DefaultPackageManager,
@@ -80,7 +81,12 @@ function canonicalPath(path: string): string {
 function resourcePath(path: string, base: string): string {
   let value = path.replace(/^!/, '').replace(/^@(?=[./~])/, '');
   if (value === '~') value = homedir();
-  else if (value.startsWith('~/')) value = join(homedir(), value.slice(2));
+  else if (
+    value.startsWith('~/') ||
+    (process.platform === 'win32' && value.startsWith('~\\'))
+  )
+    value = join(homedir(), value.slice(2));
+  if (value.startsWith('file://')) value = fileURLToPath(value);
   return canonicalPath(resolve(base, value));
 }
 
@@ -135,13 +141,20 @@ export function createAppResourceFilter(
     roots: Set<string>,
   ): boolean => {
     if (isAppPackageSource(source)) return true;
-    // Remote registrations owned by other publishers are never local paths.
+    // Pi treats file URLs as local resources.
     if (
-      (/^[a-z][a-z\d+.-]*:/i.test(source) && !/^[a-z]:[\\/]/i.test(source)) ||
-      /^git@/i.test(source)
+      !source.startsWith('file://') &&
+      ((/^[a-z][a-z\d+.-]*:/i.test(source) && !/^[a-z]:[\\/]/i.test(source)) ||
+        /^git@/i.test(source))
     )
       return false;
-    const requested = resourcePath(source, base);
+    let requested: string;
+    try {
+      requested = resourcePath(source, base);
+    } catch {
+      // Leave malformed file URLs for the SDK's resource diagnostics.
+      return false;
+    }
     let path = requested;
     while (true) {
       try {

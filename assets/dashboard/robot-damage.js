@@ -1,10 +1,13 @@
 // Decorative only: this model never reads or changes agent/session/task state.
-// Distances are scene units, angles radians; effects are relative to a robot's
-// home on the floor (not its moving body). No timers, random globals or DOM.
+// Positions are relative to the robot's home on the floor.
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 const ZERO = () => [0, 0, 0];
-const EXPLOSION_SECONDS = 0.9;
+const smooth = n => n * n * (3 - 2 * n);
+const FALL_SECONDS = 0.9;
+const WRECK_SECONDS = 2.4;
+const CLEANUP_SECONDS = 6;
 const REPLACEMENT_SECONDS = 3.6;
+const SURPRISE_SECONDS = 1.15;
 
 export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
   const limit = (n, fallback, max) =>
@@ -23,33 +26,25 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       damage: 0,
       phase: 'alive',
       age: 0,
-      offset: ZERO(),
-      velocity: ZERO(),
-      rotation: ZERO(),
-      spin: ZERO(),
+      hitAge: SURPRISE_SECONDS,
+      strength: 0,
+      direction: 1,
       generation: 0,
       hits: 0,
     };
-  }
-  function settle(robot) {
-    robot.offset = ZERO();
-    robot.velocity = ZERO();
-    robot.rotation = ZERO();
-    robot.spin = ZERO();
   }
   function replace(robot) {
     robot.phase = 'alive';
     robot.age = 0;
     robot.damage = 0;
+    robot.hitAge = SURPRISE_SECONDS;
     robot.generation++;
-    settle(robot);
   }
   function remove(id) {
     robots.delete(id);
     debris = debris.filter(piece => piece.owner !== id);
   }
-  function pieces(robot, strength, direction, exploding) {
-    // Seeded per hit: both renderers get the same bounded physical fragments.
+  function pieces(robot, strength, direction, destroyed) {
     let seed = 2166136261;
     for (const c of String(robot.id))
       seed = Math.imul(seed ^ c.charCodeAt(0), 16777619);
@@ -58,39 +53,31 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       return seed / 4294967296;
     };
-    const count = exploding ? 24 : Math.ceil(3 + strength * 3);
+    const count = destroyed ? 18 : Math.ceil(2 + strength * 2);
     for (let i = 0; i < count; i++) {
       const angle = random() * Math.PI * 2;
-      const speed = (exploding ? 2.2 : 0.6) + random() * strength * 2.4;
-      const kind =
-        exploding && i < 6
-          ? ['head', 'limb', 'limb', 'armor', 'armor', 'armor'][i]
-          : i % 3 === 0
-            ? 'armor'
-            : 'spark';
+      const speed = 0.5 + random() * strength * (destroyed ? 1.2 : 0.6);
+      // The body stays intact; only small chips and sparks break free.
+      const kind = i % 3 === 0 ? 'armor' : 'spark';
       const size =
-        kind === 'head'
-          ? [0.5, 0.3, 0.45]
-          : kind === 'limb'
-            ? [0.18, 0.52, 0.22]
-            : kind === 'armor'
-              ? [0.22 + random() * 0.22, 0.08, 0.3]
-              : [0.045, 0.045, 0.12];
+        kind === 'armor'
+          ? [0.12 + random() * 0.12, 0.05, 0.18]
+          : [0.045, 0.045, 0.12];
       debris.push({
         id: ++serial,
         owner: robot.id,
         kind,
         size,
-        position: [robot.offset[0], 1.6 + robot.offset[1], robot.offset[2]],
+        position: [0, 1.6, 0],
         velocity: [
           Math.cos(angle) * speed,
-          2 + random() * (exploding ? 5 : 2),
-          Math.sin(angle) * speed - direction * strength,
+          1 + random() * (destroyed ? 3 : 2),
+          Math.sin(angle) * speed - direction * strength * 0.3,
         ],
         rotation: [random() * 3, random() * 3, random() * 3],
         spin: [random() * 10 - 5, random() * 10 - 5, random() * 10 - 5],
         age: 0,
-        duration: kind === 'spark' ? 0.35 + random() * 0.5 : 2 + random() * 1.5,
+        duration: kind === 'spark' ? 0.25 + random() * 0.4 : 1.5 + random(),
       });
     }
     if (debris.length > maxEffects)
@@ -108,39 +95,16 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
     strength = Number.isFinite(strength) ? clamp(strength, 0.15, 2.2) : 1;
     direction = Number.isFinite(direction) && direction < 0 ? -1 : 1;
     robot.hits++;
+    robot.hitAge = 0;
+    robot.strength = strength;
+    robot.direction = direction;
     robot.damage = Math.min(
       1,
       robot.damage + 0.08 + 0.045 * strength * strength,
     );
-    const exploding = robot.damage >= 1;
-    if (motion) {
-      // An immediate small contact displacement keeps an impact visible even
-      // before the first animation frame (which intentionally has zero dt).
-      robot.offset[1] = Math.min(4, robot.offset[1] + 0.025 * strength);
-      robot.offset[2] = clamp(
-        robot.offset[2] - direction * 0.045 * strength,
-        -5,
-        5,
-      );
-      robot.rotation[0] += direction * 0.035 * strength;
-      robot.velocity[0] = clamp(
-        robot.velocity[0] + direction * strength * 0.75,
-        -6,
-        6,
-      );
-      robot.velocity[1] = Math.min(9, robot.velocity[1] + 2 + strength * 2.6);
-      // Positive screen-space hits travel right, toward negative scene Z.
-      robot.velocity[2] = clamp(
-        robot.velocity[2] - direction * strength * 4,
-        -10,
-        10,
-      );
-      robot.spin[0] += direction * strength * 7;
-      robot.spin[1] += direction * strength * 2.8;
-      robot.spin[2] -= direction * strength * 2;
-      pieces(robot, strength, direction, exploding);
-    }
-    if (exploding) {
+    const destroyed = robot.damage >= 1;
+    if (motion) pieces(robot, strength, direction, destroyed);
+    if (destroyed) {
       robot.phase = 'exploding';
       robot.age = 0;
       if (!motion) replace(robot);
@@ -149,50 +113,25 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
   }
   function step(dt) {
     for (const robot of robots.values()) {
-      if (robot.phase === 'exploding') {
-        robot.age += dt;
-        if (robot.age >= EXPLOSION_SECONDS) {
-          robot.phase = 'replacing';
-          robot.age = 0;
-          robot.damage = 0;
-          settle(robot);
-        }
-      } else if (robot.phase === 'replacing') {
-        robot.age += dt;
-        if (robot.age >= REPLACEMENT_SECONDS) replace(robot);
-      } else {
-        const airborne = robot.offset[1] > 0 || robot.velocity[1] > 0;
-        if (airborne) robot.velocity[1] -= 14 * dt;
-        for (let axis = 0; axis < 3; axis++) {
-          if (axis !== 1) {
-            robot.velocity[axis] += -robot.offset[axis] * 5 * dt;
-            robot.velocity[axis] *= Math.exp(-2.6 * dt);
-          }
-          robot.offset[axis] += robot.velocity[axis] * dt;
-          robot.spin[axis] += -robot.rotation[axis] * 13 * dt;
-          robot.spin[axis] *= Math.exp(-3 * dt);
-          robot.rotation[axis] += robot.spin[axis] * dt;
-        }
-        if (robot.offset[1] < 0) {
-          robot.offset[1] = 0;
-          robot.velocity[1] =
-            Math.abs(robot.velocity[1]) > 1 ? -robot.velocity[1] * 0.3 : 0;
-          robot.velocity[0] *= 0.7;
-          robot.velocity[2] *= 0.7;
-        }
-        for (let axis = 0; axis < 3; axis++) {
-          if (
-            Math.abs(robot.offset[axis]) + Math.abs(robot.velocity[axis]) <
-            0.002
-          )
-            robot.offset[axis] = robot.velocity[axis] = 0;
-          if (
-            Math.abs(robot.rotation[axis]) + Math.abs(robot.spin[axis]) <
-            0.002
-          )
-            robot.rotation[axis] = robot.spin[axis] = 0;
-        }
+      if (robot.phase === 'alive') {
+        robot.hitAge = Math.min(SURPRISE_SECONDS, robot.hitAge + dt);
+        continue;
       }
+      robot.age += dt;
+      const duration = {
+        exploding: FALL_SECONDS,
+        wrecked: WRECK_SECONDS,
+        cleanup: CLEANUP_SECONDS,
+        replacing: REPLACEMENT_SECONDS,
+      }[robot.phase];
+      if (robot.age + 1e-9 < duration) continue;
+      robot.age = Math.max(0, robot.age - duration);
+      if (robot.phase === 'exploding') robot.phase = 'wrecked';
+      else if (robot.phase === 'wrecked') robot.phase = 'cleanup';
+      else if (robot.phase === 'cleanup') {
+        robot.phase = 'replacing';
+        robot.damage = 0;
+      } else replace(robot);
     }
     for (const piece of debris) {
       piece.age += dt;
@@ -215,7 +154,7 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
   }
   function tick(dt) {
     if (disposed || !motion || !Number.isFinite(dt) || dt <= 0) return;
-    // Drop suspended-tab catch-up, and substep for stable gravity and springs.
+    // Drop suspended-tab catch-up and substep the fragment physics.
     let remaining = Math.min(dt, 0.25);
     while (remaining > 0.000001) {
       const delta = Math.min(remaining, 1 / 120);
@@ -223,29 +162,62 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       remaining -= delta;
     }
   }
+  function cleanupPose(robot) {
+    if (robot.phase !== 'cleanup') return null;
+    const arrival = smooth(clamp(robot.age / 2, 0, 1));
+    const grip = clamp((robot.age - 2) / 1.1, 0, 1);
+    // Enter from beyond the factory and leave room for the trailing wreck
+    // to clear the scene before its replacement starts.
+    const travel = smooth(clamp((robot.age - 3.1) / 2.9, 0, 1)) * 25.2;
+    return {
+      phase: robot.age < 2 ? 'arrive' : robot.age < 3.1 ? 'load' : 'leave',
+      position: [20 - arrival * 17.2 + travel, 0, 0],
+      grip,
+      travel,
+      wheel: (arrival * 17.2 + travel) * 4,
+    };
+  }
   function pose(id) {
     const robot = robots.get(id) || fresh(id);
     const replacing = robot.phase === 'replacing';
+    const alive = robot.phase === 'alive';
+    const corpse = !alive && !replacing;
     const rise = replacing ? clamp((robot.age - 0.65) / 1.9, 0, 1) : 1;
-    const smooth = rise * rise * (3 - 2 * rise);
+    const contact =
+      alive && motion ? Math.max(0, 1 - robot.hitAge / 0.4) ** 2 : 0;
+    const recoil = robot.direction * robot.strength * contact;
+    const cleanup = cleanupPose(robot);
     return {
       damage: robot.damage,
       phase: robot.phase,
       phaseAge: robot.age,
-      blast:
-        robot.phase === 'exploding'
-          ? clamp(1 - robot.age / EXPLOSION_SECONDS, 0, 1)
+      surprise:
+        alive && motion
+          ? clamp((SURPRISE_SECONDS - robot.hitAge) / 0.7, 0, 1)
           : 0,
-      offset: [...robot.offset],
-      rotation: [...robot.rotation],
+      flinch: (robot.strength / 2.2) * contact,
+      // A short, monotonic flinch. No spring, spin or upward launch.
+      offset: [recoil * 0.025, 0, -recoil * 0.055],
+      rotation: [recoil * 0.025, 0, -recoil * 0.01],
+      collapse: corpse
+        ? robot.phase === 'exploding'
+          ? smooth(clamp(robot.age / FALL_SECONDS, 0, 1))
+          : 1
+        : 0,
+      corpseOffset: cleanup
+        ? [cleanup.travel, Math.max(0, (cleanup.grip - 0.6) / 0.4) * 0.08, 0]
+        : ZERO(),
+      cleanup,
+      blast:
+        robot.phase === 'exploding' ? clamp(1 - robot.age / 0.45, 0, 1) : 0,
       door: replacing
         ? Math.min(
             clamp(robot.age / 0.55, 0, 1),
             clamp((REPLACEMENT_SECONDS - robot.age) / 0.65, 0, 1),
           )
         : 0,
-      lift: replacing && smooth < 1 ? -3.4 * (1 - smooth) : 0,
-      visible: robot.phase === 'alive' || (replacing && rise > 0),
+      lift: replacing && rise < 1 ? -3.4 * (1 - smooth(rise)) : 0,
+      visible: !replacing || rise > 0,
       generation: robot.generation,
     };
   }
@@ -268,8 +240,8 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       if (!motion) {
         debris = [];
         for (const robot of robots.values()) {
+          robot.hitAge = SURPRISE_SECONDS;
           if (robot.phase !== 'alive') replace(robot);
-          else settle(robot);
         }
       }
     },

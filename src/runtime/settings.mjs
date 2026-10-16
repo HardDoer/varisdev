@@ -33,7 +33,10 @@ export function configureSettings(env = process.env) {
     migrateSettings(root, directory);
   env.VARISDEV_SETTINGS_DIR = directory;
   env.VARISDEV_CODING_AGENT_DIR = directory;
+  // Dependency reinstalls can restore Pi's original package identity.
+  env.PI_CODING_AGENT_DIR = directory;
   delete env.VARISDEV_CODING_AGENT_SESSION_DIR;
+  delete env.PI_CODING_AGENT_SESSION_DIR;
   delete env.PI_PACKAGE_DIR;
   return env;
 }

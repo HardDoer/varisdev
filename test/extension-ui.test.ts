@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
-import {test} from 'node:test';
+import {test, type TestContext} from 'node:test';
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {
+  ModelRuntime,
+  ModelSelectorComponent,
+} from '@earendil-works/pi-coding-agent';
 import {setTimeout as delay} from 'node:timers/promises';
 
 async function waitFor(check: () => boolean): Promise<void> {
@@ -27,6 +34,7 @@ void test('desktop extension dialogs preserve FIFO order and validate responses'
     ['select', 'confirm', 'input', 'editor'],
   );
   assert.deepEqual(dialogs[0].options, ['First', 'Second']);
+  assert.equal(dialogs[0].searchable, true);
   assert.equal(dialogs[1].message, 'Please confirm.');
   assert.equal(dialogs[2].placeholder, 'Enter a name');
   assert.equal(dialogs[3].prefill, 'Old\nnotes');
@@ -225,6 +233,112 @@ void test('theme helpers and tool expansion keep normal extension API behavior',
   ui.setEditorComponent(undefined);
   assert.equal(ui.getEditorComponent(), undefined);
   adapter.dispose();
+});
+
+async function selectorRuntime(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), 'desktop-model-selector-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const modelsPath = join(directory, 'models.json');
+  await writeFile(
+    modelsPath,
+    JSON.stringify({
+      providers: {
+        'selector-fixture': {
+          api: 'openai-completions',
+          baseUrl: 'https://selector-fixture.invalid/v1',
+          apiKey: 'fixture-key',
+          models: [
+            {id: 'alpha', name: 'Alpha model'},
+            {id: 'beta', name: 'Beta model'},
+          ],
+        },
+      },
+    }),
+  );
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(directory, 'auth.json'),
+    modelsPath,
+    allowModelNetwork: false,
+  });
+  return {
+    modelRuntime,
+    currentModel: modelRuntime.getModel('selector-fixture', 'alpha')!,
+    scopedModels: [],
+    initialSearch: 'selector-fixture/beta',
+  };
+}
+
+void test('SDK model selector routes native actions and keyboard selections with explicit persistence', async t => {
+  const options = await selectorRuntime(t);
+  const adapter = new DesktopExtensionUI(() => {});
+  t.after(() => adapter.dispose());
+  for (const [response, persist] of [
+    [{action: 'session'}, false],
+    [{action: 'default'}, true],
+    ['\r', false],
+    ['\x13', true],
+  ] as const) {
+    const selection = adapter.selectModel(options);
+    await waitFor(
+      () =>
+        adapter.snapshot().dialogs[0]?.terminal?.output.includes('beta') ===
+        true,
+    );
+    const dialog = adapter.snapshot().dialogs[0];
+    assert.deepEqual(dialog.actions, [
+      {id: 'default', label: 'Make as default'},
+      {id: 'session', label: 'Apply to session'},
+    ]);
+    dialog.actions![0].id = 'mutated';
+    adapter.respond(dialog.id, {action: 'unknown'});
+    assert.equal(adapter.snapshot().dialogs[0].actions![0].id, 'default');
+    adapter.respond(dialog.id, response);
+    const selected = await selection;
+    assert.equal(selected?.model.provider, 'selector-fixture');
+    assert.equal(selected?.model.id, 'beta');
+    assert.equal(selected?.persist, persist);
+    assert.equal(adapter.snapshot().dialogs.length, 0);
+  }
+});
+
+void test('command cancellation disposes the SDK model selector and empty results cannot submit', async t => {
+  const options = await selectorRuntime(t);
+  const adapter = new DesktopExtensionUI(() => {});
+  t.after(() => adapter.dispose());
+  let disposed = 0;
+  const dispose = ModelSelectorComponent.prototype.dispose;
+  t.mock.method(
+    ModelSelectorComponent.prototype,
+    'dispose',
+    function (this: ModelSelectorComponent) {
+      disposed++;
+      dispose.call(this);
+    },
+  );
+  const abort = new AbortController();
+  const selection = adapter
+    .forCommand(abort.signal)
+    .selectModel({...options, initialSearch: 'no-matching-model'});
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('No matching models') === true,
+  );
+  const dialog = adapter.snapshot().dialogs[0];
+  adapter.respond(dialog.id, {action: 'default'});
+  assert.equal(adapter.snapshot().dialogs.length, 1);
+  abort.abort();
+  assert.equal(await selection, undefined);
+  assert.ok(disposed > 0, 'The command-owned SDK component must be disposed');
+  assert.equal(adapter.snapshot().dialogs.length, 0);
+  const later = adapter.selectModel(options);
+  await waitFor(
+    () =>
+      adapter.snapshot().dialogs[0]?.terminal?.output.includes('beta') === true,
+  );
+  adapter.respond(adapter.snapshot().dialogs[0].id, {action: 'session'});
+  assert.equal((await later)?.persist, false);
 });
 
 void test('custom terminal dialogs render ANSI and use real keybindings and buffered raw input', async t => {

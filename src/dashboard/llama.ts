@@ -215,10 +215,7 @@ export function createLlamaExtension() {
       );
       completed = !!result;
       if (completed)
-        ctx.ui.notify(
-          `Loaded ${model.id}. Select it in Menu → Model & settings.`,
-          'info',
-        );
+        ctx.ui.notify(`Loaded ${model.id}. Select it in Menu → Model.`, 'info');
     } finally {
       if (!completed && removed.length) {
         const restoreSignal = AbortSignal.timeout(60000);

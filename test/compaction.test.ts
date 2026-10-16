@@ -14,6 +14,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import registerVarisdev from '../extensions/varisdev.ts';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
+import {saveToolSettings} from '../src/tools/settings.ts';
 
 interface ProviderRequest {
   model: string;
@@ -316,6 +317,9 @@ void test(
         }
       },
     );
+    await saveToolSettings('agents', {
+      allowedModels: ['compaction-fixture/worker-model'],
+    });
     async function tool<T>(name: string, parameters: Record<string, unknown>) {
       const registered = session.agent.state.tools.find(
         tool => tool.name === name,

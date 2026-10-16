@@ -1,12 +1,15 @@
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
-import type {
-  ExtensionUIContext,
-  ExtensionUIDialogOptions,
-  KeybindingsManager,
-  ReadonlyFooterDataProvider,
-  Theme,
+import {
+  ModelSelectorComponent,
+  ThinkingSelectorComponent,
+  initTheme,
+  type ExtensionUIContext,
+  type ExtensionUIDialogOptions,
+  type KeybindingsManager,
+  type ReadonlyFooterDataProvider,
+  type Theme,
 } from '@earendil-works/pi-coding-agent';
 
 // The SDK exports Theme at its root, but its theme discovery helpers only live
@@ -81,6 +84,31 @@ export interface DesktopTerminalState {
   revision: number;
 }
 
+type ModelSelectorArguments = ConstructorParameters<
+  typeof ModelSelectorComponent
+>;
+type ThinkingSelectorArguments = ConstructorParameters<
+  typeof ThinkingSelectorComponent
+>;
+
+export interface DesktopModelSelectorOptions {
+  currentModel: ModelSelectorArguments[1];
+  modelRuntime: ModelSelectorArguments[2];
+  scopedModels: ModelSelectorArguments[3];
+  defaultModel?: ModelSelectorArguments[8];
+  initialSearch?: string;
+}
+
+export interface DesktopThinkingSelectorOptions {
+  currentLevel: ThinkingSelectorArguments[0];
+  availableLevels: ThinkingSelectorArguments[1];
+  defaultLevel?: ThinkingSelectorArguments[5];
+}
+
+export interface DesktopUIDialogAction {
+  action: string;
+}
+
 export interface DesktopUIDialog {
   id: string;
   kind: 'select' | 'confirm' | 'input' | 'editor' | 'terminal' | 'info';
@@ -92,6 +120,7 @@ export interface DesktopUIDialog {
   placeholder?: string;
   prefill?: string;
   terminal?: DesktopTerminalState;
+  actions?: Array<{id: string; label: string}>;
 }
 
 export interface DesktopUIState {
@@ -122,6 +151,13 @@ interface PendingDialog {
   finish(value: unknown): void;
   activate?(): void;
   input?(data: string): void;
+  onAction?(action: string): void;
+}
+
+interface CustomDialogControls {
+  actions?: DesktopUIDialog['actions'];
+  onAction?(action: string): void;
+  signal?: AbortSignal;
 }
 
 const MAX_DIALOGS = 32;
@@ -306,6 +342,7 @@ export class DesktopExtensionUI {
 
   constructor(onChange: () => void) {
     this.onChange = onChange;
+    initTheme('dark');
     const theme = themes.getThemeByName('dark');
     if (!theme) throw new Error('The SDK dark theme is unavailable.');
     this.currentTheme = theme;
@@ -448,6 +485,12 @@ export class DesktopExtensionUI {
     return new Proxy(this, {
       get: (target, key) => {
         if (key === 'context') return context;
+        if (key === 'selectModel')
+          return (options: DesktopModelSelectorOptions) =>
+            this.openModelSelector(options, signal);
+        if (key === 'selectThinking')
+          return (options: DesktopThinkingSelectorOptions) =>
+            this.openThinkingSelector(options, signal);
         if (key === 'select')
           return (title: string, choices: string[], presentation = {}) =>
             this.open(
@@ -490,6 +533,103 @@ export class DesktopExtensionUI {
     ) as Promise<string | undefined>;
   }
 
+  selectModel(options: DesktopModelSelectorOptions) {
+    return this.openModelSelector(options);
+  }
+
+  private openModelSelector(
+    options: DesktopModelSelectorOptions,
+    signal?: AbortSignal,
+  ) {
+    type Model = NonNullable<ModelSelectorArguments[1]>;
+    let submit: ((action: string) => void) | undefined;
+    return this.openCustom<{model: Model; persist: boolean} | undefined>(
+      (screen, _theme, _keys, done) => {
+        let persist = false;
+        const selector = new ModelSelectorComponent(
+          screen,
+          options.currentModel,
+          options.modelRuntime,
+          options.scopedModels,
+          model => done({model, persist}),
+          () => done(undefined),
+          options.initialSearch,
+          model => done({model, persist: true}),
+          options.defaultModel,
+        );
+        submit = action => {
+          persist = action === 'default';
+          try {
+            const search = selector.getSearchInput();
+            search.onSubmit?.(search.getValue());
+          } finally {
+            persist = false;
+          }
+        };
+        return selector;
+      },
+      undefined,
+      'Model',
+      {
+        actions: this.selectionActions(),
+        onAction: action => submit?.(action),
+        signal,
+      },
+    );
+  }
+
+  selectThinking(options: DesktopThinkingSelectorOptions) {
+    return this.openThinkingSelector(options);
+  }
+
+  private openThinkingSelector(
+    options: DesktopThinkingSelectorOptions,
+    signal?: AbortSignal,
+  ) {
+    type ThinkingLevel = ThinkingSelectorArguments[0];
+    let submit: ((action: string) => void) | undefined;
+    return this.openCustom<
+      {thinkingLevel: ThinkingLevel; persist: boolean} | undefined
+    >(
+      (_screen, _theme, _keys, done) => {
+        let persist = false;
+        const selector = new ThinkingSelectorComponent(
+          options.currentLevel,
+          options.availableLevels,
+          thinkingLevel => done({thinkingLevel, persist}),
+          () => done(undefined),
+          thinkingLevel => done({thinkingLevel, persist: true}),
+          options.defaultLevel,
+        );
+        submit = action => {
+          persist = action === 'default';
+          try {
+            const list = selector.getSelectList();
+            const selected = list.getSelectedItem();
+            if (selected) list.onSelect?.(selected);
+          } finally {
+            persist = false;
+          }
+        };
+        return selector;
+      },
+      undefined,
+      'Thinking level',
+      {
+        actions: this.selectionActions(),
+        onAction: action => submit?.(action),
+        signal,
+      },
+    );
+  }
+
+  private selectionActions(): NonNullable<DesktopUIDialog['actions']> {
+    return [
+      {id: 'default', label: 'Make as default'},
+      {id: 'session', label: 'Apply to session'},
+    ];
+  }
+
   async show(title: string, message: string): Promise<void> {
     await this.open(
       {kind: 'info', title, message: bounded(message, MAX_EDITOR_TEXT)},
@@ -515,6 +655,9 @@ export class DesktopExtensionUI {
       dialogs: this.pending.map(({dialog}) => ({
         ...dialog,
         ...(dialog.options ? {options: [...dialog.options]} : {}),
+        ...(dialog.actions
+          ? {actions: dialog.actions.map(action => ({...action}))}
+          : {}),
         ...(dialog.terminal ? {terminal: {...dialog.terminal}} : {}),
       })),
       notifications: this.notifications.map(item => ({...item})),
@@ -531,7 +674,7 @@ export class DesktopExtensionUI {
   }
 
   /** Only the first dialog accepts input. Unknown or stale responses are ignored. */
-  respond(id: string, value?: string | boolean): void {
+  respond(id: string, value?: string | boolean | DesktopUIDialogAction): void {
     if (this.disposed) return;
     if (id === this.navigation?.id) {
       this.navigation = undefined;
@@ -561,6 +704,13 @@ export class DesktopExtensionUI {
       if (value === undefined) item.finish(undefined);
       else if (typeof value === 'string' && value.length <= MAX_EDITOR_TEXT)
         item.input?.(value);
+      else if (
+        value &&
+        typeof value === 'object' &&
+        Object.keys(value).length === 1 &&
+        item.dialog.actions?.some(action => action.id === value.action)
+      )
+        item.onAction?.(value.action);
       return;
     }
     if (value === undefined) {
@@ -675,7 +825,13 @@ export class DesktopExtensionUI {
       const signal = opts?.signal;
       const abort = () => item.finish(cancelled);
       const item: PendingDialog = {
-        dialog: {id: randomUUID(), ...data},
+        dialog: {
+          id: randomUUID(),
+          ...data,
+          ...(data.kind === 'select'
+            ? {searchable: data.searchable ?? true}
+            : {}),
+        },
         finish: value => {
           if (settled) return;
           settled = true;
@@ -701,8 +857,10 @@ export class DesktopExtensionUI {
     factory: CustomFactory<T>,
     options?: CustomOptions,
     title = 'Extension',
+    controls?: CustomDialogControls,
   ): Promise<T> {
-    if (this.disposed) return Promise.resolve(undefined as T);
+    if (this.disposed || controls?.signal?.aborted)
+      return Promise.resolve(undefined as T);
     if (this.pending.length >= MAX_DIALOGS) {
       const message = 'Extension dialog exceeds the desktop UI queue limit.';
       this.notify(message, 'error');
@@ -714,7 +872,10 @@ export class DesktopExtensionUI {
       let terminal: VirtualTerminal | undefined;
       let started = false;
       let closed = false;
+      const signal = controls?.signal;
+      const abort = () => item.finish(undefined);
       const cleanup = () => {
+        signal?.removeEventListener('abort', abort);
         terminal?.stop();
         renderer?.stop();
         this.disposeComponent(component);
@@ -738,7 +899,21 @@ export class DesktopExtensionUI {
         reject(failure);
       };
       const item: PendingDialog = {
-        dialog: {id: randomUUID(), kind: 'terminal', title},
+        dialog: {
+          id: randomUUID(),
+          kind: 'terminal',
+          title,
+          ...(controls?.actions
+            ? {actions: controls.actions.map(action => ({...action}))}
+            : {}),
+        },
+        onAction: action => {
+          try {
+            this.withKeybindings(() => controls?.onAction?.(action));
+          } catch (error) {
+            fail(error);
+          }
+        },
         finish: result => {
           if (closed) return;
           closed = true;
@@ -824,6 +999,7 @@ export class DesktopExtensionUI {
         },
       };
       this.pending.push(item);
+      signal?.addEventListener('abort', abort, {once: true});
       if (this.pending[0] === item) item.activate!();
       this.onChange();
     });

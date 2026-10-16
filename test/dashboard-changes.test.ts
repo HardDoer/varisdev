@@ -11,6 +11,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {observeFileChanges, type UnitChange} from '../src/dashboard/changes.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
+import {saveToolSettings} from '../src/tools/settings.ts';
 
 function toolContext(ctx: ExtensionContext): ExtensionToolContext {
   return Object.assign(ctx, {
@@ -30,6 +31,7 @@ function hooks(cwd: string) {
   const ctx = toolContext({
     cwd,
     hasUI: false,
+    isProjectTrusted: () => false,
     model: {provider: 'test', id: 'model'},
     modelRegistry: {},
     sessionManager: {getSessionId: () => 'parent'},
@@ -158,6 +160,7 @@ void test('worker hooks attribute changes and team snapshots retain bounded copi
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     await rm(cwd, {recursive: true, force: true});
   });
+  await saveToolSettings('agents', {allowedModels: ['test/model']});
   const parent = hooks(cwd);
   const worker = hooks(cwd);
   let ready!: () => void;

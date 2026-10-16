@@ -82,10 +82,7 @@ export function initToolSettings({api, selectedSessionId}) {
         input.value = model.key;
         input.checked = checked;
         input.disabled =
-          busy ||
-          (agent && draft.allowedModels === null) ||
-          blocked ||
-          (model.unavailable && (!agent || !checked));
+          busy || blocked || (model.unavailable && (!agent || !checked));
         const text = document.createElement('span');
         const name = document.createElement('strong');
         name.textContent = model.name;
@@ -129,32 +126,28 @@ export function initToolSettings({api, selectedSessionId}) {
     const loaded = Boolean(state && draft);
     $('tool-settings-content').hidden = !loaded;
     $('tool-settings-loading').hidden = !busy || loaded;
-    $('tool-settings-error').textContent = failure;
-    $('tool-settings-error').hidden = !failure;
+    const errors = [failure, ...(state?.diagnostics || [])]
+      .filter(Boolean)
+      .join('\n');
+    $('tool-settings-error').textContent = errors;
+    $('tool-settings-error').hidden = !errors;
     $('tool-settings-retry').hidden = loaded || !failure;
     $('tool-settings-retry').disabled = busy;
     $('tool-settings-close').disabled = busy;
     $('tool-settings-save').disabled = busy || !loaded;
     if (!loaded) return;
     $('tool-settings-search').disabled = busy;
-    $('agent-model-mode').disabled = busy;
     $('commit-inherit-model').disabled = busy;
     $('commit-thinking').disabled = busy;
-    $('agent-model-mode').value =
-      draft.allowedModels === null ? 'all' : 'selected';
     $('commit-inherit-model').checked = draft.model === null;
     $('commit-thinking').value = draft.thinkingLevel ?? '';
-    const invalid = agent ? draft.allowedModels?.length === 0 : !commitValid();
+    const invalid = !agent && !commitValid();
     $('tool-settings-validation').textContent = invalid
-      ? agent
-        ? 'Select at least one model, or allow all models.'
-        : 'Choose an available allowed model, or inherit the parent model.'
+      ? 'Choose an available allowed model, or inherit the parent model.'
       : '';
     $('tool-settings-save').disabled = busy || invalid;
     $('tool-settings-selection').textContent = agent
-      ? draft.allowedModels === null
-        ? 'All available models are allowed (default).'
-        : `${draft.allowedModels.length} model${draft.allowedModels.length === 1 ? '' : 's'} selected.`
+      ? `${draft.allowedModels.length} model${draft.allowedModels.length === 1 ? '' : 's'} selected.`
       : draft.model === null
         ? 'Using the parent model.'
         : `Selected: ${draft.model}`;
@@ -174,6 +167,7 @@ export function initToolSettings({api, selectedSessionId}) {
       if (disposed || version !== request) return;
       state = next;
       draft = structuredClone(next.settings[section]);
+      if (section === 'agents') draft.allowedModels ??= [];
     } catch (error) {
       failure = errorText(error);
     } finally {
@@ -191,11 +185,10 @@ export function initToolSettings({api, selectedSessionId}) {
     failure = '';
     $('tool-settings-title').textContent =
       section === 'agents' ? 'Agent models' : 'Commit settings';
-    $('agent-model-settings').hidden = section !== 'agents';
     $('commit-model-settings').hidden = section !== 'commit';
     $('tool-settings-description').textContent =
       section === 'agents'
-        ? 'Background agents inherit the parent session’s model and reasoning level by default. Choose which models agents may inherit or select explicitly. These settings apply across projects.'
+        ? 'Choose which models background agents may use, including models inherited from the parent session. These settings apply across projects.'
         : 'Choose the model and thinking level for the Commit tool. Models must be allowed in Agent models. These settings apply across projects.';
     $('tool-settings-search').value = '';
     render();
@@ -371,11 +364,6 @@ export function initToolSettings({api, selectedSessionId}) {
   });
   listen($('tool-settings-retry'), 'click', () => void load());
   listen($('tool-settings-search'), 'input', renderModels);
-  listen($('agent-model-mode'), 'change', event => {
-    draft.allowedModels = event.target.value === 'all' ? null : [];
-    failure = '';
-    render();
-  });
   listen($('commit-inherit-model'), 'change', () => {
     draft.model = null;
     failure = '';

@@ -51,7 +51,7 @@
     "fix": "gts fix",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "desktop:build": "tsc --project tsconfig.desktop.json",
+    "desktop:build": "node scripts/configure-pi.mjs && tsc --project tsconfig.desktop.json",
     "desktop": "npm run desktop:open",
     "desktop:dev": "npm run desktop:build && electron desktop/build/src/desktop/main.js",
     "desktop:install": "npm run desktop:build && node scripts/desktop-app.mjs install",

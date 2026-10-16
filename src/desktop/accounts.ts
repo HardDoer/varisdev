@@ -1,9 +1,13 @@
 import {randomUUID} from 'node:crypto';
-import {join} from 'node:path';
-import {getAgentDir, type ModelRuntime} from '@earendil-works/pi-coding-agent';
-import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
+import {
+  CredentialSynchronizationError,
+  type ModelRuntime,
+} from '@earendil-works/pi-coding-agent';
+import {LLAMA_PROVIDER} from '../llama.ts';
 import type {AuthEvent, AuthPrompt, AuthType} from '@earendil-works/pi-ai';
 import {updateMessage} from './updates.ts';
+import {createInstallationLoginContext} from './installation-id.ts';
+import {createGlobalModelRuntime} from './model-runtime.ts';
 
 export interface AccountState {
   revision: number;
@@ -26,6 +30,7 @@ export interface AccountState {
   };
   message: string;
   error?: string;
+  diagnostics?: string[];
   links: Array<{url: string; label: string}>;
   deviceCode?: string;
 }
@@ -50,6 +55,7 @@ export class DesktopAccounts {
   private pending?: {id: string; finish: (value: string) => void};
   private disposed = false;
   private readonly secrets = new Set<string>();
+  private readonly refreshes = new Set<AbortController>();
 
   private readonly dependencies: AccountDependencies;
 
@@ -58,13 +64,13 @@ export class DesktopAccounts {
   }
 
   private getRuntime(): Promise<ModelRuntime> {
+    if (!this.runtime) this.state.diagnostics = undefined;
     this.runtime ??= (
       this.dependencies.createRuntime
         ? this.dependencies.createRuntime()
-        : createDesktopModelRuntime({
-            authPath: join(getAgentDir(), 'auth.json'),
-            modelsPath: join(getAgentDir(), 'models.json'),
-            allowModelNetwork: false,
+        : createGlobalModelRuntime(message => {
+            this.state.diagnostics ??= [];
+            this.state.diagnostics.push(this.clean(message));
           })
     ).catch(error => {
       this.runtime = undefined;
@@ -128,8 +134,19 @@ export class DesktopAccounts {
           provider.apiKey ||
           provider.stored ||
           provider.status !== 'Not connected',
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
+      );
+    for (const [id, type] of stored) {
+      if (this.state.providers.some(provider => provider.id === id)) continue;
+      this.state.providers.push({
+        id,
+        name: id,
+        oauth: false,
+        apiKey: false,
+        stored: true,
+        status: type === 'oauth' ? 'Signed in' : 'API key saved',
+      });
+    }
+    this.state.providers.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async get(): Promise<AccountState> {
@@ -150,6 +167,7 @@ export class DesktopAccounts {
     if (this.disposed) throw new Error('The accounts window is unavailable.');
     if (this.operation)
       throw new Error('Finish or cancel the current account operation.');
+    for (const refresh of this.refreshes) refresh.abort();
     const controller = new AbortController();
     this.controller = controller;
     this.secrets.clear();
@@ -183,12 +201,12 @@ export class DesktopAccounts {
       const runtime = await this.getRuntime();
       signal.throwIfAborted();
       const provider = runtime.getProvider(providerId);
-      if (!provider) throw new Error('This provider is unavailable.');
       if (method === 'logout') {
         await runtime.logout(providerId, {signal});
         this.state.error = undefined;
-        this.state.message = `Signed out of ${provider.name}.`;
+        this.state.message = `Signed out of ${provider?.name ?? providerId}.`;
       } else {
+        if (!provider) throw new Error('This provider is unavailable.');
         if (
           !(method === 'oauth'
             ? provider.auth.oauth
@@ -197,13 +215,28 @@ export class DesktopAccounts {
           throw new Error(
             'This provider does not support that sign-in method.',
           );
-        await runtime.login(providerId, method, {
-          signal,
-          prompt: request => this.prompt(request, signal),
-          notify: event => {
-            if (!signal.aborted) this.notify(event);
-          },
-        });
+        const installation = createInstallationLoginContext();
+        try {
+          await runtime.login(
+            providerId,
+            method,
+            {
+              signal,
+              prompt: request => this.prompt(request, signal),
+              notify: event => {
+                if (!signal.aborted) this.notify(event);
+              },
+            },
+            {
+              getDeviceId: installation.getDeviceId,
+              agentName: 'VarisDev',
+            },
+          );
+        } catch (error) {
+          await installation.flush().catch(() => {});
+          throw error;
+        }
+        await installation.flush();
         this.state.error = undefined;
         this.state.message =
           providerId === LLAMA_PROVIDER
@@ -211,11 +244,16 @@ export class DesktopAccounts {
             : method === 'api_key'
               ? `API key saved for ${provider.name}.`
               : `Signed in to ${provider.name}.`;
+        this.refreshModels(runtime, providerId);
       }
     } catch (error) {
       this.state.message = signal.aborted
         ? 'Cancelled.'
-        : 'Account setup failed.';
+        : error instanceof CredentialSynchronizationError
+          ? method === 'logout'
+            ? 'Credentials removed; model state could not be synchronized.'
+            : 'Credentials saved; model state could not be synchronized.'
+          : 'Account setup failed.';
       this.state.error = signal.aborted
         ? undefined
         : this.clean(error instanceof Error ? error.message : String(error));
@@ -229,6 +267,28 @@ export class DesktopAccounts {
     }
   }
 
+  private refreshModels(runtime: ModelRuntime, providerId: string): void {
+    const controller = new AbortController();
+    this.refreshes.add(controller);
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(15000),
+    ]);
+    const failed = () => {
+      if (this.disposed || controller.signal.aborted) return;
+      this.state.error =
+        'Credentials saved, but the model catalog could not be refreshed.';
+      this.publish();
+    };
+    void runtime
+      .refresh({providers: [providerId], allowNetwork: true, signal})
+      .then(result => {
+        if (result.aborted || result.errors.size) failed();
+      })
+      .catch(failed)
+      .finally(() => this.refreshes.delete(controller));
+  }
+
   private prompt(
     request: AuthPrompt,
     loginSignal: AbortSignal,
@@ -240,10 +300,8 @@ export class DesktopAccounts {
     if (this.pending)
       throw new Error('The provider requested overlapping account prompts.');
     const id = randomUUID();
-    // Pi's llama.cpp login accepts the default URL and an optional server key.
-    const allowEmpty =
-      this.state.attempt?.provider === LLAMA_PROVIDER &&
-      (request.type === 'text' || request.type === 'secret');
+    // Providers decide whether a submitted string is required or has a default.
+    const allowEmpty = request.type !== 'select';
     return new Promise((resolve, reject) => {
       const clear = () => {
         signal.removeEventListener('abort', abort);
@@ -265,9 +323,10 @@ export class DesktopAccounts {
             !request.options.some(option => option.id === value)
           )
             throw new Error('Choose one of the listed options.');
-          if (!allowEmpty && !value.trim())
-            throw new Error('A value is required.');
-          if (request.type === 'secret' || request.type === 'manual_code')
+          if (
+            value &&
+            (request.type === 'secret' || request.type === 'manual_code')
+          )
             this.secrets.add(value);
           clear();
           resolve(value);
@@ -341,8 +400,7 @@ export class DesktopAccounts {
     } else if (event.type === 'device_code') {
       this.state.deviceCode = event.userCode;
       this.state.message = 'Enter this code on the sign-in page.';
-      if (this.addLink(event.verificationUri, 'Open sign-in page'))
-        this.launchBrowser(event.verificationUri);
+      this.addLink(event.verificationUri, 'Open sign-in page');
     } else {
       this.state.message = this.clean(event.message);
       if (event.type === 'info')
@@ -378,6 +436,7 @@ export class DesktopAccounts {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.controller?.abort();
+    for (const refresh of this.refreshes) refresh.abort();
     await this.operation;
   }
 }

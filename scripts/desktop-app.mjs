@@ -16,6 +16,7 @@ import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
 import {configureSettings} from '../src/runtime/settings.mjs';
+import {configureBundledPi} from './configure-pi.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -185,6 +186,7 @@ function windowsApp() {
 }
 
 try {
+  await configureBundledPi(join(root, 'desktop'));
   configureSettings();
   if (process.platform === 'win32') windowsApp();
   else if (process.platform !== 'darwin')

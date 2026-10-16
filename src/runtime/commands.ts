@@ -7,10 +7,12 @@ import type {
   AuthInteraction,
   AuthPrompt,
   AuthType,
+  LoginOptions,
   Provider,
 } from '@earendil-works/pi-ai';
 import type {
   CreateModelRuntimeOptions,
+  CredentialSynchronizationError,
   PackageManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
@@ -18,11 +20,16 @@ import type {
 type AccountProvider = Pick<Provider, 'id' | 'name' | 'auth'>;
 type CommandSettings = Pick<
   SettingsManager,
-  'flush' | 'drainErrors' | 'getNpmCommand' | 'applyOverrides'
+  | 'flush'
+  | 'drainErrors'
+  | 'getOrCreateDeviceId'
+  | 'getNpmCommand'
+  | 'applyOverrides'
 >;
 
 export interface CommandSDK {
   getAgentDir(): string;
+  CredentialSynchronizationError?: typeof CredentialSynchronizationError;
   ModelRuntime: {
     create(options: CreateModelRuntimeOptions): Promise<{
       getProviders(): readonly AccountProvider[];
@@ -30,6 +37,7 @@ export interface CommandSDK {
         provider: string,
         type: AuthType,
         interaction: AuthInteraction,
+        options?: LoginOptions,
       ): Promise<unknown>;
       logout(provider: string, options: {signal: AbortSignal}): Promise<void>;
     }>;
@@ -55,8 +63,16 @@ export interface CommandSDK {
   >;
 }
 
+type CommandModelRuntime = Awaited<
+  ReturnType<CommandSDK['ModelRuntime']['create']>
+>;
+
 export interface CommandDependencies {
   loadSDK?: (root: string) => Promise<CommandSDK>;
+  createGlobalModelRuntime?: (
+    root: string,
+    onDiagnostic?: (message: string) => void,
+  ) => Promise<CommandModelRuntime>;
   write?: (message: string) => void;
   prompt?: (prompt: AuthPrompt, signal: AbortSignal) => Promise<string>;
   openBrowser?: (url: string) => Promise<void>;
@@ -71,6 +87,17 @@ async function loadSDK(root: string): Promise<CommandSDK> {
     ),
   );
   return (await import(url.href)) as CommandSDK;
+}
+
+async function createGlobalModelRuntime(
+  root: string,
+  onDiagnostic?: (message: string) => void,
+): Promise<CommandModelRuntime> {
+  const url = pathToFileURL(
+    join(root, 'desktop/build/src/desktop/model-runtime.js'),
+  );
+  const runtime = await import(url.href);
+  return runtime.createGlobalModelRuntime(onDiagnostic);
 }
 
 function brand(message: string): string {
@@ -229,22 +256,27 @@ export async function runAccountCommand(
         throw new Error('Choose a listed option by number or provider ID.');
       return selected.id;
     }
-    if (request.type === 'secret' && !value.trim())
-      throw new Error('A value is required.');
     return value;
   };
 
+  let sdk: CommandSDK | undefined;
+  let providerName = positional[0];
   try {
     checkCancelled(controller.signal);
-    const sdk = await (dependencies.loadSDK ?? loadSDK)(root);
+    sdk = await (dependencies.loadSDK ?? loadSDK)(root);
     const agentDir = sdk.getAgentDir();
-    const runtime = await sdk.ModelRuntime.create({
-      authPath: join(agentDir, 'auth.json'),
-      modelsPath: join(agentDir, 'models.json'),
-      allowModelNetwork: false,
-      refreshOnCreate: false,
-      signal: controller.signal,
-    });
+    const runtime =
+      command === 'login'
+        ? await (
+            dependencies.createGlobalModelRuntime ?? createGlobalModelRuntime
+          )(root, write)
+        : await sdk.ModelRuntime.create({
+            authPath: join(agentDir, 'auth.json'),
+            modelsPath: join(agentDir, 'models.json'),
+            allowModelNetwork: false,
+            refreshOnCreate: false,
+            signal: controller.signal,
+          });
     checkCancelled(controller.signal);
     if (command === 'logout') {
       await runtime.logout(positional[0], {signal: controller.signal});
@@ -278,41 +310,91 @@ export async function runAccountCommand(
         `Provider '${providerId}' does not support this sign-in method. Run varisdev login${apiKey ? ' --api-key' : ''} to choose a provider.`,
       );
     }
+    providerName = provider.name;
     const type: AuthType = apiKey || !provider.auth.oauth ? 'api_key' : 'oauth';
-    await runtime.login(provider.id, type, {
-      signal: controller.signal,
-      prompt,
-      notify(event) {
-        switch (event.type) {
-          case 'auth_url':
-            if (event.instructions) write(event.instructions);
-            write(event.url);
-            void (dependencies.openBrowser ?? openBrowser)(event.url).catch(
-              () => {},
-            );
-            break;
-          case 'device_code':
-            write(`Code: ${event.userCode}`);
-            write(event.verificationUri);
-            void (dependencies.openBrowser ?? openBrowser)(
-              event.verificationUri,
-            ).catch(() => {});
-            break;
-          case 'info':
-            write(event.message);
-            event.links?.forEach(link =>
-              write(`${link.label ? `${link.label}: ` : ''}${link.url}`),
-            );
-            break;
-          case 'progress':
-            write(event.message);
-            break;
-        }
+    let settings: CommandSettings | undefined;
+    const checkSettings = () => {
+      const errors = settings!.drainErrors();
+      if (errors.length)
+        throw new Error(errors.map(item => item.error.message).join('\n'));
+    };
+    const loginOptions: LoginOptions = {
+      agentName: 'VarisDev',
+      getDeviceId() {
+        checkCancelled(controller.signal);
+        settings ??= sdk!.SettingsManager.create(agentDir, agentDir, {
+          projectTrusted: false,
+        });
+        checkSettings();
+        return settings.getOrCreateDeviceId();
       },
-    });
+    };
+    let loginFailed = false;
+    let installationError: Error | undefined;
+    try {
+      await runtime.login(
+        provider.id,
+        type,
+        {
+          signal: controller.signal,
+          prompt,
+          notify(event) {
+            switch (event.type) {
+              case 'auth_url':
+                if (event.instructions) write(event.instructions);
+                write(event.url);
+                void (dependencies.openBrowser ?? openBrowser)(event.url).catch(
+                  () => {},
+                );
+                break;
+              case 'device_code':
+                write(`Code: ${event.userCode}`);
+                write(event.verificationUri);
+                break;
+              case 'info':
+                write(event.message);
+                event.links?.forEach(link =>
+                  write(`${link.label ? `${link.label}: ` : ''}${link.url}`),
+                );
+                break;
+              case 'progress':
+                write(event.message);
+                break;
+            }
+          },
+        },
+        loginOptions,
+      );
+    } catch (error) {
+      loginFailed = true;
+      throw error;
+    } finally {
+      if (settings) {
+        try {
+          await settings.flush();
+          checkSettings();
+        } catch (error) {
+          if (!loginFailed)
+            installationError = new Error(
+              `Signed in to ${provider.name}, but the installation ID could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        }
+      }
+    }
+    if (installationError) throw installationError;
     checkCancelled(controller.signal);
     write(`Signed in to ${provider.name}.`);
   } catch (error) {
+    if (
+      sdk?.CredentialSynchronizationError &&
+      error instanceof sdk.CredentialSynchronizationError
+    ) {
+      throw new Error(
+        sanitize(
+          `${command === 'logout' ? 'Signed out of' : 'Signed in to'} ${providerName}, but local model state could not be synchronized: ${error.message}`,
+        ),
+      );
+    }
     if (controller.signal.aborted || error instanceof CommandCancelledError) {
       throw new CommandCancelledError();
     }

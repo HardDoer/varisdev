@@ -250,7 +250,7 @@ void test(
       savedToolPath: true,
       settingsDir,
       sdkSettingsDir: settingsDir,
-      agentDir: inheritedAgent,
+      agentDir: settingsDir,
     });
     const manager = new RuntimeManager({
       installRoot,
@@ -283,7 +283,7 @@ void test(
       savedToolPath: true,
       settingsDir,
       sdkSettingsDir: settingsDir,
-      agentDir: inheritedAgent,
+      agentDir: settingsDir,
     });
   },
 );

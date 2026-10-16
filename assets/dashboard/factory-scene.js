@@ -12,6 +12,7 @@ import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
 import {createFactoryVisitors} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
+import {drawCleanupBot} from './robot-cleanup.js';
 
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
@@ -211,7 +212,7 @@ const CUBE = cubeMesh();
 const CYLINDER = cylinderMesh();
 const OCTAGON = cylinderMesh(8);
 
-// A full rigid-body basis, rather than yaw-only sprite recoil.
+// Rotate body and fragment geometry around its local pivot.
 function tumble(v, angles) {
   const [rx, ry, rz] = angles;
   const x = v[0],
@@ -224,6 +225,59 @@ function tumble(v, angles) {
     xx * Math.sin(rz) + y * Math.cos(rz),
     zz,
   ];
+}
+
+function clipPolygon(vertices, axis, boundary, above) {
+  const clipped = [];
+  for (let i = 0; i < vertices.length; i++) {
+    const a = vertices[i],
+      b = vertices[(i + 1) % vertices.length];
+    const insideA = above ? a[axis] >= boundary : a[axis] <= boundary;
+    const insideB = above ? b[axis] >= boundary : b[axis] <= boundary;
+    if (insideA) clipped.push(a);
+    if (insideA !== insideB) {
+      const t = (boundary - a[axis]) / (b[axis] - a[axis]);
+      clipped.push(a.map((n, k) => n + (b[k] - n) * t));
+    }
+  }
+  return clipped;
+}
+
+function cleanupFloor(x, z) {
+  const ramp = n => Math.max(0, Math.min(1, n));
+  let floor = 0.02 + 0.34 * ramp((2.75 - Math.hypot(x + 6.25, z)) / 0.45);
+  for (const [i, [bx, bz]] of BAYS.entries()) {
+    const center = bx - (i < 6 ? 0.35 : 0);
+    floor = Math.max(
+      floor,
+      (i < 6 ? 0.24 : 0.12) * ramp((1 - Math.hypot(x - center, z - bz)) / 0.25),
+    );
+  }
+  return floor;
+}
+
+function groundedDamagePose(geometry, pivot, pose, floor, hovering = false) {
+  const corpse = !['alive', 'replacing'].includes(pose.phase);
+  if (!corpse && (hovering || !pose.flinch)) return pose;
+  const rotation = corpse
+    ? [0, 0, pose.collapse * Math.PI * 0.5]
+    : pose.rotation;
+  let bottom = Infinity;
+  for (let i = 0; i < geometry.data.length; i += 10) {
+    const point = tumble(
+      geometry.data.slice(i, i + 3).map((n, axis) => n - pivot[axis]),
+      rotation,
+    );
+    bottom = Math.min(bottom, point[1] + pivot[1]);
+  }
+  const offset = [...pose.offset];
+  // Keep the supporting foot on the floor while tipping. Flying drones first
+  // descend to the floor; the wreck stays there until the tow claw lifts it.
+  offset[1] += (floor - bottom) * (hovering ? pose.collapse : 1);
+  if (corpse)
+    for (let axis = 0; axis < 3; axis++)
+      offset[axis] += pose.corpseOffset[axis];
+  return {...pose, rotation, offset};
 }
 
 class Geometry {
@@ -251,10 +305,11 @@ class Geometry {
       );
     }
   }
-  appendBody(geometry, pivot, pose, floor = -Infinity) {
+  appendBody(geometry, pivot, pose, floor = -Infinity, exit = Infinity) {
     if (!pose.visible) return;
     if (
       !Number.isFinite(floor) &&
+      !Number.isFinite(exit) &&
       pose.lift === 0 &&
       pose.offset.every(n => n === 0) &&
       pose.rotation.every(n => n === 0)
@@ -284,19 +339,12 @@ class Geometry {
           ...d.slice(j + 6, j + 10),
         ]);
       }
-      if (Number.isFinite(floor)) {
-        const clipped = [];
-        for (let j = 0; j < triangle.length; j++) {
-          const a = triangle[j],
-            b = triangle[(j + 1) % triangle.length];
-          if (a[1] >= floor) clipped.push(a);
-          if (a[1] >= floor !== b[1] >= floor) {
-            const t = (floor - a[1]) / (b[1] - a[1]);
-            clipped.push(a.map((n, k) => n + (b[k] - n) * t));
-          }
-        }
-        triangle = clipped;
-      }
+      if (Number.isFinite(floor))
+        triangle = clipPolygon(triangle, 1, floor, true);
+      // The cutaway ends at the service exit. Hide geometry beyond it so the
+      // departing cleaner and its cargo never float over the empty backdrop.
+      if (Number.isFinite(exit))
+        triangle = clipPolygon(triangle, 0, exit, false);
       for (let j = 1; j < triangle.length - 1; j++)
         this.data.push(...triangle[0], ...triangle[j], ...triangle[j + 1]);
     }
@@ -696,6 +744,7 @@ export function createFactoryScene(
   const damageHomes = new Map();
   const unsettled = p =>
     p.phase !== 'alive' ||
+    p.surprise > 0 ||
     [...p.offset, ...p.rotation].some(n => Math.abs(n) >= 0.025);
   const parentMotion = createParentMotion();
   const whip = createRobotWhip();
@@ -710,11 +759,12 @@ export function createFactoryScene(
           unit =>
             unit.status === 'running' &&
             damage.pose(unit.id).phase === 'alive' &&
+            !damage.pose(unit.id).surprise &&
             anchors.some(a => a.id === unit.id && a.visible),
         )
         .map(unit => unit.id),
       Boolean(reaction) ||
-        damage.pose('parent').phase !== 'alive' ||
+        unsettled(damage.pose('parent')) ||
         visitors.isAway(sessionId) ||
         !['rest', 'work'].includes(mode) ||
         snapshot?.session?.status === 'closed',
@@ -875,11 +925,21 @@ export function createFactoryScene(
   }
 
   function drawDamageHatch(g, fx, home, pose, scale = 1) {
-    if (pose.phase === 'alive') return;
     const [x, floor, z] = home,
       width = 1.9 * scale,
       depth = 1.85 * scale;
-    // Dark recessed well with two actual sliding steel floor-door halves.
+    if (pose.blast > 0) {
+      fx.ring(
+        [x, floor + 1.4 * scale, z],
+        width * (0.15 + (1 - pose.blast) * 0.45),
+        0.035 * pose.blast,
+        C.amber,
+        pose.blast * 0.5,
+        24,
+      );
+    }
+    if (pose.phase !== 'replacing') return;
+    // Open the replacement hatch only after the wreck has been hauled away.
     g.box([x, floor, z], [width * 1.12, 0.055, depth * 1.12], C.dark);
     for (const side of [-1, 1]) {
       g.box(
@@ -899,42 +959,12 @@ export function createFactoryScene(
           -0.32,
         );
     }
-    if (pose.phase === 'replacing') {
-      g.box(
-        [x, Math.max(floor + 0.018, floor + pose.lift), z],
-        [width * 0.8, 0.025, depth * 0.8],
-        C.metal,
-      );
-      g.ring([x, floor + 0.13, z], width * 0.43, 0.025, C.cyan, 0.7, 24);
-    } else {
-      // Hot core and expanding shock rings accompany substantial solid debris.
-      const radius = width * 0.62 * pose.blast;
-      const blastCenter = [
-        x + pose.offset[0],
-        floor + 1.4 * scale + pose.offset[1],
-        z + pose.offset[2],
-      ];
-      fx.octagon(
-        blastCenter,
-        [radius, radius * 0.7, radius],
-        C.amber,
-        pose.blast * 0.75,
-      );
-      fx.ring(
-        blastCenter,
-        width * (0.35 + (1 - pose.blast) * 1.5),
-        0.08 * pose.blast,
-        C.amber,
-        pose.blast * 0.7,
-        32,
-      );
-      const smoke = (1 - pose.blast) * scale;
-      g.octagon(
-        [blastCenter[0], blastCenter[1] + smoke * 0.7, blastCenter[2]],
-        [smoke * 1.1, smoke * 0.7, smoke],
-        C.dark,
-      );
-    }
+    g.box(
+      [x, Math.max(floor + 0.018, floor + pose.lift), z],
+      [width * 0.8, 0.025, depth * 0.8],
+      C.metal,
+    );
+    g.ring([x, floor + 0.13, z], width * 0.43, 0.025, C.cyan, 0.7, 24);
   }
 
   function startlePose() {
@@ -989,11 +1019,20 @@ export function createFactoryScene(
       pose.z = home.p[2];
       pose.yaw = home.yaw;
     }
+    const corpse = !['alive', 'replacing'].includes(damagePose.phase);
+    const braced = damagePose.surprise > 0 || damagePose.phase !== 'alive';
+    if (braced) {
+      pose.mode = 'rest';
+      pose.activity = null;
+      pose.stride = pose.jump = pose.surprise = 0;
+    }
     const idle = pose.activity
       ? idleActivityPose(pose.activity, pose.elapsed)
       : null;
     const relaxed =
-      pose.mode === 'rest' && !reaction ? relaxedIdlePose(time, motion) : null;
+      pose.mode === 'rest' && !reaction && !braced
+        ? relaxedIdlePose(time, motion)
+        : null;
     const blend = idle
       ? Math.max(
           0,
@@ -1019,7 +1058,13 @@ export function createFactoryScene(
       /using|tool|running (bash|read|write|edit|agent_)/i.test(activity);
     const writing = active && !tools && /responding|writing/i.test(activity);
     const thinking = active && !tools && !writing;
-    const color = tools ? C.amber : thinking ? C.cyan : statusColor(state);
+    const color = corpse
+      ? C.dim
+      : tools
+        ? C.amber
+        : thinking
+          ? C.cyan
+          : statusColor(state);
     const t = active ? time : 0;
     const x = -6.25,
       bob = active
@@ -1027,17 +1072,24 @@ export function createFactoryScene(
         : moving
           ? Math.abs(Math.sin(pose.stride)) * (running ? 0.13 : 0.06)
           : 0;
-    const lash = visitor ? null : whip.pose();
+    const lash = visitor || braced ? null : whip.pose();
     const lashPose = lash ? whipPose(lash.age) : null;
     let whipHand;
-    const reactionPose = visitor
-      ? {surprise: 0, jump: 0, squash: 0, wobble: 0}
-      : startlePose();
-    const surprise = Math.max(reactionPose.surprise, pose.surprise);
+    const reactionPose =
+      visitor || braced
+        ? {surprise: 0, jump: 0, squash: 0, wobble: 0}
+        : startlePose();
+    const promptSurprise = Math.max(reactionPose.surprise, pose.surprise);
+    const surprise = Math.max(promptSurprise, damagePose.surprise);
     const jump = reactionPose.jump + pose.jump;
     const {squash, wobble} = reactionPose;
     const lift =
-      bob + jump + squash + (idle?.lift || 0) * blend + (relaxed?.lift || 0);
+      bob +
+      jump +
+      squash +
+      (idle?.lift || 0) * blend +
+      (relaxed?.lift || 0) -
+      damagePose.flinch * 0.16;
     const y = 0.4 + lift;
     sceneGeometry.cylinder(
       [pose.x, pose.ground + 0.38, pose.z],
@@ -1074,23 +1126,44 @@ export function createFactoryScene(
     g.box([x, y + 1.55, 0], [1.45, 1.12, 1.52], C.shell);
     g.box([x + 0.74, y + 1.54, 0], [0.09, 0.84, 1.15], C.edge);
     g.box([x + 0.8, y + 1.62, 0], [0.035, 0.27, 0.68], C.dark);
-    g.box([x + 0.825, y + 1.62, 0], [0.025, 0.11, 0.46], color, 0.85);
+    g.box(
+      [x + 0.825, y + 1.62, 0],
+      [0.025, 0.11, 0.46],
+      color,
+      corpse ? 0 : 0.85,
+    );
     for (const z of [-0.44, 0.44])
-      g.box([x + 0.79, y + 1.3, z], [0.03, 0.08, 0.15], C.amber, 0.5);
+      g.box(
+        [x + 0.79, y + 1.3, z],
+        [0.03, 0.08, 0.15],
+        corpse ? C.dim : C.amber,
+        corpse ? 0 : 0.5,
+      );
     g.cylinder([x, y + 2.22, 0], [0.56, 0.34, 0.56], C.dark);
     // Wide helmet, dark wraparound visor, two independently glowing eyes.
     g.box([x + 0.05, y + 2.62, 0], [1.54, 0.88, 1.66], C.shell);
     g.box([x + 0.12, y + 3.09, 0], [1.35, 0.11, 1.5], C.white);
     g.box([x + 0.84, y + 2.61, 0], [0.095, 0.47, 1.45], C.dark);
-    g.box([x + 0.9, y + 2.58, 0], [0.035, 0.05, 1.23], color, 0.7);
-    const eyeHeight = relaxed?.eyeHeight || AWAKE_EYE_HEIGHT;
+    g.box([x + 0.9, y + 2.58, 0], [0.035, 0.05, 1.23], color, corpse ? 0 : 0.7);
+    const eyeHeight = corpse
+      ? 0
+      : (relaxed?.eyeHeight || AWAKE_EYE_HEIGHT) + surprise * 0.2;
     for (const z of [-0.4, 0.4]) {
-      g.box(
-        [x + 0.91, y + 2.67, z],
-        [0.04, eyeHeight + surprise * 0.15, 0.3 + surprise * 0.08],
-        surprise ? C.white : color,
-        1,
-      );
+      if (corpse) {
+        for (const side of [-1, 1])
+          g.rod(
+            [x + 0.92, y + 2.58, z - side * 0.1],
+            [x + 0.92, y + 2.76, z + side * 0.1],
+            0.025,
+            C.metal,
+          );
+      } else
+        g.box(
+          [x + 0.91, y + 2.67, z],
+          [0.04, eyeHeight, 0.3 + surprise * 0.08],
+          surprise ? C.white : color,
+          1,
+        );
       if (surprise > 0)
         g.box(
           [x + 0.935, y + 2.69, z],
@@ -1098,7 +1171,12 @@ export function createFactoryScene(
           C.dark,
         );
       g.box([x - 0.08, y + 2.64, z * 2.23], [0.56, 0.5, 0.14], C.metal);
-      g.box([x + 0.01, y + 2.66, z * 2.43], [0.21, 0.22, 0.03], color, 0.8);
+      g.box(
+        [x + 0.01, y + 2.66, z * 2.43],
+        [0.21, 0.22, 0.03],
+        color,
+        corpse ? 0 : 0.8,
+      );
     }
     if (surprise > 0)
       g.box(
@@ -1113,7 +1191,7 @@ export function createFactoryScene(
       [antenna[0], antenna[1] + 0.04, antenna[2]],
       [0.19, 0.16, 0.19],
       color,
-      0.95,
+      corpse ? 0 : 0.95,
     );
     for (const side of [-1, 1]) {
       const shoulder = [x, y + 1.94, side * 0.96];
@@ -1172,12 +1250,19 @@ export function createFactoryScene(
         }
         whipHand = [...hand];
       }
-      // Blend from the frozen work pose into a broad, overhead flail.
       const raisedElbow = [x - 0.15, y + 2.6, side * 1.65];
       const raisedHand = [x + 0.25 + wobble * 0.12, y + 3.55, side * 1.95];
+      const guardElbow = [x + 0.35, y + 1.85, side * 1.25];
+      const guardHand = [x + 1.05, y + 2.45, side * 0.95];
       for (let axis = 0; axis < 3; axis++) {
-        elbow[axis] += (raisedElbow[axis] - elbow[axis]) * surprise;
-        hand[axis] += (raisedHand[axis] - hand[axis]) * surprise;
+        elbow[axis] += (raisedElbow[axis] - elbow[axis]) * promptSurprise;
+        hand[axis] += (raisedHand[axis] - hand[axis]) * promptSurprise;
+        elbow[axis] += (guardElbow[axis] - elbow[axis]) * damagePose.surprise;
+        hand[axis] += (guardHand[axis] - hand[axis]) * damagePose.surprise;
+      }
+      if (corpse) {
+        elbow.splice(0, 3, x + 0.1, y + 1.2, side * 1.05);
+        hand.splice(0, 3, x + 0.12, y + 0.6, side * 1.1);
       }
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
@@ -1329,21 +1414,38 @@ export function createFactoryScene(
     const pivot = [position[0], position[1] + 1.9, position[2]];
     const floor =
       damagePose.phase === 'replacing' ? position[1] + 0.4 : -Infinity;
-    sceneGeometry.appendBody(bodyGeometry, pivot, damagePose, floor);
-    sceneEffects.appendBody(bodyEffects, pivot, damagePose, floor);
+    const support = damagePose.cleanup
+      ? cleanupFloor(position[0] + damagePose.corpseOffset[0], position[2]) +
+        0.055
+      : position[1] + 0.415;
+    const bodyPose = groundedDamagePose(
+      bodyGeometry,
+      pivot,
+      damagePose,
+      support,
+    );
+    const exit = damagePose.cleanup ? 10.4 : Infinity;
+    sceneGeometry.appendBody(bodyGeometry, pivot, bodyPose, floor, exit);
+    sceneEffects.appendBody(bodyEffects, pivot, bodyPose, floor, exit);
     const anchor = p =>
       tumble(
         p.map((n, a) => n - pivot[a]),
-        damagePose.rotation,
+        bodyPose.rotation,
       ).map(
         (n, a) =>
-          n + pivot[a] + damagePose.offset[a] + (a === 1 ? damagePose.lift : 0),
+          n + pivot[a] + bodyPose.offset[a] + (a === 1 ? bodyPose.lift : 0),
       );
     if (whipStart)
       whipStart = damagePose.phase === 'alive' ? anchor(whipStart) : null;
     if (!visitor) {
       canvas.dataset.robotWhip = lash?.target || '';
-      canvas.dataset.parentMode = pose.mode;
+      canvas.dataset.parentMode = braced
+        ? corpse
+          ? damagePose.phase
+          : damagePose.surprise
+            ? 'startled'
+            : pose.mode
+        : pose.mode;
       canvas.dataset.parentActivity = pose.activity || '';
       canvas.dataset.parentEyes = String(eyeHeight);
     }
@@ -1366,12 +1468,23 @@ export function createFactoryScene(
         home && unsettled(damagePose)
           ? [home.p[0], 1.63, home.p[2]]
           : positionFor(unit);
-    const active = unit.status === 'running' && damagePose.phase === 'alive',
-      failed = unit.status === 'failed';
+    const corpse = !['alive', 'replacing'].includes(damagePose.phase);
+    const active =
+        unit.status === 'running' &&
+        damagePose.phase === 'alive' &&
+        !damagePose.surprise,
+      failed = unit.status === 'failed' && damagePose.phase === 'alive';
     const t = active ? time + index * 1.7 : 0;
     const lash = whip.pose();
-    const recoil = lash?.target === unit.id ? whipPose(lash.age).recoil : 0;
-    const y = baseY + (active ? Math.sin(t * 3.4) * 0.24 : 0) + recoil * 0.68;
+    const recoil =
+      !damagePose.surprise && lash?.target === unit.id
+        ? whipPose(lash.age).recoil
+        : 0;
+    const y =
+      baseY +
+      (active ? Math.sin(t * 3.4) * 0.24 : 0) +
+      recoil * 0.68 -
+      damagePose.flinch * 0.08;
     const x = baseX + (active ? Math.sin(t * 1.7) * 0.1 : 0) + recoil * 0.28;
     const bodyZ = z;
     drawDamageHatch(sceneGeometry, sceneEffects, [baseX, 0.24, z], damagePose);
@@ -1397,7 +1510,7 @@ export function createFactoryScene(
         t * 1.8,
       );
     }
-    const color = statusColor(unit.status);
+    const color = corpse ? C.dim : statusColor(unit.status);
     sceneGeometry.cylinder(
       [baseX, 0.225, z],
       [1.22, 0.018, 0.86],
@@ -1408,8 +1521,17 @@ export function createFactoryScene(
     g.box([x + 0.08, y + 0.28, bodyZ], [0.7, 0.14, 0.74], C.white);
     g.box([x + 0.55, y + 0.01, bodyZ], [0.07, 0.3, 0.7], C.dark);
     for (const zz of [-0.2, 0.2])
-      g.box([x + 0.6, y + 0.04, bodyZ + zz], [0.025, 0.09, 0.16], color, 1);
-    g.box([x, y + 0.36, bodyZ], [0.34, 0.035, 0.12], color, 0.9);
+      g.box(
+        [x + 0.6, y + 0.04, bodyZ + zz],
+        [
+          0.025,
+          corpse ? 0.035 : 0.09 + damagePose.surprise * 0.16,
+          0.16 + damagePose.surprise * 0.06,
+        ],
+        damagePose.surprise ? C.white : color,
+        corpse ? 0 : 1,
+      );
+    g.box([x, y + 0.36, bodyZ], [0.34, 0.035, 0.12], color, corpse ? 0 : 0.9);
     for (const side of [-1, 1]) {
       g.rod(
         [x - 0.15, y, bodyZ],
@@ -1431,7 +1553,7 @@ export function createFactoryScene(
         [x - 0.2, y - 0.24, bodyZ + side * 0.71],
         [0.18, 0.05, 0.18],
         color,
-        active ? 1 : 0.2,
+        corpse ? 0 : active ? 1 : 0.2,
       );
       if (damagePose.damage < 0.65 || side < 0)
         g.box(
@@ -1465,12 +1587,15 @@ export function createFactoryScene(
       [x - 0.38, y + 0.68, bodyZ - 0.28],
       [0.1, 0.09, 0.1],
       color,
-      0.85,
+      corpse ? 0 : 0.85,
     );
     const elbow = [x + 0.47, y - 0.38, bodyZ + 0.29];
     const hand = [
       x + 0.83,
-      y - 0.32 + (active ? Math.sin(t * 4) * 0.3 : 0),
+      y -
+        0.32 +
+        (active ? Math.sin(t * 4) * 0.3 : 0) +
+        damagePose.surprise * 0.4,
       bodyZ + 0.12,
     ];
     g.rod([x + 0.1, y - 0.2, bodyZ + 0.27], elbow, 0.066, C.dark);
@@ -1545,15 +1670,20 @@ export function createFactoryScene(
     drawDamageScars(g, [x, y, bodyZ], damagePose.damage);
     const pivot = [baseX, baseY, z];
     const floor = damagePose.phase === 'replacing' ? 0.36 : -Infinity;
-    sceneGeometry.appendBody(g, pivot, damagePose, floor);
-    sceneEffects.appendBody(fx, pivot, damagePose, floor);
+    const support = damagePose.cleanup
+      ? cleanupFloor(baseX + damagePose.corpseOffset[0], z) + 0.04
+      : 0.28;
+    const bodyPose = groundedDamagePose(g, pivot, damagePose, support, true);
+    const exit = damagePose.cleanup ? 10.4 : Infinity;
+    sceneGeometry.appendBody(g, pivot, bodyPose, floor, exit);
+    sceneEffects.appendBody(fx, pivot, bodyPose, floor, exit);
     const anchor = p =>
       tumble(
         p.map((n, a) => n - pivot[a]),
-        damagePose.rotation,
+        bodyPose.rotation,
       ).map(
         (n, a) =>
-          n + pivot[a] + damagePose.offset[a] + (a === 1 ? damagePose.lift : 0),
+          n + pivot[a] + bodyPose.offset[a] + (a === 1 ? bodyPose.lift : 0),
       );
     return {
       p: anchor([x, y + 1.02, bodyZ]),
@@ -1630,17 +1760,18 @@ export function createFactoryScene(
     const visiting = visitors.visitorsAt(sessionId);
     const ownAway = visitors.isAway(sessionId);
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
-    // Visitor travel is independent decorative state: let it advance, but keep
-    // a struck local body/hatch at its latched home through the whole cycle.
+    // Keep the struck body and cleanup route at the impact location.
     const physicalParent =
       damageHomes.has('parent') && unsettled(damage.pose('parent'));
     let parentPosition;
     if (ownTravel) {
       parentPosition = drawParentSession(g, fx, ownTravel, 'parent');
       canvas.dataset.robotWhip = '';
-      canvas.dataset.parentMode = ownTravel.phase;
-      canvas.dataset.parentActivity = '';
-      canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
+      if (!physicalParent) {
+        canvas.dataset.parentMode = ownTravel.phase;
+        canvas.dataset.parentActivity = '';
+        canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
+      }
     } else if (!ownAway || physicalParent)
       parentPosition = drawParentSession(g, fx);
     else {
@@ -1699,13 +1830,34 @@ export function createFactoryScene(
       }),
     );
     homes.set('parent', [pose.x, pose.ground + 0.36, pose.z]);
+    const cleaners = [];
+    for (const id of homes.keys()) {
+      const cleanup = damage.pose(id).cleanup;
+      if (!cleanup) continue;
+      const home = damageHomes.get(id)?.p || homes.get(id);
+      const bot = new Geometry(),
+        botEffects = new Geometry();
+      drawCleanupBot(bot, botEffects, C, cleanup);
+      const botPose = {
+        visible: true,
+        offset: [
+          home[0],
+          cleanupFloor(home[0] + cleanup.position[0], home[2]),
+          home[2],
+        ],
+        rotation: [0, 0, 0],
+        lift: 0,
+      };
+      g.appendBody(bot, [0, 0, 0], botPose, -Infinity, 10.4);
+      fx.appendBody(botEffects, [0, 0, 0], botPose, -Infinity, 10.4);
+      cleaners.push({id, ...cleanup});
+    }
+    canvas.dataset.robotCleanup = JSON.stringify(cleaners);
     for (const piece of robotEffects) {
       const home = damageHomes.get(piece.owner)?.p || homes.get(piece.owner);
       if (!home) continue;
       const scale = piece.owner === 'parent' ? 1.4 : 1;
-      const p = piece.position.map(
-        (n, a) => home[a] + n + (a === 1 ? 1.6 * (scale - 1) : 0),
-      );
+      const p = piece.position.map((n, a) => home[a] + n);
       const size = piece.size.map(n => n * scale * Math.min(1, piece.life * 4));
       const basis = [
         [1, 0, 0],
@@ -2048,6 +2200,7 @@ export function createFactoryScene(
     damageHomes.clear();
     delete canvas.dataset.robotDamage;
     delete canvas.dataset.robotDebris;
+    delete canvas.dataset.robotCleanup;
     stop();
   }
   function onContextRestored() {
@@ -2208,8 +2361,7 @@ export function createFactoryScene(
       if (disposed || contextLost) return false;
       const target = caneTargetList().find(item => item.id === id);
       if (!target) return false;
-      // Latch the physical launch/hatch origin; snapshots and idle wandering
-      // must not drag airborne fragments or the replacement elevator around.
+      // Keep the flinch, wreck and cleanup route anchored across snapshots.
       if (!unsettled(damage.pose(id))) {
         if (id === 'parent') {
           const ownTravel = visitors
@@ -2227,6 +2379,7 @@ export function createFactoryScene(
         }
       }
       if (!damage.hit(id, direction, strength)) return false;
+      reaction = null;
       whip.cancel();
       render();
       schedule();
@@ -2259,6 +2412,7 @@ export function createFactoryScene(
       delete canvas.dataset.parentAwayLabel;
       delete canvas.dataset.robotDamage;
       delete canvas.dataset.robotDebris;
+      delete canvas.dataset.robotCleanup;
       particles = [];
       dispatches = [];
       flashes = [];

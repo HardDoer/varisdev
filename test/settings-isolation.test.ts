@@ -532,23 +532,20 @@ for (const custom of [false, true]) {
         stopReason: 'stop', timestamp: Date.now()});
       const listed = await sdk.SessionManager.list(process.cwd());
       const {execFileSync} = await import('node:child_process');
-      const piChild = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(`
-        const sdk = await import(${asURL(join(stockSDK, 'dist/index.js'))});
+      const unbrandedChild = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(`
         const config = await import(${asURL(join(stockSDK, 'dist/config.js'))});
-        const {AuthStorage} = await import(${asURL(join(stockSDK, 'dist/core/auth-storage.js'))});
-        const settings = sdk.SettingsManager.create(process.cwd());
         console.log(JSON.stringify({
-          agentDir: sdk.getAgentDir(), appName: config.APP_NAME, configDir: config.CONFIG_DIR_NAME,
-          sessionOverride: process.env.PI_CODING_AGENT_SESSION_DIR,
-          provider: settings.getDefaultProvider(), thinking: settings.getDefaultThinkingLevel(),
-          credential: await AuthStorage.create().read('regular-pi-provider'),
+          agentDir: config.getAgentDir(), authPath: config.getAuthPath(),
+          settingsPath: config.getSettingsPath(),
+          appName: config.APP_NAME, configDir: config.CONFIG_DIR_NAME,
+          sessionOverride: process.env.PI_CODING_AGENT_SESSION_DIR ?? null,
         }));
       `)}], {encoding: 'utf8', env: process.env}));
       const report = {
         agentDir: sdk.getAgentDir(), appName: config.APP_NAME, configDir: config.CONFIG_DIR_NAME,
         inheritedSession: process.env.PI_CODING_AGENT_SESSION_DIR ?? null,
         privateSession: process.env.VARISDEV_CODING_AGENT_SESSION_DIR ?? null,
-        inheritedPackage: process.env.PI_PACKAGE_DIR ?? null, piChild,
+        inheritedPackage: process.env.PI_PACKAGE_DIR ?? null, unbrandedChild,
         provider: settings.getDefaultProvider(), thinking: settings.getDefaultThinkingLevel(),
         credential: await auth.read('isolation-provider'), foreignCredential: await auth.read('regular-pi-provider') ?? null,
         ownModel: !!runtime.getModel('isolation-provider', 'fixture-model'),
@@ -564,16 +561,15 @@ for (const custom of [false, true]) {
       assert.equal(privateReport.agentDir, f.settings);
       assert.equal(privateReport.appName, 'varisdev');
       assert.equal(privateReport.configDir, '.varisdev');
-      assert.equal(privateReport.inheritedSession, f.sessions);
+      assert.equal(privateReport.inheritedSession, null);
       assert.equal(privateReport.privateSession, null);
-      assert.deepEqual(privateReport.piChild, {
-        agentDir: f.inherited,
+      assert.deepEqual(privateReport.unbrandedChild, {
+        agentDir: f.settings,
+        authPath: join(f.settings, 'auth.json'),
+        settingsPath: join(f.settings, 'settings.json'),
         appName: 'pi',
         configDir: '.pi',
-        sessionOverride: f.sessions,
-        provider: 'regular-pi-provider',
-        thinking: 'minimal',
-        credential: {type: 'api_key', key: 'regular-pi-secret'},
+        sessionOverride: null,
       });
       assert.equal(privateReport.inheritedPackage, null);
       assert.equal(privateReport.provider, 'isolation-provider');
@@ -650,7 +646,10 @@ for (const custom of [false, true]) {
       assert.equal(resumed.agentDir, f.settings);
       assert.equal(resumed.restoredFile, resumed.sessionFile);
       assert.ok(resumed.sessionFile.startsWith(join(f.settings, 'sessions')));
-      assert.equal(resumed.model, undefined);
+      assert.deepEqual(resumed.model, {
+        provider: 'isolation-provider',
+        id: 'fixture-model',
+      });
       assert.equal(resumed.fileSaved, true);
       assert.equal(resumed.dirSaved, true);
       for (const paths of resumed.externalPaths) {
@@ -658,10 +657,10 @@ for (const custom of [false, true]) {
         assert.ok(paths.dir.startsWith(join(f.settings, 'sessions')));
       }
       assert.ok(
-        resumed.diagnostics.some(
-          (entry: {message: string}) =>
-            entry.message.includes('regular-pi-provider/fixture-model') &&
-            entry.message.includes('not configured'),
+        resumed.diagnostics.some((entry: {message: string}) =>
+          entry.message.includes(
+            'Could not restore model regular-pi-provider/fixture-model',
+          ),
         ),
       );
       for (const kind of [

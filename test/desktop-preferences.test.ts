@@ -1,16 +1,26 @@
 import assert from 'node:assert/strict';
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {test} from 'node:test';
+import {test, type TestContext} from 'node:test';
 import {DesktopPreferences} from '../src/desktop/preferences.ts';
 
-void test('folder picker remembers the last project across app instances and handles missing folders', async t => {
-  const root = join(process.cwd(), '.pi', 'tmp');
-  await mkdir(root, {recursive: true});
-  const directory = await mkdtemp(join(root, 'preferences-'));
+async function temporaryDirectory(t: TestContext, prefix: string) {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   t.after(() => rm(directory, {recursive: true, force: true}));
-  const profile = join(directory, '.pi', 'desktop');
+  return directory;
+}
+
+void test('folder picker remembers the last project across app instances and handles missing folders', async t => {
+  const directory = await temporaryDirectory(t, 'varisdev-preferences-');
+  const profile = join(directory, 'profile');
   const project = join(directory, 'project');
   await mkdir(project);
   const preferences = new DesktopPreferences(profile);
@@ -24,8 +34,7 @@ void test('folder picker remembers the last project across app instances and han
 });
 
 void test('agent notice acknowledgment survives restart and folder changes', async t => {
-  const profile = await mkdtemp(join(tmpdir(), 'varisdev-notice-'));
-  t.after(() => rm(profile, {recursive: true, force: true}));
+  const profile = await temporaryDirectory(t, 'varisdev-notice-');
   const first = new DesktopPreferences(profile);
   assert.equal(first.agentNoticeAcknowledged(), false);
   assert.equal(first.commitNoticeAcknowledged(), false);
@@ -52,8 +61,7 @@ void test('agent notice acknowledgment survives restart and folder changes', asy
 });
 
 void test('a failed preference write leaves the agent notice unacknowledged', async t => {
-  const profile = await mkdtemp(join(tmpdir(), 'varisdev-notice-failure-'));
-  t.after(() => rm(profile, {recursive: true, force: true}));
+  const profile = await temporaryDirectory(t, 'varisdev-notice-failure-');
   const preferences = new DesktopPreferences(profile);
   await mkdir(join(profile, 'settings.json'));
   assert.throws(() => preferences.acknowledgeAgentNotice());
@@ -68,18 +76,24 @@ void test('a failed preference write leaves the agent notice unacknowledged', as
 });
 
 void test('recent projects persist in most-recent order, deduplicate, and survive notice changes', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'varisdev-recents-'));
-  t.after(() => rm(directory, {recursive: true, force: true}));
+  const directory = await temporaryDirectory(t, 'varisdev-recents-');
   const profile = join(directory, 'profile');
   const first = join(directory, 'first');
   const second = join(directory, 'second');
   await mkdir(first);
   await mkdir(second);
+  const alias = join(directory, 'first-alias');
+  await symlink(
+    first,
+    alias,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
   const preferences = new DesktopPreferences(profile);
   assert.deepEqual(preferences.recentProjects(), []);
   preferences.rememberFolder(first);
   preferences.rememberFolder(second);
-  preferences.rememberFolder(first);
+  preferences.rememberFolder(alias);
+  assert.equal(preferences.folder('/unused'), first);
   preferences.acknowledgeAgentNotice();
   preferences.acknowledgeCommitNotice();
   const restarted = new DesktopPreferences(profile);
@@ -92,10 +106,7 @@ void test('recent projects persist in most-recent order, deduplicate, and surviv
 });
 
 void test('recent projects migrate the last folder and bound and validate saved history', async t => {
-  const directory = await mkdtemp(
-    join(tmpdir(), 'varisdev-recents-migration-'),
-  );
-  t.after(() => rm(directory, {recursive: true, force: true}));
+  const directory = await temporaryDirectory(t, 'varisdev-recents-migration-');
   const profile = join(directory, 'profile');
   await mkdir(profile);
   const path = join(profile, 'settings.json');
@@ -125,8 +136,7 @@ void test('recent projects migrate the last folder and bound and validate saved 
 });
 
 void test('failed writes do not change recent-project history in memory', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'varisdev-recents-failure-'));
-  t.after(() => rm(directory, {recursive: true, force: true}));
+  const directory = await temporaryDirectory(t, 'varisdev-recents-failure-');
   const profile = join(directory, 'profile');
   const preferences = new DesktopPreferences(profile);
   preferences.rememberFolder(directory);

@@ -6,6 +6,7 @@ import {isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
 import {DashboardState} from './state.ts';
 import {DashboardInputError} from './errors.ts';
+import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
 import type {SessionFeatures, SessionConfiguration} from './features.ts';
 import type {DesktopExtensionUI, DesktopUIState} from './extension-ui.ts';
@@ -113,7 +114,7 @@ export function sessionConfiguration(input: unknown): SessionConfiguration {
   const values = fields(input);
   if (
     Object.keys(values).some(
-      key => !['provider', 'modelId', 'thinkingLevel'].includes(key),
+      key => !['provider', 'modelId', 'thinkingLevel', 'persist'].includes(key),
     )
   )
     throw new DashboardInputError('Unknown session setting.');
@@ -126,6 +127,11 @@ export function sessionConfiguration(input: unknown): SessionConfiguration {
     result.thinkingLevel = text(values.thinkingLevel, 'Thinking level', 32);
   if (!Object.keys(result).length)
     throw new DashboardInputError('Choose a model or thinking level.');
+  if (values.persist !== undefined) {
+    if (typeof values.persist !== 'boolean')
+      throw new DashboardInputError('Persist must be a boolean.');
+    result.persist = values.persist;
+  }
   return result;
 }
 
@@ -646,7 +652,8 @@ export class DashboardHub {
     if (
       value !== undefined &&
       typeof value !== 'boolean' &&
-      (typeof value !== 'string' || value.length > 262144)
+      (typeof value !== 'string' || value.length > 262144) &&
+      (typeof value !== 'object' || value === null || Array.isArray(value))
     )
       throw new DashboardInputError('Invalid extension dialog response.');
     const parent = this.owned(id).parent;
@@ -668,6 +675,19 @@ export class DashboardHub {
       throw new DashboardInputError(
         'This extension dialog is no longer waiting for a response.',
       );
+    if (value !== null && typeof value === 'object') {
+      const response = fields(value);
+      if (
+        editor ||
+        dialog?.kind !== 'terminal' ||
+        Object.keys(response).length !== 1 ||
+        typeof response.action !== 'string' ||
+        !dialog.actions?.some(action => action.id === response.action)
+      )
+        throw new DashboardInputError('Invalid extension dialog action.');
+      parent.ui.respond(dialogId, {action: response.action});
+      return;
+    }
     if (value !== undefined) {
       const expectedType =
         !editor && (dialog?.kind === 'confirm' || dialog?.kind === 'info')
@@ -711,13 +731,12 @@ export class DashboardHub {
     const entry = this.owned(id);
     const status = entry.state.snapshot().session.status;
     if (
-      entry.maintaining ||
-      status === 'compacting' ||
       status === 'closed' ||
-      (!allowRunning && (entry.running.size || status !== 'idle'))
+      (!allowRunning &&
+        (entry.maintaining || entry.running.size || status !== 'idle'))
     )
       throw new DashboardInputError('Wait until this session is idle.');
-    entry.maintaining = true;
+    if (!allowRunning) entry.maintaining = true;
     let actionOperation: Promise<void>;
     try {
       actionOperation = action(entry.parent);
@@ -725,7 +744,7 @@ export class DashboardHub {
       actionOperation = Promise.reject(error);
     }
     const operation = actionOperation.finally(() => {
-      entry.maintaining = false;
+      if (!allowRunning) entry.maintaining = false;
       entry.pending.delete(operation);
       if (this.has(entry)) {
         if (!entry.closing) this.refresh(entry);
@@ -747,7 +766,7 @@ export class DashboardHub {
     const instructions = compactionInstructions(input);
     const attached = this.attached(id);
     if (attached) return attached.compact(id, instructions);
-    await this.maintain(id, parent => parent.compact(instructions));
+    await this.maintain(id, parent => parent.compact(instructions), true);
   }
 
   async reloadSession(id: string): Promise<void> {
@@ -761,7 +780,8 @@ export class DashboardHub {
     const attached = this.attached(id);
     if (attached) return attached.prompt(id, prompt);
     const entry = this.owned(id);
-    if (entry.maintaining)
+    const command = parseSlashCommand(prompt);
+    if (entry.maintaining && !(command && nativeCommand(command.name)?.live))
       throw new DashboardInputError(
         'This session is updating. Try again when it is idle.',
       );

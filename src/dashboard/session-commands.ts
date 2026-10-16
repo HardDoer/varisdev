@@ -40,13 +40,6 @@ function checkCancelled(signal?: AbortSignal): void {
 const SENSITIVE =
   'Sessions may contain prompts, model responses, tool arguments, command output, file contents, extension messages, and secrets. Review the exported file before sharing it.';
 
-function requireIdle(session: AgentSession): void {
-  if (!session.isIdle || session.isBashRunning)
-    throw new Error(
-      'Wait for the current operation to finish before changing sessions.',
-    );
-}
-
 function fileArgument(argument: string, cwd: string): string | undefined {
   let value = argument.trim();
   if (!value) return undefined;
@@ -192,7 +185,6 @@ async function fork(
   signal?: AbortSignal,
 ): Promise<SessionCommandResult> {
   checkCancelled(signal);
-  requireIdle(session);
   const runner = session.extensionRunner;
   if (runner.hasHandlers('session_before_fork')) {
     const result = await runner.emit({
@@ -203,7 +195,6 @@ async function fork(
     if (result?.cancel) return cancelled;
   }
   checkCancelled(signal);
-  requireIdle(session);
   const entry = session.sessionManager.getEntry(entryId);
   if (
     !entry ||
@@ -222,17 +213,19 @@ async function fork(
             .map(block => block.text)
             .join('')
       : '';
-  return {
-    kind: 'replace',
-    replacement: {
-      ...(await prepareBranch(
-        session,
-        position === 'at' ? entry.id : entry.parentId,
-        signal,
-      )),
-      editorText,
-    },
-  };
+  const replacement = await prepareBranch(
+    session,
+    position === 'at' ? entry.id : entry.parentId,
+    signal,
+  );
+  try {
+    await session.abort();
+    checkCancelled(signal);
+  } catch (error) {
+    await rm(replacement.sessionFile, {force: true});
+    throw error;
+  }
+  return {kind: 'replace', replacement: {...replacement, editorText}};
 }
 
 /** Parse/migrate with Pi, without opening (and possibly rewriting) the source. */
@@ -340,7 +333,6 @@ async function importSession(
   )
     return cancelled;
   checkCancelled(signal);
-  requireIdle(session);
   const runner = session.extensionRunner;
   if (runner.hasHandlers('session_before_switch')) {
     const result = await runner.emit({
@@ -351,10 +343,16 @@ async function importSession(
     if (result?.cancel) return cancelled;
   }
   checkCancelled(signal);
-  requireIdle(session);
   // Persist the same validated, SDK-migrated snapshot, not a second read of an
   // untrusted source that may have changed while confirmation dialogs were open.
   const prepared = await persistSnapshot(imported, cwd, source, signal);
+  try {
+    await session.abort();
+    checkCancelled(signal);
+  } catch (error) {
+    await rm(prepared.sessionFile, {force: true});
+    throw error;
+  }
   return {
     kind: 'replace',
     replacement: {...prepared, editorText: ''},
@@ -456,7 +454,6 @@ async function executeSessionCommand(
     throw new Error(`Usage: /${name} (this command takes no arguments).`);
   switch (name) {
     case 'tree': {
-      requireIdle(session);
       const manager = session.sessionManager;
       const choices: Array<{id: string; label: string}> = [];
       const stack = manager
@@ -483,14 +480,16 @@ async function executeSessionCommand(
         signal,
       );
       if (!selected) return cancelled;
-      requireIdle(session);
+      if (selected === manager.getLeafId())
+        return {kind: 'done', message: 'Already at this point.'};
+      if (session.isStreaming) await session.abort();
+      checkCancelled(signal);
       const result = await session.navigateTree(selected, {summarize: false});
       if (result.cancelled || result.aborted) return cancelled;
       ui.context.setEditorText(result.editorText ?? '');
       return {kind: 'done', message: 'Session tree position updated.'};
     }
     case 'fork': {
-      requireIdle(session);
       const messages = session.getUserMessagesForForking();
       if (!messages.length)
         return {kind: 'done', message: 'No user messages to fork from.'};
@@ -508,7 +507,6 @@ async function executeSessionCommand(
       return selected ? fork(session, selected, 'before', signal) : cancelled;
     }
     case 'clone': {
-      requireIdle(session);
       const leaf = session.sessionManager.getLeafId();
       return leaf
         ? fork(session, leaf, 'at', signal)

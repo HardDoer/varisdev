@@ -18,6 +18,7 @@ import type {DashboardState} from './state.ts';
 import {sessionConfiguration, compactionInstructions} from './hub.ts';
 import {supportedThinkingLevels, type SessionFeatures} from './features.ts';
 import {attachedContextFiles} from './context-files.ts';
+import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 
 interface FactoryConnection {
   isOpen(): boolean;
@@ -37,7 +38,7 @@ interface FactoryBinding {
   submissions: number;
   stopping: boolean;
   maintaining: boolean;
-  configuration?: Promise<void>;
+  configurations: Set<Promise<void>>;
   epoch: number;
 }
 
@@ -66,14 +67,13 @@ export function registerFactory(
     ensureAttached(current);
     const status = current.state.snapshot().session.status;
     if (
-      current.maintaining ||
       current.stopping ||
-      status === 'compacting' ||
       status === 'closed' ||
-      (!allowRunning && (current.submissions || !current.ctx.isIdle()))
+      (!allowRunning &&
+        (current.maintaining || current.submissions || !current.ctx.isIdle()))
     )
       throw new Error('Wait until this session is idle.');
-    current.maintaining = true;
+    if (!allowRunning) current.maintaining = true;
     const epoch = current.epoch;
     const operation = Promise.resolve().then(() => {
       ensureAttached(current);
@@ -81,13 +81,13 @@ export function registerFactory(
         throw new Error('This session is stopping.');
       return action();
     });
-    if (allowRunning) current.configuration = operation;
+    current.configurations.add(operation);
     try {
       await operation;
       ensureAttached(current);
     } finally {
-      if (allowRunning) current.configuration = undefined;
-      current.maintaining = false;
+      current.configurations.delete(operation);
+      if (!allowRunning) current.maintaining = false;
     }
   };
   const open = async (show: boolean) => {
@@ -113,6 +113,7 @@ export function registerFactory(
       submissions: 0,
       stopping: false,
       maintaining: false,
+      configurations: new Set(),
       epoch: 0,
       control: {
         async features(): Promise<SessionFeatures> {
@@ -162,6 +163,8 @@ export function registerFactory(
         },
         async configure(input) {
           const configuration = sessionConfiguration(input);
+          if (configuration.persist)
+            throw new Error('Save startup defaults in the attached terminal.');
           const epoch = current.epoch;
           await maintain(
             current,
@@ -229,6 +232,7 @@ export function registerFactory(
                   onError: reject,
                 });
               }),
+            true,
           );
         },
         async reload() {
@@ -239,16 +243,43 @@ export function registerFactory(
         },
         async prompt(prompt: string) {
           ensureAttached(current);
-          if (current.maintaining || current.stopping)
-            throw new Error(
-              'This session is updating. Try again when it is idle.',
-            );
           if (
             typeof prompt !== 'string' ||
             !prompt.trim() ||
             prompt.length > 64000
           )
             throw new Error('Prompt must contain 1 to 64000 characters.');
+          const parsed = parseSlashCommand(prompt);
+          const native = parsed && nativeCommand(parsed.name);
+          if (current.stopping || (current.maintaining && !native?.live))
+            throw new Error(
+              'This session is updating. Try again when it is idle.',
+            );
+          if (native) {
+            if (parsed!.name === 'model' && parsed!.args.includes('/')) {
+              const separator = parsed!.args.indexOf('/');
+              await current.control.configure({
+                provider: parsed!.args.slice(0, separator),
+                modelId: parsed!.args.slice(separator + 1),
+              });
+              return;
+            }
+            if (parsed!.name === 'thinking' && parsed!.args) {
+              await current.control.configure({
+                thinkingLevel: parsed!.args.toLowerCase(),
+              });
+              return;
+            }
+            if (parsed!.name === 'compact') {
+              await current.control.compact(parsed!.args || undefined);
+              return;
+            }
+            if (parsed!.name === 'name' && parsed!.args) {
+              pi.setSessionName(parsed!.args);
+              return;
+            }
+            throw new Error(`Run /${parsed!.name} in the attached terminal.`);
+          }
           const epoch = current.epoch;
           current.submissions++;
           try {
@@ -307,8 +338,7 @@ export function registerFactory(
           const queued = state.snapshot().queue ?? {steering: [], followUp: []};
           ctx.abort();
           try {
-            if (current.configuration)
-              await Promise.allSettled([current.configuration]);
+            await Promise.allSettled([...current.configurations]);
             return queued;
           } finally {
             current.stopping = false;

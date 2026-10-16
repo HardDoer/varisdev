@@ -1,9 +1,12 @@
 import {
   getAgentDir,
+  getPackageDir,
   ProjectTrustStore,
   resolveModelScopeWithDiagnostics,
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import type {DesktopExtensionUI} from './extension-ui.ts';
 import type {SessionConfiguration} from './features.ts';
 
@@ -23,6 +26,30 @@ type SelectOptions = {
 };
 const reference = (model: Model) => `${model.provider}/${model.id}`;
 const stopped = (ctx: SettingsCommandContext) => ctx.signal?.aborted === true;
+
+// Pi's interactive /model command uses these shipped helpers; they are not root exports.
+const modelResolver = (await import(
+  pathToFileURL(join(getPackageDir(), 'dist/core/model-resolver.js')).href
+)) as {
+  findExactModelReferenceMatch(
+    text: string,
+    models: readonly Model[],
+  ): Model | undefined;
+};
+const modelCatalogs = (await import(
+  pathToFileURL(
+    join(getPackageDir(), 'dist/modes/interactive/model-catalog-refresh.js'),
+  ).href
+)) as {
+  refreshModelCatalogs(
+    runtime: AgentSession['modelRuntime'],
+    signal: AbortSignal,
+  ): ReturnType<AgentSession['modelRuntime']['refresh']>;
+};
+
+const {DEFAULT_THINKING_LEVEL} = (await import(
+  pathToFileURL(join(getPackageDir(), 'dist/core/defaults.js')).href
+)) as {DEFAULT_THINKING_LEVEL: AgentSession['thinkingLevel']};
 
 /** Validate even mocked/custom UIs; never interpret an arbitrary response as a setting. */
 async function select(
@@ -161,58 +188,104 @@ async function thinkingCommand(
   ctx: SettingsCommandContext,
   args: string,
 ): Promise<void> {
-  const levels = ctx.session.getAvailableThinkingLevels();
-  const level = args
-    ? args.toLowerCase()
-    : await select(ctx, 'Thinking level', levels, {
-        selected: ctx.session.thinkingLevel,
-        message:
-          'For the current session. Only levels supported by this model are shown.',
+  const session = ctx.session;
+  const levels = session.getAvailableThinkingLevels();
+  const selection = args
+    ? {thinkingLevel: args.toLowerCase(), persist: false}
+    : await ctx.ui.selectThinking({
+        currentLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+        availableLevels: levels,
+        defaultLevel:
+          session.settingsManager.getDefaultThinkingLevel() ??
+          DEFAULT_THINKING_LEVEL,
       });
-  if (stopped(ctx) || level === undefined) return;
-  if (!levels.includes(level as (typeof levels)[number]))
+  if (stopped(ctx) || selection === undefined) return;
+  if (!levels.includes(selection.thinkingLevel as (typeof levels)[number]))
     throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
-  if (level !== ctx.session.thinkingLevel)
-    await ctx.configure({thinkingLevel: level});
+  await ctx.configure({
+    thinkingLevel: selection.thinkingLevel,
+    persist: selection.persist,
+  });
+}
+
+async function exactModel(
+  ctx: SettingsCommandContext,
+  args: string,
+): Promise<Model | undefined> {
+  const session = ctx.session;
+  const models = session.scopedModels.length
+    ? session.scopedModels.map(scoped => scoped.model)
+    : session.modelRuntime.getAvailableSnapshot();
+  const match = modelResolver.findExactModelReferenceMatch(args, models);
+  if (match || session.scopedModels.length) return match;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const signal = ctx.signal
+    ? AbortSignal.any([controller.signal, ctx.signal])
+    : controller.signal;
+  try {
+    const result = await modelCatalogs.refreshModelCatalogs(
+      session.modelRuntime,
+      signal,
+    );
+    if (stopped(ctx)) return undefined;
+    if (result.aborted || result.errors.size)
+      ctx.ui.context.notify(
+        result.aborted
+          ? 'Model refresh timed out; searching cached models.'
+          : `Could not refresh ${[...result.errors.keys()].join(', ')}; searching cached models.`,
+        'warning',
+      );
+  } catch (error) {
+    if (stopped(ctx)) return undefined;
+    ctx.ui.context.notify(
+      controller.signal.aborted
+        ? 'Model refresh timed out; searching cached models.'
+        : `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
+      'warning',
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+  return modelResolver.findExactModelReferenceMatch(
+    args,
+    session.modelRuntime.getAvailableSnapshot(),
+  );
 }
 
 async function modelCommand(
   ctx: SettingsCommandContext,
   args: string,
 ): Promise<void> {
-  if (args && (args.indexOf('/') < 1 || args.endsWith('/')))
-    throw new Error('Use /model provider/model.');
-  const available = await availableModels(ctx);
+  const model = args ? await exactModel(ctx, args) : undefined;
   if (stopped(ctx)) return;
-  let model: Model | undefined;
-  if (args) {
-    model = available.find(model => reference(model) === args);
-    // A scoped model may not appear in a temporarily stale availability snapshot.
-    model ??= ctx.session.scopedModels.find(
-      scoped => reference(scoped.model) === args,
-    )?.model;
-    if (!model) throw new Error(`Model is unavailable: ${args}`);
-  } else {
-    let models = available;
-    if (ctx.session.scopedModels.length) {
-      const scope = await select(
-        ctx,
-        'Model scope',
-        ['Scoped models', 'All available models'],
-        {
-          selected: 'Scoped models',
-          message: 'Scoped models control cycling, not provider permissions.',
-        },
-      );
-      if (scope === undefined) return;
-      if (scope === 'Scoped models')
-        models = ctx.session.scopedModels.map(scoped => scoped.model);
-    }
-    model = await pickModel(ctx, models, 'Select model');
+  if (model) {
+    await ctx.configure({
+      provider: model.provider,
+      modelId: model.id,
+      persist: false,
+    });
+    return;
   }
-  if (stopped(ctx) || !model) return;
-  if (!ctx.session.model || reference(model) !== reference(ctx.session.model))
-    await ctx.configure({provider: model.provider, modelId: model.id});
+  const session = ctx.session;
+  const defaultProvider = session.settingsManager.getDefaultProvider();
+  const defaultModel = session.settingsManager.getDefaultModel();
+  const selection = await ctx.ui.selectModel({
+    currentModel: session.model,
+    modelRuntime: session.modelRuntime,
+    scopedModels: session.scopedModels,
+    defaultModel:
+      defaultProvider && defaultModel
+        ? {provider: defaultProvider, id: defaultModel}
+        : undefined,
+    initialSearch: args || undefined,
+  });
+  if (stopped(ctx) || !selection) return;
+  await ctx.configure({
+    provider: selection.model.provider,
+    modelId: selection.model.id,
+    persist: selection.persist,
+  });
 }
 
 async function flushSettings(ctx: SettingsCommandContext): Promise<void> {
@@ -231,14 +304,13 @@ async function scopedModelsCommand(ctx: SettingsCommandContext): Promise<void> {
   if (stopped(ctx)) return;
   const originals = ctx.session.scopedModels;
   const patterns = ctx.session.settingsManager.getEnabledModels();
-  const resolved =
-    !originals.length && patterns?.length
-      ? await resolveModelScopeWithDiagnostics(
-          patterns,
-          ctx.session.modelRuntime,
-          {signal: ctx.signal},
-        )
-      : undefined;
+  const resolved = patterns?.length
+    ? await resolveModelScopeWithDiagnostics(
+        patterns,
+        ctx.session.modelRuntime,
+        {signal: ctx.signal},
+      )
+    : undefined;
   if (stopped(ctx)) return;
   const configured = originals.length
     ? [...originals]
@@ -264,10 +336,9 @@ async function scopedModelsCommand(ctx: SettingsCommandContext): Promise<void> {
       ]),
     ).values(),
   ];
-  let enabled: Set<string> | null =
-    configured.length || unavailablePatterns.length
-      ? new Set(configured.map(scoped => reference(scoped.model)))
-      : null;
+  let enabled: Set<string> | null = new Set(
+    configured.map(scoped => reference(scoped.model)),
+  );
   let dirty = false;
   while (!stopped(ctx)) {
     const action = await select(
@@ -320,24 +391,33 @@ async function scopedModelsCommand(ctx: SettingsCommandContext): Promise<void> {
           'Select at least one model, or choose Enable all models. Pi treats an empty scope as all models.',
         );
       const selectedIds = enabled;
-      const allEnabled =
-        selectedIds === null ||
-        models.every(model => selectedIds.has(reference(model)));
+      const allEnabled = selectedIds === null;
       const scoped = allEnabled
         ? []
         : models
             .filter(model => selectedIds?.has(reference(model)))
             .map(model => ({...known.get(reference(model)), model}));
       if (action === 'Apply and save to Pi settings') {
-        // Keep the original patterns (including unavailable entries and thinking suffixes)
-        // when saving an untouched configuration.
+        // Preserve patterns when they still describe the session's scope.
+        const matchesSavedScope =
+          resolved?.scopedModels.length === configured.length &&
+          configured.every((scoped, index) => {
+            const saved = resolved!.scopedModels[index];
+            return (
+              reference(scoped.model) === reference(saved.model) &&
+              scoped.thinkingLevel === saved.thinkingLevel
+            );
+          });
         const saved =
-          !dirty && !originals.length && patterns?.length
+          !dirty && patterns?.length && matchesSavedScope
             ? patterns
-            : allEnabled && !unavailablePatterns.length
+            : allEnabled
               ? undefined
               : [
-                  ...(enabled ?? new Set(models.map(reference))),
+                  ...[...selectedIds!].map(id => {
+                    const thinkingLevel = known.get(id)?.thinkingLevel;
+                    return thinkingLevel ? `${id}:${thinkingLevel}` : id;
+                  }),
                   ...unavailablePatterns,
                 ];
         ctx.session.settingsManager.setEnabledModels(
@@ -497,7 +577,7 @@ async function settingsCommand(ctx: SettingsCommandContext): Promise<void> {
       actions.map(action => action.label),
       {
         message:
-          'Model and thinking changes apply only to this session. Other Pi preferences are saved when selected. Cancel a value picker to leave it unchanged.',
+          'Model and thinking selectors can apply to this session or save a default. Other Pi preferences are saved when selected.',
         searchable: true,
       },
     );
@@ -510,10 +590,7 @@ async function trustCommand(ctx: SettingsCommandContext): Promise<void> {
   if (stopped(ctx)) return;
   // Pi's parent-folder choice canonicalizes paths and clears a closer child override.
   const {getProjectTrustOptions} = (await import(
-    new URL(
-      './core/trust-manager.js',
-      import.meta.resolve('@earendil-works/pi-coding-agent'),
-    ).href
+    pathToFileURL(join(getPackageDir(), 'dist/core/trust-manager.js')).href
   )) as {
     getProjectTrustOptions(cwd: string): Array<{
       label: string;

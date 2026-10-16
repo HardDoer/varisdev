@@ -40,6 +40,18 @@ function harness(replies: Reply[] = [], models = [first, second, third]) {
   const configurations: SessionConfiguration[] = [];
   const mutations: Array<{name: string; value: unknown}> = [];
   const refreshes: unknown[] = [];
+  const modelSelections: Array<
+    Parameters<DesktopExtensionUI['selectModel']>[0]
+  > = [];
+  const modelReplies: Array<
+    Awaited<ReturnType<DesktopExtensionUI['selectModel']>>
+  > = [];
+  const thinkingSelections: Array<
+    Parameters<DesktopExtensionUI['selectThinking']>[0]
+  > = [];
+  const thinkingReplies: Array<
+    Awaited<ReturnType<DesktopExtensionUI['selectThinking']>>
+  > = [];
   let scopes: AgentSession['scopedModels'] = [];
   const state = {
     model: models[0] as Model | undefined,
@@ -98,6 +110,18 @@ function harness(replies: Reply[] = [], models = [first, second, third]) {
     },
   };
   const ui = {
+    selectThinking: async (
+      options: Parameters<DesktopExtensionUI['selectThinking']>[0],
+    ) => {
+      thinkingSelections.push(options);
+      return thinkingReplies.shift();
+    },
+    selectModel: async (
+      options: Parameters<DesktopExtensionUI['selectModel']>[0],
+    ) => {
+      modelSelections.push(options);
+      return modelReplies.shift();
+    },
     select: async (
       title: string,
       options: string[],
@@ -144,6 +168,10 @@ function harness(replies: Reply[] = [], models = [first, second, third]) {
     configurations,
     mutations,
     refreshes,
+    modelSelections,
+    modelReplies,
+    thinkingSelections,
+    thinkingReplies,
     setScopes: (value: AgentSession['scopedModels']) => {
       scopes = value;
     },
@@ -169,129 +197,149 @@ void test('unknown commands remain unhandled and argumentless commands validate 
   assert.equal(h.dialogs.length, 0);
 });
 
-void test('thinking picker offers supported levels and selects current without rewriting startup defaults', async () => {
-  const h = harness(['high']);
+void test('thinking command delegates current, available and default levels to the SDK selector', async () => {
+  const h = harness();
+  h.thinkingReplies.push({thinkingLevel: 'high', persist: false});
   h.settings.setDefaultThinkingLevel('low');
   assert.equal(await runSettingsCommand('thinking', '', h.ctx), true);
-  assert.deepEqual(h.dialogs[0].options, ['off', 'low', 'medium', 'high']);
-  assert.equal(h.dialogs[0].selected, 'medium');
-  assert.deepEqual(h.configurations, [{thinkingLevel: 'high'}]);
+  assert.deepEqual(h.thinkingSelections, [
+    {
+      currentLevel: 'medium',
+      availableLevels: ['off', 'low', 'medium', 'high'],
+      defaultLevel: 'low',
+    },
+  ]);
+  assert.deepEqual(h.configurations, [{thinkingLevel: 'high', persist: false}]);
   assert.equal(h.settings.getDefaultThinkingLevel(), 'low');
 });
 
-void test('thinking cancellation/current choice are no-ops; explicit levels normalize and validate', async () => {
-  for (const reply of [undefined, 'medium']) {
-    const h = harness([reply]);
-    await runSettingsCommand('thinking', '', h.ctx);
-    assert.deepEqual(h.configurations, []);
-  }
+void test('thinking selector cancellation does not configure; Make as default persists the current level', async () => {
+  const cancelled = harness();
+  await runSettingsCommand('thinking', '', cancelled.ctx);
+  assert.deepEqual(cancelled.configurations, []);
+  assert.equal(cancelled.thinkingSelections[0].defaultLevel, 'medium');
+  const saved = harness();
+  saved.thinkingReplies.push({thinkingLevel: 'medium', persist: true});
+  await runSettingsCommand('thinking', '', saved.ctx);
+  assert.deepEqual(saved.configurations, [
+    {thinkingLevel: 'medium', persist: true},
+  ]);
+});
+
+void test('explicit thinking levels normalize and apply to this session; invalid levels do not configure', async () => {
   const h = harness();
   await runSettingsCommand('thinking', ' HIGH ', h.ctx);
-  assert.deepEqual(h.configurations, [{thinkingLevel: 'high'}]);
+  assert.deepEqual(h.configurations, [{thinkingLevel: 'high', persist: false}]);
+  assert.deepEqual(h.thinkingSelections, []);
   await assert.rejects(
     runSettingsCommand('thinking', 'xhigh', h.ctx),
     /off, low, medium, high/,
   );
-  const badUI = harness(['not-an-option']);
+  const invalid = harness();
+  invalid.ctx.ui.selectThinking = async () =>
+    ({thinkingLevel: 'not-an-option', persist: false}) as never;
   await assert.rejects(
-    runSettingsCommand('thinking', '', badUI.ctx),
-    /Invalid settings selection/,
+    runSettingsCommand('thinking', '', invalid.ctx),
+    /off, low, medium, high/,
   );
-  assert.deepEqual(badUI.configurations, []);
+  assert.deepEqual(invalid.configurations, []);
 });
 
-void test('model picker is provider-first and uses real available models, including slash-containing IDs', async () => {
-  const h = harness(['one', 'one/nested/second']);
+void test('model command delegates current model, scope, runtime and saved default to the SDK selector', async () => {
+  const h = harness();
+  const scope = [{model: third, thinkingLevel: 'high' as const}];
+  h.setScopes(scope);
   h.settings.setDefaultModelAndProvider('two', 'startup');
+  h.modelReplies.push({model: second, persist: false});
   await runSettingsCommand('model', '', h.ctx);
-  assert.deepEqual(h.dialogs[0].options, ['one', 'two']);
-  assert.equal(h.dialogs[0].selected, 'one');
-  assert.deepEqual(h.dialogs[1].options, ['one/first', 'one/nested/second']);
-  assert.equal(h.dialogs[1].selected, 'one/first');
-  assert.deepEqual(h.configurations, [
-    {provider: 'one', modelId: 'nested/second'},
+  assert.deepEqual(h.modelSelections, [
+    {
+      currentModel: first,
+      modelRuntime: h.state.modelRuntime,
+      scopedModels: scope,
+      defaultModel: {provider: 'two', id: 'startup'},
+      initialSearch: undefined,
+    },
   ]);
-  assert.deepEqual(h.refreshes, [{allowNetwork: false, signal: undefined}]);
-  assert.equal(h.settings.getDefaultProvider(), 'two');
+  assert.deepEqual(h.configurations, [
+    {provider: 'one', modelId: 'nested/second', persist: false},
+  ]);
+  assert.deepEqual(h.dialogs, []);
+  assert.deepEqual(h.refreshes, []);
   assert.equal(h.settings.getDefaultModel(), 'startup');
 });
 
-void test('model explicit references validate availability; cancellation and current selection do not mutate', async () => {
+void test('model selector cancellation does not configure and Make as default persists even the current model', async () => {
+  const cancelled = harness();
+  await runSettingsCommand('model', '', cancelled.ctx);
+  assert.deepEqual(cancelled.configurations, []);
+  const saved = harness();
+  saved.modelReplies.push({model: first, persist: true});
+  await runSettingsCommand('model', '', saved.ctx);
+  assert.deepEqual(saved.configurations, [
+    {provider: 'one', modelId: 'first', persist: true},
+  ]);
+});
+
+void test('exact model references and bare IDs apply directly to the session', async () => {
+  for (const reference of ['one/nested/second', 'nested/second']) {
+    const h = harness();
+    await runSettingsCommand('model', reference, h.ctx);
+    assert.deepEqual(h.configurations, [
+      {provider: 'one', modelId: 'nested/second', persist: false},
+    ]);
+    assert.deepEqual(h.modelSelections, []);
+    assert.deepEqual(h.refreshes, []);
+  }
+});
+
+void test('nonexact model arguments open the SDK selector with the original search', async () => {
+  for (const search of ['second', 'one/', '/first', 'unknown/model']) {
+    const h = harness();
+    await runSettingsCommand('model', search, h.ctx);
+    assert.equal(h.modelSelections[0].initialSearch, search);
+    assert.deepEqual(h.configurations, []);
+    assert.equal(h.refreshes.length, 1);
+  }
+});
+
+void test('direct model arguments honor session scope and leave scope switching to the SDK selector', async () => {
   const h = harness();
-  await runSettingsCommand('model', 'one/nested/second', h.ctx);
+  h.setScopes([{model: third}]);
+  await runSettingsCommand('model', 'one/first', h.ctx);
+  assert.equal(h.modelSelections[0].initialSearch, 'one/first');
+  assert.deepEqual(h.configurations, []);
+  assert.deepEqual(h.refreshes, []);
+  await runSettingsCommand('model', 'third', h.ctx);
   assert.deepEqual(h.configurations, [
-    {provider: 'one', modelId: 'nested/second'},
-  ]);
-  await assert.rejects(
-    runSettingsCommand('model', 'one/missing', h.ctx),
-    /unavailable/,
-  );
-  for (const value of ['one', '/first', 'one/'])
-    await assert.rejects(
-      runSettingsCommand('model', value, h.ctx),
-      /provider\/model/,
-    );
-  for (const replies of [
-    [undefined],
-    ['one', undefined],
-    ['one', 'one/first'],
-  ]) {
-    const cancelled = harness(replies);
-    await runSettingsCommand('model', '', cancelled.ctx);
-    assert.deepEqual(cancelled.configurations, []);
-  }
-  const none = harness([], []);
-  await runSettingsCommand('model', '', none.ctx);
-  assert.match(none.shown[0].message, /No authenticated chat models/);
-});
-
-void test('model scope is real Pi session scope, with an escape to all authenticated models', async () => {
-  const scoped = harness(['Scoped models', 'two', 'two/third']);
-  scoped.setScopes([{model: third, thinkingLevel: 'high'}]);
-  await runSettingsCommand('model', '', scoped.ctx);
-  assert.equal(scoped.dialogs[0].selected, 'Scoped models');
-  assert.deepEqual(scoped.dialogs[1].options, ['two']);
-  assert.deepEqual(scoped.configurations, [
-    {provider: 'two', modelId: 'third'},
-  ]);
-  const all = harness(['All available models', 'one', 'one/nested/second']);
-  all.setScopes([{model: third}]);
-  await runSettingsCommand('model', '', all.ctx);
-  assert.deepEqual(all.dialogs[1].options, ['one', 'two']);
-  assert.deepEqual(all.configurations, [
-    {provider: 'one', modelId: 'nested/second'},
+    {provider: 'two', modelId: 'third', persist: false},
   ]);
 });
 
-void test('thousands of models are paginated, with current model page preselected and later entries reachable', async () => {
-  const models = Array.from({length: 2501}, (_, i) =>
-    model('many', `m-${String(i).padStart(4, '0')}`),
-  );
-  const h = harness(['many', 'Next page →', 'many/m-2010'], models);
-  h.state.model = models[1999];
-  await runSettingsCommand('model', '', h.ctx);
-  assert.equal(h.dialogs[1].selected, 'many/m-1999');
-  assert.match(h.dialogs[1].title, /10\/13/);
-  assert.deepEqual(h.configurations, [{provider: 'many', modelId: 'm-2010'}]);
-  for (const dialog of h.dialogs) {
-    assert.ok(dialog.options.length <= 202);
-    assert.ok(Buffer.byteLength(JSON.stringify(dialog.options)) < 1024 * 1024);
-  }
+void test('exact model lookup refreshes a missing catalog entry before opening the selector', async () => {
+  const models = [first];
+  const h = harness([], models);
+  h.state.modelRuntime.refresh = async options => {
+    h.refreshes.push(options);
+    models.push(second);
+    return {aborted: false, errors: new Map()};
+  };
+  await runSettingsCommand('model', 'nested/second', h.ctx);
+  assert.deepEqual(h.configurations, [
+    {provider: 'one', modelId: 'nested/second', persist: false},
+  ]);
+  assert.deepEqual(h.modelSelections, []);
 });
 
-void test('catalog pagination also bounds bytes, not only entry count', async () => {
-  const models = Array.from({length: 210}, (_, i) =>
-    model('big', `${String(i).padStart(3, '0')}-${'x'.repeat(9000)}`),
-  );
-  const h = harness(
-    ['big', 'Next page →', dialog => dialog.options[0]],
-    models,
-  );
-  await runSettingsCommand('model', '', h.ctx);
-  assert.ok(h.dialogs[1].options.length < 100);
-  assert.equal(h.configurations.length, 1);
-  for (const dialog of h.dialogs)
-    assert.ok(Buffer.byteLength(JSON.stringify(dialog.options)) < 1024 * 1024);
+void test('catalog refresh failures warn and keep model search available', async () => {
+  const h = harness();
+  h.state.modelRuntime.refresh = async () => {
+    throw new Error('catalog offline');
+  };
+  await runSettingsCommand('model', 'unknown/model', h.ctx);
+  assert.match(h.notices[0], /catalog offline/);
+  assert.equal(h.modelSelections[0].initialSearch, 'unknown/model');
+  assert.deepEqual(h.configurations, []);
 });
 
 void test('settings is a native menu of session controls; cancellation/current option leave settings unchanged', async () => {
@@ -422,18 +470,13 @@ void test('native settings choices call actual Pi runtime and persistence setter
 });
 
 void test('settings model/thinking entries use session configuration, not startup defaults', async () => {
-  const h = harness([
-    choose('Thinking level:'),
-    'high',
-    choose('Model:'),
-    'two',
-    'two/third',
-    undefined,
-  ]);
+  const h = harness([choose('Thinking level:'), choose('Model:'), undefined]);
+  h.modelReplies.push({model: third, persist: false});
+  h.thinkingReplies.push({thinkingLevel: 'high', persist: false});
   await runSettingsCommand('settings', '', h.ctx);
   assert.deepEqual(h.configurations, [
-    {thinkingLevel: 'high'},
-    {provider: 'two', modelId: 'third'},
+    {thinkingLevel: 'high', persist: false},
+    {provider: 'two', modelId: 'third', persist: false},
   ]);
   assert.equal(h.settings.getDefaultModel(), undefined);
   assert.equal(h.settings.getDefaultThinkingLevel(), undefined);
@@ -454,7 +497,8 @@ void test('invalid selections, setter failures, configure failures and settings 
     runSettingsCommand('settings', '', setter.ctx),
     /setter failed/,
   );
-  const config = harness(['high']);
+  const config = harness();
+  config.thinkingReplies.push({thinkingLevel: 'high', persist: false});
   config.ctx.configure = async () => {
     throw new Error('configuration failed');
   };
@@ -505,7 +549,7 @@ void test('scope Apply configures actual session scope; save writes Pi enabledMo
   ]);
   save.setScopes([{model: first, thinkingLevel: 'high'}, {model: third}]);
   await runSettingsCommand('scoped-models', '', save.ctx);
-  assert.deepEqual(save.settings.getEnabledModels(), ['one/first']);
+  assert.deepEqual(save.settings.getEnabledModels(), ['one/first:high']);
   assert.deepEqual(save.ctx.session.scopedModels, [
     {model: first, thinkingLevel: 'high'},
   ]);
@@ -542,7 +586,7 @@ void test('editing a scope retains unavailable saved patterns unless explicitly 
   h.settings.setEnabledModels(['one/first:high', 'offline/not-loaded']);
   await runSettingsCommand('scoped-models', '', h.ctx);
   assert.deepEqual(h.settings.getEnabledModels(), [
-    'one/first',
+    'one/first:high',
     'one/nested/second',
     'offline/not-loaded',
   ]);
@@ -567,6 +611,7 @@ void test('unavailable scoped models are retained and an empty draft is not misi
     ['Toggle a model', 'one', '[✓] one/first', 'Apply to this session'],
     [first],
   );
+  empty.setScopes([{model: first}]);
   await assert.rejects(
     runSettingsCommand('scoped-models', '', empty.ctx),
     /Select at least one model/,
@@ -641,9 +686,11 @@ void test('aborted commands open no dialogs, and abort after a dialog prevents m
     h.ctx.signal = AbortSignal.abort();
     assert.equal(await runSettingsCommand(name, '', h.ctx), true);
     assert.deepEqual(h.dialogs, []);
+    assert.deepEqual(h.modelSelections, []);
+    assert.deepEqual(h.thinkingSelections, []);
     assert.deepEqual(h.refreshes, []);
   }
-  for (const command of ['thinking', 'settings', 'scoped-models']) {
+  for (const command of ['settings', 'scoped-models']) {
     const abort = new AbortController();
     const h = harness([
       dialog => {
@@ -657,6 +704,15 @@ void test('aborted commands open no dialogs, and abort after a dialog prevents m
     assert.deepEqual(h.configurations, []);
     assert.deepEqual(h.mutations, []);
   }
+  const thinkingAbort = new AbortController();
+  const thinking = harness();
+  thinking.ctx.signal = thinkingAbort.signal;
+  thinking.ctx.ui.selectThinking = async () => {
+    thinkingAbort.abort();
+    return {thinkingLevel: 'high', persist: true};
+  };
+  await runSettingsCommand('thinking', '', thinking.ctx);
+  assert.deepEqual(thinking.configurations, []);
   const abort = new AbortController();
   const h = harness([
     choose('Auto retry:'),
@@ -677,20 +733,20 @@ void test('abort during catalog refresh/model selection and trust selection prev
   const h = harness();
   h.ctx.signal = abort.signal;
   h.state.modelRuntime.refresh = async options => {
-    assert.equal((options as {signal: AbortSignal}).signal, abort.signal);
+    const signal = (options as {signal: AbortSignal}).signal;
     abort.abort();
+    assert.equal(signal.aborted, true);
     return {aborted: true, errors: new Map()};
   };
-  await runSettingsCommand('model', '', h.ctx);
-  assert.deepEqual(h.dialogs, []);
+  await runSettingsCommand('model', 'unknown', h.ctx);
+  assert.deepEqual(h.modelSelections, []);
+  assert.deepEqual(h.configurations, []);
   const modelAbort = new AbortController();
-  const picker = harness([
-    'two',
-    () => {
-      modelAbort.abort();
-      return 'two/third';
-    },
-  ]);
+  const picker = harness();
+  picker.ctx.ui.selectModel = async () => {
+    modelAbort.abort();
+    return {model: third, persist: true};
+  };
   picker.ctx.signal = modelAbort.signal;
   await runSettingsCommand('model', '', picker.ctx);
   assert.deepEqual(picker.configurations, []);
@@ -706,4 +762,99 @@ void test('abort during catalog refresh/model selection and trust selection prev
   trust.ctx.signal = trustAbort.signal;
   await runSettingsCommand('trust', '', trust.ctx);
   assert.equal(write.mock.callCount(), 0);
+});
+
+void test('saving existing session scope preserves matching patterns and unavailable entries', async () => {
+  const h = harness(['Apply and save to Pi settings']);
+  h.setScopes([
+    {model: first, thinkingLevel: 'high'},
+    {model: second, thinkingLevel: 'high'},
+  ]);
+  h.settings.setEnabledModels(['one/**:high', 'offline/not-loaded:low']);
+  await runSettingsCommand('scoped-models', '', h.ctx);
+  assert.deepEqual(h.settings.getEnabledModels(), [
+    'one/**:high',
+    'offline/not-loaded:low',
+  ]);
+  assert.deepEqual(h.ctx.session.scopedModels, [
+    {model: first, thinkingLevel: 'high'},
+    {model: second, thinkingLevel: 'high'},
+  ]);
+});
+
+void test('editing existing session scope retains model efforts and unavailable saved patterns', async () => {
+  const h = harness([
+    'Toggle a model',
+    'one',
+    '[ ] one/nested/second',
+    'Apply and save to Pi settings',
+  ]);
+  h.setScopes([{model: first, thinkingLevel: 'off'}]);
+  h.settings.setEnabledModels(['one/first:off', 'offline/not-loaded:high']);
+  await runSettingsCommand('scoped-models', '', h.ctx);
+  assert.deepEqual(h.settings.getEnabledModels(), [
+    'one/first:off',
+    'one/nested/second',
+    'offline/not-loaded:high',
+  ]);
+  assert.deepEqual(h.ctx.session.scopedModels, [
+    {model: first, thinkingLevel: 'off'},
+    {model: second},
+  ]);
+});
+
+void test('saving a session scope different from saved patterns persists its own efforts', async () => {
+  const h = harness(['Apply and save to Pi settings']);
+  h.setScopes([{model: first, thinkingLevel: 'low'}]);
+  h.settings.setEnabledModels(['one/**:high', 'offline/not-loaded']);
+  await runSettingsCommand('scoped-models', '', h.ctx);
+  assert.deepEqual(h.settings.getEnabledModels(), [
+    'one/first:low',
+    'offline/not-loaded',
+  ]);
+  assert.deepEqual(h.ctx.session.scopedModels, [
+    {model: first, thinkingLevel: 'low'},
+  ]);
+});
+
+void test('selecting every available scoped model retains explicit thinking levels', async () => {
+  const h = harness(['Apply and save to Pi settings'], [first, second]);
+  const scoped = [
+    {model: first, thinkingLevel: 'high' as const},
+    {model: second, thinkingLevel: 'off' as const},
+  ];
+  h.setScopes(scoped);
+  await runSettingsCommand('scoped-models', '', h.ctx);
+  assert.deepEqual(h.settings.getEnabledModels(), [
+    'one/first:high',
+    'one/nested/second:off',
+  ]);
+  assert.deepEqual(h.ctx.session.scopedModels, scoped);
+});
+
+void test('an unconfigured scope draft starts deselected and requires an explicit choice', async () => {
+  const h = harness([
+    'Toggle a model',
+    'one',
+    dialog => {
+      assert.deepEqual(dialog.options, [
+        '[ ] one/first',
+        '[ ] one/nested/second',
+      ]);
+      return '[ ] one/first';
+    },
+    'Apply and save to Pi settings',
+  ]);
+  await runSettingsCommand('scoped-models', '', h.ctx);
+  assert.match(h.dialogs[0].message!, /0 models selected/);
+  assert.deepEqual(h.settings.getEnabledModels(), ['one/first']);
+  assert.deepEqual(h.ctx.session.scopedModels, [{model: first}]);
+
+  const empty = harness(['Apply and save to Pi settings']);
+  await assert.rejects(
+    runSettingsCommand('scoped-models', '', empty.ctx),
+    /Pi treats an empty scope as all models/,
+  );
+  assert.equal(empty.settings.getEnabledModels(), undefined);
+  assert.deepEqual(empty.mutations, []);
 });
