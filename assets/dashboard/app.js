@@ -4,6 +4,7 @@ import {renderFileLinks} from './file-links.js';
 import {createFactoryScene} from './factory-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createParentFallback} from './parent-fallback.js';
+import {createFactoryCane} from './factory-cane.js';
 import {createProcessingEffects} from './processing-effects.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
@@ -712,6 +713,7 @@ function setSceneMotion(enabled) {
   if (!animation || sceneMotion === enabled) return;
   sceneMotion = enabled;
   animation.setMotion(enabled);
+  factoryCane.setMotion(enabled);
 }
 function activityPhase(data) {
   if (stopping.has(data.session.id)) return 'Stopping';
@@ -1751,6 +1753,7 @@ function render() {
   if (!hasSession && $('welcome').hidden) void recentProjects.refresh();
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
+  factoryCane.setSession(hasSession ? state.sessionId : null);
   appMenu.place(hasSession);
   renderSessionActions();
   if (!themesDiscovered || themeSessionId !== state.sessionId) {
@@ -2257,6 +2260,11 @@ try {
   scene = null;
 }
 if (!scene) fallbackScene = createParentFallback($('fallback-units'));
+const factoryCane = createFactoryCane($('scene'), {
+  getTargets: () => (scene || fallbackScene)?.caneTargets() || [],
+  onHit: (id, direction) =>
+    (scene || fallbackScene)?.hitWithCane(id, direction),
+});
 const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
   deferDiscovery: true,
 });
@@ -2359,6 +2367,7 @@ window.addEventListener('unload', () => {
   recentProjects.dispose();
   cleanupSessionHistory();
   cleanupSessionSelection?.();
+  factoryCane.dispose();
   scene?.dispose();
   fallbackScene?.dispose();
   processingEffects.dispose();

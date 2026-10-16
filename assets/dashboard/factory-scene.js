@@ -14,6 +14,7 @@ import {createFactoryVisitors} from './factory-visitors.js';
 
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
+const CANE_RECOIL_DURATION = 0.42;
 const COLORS = {
   floor: [0.095, 0.14, 0.16],
   edge: [0.14, 0.21, 0.23],
@@ -626,6 +627,7 @@ export function createFactoryScene(
     dispatches = [],
     flashes = [];
   let reaction = null;
+  const caneRecoils = new Map();
   const parentMotion = createParentMotion();
   const whip = createRobotWhip();
   const visitors = createFactoryVisitors();
@@ -759,6 +761,26 @@ export function createFactoryScene(
     firstSnapshot = false;
   }
 
+  function caneRecoilPose(id) {
+    const recoil = caneRecoils.get(id);
+    if (!recoil || recoil.age >= CANE_RECOIL_DURATION)
+      return {jump: 0, lateral: 0, wobble: 0};
+    const progress = recoil.age / CANE_RECOIL_DURATION;
+    const fade = 1 - progress;
+    return {
+      jump: Math.sin(progress * Math.PI) * 0.34,
+      lateral:
+        recoil.direction *
+        fade *
+        (0.32 + Math.sin(progress * Math.PI * 3) * 0.1),
+      wobble: recoil.direction * Math.sin(progress * Math.PI * 4) * fade * 0.08,
+    };
+  }
+
+  function clearCaneRecoils() {
+    caneRecoils.clear();
+  }
+
   function startlePose() {
     if (!reaction) return {surprise: 0, jump: 0, squash: 0, wobble: 0};
     if (!reaction.animated) return {surprise: 1, jump: 0, squash: 0, wobble: 0};
@@ -775,7 +797,12 @@ export function createFactoryScene(
     return {surprise, jump, squash, wobble: Math.sin(p * TAU * 4) * surprise};
   }
 
-  function drawParentSession(sceneGeometry, sceneEffects, visitor = null) {
+  function drawParentSession(
+    sceneGeometry,
+    sceneEffects,
+    visitor = null,
+    caneId = visitor ? null : 'parent',
+  ) {
     const pose = visitor
       ? {
           mode:
@@ -1074,21 +1101,25 @@ export function createFactoryScene(
       g.append(props, [x, 0, 0]);
       fx.append(propEffects, [x, 0, 0]);
     }
-    const position = [pose.x, pose.ground, pose.z];
+    const cane = caneId
+      ? caneRecoilPose(caneId)
+      : {jump: 0, lateral: 0, wobble: 0};
+    // Positive screen-space swings push right (toward negative world Z).
+    const position = [pose.x, pose.ground + cane.jump, pose.z - cane.lateral];
     const targetUnit = lash && units.find(unit => unit.id === lash.target);
     const targetPosition = targetUnit ? positionFor(targetUnit) : null;
     const turn = targetPosition
       ? Math.sign(-targetPosition[2]) * lashPose.turn
       : 0;
-    const yaw = pose.yaw + (idle?.yaw || 0) * blend + turn;
+    const yaw = pose.yaw + (idle?.yaw || 0) * blend + turn + cane.wobble;
     let whipStart = null;
     if (whipHand) {
       const dx = whipHand[0] - x,
         dz = whipHand[2];
       whipStart = [
-        pose.x + dx * Math.cos(yaw) + dz * Math.sin(yaw),
-        pose.ground + whipHand[1],
-        pose.z + dz * Math.cos(yaw) - dx * Math.sin(yaw),
+        position[0] + dx * Math.cos(yaw) + dz * Math.sin(yaw),
+        position[1] + whipHand[1],
+        position[2] + dz * Math.cos(yaw) - dx * Math.sin(yaw),
       ];
     }
     sceneGeometry.append(g, position, yaw, x);
@@ -1100,8 +1131,9 @@ export function createFactoryScene(
       canvas.dataset.parentEyes = String(eyeHeight);
     }
     return {
-      p: [pose.x, pose.ground + y + 4.0, pose.z],
-      body: [pose.x, pose.ground + y + 1.6, pose.z],
+      p: [position[0], position[1] + y + 4.0, position[2]],
+      body: [position[0], position[1] + y + 1.6, position[2]],
+      radius: 1.8,
       whipStart,
     };
   }
@@ -1114,8 +1146,14 @@ export function createFactoryScene(
     const t = active ? time + index * 1.7 : 0;
     const lash = whip.pose();
     const recoil = lash?.target === unit.id ? whipPose(lash.age).recoil : 0;
-    const y = baseY + (active ? Math.sin(t * 3.4) * 0.24 : 0) + recoil * 0.68;
+    const cane = caneRecoilPose(unit.id);
+    const y =
+      baseY +
+      (active ? Math.sin(t * 3.4) * 0.24 : 0) +
+      recoil * 0.68 +
+      cane.jump;
     const x = baseX + (active ? Math.sin(t * 1.7) * 0.1 : 0) + recoil * 0.28;
+    const bodyZ = z - cane.lateral;
     if (active) {
       const pulse = 0.75 + Math.sin(t * 4) * 0.2;
       g.ring([baseX, 0.26, z], 0.94, 0.065, C.running, 1, 36);
@@ -1125,37 +1163,50 @@ export function createFactoryScene(
     const color = statusColor(unit.status);
     g.cylinder([x, 0.225, z], [1.22, 0.018, 0.86], [0.025, 0.055, 0.06]);
     // A compact flying machine: four nacelles, fins, armored central hull.
-    g.octagon([x, y, z], [1.12, 0.49, 1.12], C.shell);
-    g.box([x + 0.08, y + 0.28, z], [0.7, 0.14, 0.74], C.white);
-    g.box([x + 0.55, y + 0.01, z], [0.07, 0.3, 0.7], C.dark);
+    g.octagon([x, y, bodyZ], [1.12, 0.49, 1.12], C.shell);
+    g.box([x + 0.08, y + 0.28, bodyZ], [0.7, 0.14, 0.74], C.white);
+    g.box([x + 0.55, y + 0.01, bodyZ], [0.07, 0.3, 0.7], C.dark);
     for (const zz of [-0.2, 0.2])
-      g.box([x + 0.6, y + 0.04, z + zz], [0.025, 0.09, 0.16], color, 1);
-    g.box([x, y + 0.36, z], [0.34, 0.035, 0.12], color, 0.9);
+      g.box([x + 0.6, y + 0.04, bodyZ + zz], [0.025, 0.09, 0.16], color, 1);
+    g.box([x, y + 0.36, bodyZ], [0.34, 0.035, 0.12], color, 0.9);
     for (const side of [-1, 1]) {
-      g.rod([x - 0.15, y, z], [x - 0.17, y, z + side * 0.78], 0.08, C.dark);
-      g.box([x - 0.2, y + 0.04, z + side * 0.71], [0.48, 0.25, 0.36], C.metal);
+      g.rod(
+        [x - 0.15, y, bodyZ],
+        [x - 0.17, y, bodyZ + side * 0.78],
+        0.08,
+        C.dark,
+      );
+      g.box(
+        [x - 0.2, y + 0.04, bodyZ + side * 0.71],
+        [0.48, 0.25, 0.36],
+        C.metal,
+      );
       g.cylinder(
-        [x - 0.2, y - 0.14, z + side * 0.71],
+        [x - 0.2, y - 0.14, bodyZ + side * 0.71],
         [0.25, 0.16, 0.25],
         C.dark,
       );
       g.cylinder(
-        [x - 0.2, y - 0.24, z + side * 0.71],
+        [x - 0.2, y - 0.24, bodyZ + side * 0.71],
         [0.18, 0.05, 0.18],
         color,
         active ? 1 : 0.2,
       );
-      g.box([x - 0.48, y + 0.18, z + side * 0.71], [0.1, 0.3, 0.36], C.shell);
+      g.box(
+        [x - 0.48, y + 0.18, bodyZ + side * 0.71],
+        [0.1, 0.3, 0.36],
+        C.shell,
+      );
       if (active) {
         const flame = 0.3 + (1 + Math.sin(t * 12 + side)) * 0.07;
         fx.octagon(
-          [x - 0.2, y - 0.25 - flame / 2, z + side * 0.71],
+          [x - 0.2, y - 0.25 - flame / 2, bodyZ + side * 0.71],
           [0.12, flame, 0.12],
           color,
           0.5,
         );
         fx.octagon(
-          [x - 0.2, y - 0.3 - flame / 2, z + side * 0.71],
+          [x - 0.2, y - 0.3 - flame / 2, bodyZ + side * 0.71],
           [0.22, flame * 1.25, 0.22],
           color,
           0.09,
@@ -1163,19 +1214,24 @@ export function createFactoryScene(
       }
     }
     g.rod(
-      [x - 0.32, y + 0.32, z - 0.28],
-      [x - 0.38, y + 0.64, z - 0.28],
+      [x - 0.32, y + 0.32, bodyZ - 0.28],
+      [x - 0.38, y + 0.64, bodyZ - 0.28],
       0.024,
       C.metal,
     );
-    g.octagon([x - 0.38, y + 0.68, z - 0.28], [0.1, 0.09, 0.1], color, 0.85);
-    const elbow = [x + 0.47, y - 0.38, z + 0.29];
+    g.octagon(
+      [x - 0.38, y + 0.68, bodyZ - 0.28],
+      [0.1, 0.09, 0.1],
+      color,
+      0.85,
+    );
+    const elbow = [x + 0.47, y - 0.38, bodyZ + 0.29];
     const hand = [
       x + 0.83,
       y - 0.32 + (active ? Math.sin(t * 4) * 0.3 : 0),
-      z + 0.12,
+      bodyZ + 0.12,
     ];
-    g.rod([x + 0.1, y - 0.2, z + 0.27], elbow, 0.066, C.dark);
+    g.rod([x + 0.1, y - 0.2, bodyZ + 0.27], elbow, 0.066, C.dark);
     g.octagon(elbow, [0.2, 0.18, 0.2], C.amber);
     g.rod(elbow, hand, 0.055, C.metal);
     g.box(hand, [0.18, 0.16, 0.16], C.dark);
@@ -1222,7 +1278,7 @@ export function createFactoryScene(
     }
     if (failed) {
       g.box(
-        [x, y + 0.4, z],
+        [x, y + 0.4, bodyZ],
         [0.19, 0.1, 0.2],
         C.red,
         0.65 + Math.sin(time * 6) * 0.3,
@@ -1231,7 +1287,11 @@ export function createFactoryScene(
     }
     if (selected === unit.id)
       g.ring([baseX, 0.27, z], 1.12, 0.075, C.selection, 1, 40);
-    return [x, y + 1.02, z];
+    return {
+      p: [x, y + 1.02, bodyZ],
+      body: [x, y, bodyZ],
+      radius: 0.82,
+    };
   }
 
   function project(p, matrix) {
@@ -1303,7 +1363,7 @@ export function createFactoryScene(
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
     let parentPosition;
     if (ownTravel) {
-      parentPosition = drawParentSession(g, fx, ownTravel);
+      parentPosition = drawParentSession(g, fx, ownTravel, 'parent');
       canvas.dataset.robotWhip = '';
       canvas.dataset.parentMode = ownTravel.phase;
       canvas.dataset.parentActivity = '';
@@ -1313,6 +1373,7 @@ export function createFactoryScene(
       parentPosition = {
         p: [-6.25, 4.4, 0],
         body: [-6.25, 1.6, 0],
+        radius: 1.8,
         whipStart: null,
       };
       // A holographic locator leaves the workstation visibly occupied by an
@@ -1329,12 +1390,18 @@ export function createFactoryScene(
       canvas.dataset.parentActivity = visitors.awayMessage(sessionId);
       canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
     }
-    const positions = [{id: 'parent', ...parentPosition}];
+    const positions = [
+      {
+        id: 'parent',
+        targetable: !ownAway || Boolean(ownTravel),
+        ...parentPosition,
+      },
+    ];
     units.forEach((unit, i) =>
       positions.push({
         id: unit.id,
-        p: drawAgent(unit, g, fx, i),
-        body: positionFor(unit),
+        targetable: true,
+        ...drawAgent(unit, g, fx, i),
       }),
     );
     for (const visitor of visiting) {
@@ -1373,7 +1440,7 @@ export function createFactoryScene(
     const lashTarget = lash && positions.find(p => p.id === lash.target);
     if (lashTarget && positions[0].whipStart) {
       const endpoint = [...lashTarget.body];
-      endpoint[1] += 0.22 + whipPose(lash.age).recoil * 0.68;
+      endpoint[1] += 0.22;
       drawRobotWhip(g, fx, C, positions[0].whipStart, endpoint, lash.age);
     }
     for (const beam of dispatches) {
@@ -1440,9 +1507,22 @@ export function createFactoryScene(
     draw(glow);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
-    anchors = positions.map(({id, p, body}) => {
+    anchors = positions.map(({id, p, body, radius, targetable}) => {
       const point = project(p, matrix),
-        center = project(body, matrix);
+        center = project(body, matrix),
+        edgeX = project([body[0] + radius, body[1], body[2]], matrix),
+        edgeY = project([body[0], body[1] + radius, body[2]], matrix),
+        edgeZ = project([body[0], body[1], body[2] + radius], matrix),
+        radiusX = Math.max(
+          Math.abs(edgeX.x - center.x),
+          Math.abs(edgeY.x - center.x),
+          Math.abs(edgeZ.x - center.x),
+        ),
+        radiusY = Math.max(
+          Math.abs(edgeX.y - center.y),
+          Math.abs(edgeY.y - center.y),
+          Math.abs(edgeZ.y - center.y),
+        );
       return {
         id,
         x: point.x,
@@ -1455,6 +1535,10 @@ export function createFactoryScene(
           point.y < 1,
         centerX: center.x,
         centerY: center.y,
+        radiusX,
+        radiusY,
+        targetable,
+        targetVisible: center.w > 0,
       };
     });
     const awayMessage = visitors.awayMessage(sessionId);
@@ -1499,9 +1583,13 @@ export function createFactoryScene(
       reaction.age += elapsed;
       if (reaction.age >= STARTLE_DURATION) reaction = null;
     }
-    // The parent Stop reaction and working agents keep separate clocks.
+    // The parent Stop reaction, cane hits and working agents keep separate clocks.
     if (motion) {
       const dt = Math.min(elapsed, 0.05);
+      for (const [id, recoil] of caneRecoils) {
+        recoil.age += dt;
+        if (recoil.age >= CANE_RECOIL_DURATION) caneRecoils.delete(id);
+      }
       time += dt;
       syncWhip();
       if (!whip.pose()) parentMotion.tick(dt);
@@ -1553,6 +1641,7 @@ export function createFactoryScene(
     }
   }
   function onVisibility() {
+    if (document.hidden || !inView) clearCaneRecoils();
     if (canAnimate()) {
       render();
       schedule();
@@ -1593,11 +1682,44 @@ export function createFactoryScene(
     const hit = findHit(event);
     if (hit !== null) onSelect(hit);
   }
+  function caneTargetList() {
+    if (disposed || contextLost || document.hidden || !inView) return [];
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return [];
+    return anchors
+      .filter(anchor => {
+        if (!anchor.targetable || !anchor.targetVisible) return false;
+        const x = rect.left + anchor.centerX * rect.width;
+        const y = rect.top + anchor.centerY * rect.height;
+        const radius = Math.max(
+          12,
+          anchor.radiusX * rect.width,
+          anchor.radiusY * rect.height,
+        );
+        return (
+          x + radius > Math.max(0, rect.left) &&
+          x - radius < Math.min(window.innerWidth, rect.right) &&
+          y + radius > Math.max(0, rect.top) &&
+          y - radius < Math.min(window.innerHeight, rect.bottom)
+        );
+      })
+      .map(anchor => ({
+        id: anchor.id,
+        x: rect.left + anchor.centerX * rect.width,
+        y: rect.top + anchor.centerY * rect.height,
+        radius: Math.max(
+          12,
+          anchor.radiusX * rect.width,
+          anchor.radiusY * rect.height,
+        ),
+      }));
+  }
   function onContextLost(event) {
     event.preventDefault();
     contextLost = true;
     whip.cancel();
     reaction = null;
+    clearCaneRecoils();
     stop();
   }
   function onContextRestored() {
@@ -1651,6 +1773,7 @@ export function createFactoryScene(
       const id = data?.session?.id;
       if (id !== sessionId) {
         reaction = null;
+        clearCaneRecoils();
         stop();
         sessionId = id;
         identity = factoryIdentity(id);
@@ -1714,6 +1837,7 @@ export function createFactoryScene(
       visitors.setMotion(motion);
       whip.setMotion(motion);
       if (motion) reaction = null;
+      else clearCaneRecoils();
       if (!canAnimate()) stop();
       render();
       schedule();
@@ -1748,10 +1872,30 @@ export function createFactoryScene(
       render();
       schedule();
     },
+    caneTargets() {
+      return caneTargetList();
+    },
+    hitWithCane(id, direction = 1) {
+      if (disposed || contextLost) return false;
+      const target = caneTargetList().find(item => item.id === id);
+      if (!target) return false;
+      if (!motion) return true;
+      caneRecoils.delete(id);
+      caneRecoils.set(id, {
+        age: 0,
+        direction: Number(direction) < 0 ? -1 : 1,
+      });
+      while (caneRecoils.size > 12)
+        caneRecoils.delete(caneRecoils.keys().next().value);
+      render();
+      schedule();
+      return true;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
       reaction = null;
+      clearCaneRecoils();
       parentMotion.dispose();
       visitors.dispose();
       whip.dispose();

@@ -13,6 +13,7 @@ const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
 const HOME = -6.25;
 const STARTLE_SECONDS = 1.1;
+const CANE_RECOIL_SECONDS = 0.42;
 const C = {
   shell: 'var(--mint)',
   edge: 'var(--cyan)',
@@ -166,12 +167,13 @@ export function createParentFallback(container) {
   visitorNotice.setAttribute('aria-live', 'polite');
   let agents = [];
   let recoilGlyph = null;
+  const caneRecoils = new Map();
   function clearWhip() {
     recoilGlyph?.style.removeProperty('translate');
     recoilGlyph = null;
     overlay.remove();
   }
-  function targets() {
+  function whipTargets() {
     const running = new Set(
       agents.filter(a => a.status === 'running').map(a => a.id),
     );
@@ -198,7 +200,7 @@ export function createParentFallback(container) {
   function syncWhip() {
     whip.update(
       session?.id,
-      targets().map(element => element.dataset.unitId),
+      whipTargets().map(element => element.dataset.unitId),
       Boolean(reaction) ||
         visitors.isAway(session?.id) ||
         !['rest', 'work'].includes(controller.pose().mode) ||
@@ -226,6 +228,110 @@ export function createParentFallback(container) {
   let reaction = null;
   let visible = true;
   let identity = factoryIdentity('');
+
+  function visibleBounds(rect) {
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.bottom > 0 &&
+      rect.top < window.innerHeight &&
+      rect.right > 0 &&
+      rect.left < window.innerWidth
+    );
+  }
+
+  function caneElement(id) {
+    if (id === 'parent') return robot;
+    const station = [
+      ...container.querySelectorAll('.fallback-station.agent'),
+    ].find(element => element.dataset.unitId === id);
+    return station?.querySelector('.robot-glyph') || null;
+  }
+
+  function caneTargetList() {
+    if (
+      disposed ||
+      document.hidden ||
+      !visible ||
+      container.closest('[hidden]')
+    )
+      return [];
+    const ids = new Set(agents.map(agent => agent.id));
+    const candidates = [];
+    if (session && station) candidates.push({id: 'parent', element: robot});
+    for (const element of container.querySelectorAll(
+      '.fallback-station.agent .robot-glyph',
+    )) {
+      const id = element.closest('.fallback-station.agent')?.dataset.unitId;
+      if (id && ids.has(id)) candidates.push({id, element});
+    }
+    return candidates.flatMap(({id, element}) => {
+      const rect = element.getBoundingClientRect();
+      if (!visibleBounds(rect)) return [];
+      return [
+        {
+          id,
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          radius: Math.max(12, Math.min(rect.width, rect.height) * 0.5),
+        },
+      ];
+    });
+  }
+
+  function clearCaneStyle(element) {
+    if (!element) return;
+    if (element === robot) element.removeAttribute('transform');
+    else {
+      element.style.removeProperty('left');
+      element.style.removeProperty('top');
+      element.style.removeProperty('position');
+      element.style.removeProperty('rotate');
+    }
+  }
+
+  function clearCaneRecoils() {
+    for (const recoil of caneRecoils.values()) clearCaneStyle(recoil.element);
+    caneRecoils.clear();
+    clearCaneStyle(robot);
+  }
+
+  function canePose(recoil) {
+    const progress = recoil.age / CANE_RECOIL_SECONDS;
+    const fade = Math.max(0, 1 - progress);
+    return {
+      lateral:
+        recoil.direction * fade * (1 + Math.sin(progress * Math.PI * 3) * 0.3),
+      jump: Math.sin(progress * Math.PI) * fade,
+      angle: recoil.direction * Math.sin(progress * Math.PI * 4) * fade,
+    };
+  }
+
+  function applyCaneRecoils() {
+    for (const [id, recoil] of caneRecoils) {
+      const element = caneElement(id);
+      if (!element) {
+        clearCaneStyle(recoil.element);
+        caneRecoils.delete(id);
+        continue;
+      }
+      if (recoil.element && recoil.element !== element)
+        clearCaneStyle(recoil.element);
+      recoil.element = element;
+      const pose = canePose(recoil);
+      if (element === robot) {
+        element.setAttribute(
+          'transform',
+          `translate(${number(pose.lateral * 4)} ${number(-pose.jump * 4)}) rotate(${number(pose.angle * 4)} 57 96)`,
+        );
+      } else {
+        element.style.position = 'relative';
+        element.style.left = `${number(pose.lateral * 10)}px`;
+        element.style.top = `${number(-pose.jump * 8)}px`;
+        element.style.rotate = `${number(pose.angle * 5)}deg`;
+      }
+    }
+  }
 
   function paint(group, shapes) {
     shapes.sort((a, b) => a.depth - b.depth);
@@ -327,6 +433,7 @@ export function createParentFallback(container) {
       .visitorsAt(session.id)
       .find(visitor => visitor.id === session.id);
     robot.style.display = ownAway && !ownTravel ? 'none' : '';
+    applyCaneRecoils();
     if (ownAway && !ownTravel) {
       svg.dataset.mode = 'away';
       svg.dataset.activity = '';
@@ -506,7 +613,7 @@ export function createParentFallback(container) {
     paint(robot, shapes);
     svg.dataset.robotWhip = lash?.target || '';
     if (lash && whipHand) {
-      const target = targets().find(
+      const target = whipTargets().find(
         element => element.dataset.unitId === lash.target,
       );
       const glyph = target?.querySelector('.robot-glyph');
@@ -564,6 +671,7 @@ export function createParentFallback(container) {
         paint(overlay, paths);
       }
     }
+    applyCaneRecoils();
     svg.dataset.mode = reaction ? 'startled' : pose.mode;
     svg.dataset.activity = pose.activity || '';
     svg.dataset.eyes = String(eyeHeight);
@@ -645,13 +753,23 @@ export function createParentFallback(container) {
         reaction.age += dt;
         if (reaction.age >= STARTLE_SECONDS) reaction = null;
       }
+      if (motion) {
+        for (const [id, recoil] of caneRecoils) {
+          recoil.age += dt;
+          if (recoil.age >= CANE_RECOIL_SECONDS) {
+            clearCaneStyle(recoil.element);
+            caneRecoils.delete(id);
+          }
+        }
+      }
       render();
     }
     schedule();
   }
   function onVisibility() {
     stopFrame();
-    if (!document.hidden) {
+    if (document.hidden) clearCaneRecoils();
+    else {
       render();
       schedule();
     }
@@ -661,7 +779,10 @@ export function createParentFallback(container) {
     ? new window.IntersectionObserver(entries => {
         visible = entries.some(entry => entry.isIntersecting);
         if (visible) schedule();
-        else stopFrame();
+        else {
+          clearCaneRecoils();
+          stopFrame();
+        }
       })
     : null;
   observer?.observe(container);
@@ -669,6 +790,7 @@ export function createParentFallback(container) {
   function detach() {
     whip.cancel();
     clearWhip();
+    clearCaneRecoils();
     svg.remove();
     glyph?.classList.remove('parent-fallback-glyph');
     visitorNotice.remove();
@@ -701,6 +823,7 @@ export function createParentFallback(container) {
       }
       if (session?.id !== data?.session?.id) {
         reaction = null;
+        clearCaneRecoils();
         time = 0;
         identity = factoryIdentity(data?.session?.id);
         svg.dataset.factoryIdentity = identity.token;
@@ -724,6 +847,7 @@ export function createParentFallback(container) {
       visitors.setMotion(motion);
       whip.setMotion(motion);
       if (motion) reaction = null;
+      else clearCaneRecoils();
       stopFrame();
       render();
       schedule();
@@ -758,6 +882,31 @@ export function createParentFallback(container) {
       render();
       schedule();
     },
+    caneTargets() {
+      return caneTargetList();
+    },
+    hitWithCane(id, direction = 1) {
+      if (disposed || !caneTargetList().some(target => target.id === id))
+        return false;
+      if (!motion) return true;
+      const previous = caneRecoils.get(id);
+      clearCaneStyle(previous?.element);
+      caneRecoils.delete(id);
+      caneRecoils.set(id, {
+        age: 0,
+        direction: Number(direction) < 0 ? -1 : 1,
+        element: caneElement(id),
+      });
+      while (caneRecoils.size > 12) {
+        const oldest = caneRecoils.keys().next().value;
+        clearCaneStyle(caneRecoils.get(oldest)?.element);
+        caneRecoils.delete(oldest);
+      }
+      stopFrame();
+      render();
+      schedule();
+      return true;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
@@ -768,6 +917,7 @@ export function createParentFallback(container) {
       visitors.dispose();
       whip.dispose();
       clearWhip();
+      clearCaneRecoils();
       visitorSvg.remove();
       reaction = null;
       session = null;

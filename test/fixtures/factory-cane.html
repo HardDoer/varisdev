@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <link rel="stylesheet" href="../../assets/dashboard/factory-cane.css" />
+    <title>Factory cane integration fixture</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        min-height: 100%;
+        background: #101b20;
+        color: #edf4f6;
+      }
+      #root {
+        position: relative;
+      }
+      .webgl-stage {
+        position: relative;
+        width: 800px;
+        height: 520px;
+      }
+      .webgl-stage canvas {
+        display: block;
+        width: 800px;
+        height: 520px;
+      }
+      .fallback-units {
+        position: relative;
+        display: flex;
+        width: 760px;
+        height: 260px;
+      }
+      .fallback-station {
+        position: relative;
+        width: 360px;
+        height: 240px;
+      }
+      .parent-fallback-robot {
+        display: block;
+        width: 240px;
+        height: 180px;
+      }
+      .fallback-station.agent .robot-glyph {
+        display: block;
+        width: 80px;
+        height: 80px;
+        margin: 70px 100px;
+        background: #4bbfca;
+      }
+      .plain-stage {
+        position: relative;
+        width: 640px;
+        height: 360px;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+  </body>
+</html>
