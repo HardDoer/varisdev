@@ -8,12 +8,12 @@ import {
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
 import {createFactoryVisitors} from './factory-visitors.js';
+import {createRobotDamage} from './robot-damage.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
 const HOME = -6.25;
 const STARTLE_SECONDS = 1.1;
-const CANE_RECOIL_SECONDS = 0.42;
 const C = {
   shell: 'var(--mint)',
   edge: 'var(--cyan)',
@@ -151,6 +151,17 @@ export function createParentFallback(container) {
   const controller = createParentMotion();
   const whip = createRobotWhip();
   const visitors = createFactoryVisitors();
+  const damage = createRobotDamage({maxRobots: 16, maxEffects: 80});
+  const damageVisuals = new Map();
+  function effectLayer(className) {
+    const layer = document.createElementNS(NS, 'svg');
+    layer.setAttribute('class', className);
+    layer.setAttribute('aria-hidden', 'true');
+    layer.setAttribute('focusable', 'false');
+    return layer;
+  }
+  const floorEffects = effectLayer('robot-floor-effects');
+  const debrisEffects = effectLayer('robot-debris-effects');
   const overlay = document.createElementNS(NS, 'svg');
   overlay.setAttribute('class', 'robot-whip-overlay');
   overlay.setAttribute('aria-hidden', 'true');
@@ -167,7 +178,6 @@ export function createParentFallback(container) {
   visitorNotice.setAttribute('aria-live', 'polite');
   let agents = [];
   let recoilGlyph = null;
-  const caneRecoils = new Map();
   function clearWhip() {
     recoilGlyph?.style.removeProperty('translate');
     recoilGlyph = null;
@@ -187,6 +197,7 @@ export function createParentFallback(container) {
           glyphBounds?.width > 0 &&
           glyphBounds.height > 0 &&
           running.has(element.dataset.unitId) &&
+          damage.pose(element.dataset.unitId).phase === 'alive' &&
           rect.width > 0 &&
           rect.height > 0 &&
           rect.bottom > 0 &&
@@ -202,6 +213,8 @@ export function createParentFallback(container) {
       session?.id,
       whipTargets().map(element => element.dataset.unitId),
       Boolean(reaction) ||
+        damage.pose('parent').phase !== 'alive' ||
+        damage.pose('parent').offset.some(value => Math.abs(value) > 0.025) ||
         visitors.isAway(session?.id) ||
         !['rest', 'work'].includes(controller.pose().mode) ||
         session?.status === 'closed',
@@ -214,7 +227,10 @@ export function createParentFallback(container) {
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
   const workstation = document.createElementNS(NS, 'g');
+  const ground = document.createElementNS(NS, 'g');
   const robot = document.createElementNS(NS, 'g');
+  const robotGeometry = document.createElementNS(NS, 'g');
+  robot.append(robotGeometry);
   svg.append(workstation, robot);
   let station = null;
   let glyph = null;
@@ -240,14 +256,6 @@ export function createParentFallback(container) {
     );
   }
 
-  function caneElement(id) {
-    if (id === 'parent') return robot;
-    const station = [
-      ...container.querySelectorAll('.fallback-station.agent'),
-    ].find(element => element.dataset.unitId === id);
-    return station?.querySelector('.robot-glyph') || null;
-  }
-
   function caneTargetList() {
     if (
       disposed ||
@@ -258,12 +266,19 @@ export function createParentFallback(container) {
       return [];
     const ids = new Set(agents.map(agent => agent.id));
     const candidates = [];
-    if (session && station) candidates.push({id: 'parent', element: robot});
+    if (
+      session &&
+      station &&
+      !visitors.isAway(session.id) &&
+      damage.pose('parent').phase === 'alive'
+    )
+      candidates.push({id: 'parent', element: robot});
     for (const element of container.querySelectorAll(
       '.fallback-station.agent .robot-glyph',
     )) {
       const id = element.closest('.fallback-station.agent')?.dataset.unitId;
-      if (id && ids.has(id)) candidates.push({id, element});
+      if (id && ids.has(id) && damage.pose(id).phase === 'alive')
+        candidates.push({id, element});
     }
     return candidates.flatMap(({id, element}) => {
       const rect = element.getBoundingClientRect();
@@ -282,61 +297,333 @@ export function createParentFallback(container) {
   function clearCaneStyle(element) {
     if (!element) return;
     if (element === robot) element.removeAttribute('transform');
-    else {
-      element.style.removeProperty('left');
-      element.style.removeProperty('top');
-      element.style.removeProperty('position');
-      element.style.removeProperty('rotate');
+    for (const property of ['left', 'top', 'rotate', 'clip-path', 'visibility'])
+      element.style.removeProperty(property);
+    element.classList.remove('robot-damage-body');
+    delete element.dataset.damage;
+    delete element.dataset.damagePhase;
+  }
+
+  function clearDamageVisuals() {
+    for (const visual of damageVisuals.values()) {
+      clearCaneStyle(visual.element);
+      visual.marks?.remove();
+    }
+    damageVisuals.clear();
+    clearCaneStyle(robot);
+    floorEffects.remove();
+    debrisEffects.remove();
+  }
+
+  function settleDamage() {
+    // Hidden scenes must never resume with an invisible, half-replaced unit.
+    damage.setMotion(false);
+    damage.setMotion(motion);
+    clearDamageVisuals();
+  }
+
+  const effectPath = (d, fill, stroke = C.dark, width = 0.8) => ({
+    d,
+    fill,
+    stroke,
+    width,
+    depth: 0,
+    shade: 0,
+  });
+  const polygonPath = points =>
+    points
+      .map((p, i) => `${i ? 'L' : 'M'}${p.map(number).join(' ')}`)
+      .join(' ') + ' Z';
+
+  function drawDamageMarks(group, bounds, severity) {
+    const x = bounds.x,
+      y = bounds.y,
+      w = bounds.width,
+      h = bounds.height;
+    const p = (a, b) => [x + a * w, y + b * h];
+    const shapes = [];
+    if (severity > 0) {
+      shapes.push(
+        effectPath(
+          polygonPath([
+            p(0.33, 0.42),
+            p(0.53, 0.36),
+            p(0.66, 0.49),
+            p(0.58, 0.65),
+            p(0.35, 0.62),
+            p(0.27, 0.51),
+          ]),
+          C.dark,
+          C.metal,
+          0.5,
+        ),
+      );
+      shapes.push(
+        effectPath(
+          `M${p(0.45, 0.4).join(' ')} l${number(w * 0.06)} ${number(h * 0.1)} l${number(-w * 0.12)} ${number(h * 0.06)} l${number(w * 0.1)} ${number(h * 0.13)}`,
+          'none',
+          C.amber,
+          Math.max(0.5, w * 0.018),
+        ),
+      );
+    }
+    if (severity >= 0.35)
+      shapes.push(
+        effectPath(
+          polygonPath([
+            p(0.57, 0.12),
+            p(0.78, 0.18),
+            p(0.67, 0.3),
+            p(0.53, 0.25),
+          ]),
+          C.dark,
+          C.metal,
+          0.6,
+        ),
+      );
+    if (severity >= 0.65)
+      shapes.push(
+        effectPath(
+          `M${p(0.15, 0.7).join(' ')} L${p(0.37, 0.75).join(' ')} L${p(0.26, 0.84).join(' ')} M${p(0.72, 0.36).join(' ')} L${p(0.85, 0.56).join(' ')}`,
+          'none',
+          C.dark,
+          Math.max(1, w * 0.055),
+        ),
+      );
+    paint(group, shapes);
+  }
+
+  function drawHatch(shapes, home, openness) {
+    const {x, y, width} = home;
+    const w = Math.max(34, width * 1.15),
+      h = w * 0.19;
+    const point = (a, b) => [x + a * w, y + b * h];
+    shapes.push(
+      effectPath(
+        polygonPath([
+          point(-0.59, 0),
+          point(-0.43, -0.7),
+          point(0.59, -0.7),
+          point(0.43, 0.7),
+          point(-0.59, 0.7),
+        ]),
+        C.dark,
+        C.metal,
+        1.3,
+      ),
+    );
+    for (const side of [-1, 1]) {
+      const shift = side * openness * 0.43;
+      const a = side < 0 ? -0.51 : 0,
+        b = side < 0 ? 0 : 0.51;
+      shapes.push(
+        effectPath(
+          polygonPath([
+            point(a + shift, -0.52),
+            point(b + shift, -0.52),
+            point(b + shift - 0.08, 0.52),
+            point(a + shift - 0.08, 0.52),
+          ]),
+          C.dim,
+          C.metal,
+          1,
+        ),
+      );
+      for (let i = 0; i < 3; i++) {
+        const at = a + shift + 0.09 + i * 0.12;
+        shapes.push(
+          effectPath(
+            `M${point(at, 0.28).join(' ')} L${point(at + 0.06, -0.1).join(' ')}`,
+            'none',
+            C.amber,
+            2,
+          ),
+        );
+      }
     }
   }
 
-  function clearCaneRecoils() {
-    for (const recoil of caneRecoils.values()) clearCaneStyle(recoil.element);
-    caneRecoils.clear();
-    clearCaneStyle(robot);
-  }
-
-  function canePose(recoil) {
-    const progress = recoil.age / CANE_RECOIL_SECONDS;
-    const fade = Math.max(0, 1 - progress);
-    return {
-      lateral:
-        recoil.direction *
-        fade *
-        (1 + Math.sin(progress * Math.PI * 3) * 0.3) *
-        recoil.strength,
-      jump: Math.sin(progress * Math.PI) * fade * recoil.strength,
-      angle:
-        recoil.direction *
-        Math.sin(progress * Math.PI * 4) *
-        fade *
-        recoil.strength,
-    };
-  }
-
-  function applyCaneRecoils() {
-    for (const [id, recoil] of caneRecoils) {
-      const element = caneElement(id);
-      if (!element) {
-        clearCaneStyle(recoil.element);
-        caneRecoils.delete(id);
+  function applyDamage() {
+    const bounds = container.getBoundingClientRect();
+    const floors = [],
+      fragments = [];
+    const activeIds = new Set(agents.map(agent => agent.id));
+    const elements = new Map([['parent', robot]]);
+    for (const station of container.querySelectorAll(
+      '.fallback-station.agent',
+    )) {
+      const id = station.dataset.unitId;
+      const element = station.querySelector('.robot-glyph');
+      if (activeIds.has(id) && element) elements.set(id, element);
+    }
+    damage.retain([...elements.keys()]);
+    const pieces = damage.effects();
+    const effectOwners = new Set(pieces.map(piece => piece.owner));
+    for (const [id, visual] of damageVisuals) {
+      if (elements.has(id)) continue;
+      clearCaneStyle(visual.element);
+      visual.marks?.remove();
+      damageVisuals.delete(id);
+    }
+    for (const [id, element] of elements) {
+      const pose = damage.pose(id);
+      if (!element || (id === 'parent' && robot.style.display === 'none'))
+        continue;
+      let visual = damageVisuals.get(id);
+      if (!pose.damage && pose.phase === 'alive' && !effectOwners.has(id)) {
+        clearCaneStyle(visual?.element);
+        visual?.marks?.remove();
+        damageVisuals.delete(id);
         continue;
       }
-      if (recoil.element && recoil.element !== element)
-        clearCaneStyle(recoil.element);
-      recoil.element = element;
-      const pose = canePose(recoil);
+      if (visual?.element !== element) {
+        clearCaneStyle(visual?.element);
+        visual?.marks?.remove();
+        const marks = document.createElementNS(
+          NS,
+          element === robot ? 'g' : 'svg',
+        );
+        marks.setAttribute('class', 'robot-damage-marks');
+        if (element !== robot) marks.setAttribute('viewBox', '0 0 100 100');
+        marks.setAttribute('aria-hidden', 'true');
+        marks.setAttribute('focusable', 'false');
+        element.append(marks);
+        visual = {element, marks};
+        damageVisuals.set(id, visual);
+      }
+      clearCaneStyle(element);
+      // Measure the neutral geometry each frame, not a cached station position.
+      // Cane targets subsequently measure the displaced/tumbling geometry.
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        visual.home = null;
+        continue;
+      }
+      const local =
+        element === robot
+          ? robotGeometry.getBBox()
+          : {x: 0, y: 0, width: 100, height: 100};
+      const unit =
+        element === robot
+          ? (rect.height / Math.max(1, local.height)) * 23
+          : rect.height / 1.65;
+      if (
+        !visual.home ||
+        visual.layoutWidth !== bounds.width ||
+        visual.layoutHeight !== bounds.height ||
+        (pose.phase === 'alive' &&
+          !pose.offset.some(value => Math.abs(value) > 0.025) &&
+          !effectOwners.has(id))
+      )
+        visual.home = {
+          x: rect.left - bounds.left + rect.width / 2,
+          y: rect.bottom - bounds.top,
+          width: rect.width,
+          unit,
+        };
+      visual.layoutWidth = bounds.width;
+      visual.layoutHeight = bounds.height;
+      drawDamageMarks(visual.marks, local, pose.damage);
+      element.classList.add('robot-damage-body');
+      element.dataset.damage = String(number(pose.damage));
+      element.dataset.damagePhase = pose.phase;
+      element.style.visibility = pose.visible ? '' : 'hidden';
+      const [x, y, z] = pose.offset;
+      const angle =
+        ((pose.rotation[0] - pose.rotation[2] * 0.35) * 180) / Math.PI;
+      const rise =
+        pose.phase === 'replacing'
+          ? Math.max(0, Math.min(1, 1 + pose.lift / 3.4))
+          : 1;
       if (element === robot) {
+        const dx = (x * 0.3 - z * 0.9) * 23,
+          dy = -y * 23 + (1 - rise) * local.height;
         element.setAttribute(
           'transform',
-          `translate(${number(pose.lateral * 4)} ${number(-pose.jump * 4)}) rotate(${number(pose.angle * 4)} 57 96)`,
+          `translate(${number(dx)} ${number(dy)}) rotate(${number(angle)} ${number(local.x + local.width / 2)} ${number(local.y + local.height / 2)})`,
         );
       } else {
-        element.style.position = 'relative';
-        element.style.left = `${number(pose.lateral * 10)}px`;
-        element.style.top = `${number(-pose.jump * 8)}px`;
-        element.style.rotate = `${number(pose.angle * 5)}deg`;
+        element.style.left = `${number((x * 0.3 - z * 0.9) * unit)}px`;
+        element.style.top = `${number(-y * unit + (1 - rise) * rect.height)}px`;
+        element.style.rotate = `${number(angle)}deg`;
       }
+      if (rise < 1)
+        element.style.clipPath = `inset(0 0 ${number((1 - rise) * 100)}% 0)`;
+      if (pose.phase === 'replacing') drawHatch(floors, visual.home, pose.door);
+      if (motion && pose.blast > 0 && pose.phaseAge < 0.45) {
+        const progress = pose.phaseAge / 0.45;
+        const fade = Math.min(pose.blast, 1 - progress);
+        const cx = visual.home.x + (x * 0.3 - z * 0.9) * unit;
+        const cy = visual.home.y - (1.6 + y) * unit + z * unit * 0.1;
+        const radius = (0.3 + progress * 1.7) * unit;
+        fragments.push({
+          ...effectPath(
+            `M${number(cx - radius)} ${number(cy)} a${number(radius)} ${number(radius)} 0 1 0 ${number(radius * 2)} 0 a${number(radius)} ${number(radius)} 0 1 0 ${number(-radius * 2)} 0`,
+            'none',
+            C.amber,
+            Math.max(1.2, unit * 0.08),
+          ),
+          opacity: fade * 0.65,
+        });
+        const core = (0.45 - progress * 0.3) * unit;
+        const points = Array.from({length: 12}, (_, i) => {
+          const r = core * (i % 2 ? 0.5 : 1);
+          return [
+            cx + Math.cos((i * TAU) / 12) * r,
+            cy + Math.sin((i * TAU) / 12) * r,
+          ];
+        });
+        fragments.push({
+          ...effectPath(polygonPath(points), C.amber, 'none', 0),
+          opacity: fade ** 2 * 0.6,
+        });
+      }
+    }
+    for (const fragment of pieces) {
+      const home = damageVisuals.get(fragment.owner)?.home;
+      if (!home) continue;
+      const [x, y, z] = fragment.position;
+      const px = home.x + (x * 0.3 - z * 0.9) * home.unit;
+      const py = home.y - y * home.unit + z * home.unit * 0.1;
+      const w = Math.max(1.2, fragment.size[0] * home.unit),
+        h = Math.max(1.2, fragment.size[1] * home.unit);
+      const angle = fragment.rotation[2] + fragment.rotation[0] * 0.4;
+      const point = (a, b) => [
+        px + a * w * Math.cos(angle) - b * h * Math.sin(angle),
+        py + a * w * Math.sin(angle) + b * h * Math.cos(angle),
+      ];
+      const color =
+        fragment.kind === 'spark'
+          ? C.amber
+          : fragment.kind === 'armor'
+            ? C.mint
+            : C.metal;
+      fragments.push({
+        ...effectPath(
+          polygonPath([
+            point(-0.5, -0.5),
+            point(0.5, -0.3),
+            point(0.35, 0.5),
+            point(-0.45, 0.25),
+          ]),
+          color,
+          C.dark,
+          0.6,
+        ),
+        opacity: Math.min(1, fragment.life * 3),
+      });
+    }
+    for (const [layer, shapes] of [
+      [floorEffects, floors],
+      [debrisEffects, fragments],
+    ]) {
+      layer.setAttribute(
+        'viewBox',
+        `0 0 ${Math.max(1, bounds.width)} ${Math.max(1, bounds.height)}`,
+      );
+      paint(layer, shapes);
+      if (shapes.length && !layer.parentNode) container.append(layer);
+      else if (!shapes.length) layer.remove();
     }
   }
 
@@ -357,6 +644,7 @@ export function createParentFallback(container) {
       element.setAttribute('stroke-linecap', 'round');
       element.setAttribute('stroke-linejoin', 'round');
       // A black overlay is unnecessary: brightness also follows theme colors.
+      element.setAttribute('opacity', shape.opacity ?? 1);
       element.style.filter = shape.shade
         ? `brightness(${1 - shape.shade})`
         : '';
@@ -440,8 +728,11 @@ export function createParentFallback(container) {
       .visitorsAt(session.id)
       .find(visitor => visitor.id === session.id);
     robot.style.display = ownAway && !ownTravel ? 'none' : '';
-    applyCaneRecoils();
+    ground.style.display = robot.style.display;
+    ground.style.visibility =
+      damage.pose('parent').phase === 'alive' ? '' : 'hidden';
     if (ownAway && !ownTravel) {
+      applyDamage();
       svg.dataset.mode = 'away';
       svg.dataset.activity = '';
       svg.dataset.eyes = String(AWAKE_EYE_HEIGHT);
@@ -512,12 +803,15 @@ export function createParentFallback(container) {
     const shapes = [];
     const yaw = pose.yaw + (idle?.yaw || 0) * blend - (lashPose?.turn || 0);
     const g = primitives(shapes, origin, pose.ground, yaw);
-    g.cylinder(
+    const floorShapes = [];
+    const floor = primitives(floorShapes, origin, pose.ground, yaw);
+    floor.cylinder(
       [0, 0.36, 0],
       [2.25 - jump * 0.3, 0.04, 1.5 - jump * 0.18],
       C.dark,
     );
-    if (selected || working) g.ring([0, 0.4, 0], 2.05, 0.04, color);
+    if (selected || working) floor.ring([0, 0.4, 0], 2.05, 0.04, color);
+    paint(ground, floorShapes);
     for (const [i, side] of [-1, 1].entries()) {
       const step = moving ? Math.sin(pose.stride + i * Math.PI) : 0;
       const foot = idle?.feet[i];
@@ -617,7 +911,7 @@ export function createParentFallback(container) {
     }
     if (idle && blend > 0.5)
       drawIdleActivity(g, g, C, pose.activity, pose.elapsed, {...idle, lift});
-    paint(robot, shapes);
+    paint(robotGeometry, shapes);
     svg.dataset.robotWhip = lash?.target || '';
     if (lash && whipHand) {
       const target = whipTargets().find(
@@ -678,7 +972,7 @@ export function createParentFallback(container) {
         paint(overlay, paths);
       }
     }
-    applyCaneRecoils();
+    applyDamage();
     svg.dataset.mode = reaction ? 'startled' : pose.mode;
     svg.dataset.activity = pose.activity || '';
     svg.dataset.eyes = String(eyeHeight);
@@ -711,7 +1005,9 @@ export function createParentFallback(container) {
         [0.42, 1.05, 0.42],
         index % 2 ? C.metal : accent,
       );
+    ground.remove();
     paint(workstation, shapes);
+    workstation.append(ground);
   }
   drawWorkstation();
 
@@ -749,7 +1045,13 @@ export function createParentFallback(container) {
       if (motion) {
         time += dt;
         syncWhip();
-        if (!whip.pose()) controller.tick(dt);
+        const parentDamage = damage.pose('parent');
+        if (
+          !whip.pose() &&
+          parentDamage.phase === 'alive' &&
+          !parentDamage.offset.some(value => Math.abs(value) > 0.025)
+        )
+          controller.tick(dt);
         visitors.observeLocalPose(session?.id, controller.pose());
         visitors.tick(dt);
         controller.setAway(visitors.isAway(session?.id));
@@ -760,22 +1062,14 @@ export function createParentFallback(container) {
         reaction.age += dt;
         if (reaction.age >= STARTLE_SECONDS) reaction = null;
       }
-      if (motion) {
-        for (const [id, recoil] of caneRecoils) {
-          recoil.age += dt;
-          if (recoil.age >= CANE_RECOIL_SECONDS) {
-            clearCaneStyle(recoil.element);
-            caneRecoils.delete(id);
-          }
-        }
-      }
+      if (motion) damage.tick(dt);
       render();
     }
     schedule();
   }
   function onVisibility() {
     stopFrame();
-    if (document.hidden) clearCaneRecoils();
+    if (document.hidden) settleDamage();
     else {
       render();
       schedule();
@@ -787,7 +1081,7 @@ export function createParentFallback(container) {
         visible = entries.some(entry => entry.isIntersecting);
         if (visible) schedule();
         else {
-          clearCaneRecoils();
+          settleDamage();
           stopFrame();
         }
       })
@@ -797,7 +1091,7 @@ export function createParentFallback(container) {
   function detach() {
     whip.cancel();
     clearWhip();
-    clearCaneRecoils();
+    settleDamage();
     svg.remove();
     glyph?.classList.remove('parent-fallback-glyph');
     visitorNotice.remove();
@@ -830,7 +1124,8 @@ export function createParentFallback(container) {
       }
       if (session?.id !== data?.session?.id) {
         reaction = null;
-        clearCaneRecoils();
+        clearDamageVisuals();
+        damage.reset();
         time = 0;
         identity = factoryIdentity(data?.session?.id);
         svg.dataset.factoryIdentity = identity.token;
@@ -853,8 +1148,9 @@ export function createParentFallback(container) {
       controller.setMotion(motion);
       visitors.setMotion(motion);
       whip.setMotion(motion);
+      damage.setMotion(motion);
       if (motion) reaction = null;
-      else clearCaneRecoils();
+      clearDamageVisuals();
       stopFrame();
       render();
       schedule();
@@ -895,23 +1191,7 @@ export function createParentFallback(container) {
     hitWithCane(id, direction = 1, strength = 1) {
       if (disposed || !caneTargetList().some(target => target.id === id))
         return false;
-      if (!motion) return true;
-      const previous = caneRecoils.get(id);
-      clearCaneStyle(previous?.element);
-      caneRecoils.delete(id);
-      caneRecoils.set(id, {
-        age: 0,
-        direction: Number(direction) < 0 ? -1 : 1,
-        strength: Number.isFinite(strength)
-          ? Math.max(0.35, Math.min(2.2, strength))
-          : 1,
-        element: caneElement(id),
-      });
-      while (caneRecoils.size > 12) {
-        const oldest = caneRecoils.keys().next().value;
-        clearCaneStyle(caneRecoils.get(oldest)?.element);
-        caneRecoils.delete(oldest);
-      }
+      if (!damage.hit(id, direction, strength)) return false;
       stopFrame();
       render();
       schedule();
@@ -927,7 +1207,8 @@ export function createParentFallback(container) {
       visitors.dispose();
       whip.dispose();
       clearWhip();
-      clearCaneRecoils();
+      damage.dispose();
+      clearDamageVisuals();
       visitorSvg.remove();
       reaction = null;
       session = null;

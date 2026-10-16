@@ -226,6 +226,13 @@ async function main() {
   );
   await evaluate(() => document.getElementById('accounts-logout').click());
   await waitFor(
+    () => !document.getElementById('accounts-logout-confirm').hidden,
+  );
+  assert.notDeepEqual(JSON.parse(readFileSync(authPath, 'utf8')), other);
+  await evaluate(() =>
+    document.getElementById('accounts-logout-confirm').click(),
+  );
+  await waitFor(
     () =>
       document.getElementById('accounts-cancel').hidden &&
       document.getElementById('accounts-logout').hidden,

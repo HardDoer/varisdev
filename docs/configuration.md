@@ -4,6 +4,27 @@
 
 Commands, accounts, models, settings, skills, prompts, and packages work as in Pi. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent), including [MCP servers](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md), [codemode](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md), and [virtual models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/virtual-models.md). This page covers only VarisDev-specific configuration and desktop controls.
 
+## Slash commands
+
+Type `/` in the conversation composer or open **Commands**. Built-in commands are handled by VarisDev, not sent to the model as prompts. Extensions retain their Pi command handlers and arguments; their supported UI requests use the same desktop dialog wrapper.
+
+| Commands | Desktop behavior |
+| --- | --- |
+| `/thinking [level]`, `/model [provider/model]` | Open a selection dialog when no argument is supplied; otherwise apply the value directly to this session. |
+| `/settings` | Open session settings with current values and native selectors. This is separate from **Model defaults**, which configures new sessions. |
+| `/scoped-models` | Configure the session's model selection scope, not the background-agent model allowlist. |
+| `/login [provider]`, `/logout [provider]` | Open account management. Authentication and sign-out remain explicit user actions. |
+| `/new`, `/resume` | Use the desktop session creation and saved-session workflows. |
+| `/name [name]`, `/session` | Rename the session or show its information in a dialog. |
+| `/tree`, `/fork`, `/clone`, `/import [path]` | Navigate conversation branches, fork or duplicate a conversation, or import a saved JSONL session. |
+| `/compact [instructions]`, `/reload` | Compact context or reload resources. |
+| `/copy`, `/export [path]` | Copy the last assistant message or export HTML/JSONL. |
+| `/share`, `/bug [description]` | Review sharing or private Pi bug-report details before explicitly authorizing an upload. Provider/service credentials or GitHub CLI authentication may be required. |
+| `/trust` | Save project trust for future sessions. |
+| `/hotkeys`, `/changelog`, `/quit` | Show desktop shortcuts, read the bundled Pi changelog, or confirm application exit. |
+
+Cancelling a picker leaves its value unchanged. Model and thinking changes affect the next model request, not an already-streaming response. Branch changes and other session maintenance require the session to be idle. Terminal appearance settings are not desktop themes; VarisDev's appearance is controlled through **Menu → Theme**.
+
 ## Settings directory
 
 VarisDev specific configurations live in `.varisdev`. The folder structure will be familiar to you if you have used Pi.

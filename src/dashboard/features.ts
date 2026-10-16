@@ -6,6 +6,7 @@ import type {
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import {loaderContextFiles} from './context-files.ts';
+import {nativeCommands} from './command-catalog.mjs';
 
 // Use the public entry so Pi can supply its API through the extension loader.
 export function supportedThinkingLevels(
@@ -44,30 +45,9 @@ export interface SessionConfiguration {
   thinkingLevel?: string;
 }
 
-export const desktopCommands: SessionFeatures['commands'] = [
-  {
-    name: 'compact',
-    description: 'Compact conversation history, with optional instructions.',
-    source: 'builtin',
-  },
-  {
-    name: 'reload',
-    description: 'Reload extensions, skills, prompts and settings.',
-    source: 'builtin',
-  },
-  {
-    name: 'model',
-    description: 'Select a model using provider/model.',
-    source: 'builtin',
-  },
-  {name: 'thinking', description: 'Set the thinking level.', source: 'builtin'},
-  {
-    name: 'session',
-    description: 'Show information about this conversation.',
-    source: 'builtin',
-  },
-  {name: 'name', description: 'Name this conversation.', source: 'builtin'},
-];
+export const desktopCommands: SessionFeatures['commands'] = nativeCommands.map(
+  ({name, description}) => ({name, description, source: 'builtin'}),
+);
 
 export function sessionFeatures(
   session: AgentSession,

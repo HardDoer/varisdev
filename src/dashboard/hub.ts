@@ -47,6 +47,7 @@ export interface DashboardParent {
   configure(input: SessionConfiguration): Promise<void>;
   compact(instructions?: string): Promise<void>;
   reload(): Promise<void>;
+  lastAssistantText?(): string | undefined;
 }
 
 export type ParentFactory = (
@@ -654,6 +655,12 @@ export class DashboardHub {
         'Extension dialogs are unavailable in this session.',
       );
     const ui = parent.ui.snapshot();
+    if (ui.navigation?.id === dialogId) {
+      if (value !== undefined)
+        throw new DashboardInputError('Invalid navigation acknowledgement.');
+      parent.ui.respond(dialogId);
+      return;
+    }
     const dialog = ui.dialogs[0];
     const editor =
       ui.editor?.id === dialogId || ui.extensionEditor?.id === dialogId;
@@ -663,7 +670,9 @@ export class DashboardHub {
       );
     if (value !== undefined) {
       const expectedType =
-        !editor && dialog?.kind === 'confirm' ? 'boolean' : 'string';
+        !editor && (dialog?.kind === 'confirm' || dialog?.kind === 'info')
+          ? 'boolean'
+          : 'string';
       if (typeof value !== expectedType)
         throw new DashboardInputError('Invalid extension dialog response.');
       if (
@@ -676,6 +685,14 @@ export class DashboardHub {
         );
     }
     parent.ui.respond(dialogId, value as string | boolean | undefined);
+  }
+
+  /** Copy from the authoritative transcript, not its bounded dashboard preview. */
+  lastAssistantText(id: string): string {
+    const parent = this.owned(id).parent;
+    const text = parent.lastAssistantText?.();
+    if (!text) throw new DashboardInputError('No assistant message to copy.');
+    return text;
   }
 
   async sessionFeatures(id: string): Promise<SessionFeatures> {

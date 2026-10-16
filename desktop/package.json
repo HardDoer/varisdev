@@ -1,5 +1,6 @@
 {
   "name": "varisdev-desktop-runtime",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "dependencies": {

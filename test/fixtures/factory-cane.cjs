@@ -4,6 +4,7 @@ const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow} = require('electron');
+const {setTimeout: delay} = require('node:timers/promises');
 
 const [directory, reportPath] = process.argv.slice(2);
 const report = {cases: []};
@@ -214,7 +215,143 @@ async function main() {
         };
       }
 
+      function createFallback() {
+        clearRoot();
+        const host = document.createElement('section');
+        host.className = 'fallback-units';
+        host.innerHTML =
+          '<div class="fallback-station parent-session"><span class="robot-glyph"></span></div>' +
+          '<div class="fallback-station agent" data-unit-id="drone"><span class="robot-glyph">Drone</span></div>';
+        root.append(host);
+        const scene = createParentFallback(host);
+        scene.update({session: {id: 'damage-session', status: 'idle'},
+          agents: [{id: 'drone', status: 'running'}]}, 'parent');
+        return {host, scene, dispose() {scene.dispose(); clearRoot();}};
+      }
+      let damageFixture;
+      let damageRenderer;
+      function damageState(id = 'parent') {
+        const fixture = damageFixture;
+        if (damageRenderer === 'webgl') {
+          const state = JSON.parse(fixture.canvas.dataset.robotDamage || '{}')[id];
+          return {...state, debris: Number(fixture.canvas.dataset.robotDebris || 0),
+            target: fixture.scene.caneTargets().some(target => target.id === id),
+            geometry: fixture.dynamicHash()};
+        }
+        const element = id === 'parent'
+          ? fixture.host.querySelector('.parent-fallback-robot > g:nth-child(2)')
+          : fixture.host.querySelector('.agent .robot-glyph');
+        return {damage: Number(element?.dataset.damage || 0),
+          phase: element?.dataset.damagePhase || 'alive',
+          debris: fixture.host.querySelector('.robot-debris-effects')?.children.length || 0,
+          target: fixture.scene.caneTargets().some(target => target.id === id),
+          marks: element?.querySelector('.robot-damage-marks')?.children.length || 0,
+          hatch: fixture.host.querySelector('.robot-floor-effects')?.innerHTML || '',
+          geometry: element?.outerHTML || '',
+          transform: element?.getAttribute('transform') || '',
+          styles: [element?.style.left || '', element?.style.top || '', element?.style.rotate || ''],
+          clip: element?.style.clipPath || '',
+        };
+      }
+      function damageSnapshot(session = 'damage-session', agents = [{id: 'drone', status: 'running'}]) {
+        damageFixture.scene.update({session: {id: session, status: 'idle'}, agents}, 'parent');
+      }
+
       window.fixture = {
+        damageWebGL() {
+          damageFixture?.dispose();
+          damageRenderer = 'webgl';
+          damageFixture = createWebGL();
+          damageSnapshot();
+          return damageState();
+        },
+        damageFallback() {
+          damageFixture?.dispose();
+          damageRenderer = 'fallback';
+          damageFixture = createFallback();
+          damageFixture.host.style.margin = '160px 0 0 70px';
+          damageSnapshot();
+          return damageState();
+        },
+        damageHit() {
+          const accepted = damageFixture.scene.hitWithCane('parent', 1, 2.2);
+          return {accepted, ...damageState()};
+        },
+        damageAdvance() {
+          advance(4);
+          return damageState();
+        },
+        damageSnapshot() {
+          damageSnapshot();
+          return damageState();
+        },
+        damageExplode() {
+          let hits = 1;
+          while (hits < 6 && damageState().phase === 'alive') {
+            damageFixture.scene.hitWithCane('parent', 1, 2.2);
+            hits++;
+          }
+          return {hits, ...damageState()};
+        },
+        damageExplosionFrame() {
+          advance(4);
+          return damageState();
+        },
+        damageReplacing() {
+          advance(20);
+          return damageState();
+        },
+        damageRise() {
+          advance(24);
+          return damageState();
+        },
+        damageFresh() {
+          advance(80);
+          return damageState();
+        },
+        damageCleanup() {
+          damageFixture?.dispose();
+          damageFixture = null;
+        },
+        damageLifecycle() {
+          const {scene, host} = damageFixture;
+          scene.hitWithCane('parent', 1, 2.2);
+          scene.setMotion(false);
+          const still = damageState();
+          advance(8);
+          const staticFrozen = damageState().geometry === still.geometry;
+          damageSnapshot();
+          const staticSnapshot = damageState();
+          scene.hitWithCane('parent', 1, 2.2);
+          scene.hitWithCane('parent', 1, 2.2);
+          scene.hitWithCane('parent', 1, 2.2);
+          const staticReplacement = damageState();
+          scene.setMotion(true);
+          for (let index = 0; index < 4; index++) scene.hitWithCane('drone', -1, 2.2);
+          const removedHadDebris = damageState('drone').debris > 0;
+          damageSnapshot('damage-session', []);
+          const removal = {target: scene.caneTargets().some(target => target.id === 'drone'),
+            debris: damageState().debris};
+          for (let index = 0; index < 4; index++) scene.hitWithCane('parent', 1, 2.2);
+          const switchingDead = damageState().phase;
+          damageSnapshot('new-session');
+          const switched = damageState();
+          for (let index = 0; index < 4; index++) scene.hitWithCane('parent', 1, 2.2);
+          const beforeMotionOff = damageState().phase;
+          scene.setMotion(false);
+          const motionOffReplacement = damageState();
+          scene.setMotion(true);
+          for (let index = 0; index < 4; index++) scene.hitWithCane('parent', 1, 2.2);
+          const disposingDead = damageState().phase;
+          scene.dispose();
+          const disposed = {targets: scene.caneTargets(), pending: callbacks.size,
+            effects: host.querySelectorAll('.robot-floor-effects, .robot-debris-effects, .robot-damage-marks').length,
+            diagnostics: damageFixture.canvas?.hasAttribute('data-robot-damage') || false};
+          damageFixture.dispose();
+          damageFixture = null;
+          return {still, staticFrozen, staticSnapshot, staticReplacement, removedHadDebris, removal,
+            switchingDead, switched, beforeMotionOff, motionOffReplacement, disposingDead, disposed};
+        },
         screenshotHolstered() {
           screenshotFixture?.dispose();
           screenshotFixture = createWebGL();
@@ -238,10 +375,10 @@ async function main() {
           const fixture = createWebGL();
           const {host, canvas, scene, cane, selections} = fixture;
           const holster = host.querySelector('.factory-cane-holster');
-          const overlay = host.querySelector('.factory-cane-overlay');
+          const overlay = document.querySelector('.factory-cane-overlay');
+          const layer = overlay.parentElement;
           const hostBounds = host.getBoundingClientRect();
           const holsterBounds = holster.getBoundingClientRect();
-          const overlayBounds = overlay.getBoundingClientRect();
           const initial = {
             equipped: host.dataset.caneEquipped,
             pressed: holster.getAttribute('aria-pressed'),
@@ -256,17 +393,22 @@ async function main() {
                 holsterBounds.right <= hostBounds.right &&
                 holsterBounds.bottom <= hostBounds.bottom,
               overlayPointerEvents: getComputedStyle(overlay).pointerEvents,
-              overlayCoversScene:
-                Math.abs(overlayBounds.left - hostBounds.left) < 1 &&
-                Math.abs(overlayBounds.top - hostBounds.top) < 1 &&
-                Math.abs(overlayBounds.width - hostBounds.width) < 1 &&
-                Math.abs(overlayBounds.height - hostBounds.height) < 1,
+              overlayInitiallyHidden: getComputedStyle(layer).display === 'none',
+              overlayOnBody: layer.parentElement === document.body,
+              manualPopover: layer.getAttribute('popover') === 'manual',
             },
           };
           holster.click();
+          const overlayBounds = overlay.getBoundingClientRect();
           const pickedUp = {
             equipped: host.dataset.caneEquipped,
             pressed: holster.getAttribute('aria-pressed'),
+            topLayer: layer.matches(':popover-open'),
+            viewport: Math.abs(overlayBounds.left) < 1 &&
+              Math.abs(overlayBounds.top) < 1 &&
+              Math.abs(overlayBounds.width - window.innerWidth) < 1 &&
+              Math.abs(overlayBounds.height - window.innerHeight) < 1,
+            fixed: getComputedStyle(layer).position === 'fixed',
           };
           clickTarget(canvas, targetById(scene, 'parent'));
           const blocked = [...selections];
@@ -345,14 +487,15 @@ async function main() {
           holster.click();
           pointer(menu, menuBounds.x + 4, menuBounds.y + 4, 'pointerdown');
           menu.focus();
-          const menuStows = host.dataset.caneEquipped;
+          menu.click();
+          const menuKeepsEquipped = host.dataset.caneEquipped;
           cane.setSession(null);
           const hiddenWithoutSession = getComputedStyle(holster).display === 'none';
           cane.dispose();
           const cleanedUp = !toolbar.querySelector('.factory-cane-holster') && toolbar.contains(menu);
           clearRoot();
           return {initiallyHidden, inline, noFloatingControls, pickedUp, hits,
-            readyToReturn, returned, menuStows, hiddenWithoutSession, cleanedUp};
+            readyToReturn, returned, menuKeepsEquipped, hiddenWithoutSession, cleanedUp};
         },
 
         webglSwing() {
@@ -397,7 +540,7 @@ async function main() {
           sweep(canvas, targetById(scene, 'drone'));
           const bodyHits = hits.map(hit => hit.id);
           const directions = hits.map(hit => hit.direction);
-          const held = host.querySelector('.cane-held');
+          const held = document.querySelector('.cane-held');
           const heldBounds = held.getBoundingClientRect();
           const heldVisible = {
             display: getComputedStyle(held).display,
@@ -405,6 +548,8 @@ async function main() {
             height: heldBounds.height,
           };
 
+          scene.update({session: {id: 'fresh-motion-off', status: 'idle'},
+            agents: [{id: 'drone', status: 'running'}]}, 'parent');
           scene.setMotion(false);
           cane.setMotion(false);
           const staticHash = fixture.dynamicHash();
@@ -412,8 +557,8 @@ async function main() {
           sweep(canvas, targetById(scene, 'parent'));
           const motionOff = {
             hits: hits.map(hit => hit.id),
-            hashUnchanged: fixture.dynamicHash() === staticHash,
-            trail: host.querySelector('.cane-trail').getAttribute('d'),
+            damageVisible: fixture.dynamicHash() !== staticHash,
+            trail: document.querySelector('.cane-trail').getAttribute('d'),
             indicator: host.dataset.caneHit,
           };
           const result = {
@@ -440,7 +585,12 @@ async function main() {
           scene.setMotion(false);
           const still = fixture.dynamicHash();
           const acceptedStill = scene.hitWithCane('parent', -1);
-          const noStaticRecoil = fixture.dynamicHash() === still;
+          const staticDamageVisible = fixture.dynamicHash() !== still;
+          const staticTargetX = targetById(scene, 'parent').x;
+          advance(4);
+          const noStaticRecoil = targetById(scene, 'parent').x === staticTargetX;
+          scene.update({session: {id: 'fresh-recoil', status: 'idle'},
+            agents: [{id: 'drone', status: 'running'}]}, 'parent');
           scene.setMotion(true);
           const baselineX = targetById(scene, 'parent').x;
           scene.hitWithCane('parent', 1, 0.35);
@@ -456,6 +606,7 @@ async function main() {
           const result = {
             targets,
             acceptedStill,
+            staticDamageVisible,
             noStaticRecoil,
             accepted,
             invalid,
@@ -485,7 +636,7 @@ async function main() {
             'parent',
           );
           const targets = fallback.caneTargets();
-          const robot = container.querySelector('.parent-fallback-robot g:last-child');
+          const robot = container.querySelector('.parent-fallback-robot > g:nth-child(2)');
           const glyph = container.querySelector('.agent .robot-glyph');
           fallback.hitWithCane('drone', 1, 0.35);
           const gentleDisplacement = Math.abs(parseFloat(glyph.style.left));
@@ -500,11 +651,14 @@ async function main() {
           const droneAnimated = glyph.style.left !== droneStart[0];
           fallback.setMotion(false);
           const cleared = {
-            parent: robot.getAttribute('transform') || '',
-            drone: [glyph.style.left, glyph.style.top, glyph.style.rotate],
+            parent: (robot.getAttribute('transform') || '').startsWith('translate(0 0) rotate(0 '),
+            drone: [glyph.style.left, glyph.style.top, glyph.style.rotate].every(value => parseFloat(value) === 0),
           };
+          const staticTransform = robot.getAttribute('transform');
           const acceptedStill = fallback.hitWithCane('parent', 1);
-          const noStaticRecoil = (robot.getAttribute('transform') || '') === '';
+          advance(4);
+          const noStaticRecoil = robot.getAttribute('transform') === staticTransform;
+          const staticDamageVisible = robot.querySelector('.robot-damage-marks')?.children.length > 0;
           const invalid = fallback.hitWithCane('missing', 1);
           fallback.dispose();
           const afterDispose = fallback.caneTargets();
@@ -519,6 +673,7 @@ async function main() {
             droneAnimated,
             cleared,
             acceptedStill,
+            staticDamageVisible,
             noStaticRecoil,
             invalid,
             afterDispose,
@@ -527,6 +682,132 @@ async function main() {
           };
         },
 
+        async outsideSetup() {
+          const fixture = createWebGL();
+          window.outsideFixture = fixture;
+          const panel = document.createElement('button');
+          panel.id = 'outside-panel';
+          panel.textContent = 'Outside panel';
+          panel.style.cssText = 'position:fixed;inset:140px auto auto 280px;width:280px;height:240px;background:rgb(20,40,60);cursor:crosshair;z-index:9999';
+          let clicks = 0;
+          panel.addEventListener('click', () => clicks++);
+          root.append(panel);
+          fixture.host.querySelector('.factory-cane-holster').click();
+          const parent = targetById(fixture.scene, 'parent');
+          // A real opaque panel covers the entire body sweep, not just its center.
+          panel.style.left = (parent.x - 120) + 'px';
+          panel.style.top = (parent.y - 30) + 'px';
+          const panelCoversSweep = [parent.x - 90, parent.x, parent.x + 90].every(
+            x => document.elementFromPoint(x, parent.y + 64) === panel);
+          pointer(panel, parent.x - 90, parent.y + 64);
+          pointer(panel, parent.x + 90, parent.y + 64);
+          const panelHits = fixture.hits.length;
+          // The first scene move crosses the body from the last outside sample.
+          // Removing the panel must not turn that teleport into a real swing.
+          pointer(panel, parent.x - 90, parent.y + 64);
+          panel.hidden = true;
+          pointer(fixture.canvas, parent.x + 90, parent.y + 64);
+          panel.hidden = false;
+          const teleportHits = fixture.hits.length;
+          const held = document.querySelector('.cane-held');
+          const beforeLeave = held.getAttribute('transform');
+          pointer(fixture.host, 390, 320, 'pointerleave');
+          const leaveKeepsHeld = held.style.display !== 'none' &&
+            held.getAttribute('transform') === beforeLeave;
+          pointer(panel, 390, 320, 'pointerdown');
+          panel.focus();
+          clickTarget(panel, {x: 390, y: 320});
+          pointer(panel, 390, 320);
+          const panelCursor = getComputedStyle(panel).cursor;
+          const panelEquipped = fixture.host.dataset.caneEquipped;
+          const holster = fixture.host.querySelector('.factory-cane-holster');
+          const rect = holster.getBoundingClientRect();
+          pointer(holster, rect.x + 10, rect.y + 10);
+          const holsterCursor = getComputedStyle(holster).cursor;
+          const holsterFollow = held.getAttribute('transform').startsWith(
+            'translate(' + (rect.x + 10) + ' ' + (rect.y + 10) + ')');
+          pointer(panel, 390, 320);
+          return {panelCoversSweep, panelHits, teleportHits, leaveKeepsHeld, panelCursor, panelEquipped,
+            clicks, holsterCursor, holsterFollow};
+        },
+        async outsideDialog() {
+          const dialog = document.createElement('dialog');
+          dialog.style.cssText = 'position:fixed;inset:100px auto auto 220px;margin:0;width:400px;height:340px;border:0;padding:0;background:rgb(20,40,60)';
+          root.append(dialog);
+          const opened = new Promise(resolve => dialog.addEventListener('toggle', resolve, {once: true}));
+          dialog.showModal();
+          await opened;
+          pointer(dialog, 390, 320);
+          return {open: dialog.open, topLayer: document.querySelector('.factory-cane-layer').matches(':popover-open'),
+            cursor: getComputedStyle(dialog).cursor};
+        },
+        async outsidePopover() {
+          document.querySelector('dialog').close();
+          const popover = document.createElement('div');
+          popover.id = 'outside-popover';
+          popover.setAttribute('popover', 'manual');
+          popover.style.cssText = 'position:fixed;inset:100px auto auto 220px;margin:0;width:400px;height:340px;border:0;padding:0;background:rgb(20,40,60)';
+          root.append(popover);
+          const opened = new Promise(resolve => popover.addEventListener('toggle', resolve, {once: true}));
+          popover.showPopover();
+          await opened;
+          pointer(popover, 390, 320);
+          return {open: popover.matches(':popover-open'),
+            cursor: getComputedStyle(popover).cursor};
+        },
+        outsideCleanup() {
+          window.outsideFixture?.dispose();
+          delete window.outsideFixture;
+        },
+        outsideStow() {
+          const fixture = window.outsideFixture;
+          const panel = document.querySelector('#outside-panel');
+          const first = new MouseEvent('contextmenu', {bubbles:true, cancelable:true});
+          panel.dispatchEvent(first);
+          const second = new MouseEvent('contextmenu', {bubbles:true, cancelable:true});
+          panel.dispatchEvent(second);
+          const result = {
+            firstPrevented: first.defaultPrevented,
+            secondPrevented: second.defaultPrevented,
+            equipped: fixture.host.dataset.caneEquipped,
+            cursor: getComputedStyle(panel).cursor,
+            active: document.documentElement.classList.contains('factory-cane-active'),
+            hidden: getComputedStyle(document.querySelector('.factory-cane-layer')).display === 'none',
+          };
+          document.querySelector('#outside-popover').hidePopover();
+          fixture.dispose();
+          delete window.outsideFixture;
+          result.cleaned = !document.querySelector('.factory-cane-layer, .factory-cane-overlay');
+          return result;
+        },
+        viewportSetup() {
+          const fixture = createWebGL();
+          window.viewportFixture = fixture;
+          root.style.paddingTop = '240px';
+          root.style.paddingBottom = '1000px';
+          window.scrollTo(0, 180);
+          fixture.host.querySelector('.factory-cane-holster').click();
+        },
+        viewportCheck() {
+          const fixture = window.viewportFixture;
+          const bounds = fixture.host.getBoundingClientRect();
+          const x = bounds.left + 180;
+          const y = bounds.top + 230;
+          pointer(fixture.canvas, x, y);
+          const held = document.querySelector('.cane-held');
+          const point = new DOMPoint(0, 0).matrixTransform(held.getScreenCTM());
+          const overlay = document.querySelector('.factory-cane-overlay');
+          const rect = overlay.getBoundingClientRect();
+          return {scroll: window.scrollY, aligned: Math.abs(point.x - x) < 1 && Math.abs(point.y - y) < 1,
+            viewport: Math.abs(rect.x) < 1 && Math.abs(rect.y) < 1 &&
+              Math.abs(rect.width - innerWidth) < 1 && Math.abs(rect.height - innerHeight) < 1};
+        },
+        viewportCleanup() {
+          window.viewportFixture.dispose();
+          delete window.viewportFixture;
+          root.style.paddingTop = root.style.paddingBottom = '';
+          window.scrollTo(0, 0);
+        },
         lifecycle() {
           clearRoot();
           const host = document.createElement('section');
@@ -536,13 +817,17 @@ async function main() {
           const holster = host.querySelector('.factory-cane-holster');
           cane.setSession('first');
           holster.click();
+          pointer(host, 100, 160);
           cane.setSession('first');
           const sameSession = host.dataset.caneEquipped;
           cane.setSession('second');
           const switched = host.dataset.caneEquipped;
+          const switchCursorRestored = getComputedStyle(host).cursor !== 'none';
           holster.click();
+          pointer(host, 100, 160);
           window.dispatchEvent(new Event('blur'));
           const blurred = host.dataset.caneEquipped;
+          const blurCursorRestored = getComputedStyle(host).cursor !== 'none';
           holster.click();
           const bounds = host.getBoundingClientRect();
           pointer(host, bounds.left + 100, bounds.top + 160);
@@ -550,12 +835,16 @@ async function main() {
             equipped: host.dataset.caneEquipped,
             nodes: host.children.length,
             inScene: host.classList.contains('cane-in-scene'),
+            bodyLayers: document.querySelectorAll('body > .factory-cane-layer').length,
+            cursor: getComputedStyle(host).cursor,
           };
           cane.dispose();
           const disposed = {
             equipped: host.dataset.caneEquipped ?? null,
             nodes: host.children.length,
             inScene: host.classList.contains('cane-in-scene'),
+            bodyLayers: document.querySelectorAll('.factory-cane-layer, .factory-cane-overlay').length,
+            cursorRestored: getComputedStyle(host).cursor !== 'none',
           };
           holster.click();
           window.dispatchEvent(new Event('blur'));
@@ -567,7 +856,9 @@ async function main() {
           return {
             sameSession,
             switched,
+            switchCursorRestored,
             blurred,
+            blurCursorRestored,
             beforeDispose,
             disposed,
             idempotent,
@@ -594,10 +885,18 @@ async function main() {
           holsterPosition: 'absolute',
           holsterInside: true,
           overlayPointerEvents: 'none',
-          overlayCoversScene: true,
+          overlayInitiallyHidden: true,
+          overlayOnBody: true,
+          manualPopover: true,
         },
       });
-      assert.deepEqual(result.pickedUp, {equipped: 'true', pressed: 'true'});
+      assert.deepEqual(result.pickedUp, {
+        equipped: 'true',
+        pressed: 'true',
+        topLayer: true,
+        viewport: true,
+        fixed: true,
+      });
       assert.deepEqual(result.blocked, []);
       assert.deepEqual(result.returned, ['parent']);
       assert.equal(result.escaped, 'false');
@@ -625,7 +924,7 @@ async function main() {
         'Pointerdown/focus on the external holster must not stow early',
       );
       assert.equal(result.returned, 'false');
-      assert.equal(result.menuStows, 'false');
+      assert.equal(result.menuKeepsEquipped, 'true');
       assert.equal(result.hits.length, 1);
       assert.equal(result.hits[0].id, 'parent');
       assert.equal(result.hits[0].strength, 2.2);
@@ -663,7 +962,7 @@ async function main() {
       assert.ok(result.heldVisible.width > 10);
       assert.ok(result.heldVisible.height > 50);
       assert.deepEqual(result.motionOff.hits, ['parent']);
-      assert.equal(result.motionOff.hashUnchanged, true);
+      assert.equal(result.motionOff.damageVisible, true);
       assert.equal(result.motionOff.trail, '');
       assert.equal(result.motionOff.indicator, 'parent');
     },
@@ -679,6 +978,7 @@ async function main() {
       ]);
       assert.ok(result.strongDisplacement > result.gentleDisplacement * 2);
       assert.equal(result.acceptedStill, true);
+      assert.equal(result.staticDamageVisible, true);
       assert.equal(result.noStaticRecoil, true);
       assert.equal(result.accepted, true);
       assert.equal(result.invalid, false);
@@ -711,11 +1011,256 @@ async function main() {
       assert.ok(result.droneStart.some(Boolean));
       assert.equal(result.parentAnimated, true);
       assert.equal(result.droneAnimated, true);
-      assert.deepEqual(result.cleared, {parent: '', drone: ['', '', '']});
+      assert.deepEqual(result.cleared, {parent: true, drone: true});
       assert.equal(result.acceptedStill, true);
+      assert.equal(result.staticDamageVisible, true);
       assert.equal(result.noStaticRecoil, true);
       assert.equal(result.invalid, false);
       assert.deepEqual(result.afterDispose, []);
+    },
+  );
+
+  for (const renderer of ['WebGL', 'Fallback']) {
+    await run(
+      renderer +
+        ' damage explodes once, replaces through a hatch, and cleans up',
+      async () => {
+        const capture = async phase => {
+          if (!process.env.CANE_SCREENSHOT_DIR) return;
+          const output = resolve(process.env.CANE_SCREENSHOT_DIR);
+          mkdirSync(output, {recursive: true});
+          writeFileSync(
+            join(
+              output,
+              'factory-cane-' + renderer.toLowerCase() + '-' + phase + '.png',
+            ),
+            (await browser.webContents.capturePage()).toPNG(),
+          );
+        };
+        try {
+          const initial = await evaluate('damage' + renderer);
+          assert.equal(initial.damage, 0);
+          assert.equal(initial.target, true);
+          const hit = await evaluate('damageHit');
+          assert.equal(hit.accepted, true);
+          assert.ok(hit.damage > 0 && hit.damage < 1);
+          assert.notEqual(
+            hit.geometry,
+            initial.geometry,
+            'Damage must reach rendered geometry',
+          );
+          const airborne = await evaluate('damageAdvance');
+          assert.notEqual(
+            airborne.geometry,
+            hit.geometry,
+            'Physical tumble must animate',
+          );
+          await capture('damaged-airborne');
+          const snapshot = await evaluate('damageSnapshot');
+          assert.equal(
+            snapshot.damage,
+            hit.damage,
+            'A normal session snapshot must not heal damage',
+          );
+          const dead = await evaluate('damageExplode');
+          assert.ok(
+            dead.hits >= 4 && dead.hits <= 5,
+            'Four or five strongest hits must destroy a robot',
+          );
+          assert.equal(dead.phase, 'exploding');
+          assert.equal(dead.target, false);
+          assert.ok(dead.debris > 10, 'Destruction must emit real fragments');
+          const rejected = await evaluate('damageHit');
+          assert.equal(rejected.accepted, false);
+          assert.equal(
+            rejected.debris,
+            dead.debris,
+            'A dead robot must not explode twice',
+          );
+          const explosionFrame = await evaluate('damageExplosionFrame');
+          assert.equal(explosionFrame.phase, 'exploding');
+          assert.ok(explosionFrame.debris > 10);
+          await capture('explosion');
+          const deadSnapshot = await evaluate('damageSnapshot');
+          assert.equal(deadSnapshot.phase, 'exploding');
+          assert.equal(deadSnapshot.target, false);
+          const replacing = await evaluate('damageReplacing');
+          assert.equal(replacing.phase, 'replacing');
+          assert.equal(replacing.target, false);
+          const rising = await evaluate('damageRise');
+          assert.equal(rising.phase, 'replacing');
+          assert.equal(
+            rising.target,
+            false,
+            'An emerging replacement is not yet targetable',
+          );
+          if (renderer === 'WebGL') {
+            assert.ok(rising.door > 0);
+            assert.ok(rising.lift > -3.4 && rising.lift < 0);
+          } else {
+            assert.notEqual(
+              rising.hatch,
+              '',
+              'A real split floor hatch must render',
+            );
+            assert.notEqual(
+              rising.clip,
+              '',
+              'The emerging replacement is floor-clipped',
+            );
+          }
+          assert.notEqual(
+            rising.geometry,
+            replacing.geometry,
+            'Doors and replacement must animate',
+          );
+          const rejectedRising = await evaluate('damageHit');
+          assert.equal(rejectedRising.accepted, false);
+          await capture('replacement-hatch');
+          const fresh = await evaluate('damageFresh');
+          assert.equal(fresh.phase, 'alive');
+          assert.equal(fresh.damage, 0);
+          assert.equal(fresh.target, true);
+          assert.equal(fresh.debris, 0);
+          if (renderer === 'WebGL') assert.equal(fresh.generation, 1);
+          else assert.equal(fresh.marks, 0);
+          const lifecycle = await evaluate('damageLifecycle');
+          assert.ok(lifecycle.still.damage > 0);
+          assert.equal(
+            lifecycle.staticFrozen,
+            true,
+            'Motion off cannot animate transforms or effects',
+          );
+          assert.equal(lifecycle.staticSnapshot.damage, lifecycle.still.damage);
+          assert.equal(lifecycle.staticReplacement.phase, 'alive');
+          assert.equal(lifecycle.staticReplacement.damage, 0);
+          assert.equal(lifecycle.staticReplacement.target, true);
+          assert.equal(lifecycle.staticReplacement.debris, 0);
+          assert.equal(lifecycle.removedHadDebris, true);
+          assert.deepEqual(lifecycle.removal, {target: false, debris: 0});
+          assert.equal(lifecycle.switchingDead, 'exploding');
+          assert.equal(lifecycle.switched.damage, 0);
+          assert.equal(lifecycle.switched.phase, 'alive');
+          assert.equal(lifecycle.switched.debris, 0);
+          assert.equal(lifecycle.beforeMotionOff, 'exploding');
+          assert.equal(lifecycle.motionOffReplacement.phase, 'alive');
+          assert.equal(lifecycle.motionOffReplacement.damage, 0);
+          assert.equal(lifecycle.motionOffReplacement.target, true);
+          assert.equal(lifecycle.motionOffReplacement.debris, 0);
+          assert.equal(lifecycle.disposingDead, 'exploding');
+          assert.deepEqual(lifecycle.disposed, {
+            targets: [],
+            pending: 0,
+            effects: 0,
+            diagnostics: false,
+          });
+        } finally {
+          await evaluate('damageCleanup');
+        }
+      },
+    );
+  }
+
+  await run(
+    'held cane follows outside controls above dialogs and popovers',
+    async () => {
+      try {
+        const result = await evaluate('outsideSetup');
+        assert.deepEqual(result, {
+          panelCoversSweep: true,
+          panelHits: 0,
+          teleportHits: 0,
+          leaveKeepsHeld: true,
+          panelCursor: 'none',
+          panelEquipped: 'true',
+          clicks: 1,
+          holsterCursor: 'none',
+          holsterFollow: true,
+        });
+        // Inspect actual compositor pixels, not z-index alone: an opaque top-layer
+        // surface would cover these cane-colored shaft pixels if raising regressed.
+        async function visibleAboveSurface(method) {
+          const state = await evaluate(method);
+          assert.equal(state.open, true);
+          assert.equal(state.cursor, 'none');
+          if ('topLayer' in state) assert.equal(state.topLayer, true);
+          // Native toggle and compositor painting are not driven by our fake RAF.
+          await delay(30);
+          const image = await browser.webContents.capturePage({
+            x: 350,
+            y: 210,
+            width: 100,
+            height: 120,
+          });
+          const pixels = image.toBitmap();
+          let wood = 0;
+          for (let index = 0; index < pixels.length; index += 4) {
+            const [blue, green, red] = pixels.subarray(index, index + 3);
+            if (
+              red > 150 &&
+              green > 100 &&
+              green < 220 &&
+              blue < 150 &&
+              red > green
+            )
+              wood++;
+          }
+          assert.ok(
+            wood > 80,
+            method + ': cane must paint above the opaque top-layer surface',
+          );
+          return image;
+        }
+        await visibleAboveSurface('outsideDialog');
+        await visibleAboveSurface('outsidePopover');
+        if (process.env.CANE_SCREENSHOT_DIR) {
+          const output = resolve(process.env.CANE_SCREENSHOT_DIR);
+          mkdirSync(output, {recursive: true});
+          writeFileSync(
+            join(output, 'factory-cane-app-layer.png'),
+            (await browser.webContents.capturePage()).toPNG(),
+          );
+        }
+        assert.deepEqual(await evaluate('outsideStow'), {
+          firstPrevented: true,
+          secondPrevented: false,
+          equipped: 'false',
+          cursor: 'crosshair',
+          active: false,
+          hidden: true,
+          cleaned: true,
+        });
+      } finally {
+        await evaluate('outsideCleanup');
+      }
+    },
+  );
+
+  await run(
+    'viewport cane coordinates survive document scrolling and Electron zoom',
+    async () => {
+      await evaluate('viewportSetup');
+      try {
+        for (const zoom of [1, 1.25, 0.8]) {
+          browser.webContents.setZoomFactor(zoom);
+          await delay(30);
+          const result = await evaluate('viewportCheck');
+          assert.ok(result.scroll > 0, 'The fixture must really scroll');
+          assert.equal(
+            result.aligned,
+            true,
+            'Held origin must match client coordinates at zoom ' + zoom,
+          );
+          assert.equal(
+            result.viewport,
+            true,
+            'Overlay must cover the viewport at zoom ' + zoom,
+          );
+        }
+      } finally {
+        browser.webContents.setZoomFactor(1);
+        await evaluate('viewportCleanup');
+      }
     },
   );
 
@@ -725,16 +1270,22 @@ async function main() {
       const result = await evaluate('lifecycle');
       assert.equal(result.sameSession, 'true');
       assert.equal(result.switched, 'false');
+      assert.equal(result.switchCursorRestored, true);
       assert.equal(result.blurred, 'false');
+      assert.equal(result.blurCursorRestored, true);
       assert.deepEqual(result.beforeDispose, {
         equipped: 'true',
-        nodes: 3,
+        nodes: 2,
         inScene: true,
+        bodyLayers: 1,
+        cursor: 'none',
       });
       assert.deepEqual(result.disposed, {
         equipped: null,
         nodes: 0,
         inScene: false,
+        bodyLayers: 0,
+        cursorRestored: true,
       });
       assert.equal(result.idempotent, 0);
       assert.equal(result.pending, 0);

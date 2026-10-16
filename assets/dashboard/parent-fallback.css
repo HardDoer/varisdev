@@ -11,7 +11,9 @@
   min-height: 0;
   flex: 0 1 auto;
   margin: 0 0 8px;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
+  z-index: 2;
   pointer-events: none;
 }
 
@@ -69,8 +71,51 @@
   height: 86px;
 }
 
+/* All motion comes from the bounded shared physics clock, never CSS loops.
+   The doors sit below the body so a clipped replacement rises out of the pit. */
+.robot-floor-effects,
+.robot-debris-effects {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.robot-floor-effects {
+  z-index: 1;
+}
+
+.robot-debris-effects {
+  z-index: 4;
+}
+
+.robot-damage-body {
+  z-index: 2;
+  transform-origin: center;
+  transition: none !important;
+  animation: none !important;
+}
+
+.robot-glyph > .robot-damage-marks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.robot-damage-marks {
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .factory-visitors-fallback {
+  .factory-visitors-fallback,
+  .robot-floor-effects,
+  .robot-debris-effects {
     display: none;
   }
 }

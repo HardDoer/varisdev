@@ -11,10 +11,10 @@ import {
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
 import {createFactoryVisitors} from './factory-visitors.js';
+import {createRobotDamage} from './robot-damage.js';
 
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
-const CANE_RECOIL_DURATION = 0.42;
 const COLORS = {
   floor: [0.095, 0.14, 0.16],
   edge: [0.14, 0.21, 0.23],
@@ -211,6 +211,21 @@ const CUBE = cubeMesh();
 const CYLINDER = cylinderMesh();
 const OCTAGON = cylinderMesh(8);
 
+// A full rigid-body basis, rather than yaw-only sprite recoil.
+function tumble(v, angles) {
+  const [rx, ry, rz] = angles;
+  const x = v[0],
+    y = v[1] * Math.cos(rx) - v[2] * Math.sin(rx),
+    z = v[1] * Math.sin(rx) + v[2] * Math.cos(rx);
+  const xx = x * Math.cos(ry) + z * Math.sin(ry),
+    zz = z * Math.cos(ry) - x * Math.sin(ry);
+  return [
+    xx * Math.cos(rz) - y * Math.sin(rz),
+    xx * Math.sin(rz) + y * Math.cos(rz),
+    zz,
+  ];
+}
+
 class Geometry {
   constructor() {
     this.data = [];
@@ -234,6 +249,56 @@ class Geometry {
         d[i + 8],
         d[i + 9],
       );
+    }
+  }
+  appendBody(geometry, pivot, pose, floor = -Infinity) {
+    if (!pose.visible) return;
+    if (
+      !Number.isFinite(floor) &&
+      pose.lift === 0 &&
+      pose.offset.every(n => n === 0) &&
+      pose.rotation.every(n => n === 0)
+    ) {
+      // Pristine/settled robots dominate the steady-state scene. Avoid all
+      // per-vertex arrays and trig in this path (and large argument spreads).
+      for (let i = 0; i < geometry.data.length; i++)
+        this.data.push(geometry.data[i]);
+      return;
+    }
+    // Clip replacement triangles against the hatch, so the robot actually
+    // emerges through the floor instead of showing through its foundation.
+    const d = geometry.data;
+    for (let i = 0; i < d.length; i += 30) {
+      let triangle = [];
+      for (let j = i; j < i + 30; j += 10) {
+        const p = tumble(
+          d.slice(j, j + 3).map((n, a) => n - pivot[a]),
+          pose.rotation,
+        );
+        const n = tumble(d.slice(j + 3, j + 6), pose.rotation);
+        triangle.push([
+          ...p.map(
+            (v, a) => v + pivot[a] + pose.offset[a] + (a === 1 ? pose.lift : 0),
+          ),
+          ...n,
+          ...d.slice(j + 6, j + 10),
+        ]);
+      }
+      if (Number.isFinite(floor)) {
+        const clipped = [];
+        for (let j = 0; j < triangle.length; j++) {
+          const a = triangle[j],
+            b = triangle[(j + 1) % triangle.length];
+          if (a[1] >= floor) clipped.push(a);
+          if (a[1] >= floor !== b[1] >= floor) {
+            const t = (floor - a[1]) / (b[1] - a[1]);
+            clipped.push(a.map((n, k) => n + (b[k] - n) * t));
+          }
+        }
+        triangle = clipped;
+      }
+      for (let j = 1; j < triangle.length - 1; j++)
+        this.data.push(...triangle[0], ...triangle[j], ...triangle[j + 1]);
     }
   }
   shape(mesh, p, s, color, emission = 0, yaw = 0, basis = null) {
@@ -627,7 +692,11 @@ export function createFactoryScene(
     dispatches = [],
     flashes = [];
   let reaction = null;
-  const caneRecoils = new Map();
+  const damage = createRobotDamage();
+  const damageHomes = new Map();
+  const unsettled = p =>
+    p.phase !== 'alive' ||
+    [...p.offset, ...p.rotation].some(n => Math.abs(n) >= 0.025);
   const parentMotion = createParentMotion();
   const whip = createRobotWhip();
   const visitors = createFactoryVisitors();
@@ -640,10 +709,12 @@ export function createFactoryScene(
         .filter(
           unit =>
             unit.status === 'running' &&
+            damage.pose(unit.id).phase === 'alive' &&
             anchors.some(a => a.id === unit.id && a.visible),
         )
         .map(unit => unit.id),
       Boolean(reaction) ||
+        damage.pose('parent').phase !== 'alive' ||
         visitors.isAway(sessionId) ||
         !['rest', 'work'].includes(mode) ||
         snapshot?.session?.status === 'closed',
@@ -758,33 +829,112 @@ export function createFactoryScene(
       }
     }
     previous = new Map(agents.map(a => [a.id, a.status]));
+    const shownIds = ['parent', ...units.map(unit => unit.id)];
+    damage.retain(shownIds);
+    for (const id of damageHomes.keys())
+      if (!shownIds.includes(id)) damageHomes.delete(id);
     firstSnapshot = false;
   }
 
-  function caneRecoilPose(id) {
-    const recoil = caneRecoils.get(id);
-    if (!recoil || recoil.age >= CANE_RECOIL_DURATION)
-      return {jump: 0, lateral: 0, wobble: 0};
-    const progress = recoil.age / CANE_RECOIL_DURATION;
-    const fade = 1 - progress;
-    return {
-      jump: Math.sin(progress * Math.PI) * 0.34 * recoil.strength,
-      lateral:
-        recoil.direction *
-        fade *
-        (0.32 + Math.sin(progress * Math.PI * 3) * 0.1) *
-        recoil.strength,
-      wobble:
-        recoil.direction *
-        Math.sin(progress * Math.PI * 4) *
-        fade *
-        0.08 *
-        recoil.strength,
-    };
+  function drawDamageScars(g, center, amount, scale = 1) {
+    if (!amount) return;
+    const [x, y, z] = center;
+    // Permanent jagged seams and peeled armor on the camera-facing shell.
+    const count = Math.min(4, Math.ceil(amount * 4));
+    for (let i = 0; i < count; i++) {
+      const yy = y + (0.16 - i * 0.105) * scale;
+      const zz = z + (-0.3 + i * 0.17) * scale;
+      const a = [x + 0.571 * scale, yy + 0.09 * scale, zz - 0.07 * scale];
+      const b = [x + 0.58 * scale, yy, zz];
+      const c = [x + 0.575 * scale, yy - 0.11 * scale, zz + 0.12 * scale];
+      g.rod(a, b, 0.022 * scale, C.dark);
+      g.rod(b, c, 0.026 * scale, C.dark);
+      if (amount > 0.45)
+        g.rod(
+          b,
+          [b[0] + 0.01, b[1] - 0.015 * scale, b[2] + 0.1 * scale],
+          0.012 * scale,
+          C.amber,
+          0.3,
+        );
+    }
+    if (amount > 0.3) {
+      g.box(
+        [x + 0.05 * scale, y + 0.08 * scale, z + 0.574 * scale],
+        [0.32 * scale, 0.2 * scale, 0.018 * scale],
+        C.dark,
+      );
+      g.box(
+        [x + 0.16 * scale, y + 0.1 * scale, z + 0.61 * scale],
+        [0.2 * scale, 0.16 * scale, 0.045 * scale],
+        C.metal,
+        0,
+        -0.3,
+      );
+    }
   }
 
-  function clearCaneRecoils() {
-    caneRecoils.clear();
+  function drawDamageHatch(g, fx, home, pose, scale = 1) {
+    if (pose.phase === 'alive') return;
+    const [x, floor, z] = home,
+      width = 1.9 * scale,
+      depth = 1.85 * scale;
+    // Dark recessed well with two actual sliding steel floor-door halves.
+    g.box([x, floor, z], [width * 1.12, 0.055, depth * 1.12], C.dark);
+    for (const side of [-1, 1]) {
+      g.box(
+        [x + side * width * 0.58, floor + 0.04, z],
+        [0.09, 0.08, depth * 1.2],
+        C.metal,
+      );
+      const doorX = x + side * (width * 0.25 + pose.door * width * 0.55);
+      g.box([doorX, floor + 0.065, z], [width * 0.49, 0.08, depth], C.edge);
+      g.box([doorX, floor + 0.11, z], [0.045, 0.012, depth * 0.85], C.metal);
+      for (let i = -2; i <= 2; i++)
+        g.box(
+          [doorX, floor + 0.115, z + i * depth * 0.17],
+          [width * 0.35, 0.012, 0.065],
+          C.amber,
+          0.15,
+          -0.32,
+        );
+    }
+    if (pose.phase === 'replacing') {
+      g.box(
+        [x, Math.max(floor + 0.018, floor + pose.lift), z],
+        [width * 0.8, 0.025, depth * 0.8],
+        C.metal,
+      );
+      g.ring([x, floor + 0.13, z], width * 0.43, 0.025, C.cyan, 0.7, 24);
+    } else {
+      // Hot core and expanding shock rings accompany substantial solid debris.
+      const radius = width * 0.62 * pose.blast;
+      const blastCenter = [
+        x + pose.offset[0],
+        floor + 1.4 * scale + pose.offset[1],
+        z + pose.offset[2],
+      ];
+      fx.octagon(
+        blastCenter,
+        [radius, radius * 0.7, radius],
+        C.amber,
+        pose.blast * 0.75,
+      );
+      fx.ring(
+        blastCenter,
+        width * (0.35 + (1 - pose.blast) * 1.5),
+        0.08 * pose.blast,
+        C.amber,
+        pose.blast * 0.7,
+        32,
+      );
+      const smoke = (1 - pose.blast) * scale;
+      g.octagon(
+        [blastCenter[0], blastCenter[1] + smoke * 0.7, blastCenter[2]],
+        [smoke * 1.1, smoke * 0.7, smoke],
+        C.dark,
+      );
+    }
   }
 
   function startlePose() {
@@ -830,7 +980,15 @@ export function createFactoryScene(
           jump: visitor.jump,
           surprise: visitor.surprise,
         }
-      : parentMotion.pose();
+      : {...parentMotion.pose()};
+    const damagePose = damage.pose(caneId);
+    const home = damageHomes.get(caneId);
+    if (home && unsettled(damagePose)) {
+      pose.x = home.p[0];
+      pose.ground = home.p[1] - 0.36;
+      pose.z = home.p[2];
+      pose.yaw = home.yaw;
+    }
     const idle = pose.activity
       ? idleActivityPose(pose.activity, pose.elapsed)
       : null;
@@ -881,8 +1039,8 @@ export function createFactoryScene(
     const lift =
       bob + jump + squash + (idle?.lift || 0) * blend + (relaxed?.lift || 0);
     const y = 0.4 + lift;
-    g.cylinder(
-      [x, 0.38, 0],
+    sceneGeometry.cylinder(
+      [pose.x, pose.ground + 0.38, pose.z],
       [2.25 - jump * 0.35, 0.045, 1.5 - jump * 0.2],
       [0.026, 0.055, 0.06],
     );
@@ -1034,11 +1192,34 @@ export function createFactoryScene(
         );
     }
     if (active)
-      g.ring([x, 0.4, 0], 2.08, 0.024, color, 0.9, 48, 0.72, t * 0.28);
+      sceneGeometry.ring(
+        [pose.x, pose.ground + 0.4, pose.z],
+        2.08,
+        0.024,
+        color,
+        0.9,
+        48,
+        0.72,
+        t * 0.28,
+      );
     if (!visitor && selected === 'parent')
-      g.ring([x, 0.41, 0], 2.38, 0.075, C.selection, 1, 48);
+      sceneGeometry.ring(
+        [pose.x, pose.ground + 0.41, pose.z],
+        2.38,
+        0.075,
+        C.selection,
+        1,
+        48,
+      );
     if (active) {
-      fx.ring([x, 0.44, 0], 2.12, 0.085, color, 0.08, 40);
+      sceneEffects.ring(
+        [pose.x, pose.ground + 0.44, pose.z],
+        2.12,
+        0.085,
+        color,
+        0.08,
+        40,
+      );
       // Distinct poses and signals follow the actual model/tool activity.
       if (thinking) {
         for (let i = 0; i < 3; i++) {
@@ -1107,17 +1288,30 @@ export function createFactoryScene(
       g.append(props, [x, 0, 0]);
       fx.append(propEffects, [x, 0, 0]);
     }
-    const cane = caneId
-      ? caneRecoilPose(caneId)
-      : {jump: 0, lateral: 0, wobble: 0};
-    // Positive screen-space swings push right (toward negative world Z).
-    const position = [pose.x, pose.ground + cane.jump, pose.z - cane.lateral];
+    if (caneId) {
+      drawDamageScars(g, [x + 0.01, y + 1.55, 0], damagePose.damage, 1.35);
+      if (damagePose.damage > 0.4)
+        drawDamageScars(
+          g,
+          [x + 0.12, y + 2.64, 0],
+          damagePose.damage * 0.8,
+          1.4,
+        );
+      drawDamageHatch(
+        sceneGeometry,
+        sceneEffects,
+        [pose.x, pose.ground + 0.36, pose.z],
+        damagePose,
+        1.55,
+      );
+    }
+    const position = [pose.x, pose.ground, pose.z];
     const targetUnit = lash && units.find(unit => unit.id === lash.target);
     const targetPosition = targetUnit ? positionFor(targetUnit) : null;
     const turn = targetPosition
       ? Math.sign(-targetPosition[2]) * lashPose.turn
       : 0;
-    const yaw = pose.yaw + (idle?.yaw || 0) * blend + turn + cane.wobble;
+    const yaw = pose.yaw + (idle?.yaw || 0) * blend + turn;
     let whipStart = null;
     if (whipHand) {
       const dx = whipHand[0] - x,
@@ -1128,8 +1322,25 @@ export function createFactoryScene(
         position[2] + dz * Math.cos(yaw) - dx * Math.sin(yaw),
       ];
     }
-    sceneGeometry.append(g, position, yaw, x);
-    sceneEffects.append(fx, position, yaw, x);
+    const bodyGeometry = new Geometry(),
+      bodyEffects = new Geometry();
+    bodyGeometry.append(g, position, yaw, x);
+    bodyEffects.append(fx, position, yaw, x);
+    const pivot = [position[0], position[1] + 1.9, position[2]];
+    const floor =
+      damagePose.phase === 'replacing' ? position[1] + 0.4 : -Infinity;
+    sceneGeometry.appendBody(bodyGeometry, pivot, damagePose, floor);
+    sceneEffects.appendBody(bodyEffects, pivot, damagePose, floor);
+    const anchor = p =>
+      tumble(
+        p.map((n, a) => n - pivot[a]),
+        damagePose.rotation,
+      ).map(
+        (n, a) =>
+          n + pivot[a] + damagePose.offset[a] + (a === 1 ? damagePose.lift : 0),
+      );
+    if (whipStart)
+      whipStart = damagePose.phase === 'alive' ? anchor(whipStart) : null;
     if (!visitor) {
       canvas.dataset.robotWhip = lash?.target || '';
       canvas.dataset.parentMode = pose.mode;
@@ -1137,37 +1348,61 @@ export function createFactoryScene(
       canvas.dataset.parentEyes = String(eyeHeight);
     }
     return {
-      p: [position[0], position[1] + y + 4.0, position[2]],
-      body: [position[0], position[1] + y + 1.6, position[2]],
+      p: anchor([position[0], position[1] + y + 4.0, position[2]]),
+      body: anchor([position[0], position[1] + y + 1.6, position[2]]),
       radius: 1.8,
+      ...(caneId && damagePose.phase !== 'alive' ? {targetable: false} : {}),
       whipStart,
     };
   }
 
-  function drawAgent(unit, g, fx, index) {
+  function drawAgent(unit, sceneGeometry, sceneEffects, index) {
+    const g = new Geometry(),
+      fx = new Geometry();
+    const damagePose = damage.pose(unit.id);
+    const home = damageHomes.get(unit.id);
     const slot = slots.get(unit.id),
-      [baseX, baseY, z] = positionFor(unit);
-    const active = unit.status === 'running',
+      [baseX, baseY, z] =
+        home && unsettled(damagePose)
+          ? [home.p[0], 1.63, home.p[2]]
+          : positionFor(unit);
+    const active = unit.status === 'running' && damagePose.phase === 'alive',
       failed = unit.status === 'failed';
     const t = active ? time + index * 1.7 : 0;
     const lash = whip.pose();
     const recoil = lash?.target === unit.id ? whipPose(lash.age).recoil : 0;
-    const cane = caneRecoilPose(unit.id);
-    const y =
-      baseY +
-      (active ? Math.sin(t * 3.4) * 0.24 : 0) +
-      recoil * 0.68 +
-      cane.jump;
+    const y = baseY + (active ? Math.sin(t * 3.4) * 0.24 : 0) + recoil * 0.68;
     const x = baseX + (active ? Math.sin(t * 1.7) * 0.1 : 0) + recoil * 0.28;
-    const bodyZ = z - cane.lateral;
+    const bodyZ = z;
+    drawDamageHatch(sceneGeometry, sceneEffects, [baseX, 0.24, z], damagePose);
     if (active) {
       const pulse = 0.75 + Math.sin(t * 4) * 0.2;
-      g.ring([baseX, 0.26, z], 0.94, 0.065, C.running, 1, 36);
-      fx.ring([baseX, 0.28, z], 1.02, 0.12, C.running, pulse * 0.28, 36);
-      g.ring([baseX, 0.3, z], 1.09, 0.04, C.running, 1, 32, 0.28, t * 1.8);
+      sceneGeometry.ring([baseX, 0.26, z], 0.94, 0.065, C.running, 1, 36);
+      sceneEffects.ring(
+        [baseX, 0.28, z],
+        1.02,
+        0.12,
+        C.running,
+        pulse * 0.28,
+        36,
+      );
+      sceneGeometry.ring(
+        [baseX, 0.3, z],
+        1.09,
+        0.04,
+        C.running,
+        1,
+        32,
+        0.28,
+        t * 1.8,
+      );
     }
     const color = statusColor(unit.status);
-    g.cylinder([x, 0.225, z], [1.22, 0.018, 0.86], [0.025, 0.055, 0.06]);
+    sceneGeometry.cylinder(
+      [baseX, 0.225, z],
+      [1.22, 0.018, 0.86],
+      [0.025, 0.055, 0.06],
+    );
     // A compact flying machine: four nacelles, fins, armored central hull.
     g.octagon([x, y, bodyZ], [1.12, 0.49, 1.12], C.shell);
     g.box([x + 0.08, y + 0.28, bodyZ], [0.7, 0.14, 0.74], C.white);
@@ -1198,11 +1433,12 @@ export function createFactoryScene(
         color,
         active ? 1 : 0.2,
       );
-      g.box(
-        [x - 0.48, y + 0.18, bodyZ + side * 0.71],
-        [0.1, 0.3, 0.36],
-        C.shell,
-      );
+      if (damagePose.damage < 0.65 || side < 0)
+        g.box(
+          [x - 0.48, y + 0.18, bodyZ + side * 0.71],
+          [0.1, 0.3, 0.36],
+          C.shell,
+        );
       if (active) {
         const flame = 0.3 + (1 + Math.sin(t * 12 + side)) * 0.07;
         fx.octagon(
@@ -1241,7 +1477,11 @@ export function createFactoryScene(
     g.octagon(elbow, [0.2, 0.18, 0.2], C.amber);
     g.rod(elbow, hand, 0.055, C.metal);
     g.box(hand, [0.18, 0.16, 0.16], C.dark);
-    if (slot < 6 && active) {
+    if (
+      slot < 6 &&
+      active &&
+      damagePose.offset.every(n => Math.abs(n) < 0.12)
+    ) {
       const bx = BAYS[slot][0],
         target = [bx + 1, 1.25, z + Math.sin(t * 2.5) * 0.32];
       const welding = unit.status === 'running';
@@ -1280,7 +1520,16 @@ export function createFactoryScene(
         color,
         0.9,
       );
-      g.ring([baseX, 0.25, z], 0.76, 0.022, color, 0.75, 28, 0.72, t * 0.6);
+      sceneGeometry.ring(
+        [baseX, 0.25, z],
+        0.76,
+        0.022,
+        color,
+        0.75,
+        28,
+        0.72,
+        t * 0.6,
+      );
     }
     if (failed) {
       g.box(
@@ -1289,14 +1538,28 @@ export function createFactoryScene(
         C.red,
         0.65 + Math.sin(time * 6) * 0.3,
       );
-      g.ring([baseX, 0.25, z], 0.8, 0.028, C.red, 0.8, 24, 0.85);
+      sceneGeometry.ring([baseX, 0.25, z], 0.8, 0.028, C.red, 0.8, 24, 0.85);
     }
     if (selected === unit.id)
-      g.ring([baseX, 0.27, z], 1.12, 0.075, C.selection, 1, 40);
+      sceneGeometry.ring([baseX, 0.27, z], 1.12, 0.075, C.selection, 1, 40);
+    drawDamageScars(g, [x, y, bodyZ], damagePose.damage);
+    const pivot = [baseX, baseY, z];
+    const floor = damagePose.phase === 'replacing' ? 0.36 : -Infinity;
+    sceneGeometry.appendBody(g, pivot, damagePose, floor);
+    sceneEffects.appendBody(fx, pivot, damagePose, floor);
+    const anchor = p =>
+      tumble(
+        p.map((n, a) => n - pivot[a]),
+        damagePose.rotation,
+      ).map(
+        (n, a) =>
+          n + pivot[a] + damagePose.offset[a] + (a === 1 ? damagePose.lift : 0),
+      );
     return {
-      p: [x, y + 1.02, bodyZ],
-      body: [x, y, bodyZ],
+      p: anchor([x, y + 1.02, bodyZ]),
+      body: anchor([x, y, bodyZ]),
       radius: 0.82,
+      targetable: damagePose.phase === 'alive',
     };
   }
 
@@ -1367,6 +1630,10 @@ export function createFactoryScene(
     const visiting = visitors.visitorsAt(sessionId);
     const ownAway = visitors.isAway(sessionId);
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
+    // Visitor travel is independent decorative state: let it advance, but keep
+    // a struck local body/hatch at its latched home through the whole cycle.
+    const physicalParent =
+      damageHomes.has('parent') && unsettled(damage.pose('parent'));
     let parentPosition;
     if (ownTravel) {
       parentPosition = drawParentSession(g, fx, ownTravel, 'parent');
@@ -1374,7 +1641,8 @@ export function createFactoryScene(
       canvas.dataset.parentMode = ownTravel.phase;
       canvas.dataset.parentActivity = '';
       canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
-    } else if (!ownAway) parentPosition = drawParentSession(g, fx);
+    } else if (!ownAway || physicalParent)
+      parentPosition = drawParentSession(g, fx);
     else {
       parentPosition = {
         p: [-6.25, 4.4, 0],
@@ -1399,7 +1667,7 @@ export function createFactoryScene(
     const positions = [
       {
         id: 'parent',
-        targetable: !ownAway || Boolean(ownTravel),
+        targetable: !ownAway || Boolean(ownTravel) || physicalParent,
         ...parentPosition,
       },
     ];
@@ -1423,6 +1691,58 @@ export function createFactoryScene(
         48,
       );
     }
+    const robotEffects = damage.effects();
+    const homes = new Map(
+      units.map(unit => {
+        const p = positionFor(unit);
+        return [unit.id, [p[0], 0.25, p[2]]];
+      }),
+    );
+    homes.set('parent', [pose.x, pose.ground + 0.36, pose.z]);
+    for (const piece of robotEffects) {
+      const home = damageHomes.get(piece.owner)?.p || homes.get(piece.owner);
+      if (!home) continue;
+      const scale = piece.owner === 'parent' ? 1.4 : 1;
+      const p = piece.position.map(
+        (n, a) => home[a] + n + (a === 1 ? 1.6 * (scale - 1) : 0),
+      );
+      const size = piece.size.map(n => n * scale * Math.min(1, piece.life * 4));
+      const basis = [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ].map(v => tumble(v, piece.rotation));
+      const spark = piece.kind === 'spark';
+      const color = spark ? C.amber : piece.kind === 'head' ? C.shell : C.metal;
+      g.shape(
+        piece.kind === 'head' ? OCTAGON : CUBE,
+        p,
+        size,
+        color,
+        spark ? 1 : 0,
+        0,
+        basis,
+      );
+      if (spark)
+        fx.shape(
+          CUBE,
+          p,
+          size.map(n => n * 2),
+          C.amber,
+          piece.life * 0.5,
+          0,
+          basis,
+        );
+    }
+    canvas.dataset.robotDamage = JSON.stringify(
+      Object.fromEntries(
+        ['parent', ...units.map(unit => unit.id)].map(id => [
+          id,
+          damage.pose(id),
+        ]),
+      ),
+    );
+    canvas.dataset.robotDebris = String(robotEffects.length);
     canvas.dataset.factoryVisitors = visiting
       .map(visitor => visitor.id)
       .join(',');
@@ -1592,13 +1912,11 @@ export function createFactoryScene(
     // The parent Stop reaction, cane hits and working agents keep separate clocks.
     if (motion) {
       const dt = Math.min(elapsed, 0.05);
-      for (const [id, recoil] of caneRecoils) {
-        recoil.age += dt;
-        if (recoil.age >= CANE_RECOIL_DURATION) caneRecoils.delete(id);
-      }
+      damage.tick(dt);
       time += dt;
       syncWhip();
-      if (!whip.pose()) parentMotion.tick(dt);
+      const parentDamage = damage.pose('parent');
+      if (!whip.pose() && !unsettled(parentDamage)) parentMotion.tick(dt);
       visitors.observeLocalPose(sessionId, parentMotion.pose());
       visitors.tick(dt);
       parentMotion.setAway(visitors.isAway(sessionId));
@@ -1647,7 +1965,8 @@ export function createFactoryScene(
     }
   }
   function onVisibility() {
-    if (document.hidden || !inView) clearCaneRecoils();
+    // The clocks pause while hidden; permanent damage and lifecycle resume
+    // without suspended-tab catch-up when the scene becomes visible again.
     if (canAnimate()) {
       render();
       schedule();
@@ -1725,7 +2044,10 @@ export function createFactoryScene(
     contextLost = true;
     whip.cancel();
     reaction = null;
-    clearCaneRecoils();
+    damage.reset();
+    damageHomes.clear();
+    delete canvas.dataset.robotDamage;
+    delete canvas.dataset.robotDebris;
     stop();
   }
   function onContextRestored() {
@@ -1779,7 +2101,8 @@ export function createFactoryScene(
       const id = data?.session?.id;
       if (id !== sessionId) {
         reaction = null;
-        clearCaneRecoils();
+        damage.reset();
+        damageHomes.clear();
         stop();
         sessionId = id;
         identity = factoryIdentity(id);
@@ -1842,8 +2165,8 @@ export function createFactoryScene(
       parentMotion.setMotion(motion);
       visitors.setMotion(motion);
       whip.setMotion(motion);
+      damage.setMotion(motion);
       if (motion) reaction = null;
-      else clearCaneRecoils();
       if (!canAnimate()) stop();
       render();
       schedule();
@@ -1885,17 +2208,26 @@ export function createFactoryScene(
       if (disposed || contextLost) return false;
       const target = caneTargetList().find(item => item.id === id);
       if (!target) return false;
-      if (!motion) return true;
-      caneRecoils.delete(id);
-      caneRecoils.set(id, {
-        age: 0,
-        direction: Number(direction) < 0 ? -1 : 1,
-        strength: Number.isFinite(strength)
-          ? Math.max(0.35, Math.min(2.2, strength))
-          : 1,
-      });
-      while (caneRecoils.size > 12)
-        caneRecoils.delete(caneRecoils.keys().next().value);
+      // Latch the physical launch/hatch origin; snapshots and idle wandering
+      // must not drag airborne fragments or the replacement elevator around.
+      if (!unsettled(damage.pose(id))) {
+        if (id === 'parent') {
+          const ownTravel = visitors
+            .visitorsAt(sessionId)
+            .find(v => v.id === sessionId);
+          const pose = ownTravel || parentMotion.pose();
+          damageHomes.set(id, {
+            p: [pose.x, (pose.ground || 0) + 0.36, pose.z],
+            yaw: pose.yaw,
+          });
+        } else {
+          const unit = units.find(unit => unit.id === id);
+          const p = positionFor(unit);
+          damageHomes.set(id, {p: [p[0], 0.24, p[2]], yaw: 0});
+        }
+      }
+      if (!damage.hit(id, direction, strength)) return false;
+      whip.cancel();
       render();
       schedule();
       return true;
@@ -1904,7 +2236,8 @@ export function createFactoryScene(
       if (disposed) return;
       disposed = true;
       reaction = null;
-      clearCaneRecoils();
+      damage.dispose();
+      damageHomes.clear();
       parentMotion.dispose();
       visitors.dispose();
       whip.dispose();
@@ -1924,6 +2257,8 @@ export function createFactoryScene(
       delete canvas.dataset.factoryVisitors;
       delete canvas.dataset.parentAway;
       delete canvas.dataset.parentAwayLabel;
+      delete canvas.dataset.robotDamage;
+      delete canvas.dataset.robotDebris;
       particles = [];
       dispatches = [];
       flashes = [];

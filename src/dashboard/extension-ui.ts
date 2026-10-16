@@ -83,9 +83,11 @@ export interface DesktopTerminalState {
 
 export interface DesktopUIDialog {
   id: string;
-  kind: 'select' | 'confirm' | 'input' | 'editor' | 'terminal';
+  kind: 'select' | 'confirm' | 'input' | 'editor' | 'terminal' | 'info';
   title: string;
   options?: string[];
+  selected?: string;
+  searchable?: boolean;
   message?: string;
   placeholder?: string;
   prefill?: string;
@@ -102,6 +104,7 @@ export interface DesktopUIState {
   statuses: Array<{key: string; text: string}>;
   editor?: {id: string; text: string};
   extensionEditor?: {id: string};
+  navigation?: {id: string; cwd: string; sessionId: string; draft?: string};
 }
 
 /** The SDK editor lacks dialog options; desktop also supports cancellation. */
@@ -271,6 +274,7 @@ export class DesktopExtensionUI {
   private statuses = new Map<string, string>();
   private widgets = new Map<string, string>();
   private editorState: DesktopUIState['editor'];
+  private navigation: DesktopUIState['navigation'];
   private editorText = '';
   private toolsExpanded = false;
   private currentTheme: Theme;
@@ -406,6 +410,106 @@ export class DesktopExtensionUI {
     };
   }
 
+  /** Scope command interactions to Stop/close without changing extension-owned UI. */
+  forCommand(signal: AbortSignal): DesktopExtensionUI {
+    const options = (opts?: ExtensionUIDialogOptions) => ({
+      ...opts,
+      signal: opts?.signal ? AbortSignal.any([signal, opts.signal]) : signal,
+    });
+    const context = {
+      ...this.context,
+      select: (
+        title: string,
+        choices: string[],
+        opts?: ExtensionUIDialogOptions,
+      ) => this.context.select(title, choices, options(opts)),
+      confirm: (
+        title: string,
+        message: string,
+        opts?: ExtensionUIDialogOptions,
+      ) => this.context.confirm(title, message, options(opts)),
+      input: (
+        title: string,
+        placeholder?: string,
+        opts?: ExtensionUIDialogOptions,
+      ) => this.context.input(title, placeholder, options(opts)),
+      editor: (
+        title: string,
+        prefill?: string,
+        opts?: ExtensionUIDialogOptions,
+      ) => this.context.editor(title, prefill, options(opts)),
+      notify: (...args: Parameters<ExtensionUIContext['notify']>) => {
+        if (!signal.aborted) this.context.notify(...args);
+      },
+      setEditorText: (text: string) => {
+        if (!signal.aborted) this.context.setEditorText(text);
+      },
+    };
+    return new Proxy(this, {
+      get: (target, key) => {
+        if (key === 'context') return context;
+        if (key === 'select')
+          return (title: string, choices: string[], presentation = {}) =>
+            this.open(
+              {kind: 'select', title, options: [...choices], ...presentation},
+              {signal},
+              true,
+            );
+        if (key === 'show')
+          return async (title: string, message: string) => {
+            await this.open(
+              {kind: 'info', title, message: bounded(message, MAX_EDITOR_TEXT)},
+              {signal},
+              true,
+            );
+          };
+        if (key === 'navigate')
+          return (...args: Parameters<DesktopExtensionUI['navigate']>) => {
+            if (!signal.aborted) this.navigate(...args);
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  /** Native command dialogs share the extension transport, not terminal components. */
+  select(
+    title: string,
+    options: string[],
+    presentation: {
+      selected?: string;
+      message?: string;
+      searchable?: boolean;
+    } = {},
+  ): Promise<string | undefined> {
+    return this.open(
+      {kind: 'select', title, options: [...options], ...presentation},
+      undefined,
+      true,
+    ) as Promise<string | undefined>;
+  }
+
+  async show(title: string, message: string): Promise<void> {
+    await this.open(
+      {kind: 'info', title, message: bounded(message, MAX_EDITOR_TEXT)},
+      undefined,
+      true,
+    );
+  }
+
+  /** The renderer acknowledges before replacing the parent, avoiding a close deadlock. */
+  navigate(cwd: string, sessionId: string, draft?: string): void {
+    if (this.disposed || this.cancelling) return;
+    this.navigation = {
+      id: randomUUID(),
+      cwd,
+      sessionId,
+      ...(draft !== undefined ? {draft: bounded(draft, MAX_EDITOR_TEXT)} : {}),
+    };
+    this.onChange();
+  }
+
   snapshot(): DesktopUIState {
     return {
       dialogs: this.pending.map(({dialog}) => ({
@@ -419,6 +523,7 @@ export class DesktopExtensionUI {
         text,
       })),
       ...(this.editorState ? {editor: {...this.editorState}} : {}),
+      ...(this.navigation ? {navigation: {...this.navigation}} : {}),
       ...(this.extensionEditorId
         ? {extensionEditor: {id: this.extensionEditorId}}
         : {}),
@@ -428,6 +533,11 @@ export class DesktopExtensionUI {
   /** Only the first dialog accepts input. Unknown or stale responses are ignored. */
   respond(id: string, value?: string | boolean): void {
     if (this.disposed) return;
+    if (id === this.navigation?.id) {
+      this.navigation = undefined;
+      this.onChange();
+      return;
+    }
     if (id === this.extensionEditorId) {
       if (typeof value === 'string' && !this.extensionEditorOpen)
         this.openExtensionEditor(value);
@@ -443,6 +553,10 @@ export class DesktopExtensionUI {
     }
     const item = this.pending[0];
     if (!item || item.dialog.id !== id) return;
+    if (item.dialog.kind === 'info') {
+      item.finish(undefined);
+      return;
+    }
     if (item.dialog.kind === 'terminal') {
       if (value === undefined) item.finish(undefined);
       else if (typeof value === 'string' && value.length <= MAX_EDITOR_TEXT)
@@ -461,6 +575,7 @@ export class DesktopExtensionUI {
 
   /** Abort outstanding interactions while keeping this session's UI usable. */
   cancelDialogs(): void {
+    this.navigation = undefined;
     this.cancelling = true;
     try {
       for (const item of [...this.pending])
@@ -532,6 +647,7 @@ export class DesktopExtensionUI {
   private open(
     data: Omit<DesktopUIDialog, 'id'>,
     opts?: ExtensionUIDialogOptions,
+    native = false,
   ): Promise<DialogValue> {
     const cancelled = data.kind === 'confirm' ? false : undefined;
     if (this.disposed || opts?.signal?.aborted)
@@ -539,12 +655,12 @@ export class DesktopExtensionUI {
     if (
       this.pending.length >= MAX_DIALOGS ||
       data.title.length > MAX_TEXT ||
-      (data.message?.length ?? 0) > MAX_TEXT ||
+      (data.message?.length ?? 0) > (native ? MAX_EDITOR_TEXT : MAX_TEXT) ||
       (data.placeholder?.length ?? 0) > MAX_TEXT ||
       (data.prefill?.length ?? 0) > MAX_EDITOR_TEXT ||
-      (data.options?.length ?? 0) > MAX_OPTIONS ||
+      (data.options?.length ?? 0) > (native ? 10000 : MAX_OPTIONS) ||
       (data.options?.reduce((size, option) => size + option.length, 0) ?? 0) >
-        MAX_EDITOR_TEXT
+        (native ? 2 * 1024 * 1024 : MAX_EDITOR_TEXT)
     ) {
       const message =
         'Extension dialog exceeds the desktop UI size or queue limit.';

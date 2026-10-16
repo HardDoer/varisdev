@@ -439,13 +439,14 @@ async function main() {
         fallbackPose() {
           const svg = fallbackContainer.querySelector('svg');
           const robot = svg.lastElementChild;
+          const paths = [...robot.querySelectorAll('path')];
           const bounds = robot.getBBox();
           return {
             mode: svg.dataset.mode,
             activity: svg.dataset.activity,
             eyes: Number(svg.dataset.eyes),
             geometry: JSON.stringify(
-              [...robot.children].map(path => [
+              paths.map(path => [
                 path.getAttribute('d'),
                 path.getAttribute('fill'),
                 path.getAttribute('stroke'),
@@ -453,8 +454,8 @@ async function main() {
                 path.style.filter,
               ]),
             ),
-            paths: robot.children.length,
-            finite: [...robot.children].every(
+            paths: paths.length,
+            finite: paths.every(
               path => !/NaN|Infinity/.test(path.getAttribute('d')),
             ),
             bounds: [bounds.x, bounds.y, bounds.width, bounds.height],

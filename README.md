@@ -11,7 +11,7 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 - Robots drinking coffee!
 - Detailed visualizations regarding whatever the agents are doing and token usage.
 - Context files, Markdown editing, and image previews.
-- Supports all plugins that Pi supports. Though because the visualization is quite different some plugins that do UI-stuff probably do not work that well. You have been warned!
+- Loads Pi packages and extension commands, with native desktop dialogs for Pi's built-in slash commands. Terminal-specific plugin rendering and shortcuts have compatibility limitations.
 - Has its own theming system that you can extend as you wish.
 - Additional tools for browsing, structured data, images, and audio.
 
@@ -22,8 +22,6 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 **Install this first — Node.js 24 or newer is required.** The official installer includes npm and supports Windows, macOS, and Linux. Already installed? Continue to step 2.
 
 ### 2. Install VarisDev
-
-Open a new terminal, then run the command for your platform:
 
 **macOS / Linux**
 
@@ -55,10 +53,16 @@ Use **Updates → Check for updates** in the app, or run `varisdev update`.
 
 ## Commands
 
-Since VarisDev uses Pi under the hood many of the things you see in VarisDev work exactly like in Pidev. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#commands).
+Pi's built-in slash commands are routed through VarisDev's desktop UI. For example, `/thinking`, `/model`, and `/settings` open native dialogs; `/thinking high` and `/model provider/model` also accept direct arguments. Installed extensions, templates, and skills add their own commands. See [desktop commands](docs/configuration.md#slash-commands) and [Pi's command reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/slash-commands.md).
 
 ## VarisDev documentation
 
 - [Configuration and CLI](docs/configuration.md)
 - [Agents and tools](docs/reference.md)
 - [Plugin visuals and themes](docs/plugins.md)
+
+## License
+
+VarisDev is open source under the [MIT License](LICENSE). Copyright © 2026 Joonas Nousiainen.
+
+Pi and other third-party components retain their respective licenses and copyright notices. Pi's original MIT license, including Mario Zechner's copyright notice, is preserved in [licenses/pi-MIT.txt](licenses/pi-MIT.txt). See [third-party notices](THIRD_PARTY_NOTICES.md).

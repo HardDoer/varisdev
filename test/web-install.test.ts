@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import {exec} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {access, mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -86,7 +94,7 @@ void test('installer rejects missing values and unknown options before doing any
 });
 
 void test(
-  'CMD installer forwards quoted arguments and propagates failures',
+  'CMD installer detects npm, forwards quoted arguments and propagates failures',
   {skip: process.platform !== 'win32'},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'cmd-installer-'));
@@ -116,10 +124,18 @@ void test(
     );
     const prefix = join(directory, 'app space');
     const command = `"${script}" --prefix "${prefix}" --no-path`;
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       VARISDEV_INSTALLER_URL: `http://127.0.0.1:${address.port}/install.mjs`,
     };
+    for (const key of Object.keys(env))
+      if (key.toLowerCase() === 'path') delete env[key];
+    env.PATH = directory;
+    const node = join(directory, 'node.exe');
+    const npm = join(directory, 'npm.cmd');
+    const npmBatch = '@echo off\r\necho 11.6.1\r\nexit /b 0\r\n';
+    await copyFile(process.execPath, node);
+    await writeFile(npm, npmBatch);
     const options = {
       cwd: directory,
       env,
@@ -144,19 +160,43 @@ void test(
       );
       return true;
     });
-    const missingNode: NodeJS.ProcessEnv = {...env};
-    for (const key of Object.keys(missingNode))
-      if (key.toLowerCase() === 'path') delete missingNode[key];
-    missingNode.PATH = directory;
+    status = 200;
+    exitCode = 0;
+    await rm(npm);
+    for (const name of ['npm.bat', 'npm.exe']) {
+      await t.test(`accepts ${name} without npm.cmd`, async () => {
+        const shim = join(directory, name);
+        // Node provides a native executable accepting --version for the probe.
+        if (name.endsWith('.exe')) await copyFile(process.execPath, shim);
+        else await writeFile(shim, npmBatch);
+        const result = await run(command, options);
+        assert.deepEqual(JSON.parse(result.stdout), [
+          '--prefix',
+          prefix,
+          '--no-path',
+        ]);
+        await rm(shim);
+      });
+    }
     const requested = requests;
-    await assert.rejects(
-      run(command, {...options, env: missingNode}),
-      error => {
-        assert.equal((error as {code?: number}).code, 1);
-        assert.match((error as {stderr: string}).stderr, /requires Node.js 24/);
-        return true;
-      },
-    );
+    for (const broken of [false, true]) {
+      await t.test(`rejects ${broken ? 'broken' : 'missing'} npm`, async () => {
+        if (broken) await writeFile(npm, '@exit /b 7\r\n');
+        await assert.rejects(run(command, options), error => {
+          assert.equal((error as {code?: number}).code, 1);
+          assert.match((error as {stderr: string}).stderr, /requires npm/);
+          return true;
+        });
+        assert.equal(requests, requested);
+        if (broken) await rm(npm);
+      });
+    }
+    await rm(node);
+    await assert.rejects(run(command, options), error => {
+      assert.equal((error as {code?: number}).code, 1);
+      assert.match((error as {stderr: string}).stderr, /requires Node.js 24/);
+      return true;
+    });
     assert.equal(requests, requested);
     assert.deepEqual(await readdir(directory), []);
   },

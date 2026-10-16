@@ -197,6 +197,31 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
       }
       window.webContents.send('fixture:snapshot', hub);
     }
+    if (
+      method === 'prompt' &&
+      ['/thinking', '/settings'].includes(request.prompt)
+    ) {
+      target.ui ||= {dialogs: [], notifications: [], statuses: []};
+      target.ui.dialogs = [
+        request.prompt === '/thinking'
+          ? {
+              id: 'native-thinking',
+              kind: 'select',
+              title: 'Thinking level',
+              options: resources.get(sessionId).thinkingLevels,
+              selected: target.session.thinkingLevel,
+              message: 'For the current session.',
+            }
+          : {
+              id: 'native-settings',
+              kind: 'select',
+              title: 'Session settings',
+              options: ['Auto retry: off', 'Transport: auto'],
+            },
+      ];
+      window.webContents.send('fixture:snapshot', hub);
+      return;
+    }
     if (method === 'prompt' && target.session.status === 'running') {
       target.queue.steering.push(request.prompt);
       window.webContents.send('fixture:snapshot', hub);
@@ -321,7 +346,24 @@ ipcMain.handle('fixture:dialog', (_event, sessionId, dialogId, value) => {
   calls.push({method: 'respondToDialog', sessionId, dialogId, value});
   const target = hub.sessions.find(item => item.session.id === sessionId);
   const dialog = target.ui.dialogs.find(item => item.id === dialogId);
-  if (target.ui.extensionEditor?.id === dialogId && typeof value === 'string') {
+  if (dialogId === 'native-thinking' && dialog?.options.includes(value)) {
+    target.session.thinkingLevel = value;
+    resources.get(sessionId).thinkingLevel = value;
+    target.ui.dialogs = [];
+  } else if (dialogId === 'native-settings' && value === 'Auto retry: off') {
+    target.ui.dialogs = [
+      {
+        id: 'native-settings-retry',
+        kind: 'select',
+        title: 'Auto retry',
+        options: ['on', 'off'],
+        selected: 'off',
+      },
+    ];
+  } else if (
+    target.ui.extensionEditor?.id === dialogId &&
+    typeof value === 'string'
+  ) {
     target.ui.dialogs = [
       {
         id: 'custom-editor-terminal',
@@ -2392,9 +2434,22 @@ async function main() {
         editor.dispatchEvent(new Event('input', {bubbles: true}));
         document.getElementById('open-commands').click();
       });
+      const {nativeCommands} = await import(
+        resolve('assets/dashboard/command-catalog.js')
+      );
       await until(
-        () => document.querySelectorAll('#command-catalog button').length === 5,
+        () =>
+          [...document.querySelectorAll('#command-catalog strong')].some(
+            item => item.textContent === '/fixture-command',
+          ),
         'Skill catalog did not load from sessionFeatures',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#command-catalog button').length,
+        ),
+        nativeCommands.length + 3,
+        'Every native command and each plugin resource is listed exactly once',
       );
       const catalog = await evaluate(() => ({
         open: document.getElementById('commands-dialog').open,
@@ -2457,6 +2512,90 @@ async function main() {
           request: {prompt: '/skill:inspect src/index.ts'},
         },
       ]);
+      for (const command of ['/thinking', '/settings']) {
+        await evaluate(command => {
+          const editor = document.getElementById('parent-prompt');
+          editor.value = command;
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+          document.getElementById('prompt-form').requestSubmit();
+        }, command);
+        await until(
+          () => document.getElementById('extension-dialog').matches(':modal'),
+          `${command} did not route to the session-native dialog`,
+        );
+        assert.deepEqual(calls.at(-1), {
+          method: 'prompt',
+          sessionId: 'alpha',
+          request: {prompt: command},
+        });
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('session-settings-dialog').open,
+          ),
+          false,
+          '/settings must not open the startup model defaults editor',
+        );
+        if (command === '/thinking') {
+          assert.deepEqual(
+            await evaluate(() => ({
+              title: document.getElementById('extension-dialog-title')
+                .textContent,
+              value: document.getElementById('extension-dialog-select').value,
+              current: document.getElementById('extension-dialog-current')
+                .textContent,
+              searchHidden: document.getElementById('extension-dialog-search')
+                .hidden,
+            })),
+            {
+              title: 'Thinking level',
+              value: 'medium',
+              current: 'Current: medium',
+              searchHidden: true,
+            },
+          );
+          await evaluate(() => {
+            const select = document.getElementById('extension-dialog-select');
+            select.value = 'high';
+            select.dispatchEvent(new Event('change', {bubbles: true}));
+            document.getElementById('submit-extension-dialog').click();
+          });
+          await until(
+            () => !document.getElementById('extension-dialog').open,
+            'Thinking selection did not close',
+          );
+          assert.equal(hub.sessions[0].session.thinkingLevel, 'high');
+        } else {
+          assert.equal(
+            await evaluate(
+              () =>
+                document.getElementById('extension-dialog-title').textContent,
+            ),
+            'Session settings',
+          );
+          await evaluate(() => {
+            document.getElementById('extension-dialog-select').value =
+              'Auto retry: off';
+            document.getElementById('submit-extension-dialog').click();
+          });
+          await until(
+            () =>
+              document.getElementById('extension-dialog-title').textContent ===
+              'Auto retry',
+            'Settings did not route responses to its submenu',
+          );
+          assert.equal(
+            await evaluate(
+              () => document.getElementById('extension-dialog-select').value,
+            ),
+            'off',
+          );
+          await press('Escape');
+          await until(
+            () => !document.getElementById('extension-dialog').open,
+            'Settings cancellation did not close the native dialog',
+          );
+        }
+      }
     },
   );
 
@@ -2835,6 +2974,8 @@ async function main() {
           kind: 'select',
           title: 'Choose a plan',
           options: ['Read', 'Review'],
+          selected: 'Read',
+          searchable: true,
         },
         {
           id: 'input',
@@ -2855,11 +2996,18 @@ async function main() {
           title: 'Confirm the plan',
           message: 'Continue with this plan?',
         },
+        {
+          id: 'session-info',
+          kind: 'info',
+          title: 'Session information',
+          message: 'Name: Alpha factory\nMessages: 3\nCost: $0.000000',
+        },
       ];
       const values = [
         'Review',
         'Updated name',
         'Edited instructions\nsecond line',
+        true,
         true,
       ];
       for (const [index, request] of requests.entries()) {
@@ -2877,9 +3025,63 @@ async function main() {
         assert.equal(shown.title, request.title);
         assert.equal(shown.session, 'Alpha factory');
         if (request.prefill) assert.equal(shown[request.kind], request.prefill);
+        if (request.selected) {
+          assert.equal(
+            await evaluate(
+              () => document.getElementById('extension-dialog-select').value,
+            ),
+            request.selected,
+          );
+          await evaluate(() => {
+            const search = document.getElementById('extension-dialog-search');
+            search.value = 'no matching model';
+            search.dispatchEvent(new Event('input', {bubbles: true}));
+          });
+          assert.equal(
+            await evaluate(
+              () => document.getElementById('submit-extension-dialog').disabled,
+            ),
+            true,
+            'An empty search must not submit an unrelated option',
+          );
+          await evaluate(() => {
+            const search = document.getElementById('extension-dialog-search');
+            search.value = '';
+            search.dispatchEvent(new Event('input', {bubbles: true}));
+          });
+          assert.equal(
+            await evaluate(
+              () => document.getElementById('extension-dialog-select').value,
+            ),
+            request.selected,
+            'Clearing the search restores current selection',
+          );
+        }
+        if (request.kind === 'info') {
+          assert.deepEqual(
+            await evaluate(() => ({
+              message: document.getElementById('extension-dialog-message')
+                .textContent,
+              controlsHidden: ['input', 'select', 'editor', 'search'].every(
+                kind =>
+                  document.getElementById(`extension-dialog-${kind}`).hidden,
+              ),
+              submit: document.getElementById('submit-extension-dialog')
+                .textContent,
+              close: document.getElementById('cancel-extension-dialog')
+                .textContent,
+            })),
+            {
+              message: request.message,
+              controlsHidden: true,
+              submit: 'OK',
+              close: 'Close',
+            },
+          );
+        }
         await evaluate(
           (kind, value) => {
-            if (kind !== 'confirm')
+            if (!['confirm', 'info'].includes(kind))
               document.getElementById(`extension-dialog-${kind}`).value = value;
             document.getElementById('submit-extension-dialog').click();
           },

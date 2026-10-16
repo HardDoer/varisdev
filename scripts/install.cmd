@@ -11,7 +11,7 @@ if errorlevel 1 (
     echo VarisDev requires Node.js 24+. >&2
     exit /b 1
 )
-"%SystemRoot%\System32\where.exe" npm.cmd >nul 2>&1
+call npm --version >nul 2>&1
 if errorlevel 1 (
     echo VarisDev requires npm. >&2
     exit /b 1

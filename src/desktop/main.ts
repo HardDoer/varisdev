@@ -2,6 +2,7 @@ import '../runtime/settings-entry.mjs';
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -42,6 +43,7 @@ import {DashboardHub, type StoppedMessages} from '../dashboard/hub.ts';
 import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
+import {DesktopCommands} from './commands.ts';
 import {DesktopPreferences} from './preferences.ts';
 import {DesktopTerminals} from './terminal.ts';
 import {openConversationFile} from './files.ts';
@@ -126,6 +128,12 @@ const toolSettings = new DesktopToolSettings({
   sessionFeatures: sessionId => hub.sessionFeatures(sessionId),
 });
 let mainWindow: BrowserWindow | undefined;
+const desktopCommands = new DesktopCommands({
+  clipboard,
+  lastAssistantText: sessionId => hub.lastAssistantText(id(sessionId)),
+  showQuitConfirmation: options => dialog.showMessageBox(mainWindow!, options),
+  quit: () => app.quit(),
+});
 const accounts = new DesktopAccounts({
   openBrowser: url => shell.openExternal(url),
   changed: state => {
@@ -235,6 +243,9 @@ function handle(
 }
 
 function installHandlers(): void {
+  handle('pidev:desktop-command', (action, input) =>
+    desktopCommands.execute(action, input),
+  );
   handle('varisdev:get-model-defaults', () => modelDefaults.get());
   handle('varisdev:save-model-defaults', input => modelDefaults.save(input));
   handle('varisdev:get-tool-settings', sessionId =>

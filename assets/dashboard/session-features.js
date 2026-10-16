@@ -1,5 +1,6 @@
 /* global document, window, setTimeout, clearTimeout */
 import {openMarkdownFile} from './markdown-files.js';
+import {nativeCommands} from './command-catalog.js';
 const $ = id => document.getElementById(id);
 const cache = new Map();
 const loading = new Map();
@@ -11,14 +12,10 @@ let contextConversation;
 let contextRefreshTimer;
 const dismissed = new Set();
 const seenEditor = new Map();
-// These commands operate on desktop sessions before any prompt reaches Pi.
-const composerCommands = [
-  {
-    name: 'new',
-    description: 'Start a fresh conversation in this folder.',
-    source: 'builtin',
-  },
-];
+const builtinCommands = nativeCommands.map(command => ({
+  ...command,
+  source: 'builtin',
+}));
 const sourceName = {
   skill: 'Skill',
   prompt: 'Template',
@@ -218,9 +215,9 @@ function renderContext() {
 function commands(query = '') {
   const needle = query.toLocaleLowerCase().replace(/^\//, '');
   return [
-    ...composerCommands,
+    ...builtinCommands,
     ...(features()?.commands || []).filter(
-      command => !composerCommands.some(local => local.name === command.name),
+      command => !builtinCommands.some(local => local.name === command.name),
     ),
   ].filter(command =>
     `${command.name} ${command.description} ${sourceName[command.source] || ''}`
@@ -294,7 +291,14 @@ function renderSuggestions() {
     container.hidden = true;
     return;
   }
-  suggestions = commands(match[1]).slice(0, 8);
+  const needle = match[1].toLocaleLowerCase();
+  const rank = command => {
+    const name = command.name.toLocaleLowerCase();
+    return name.startsWith(needle) ? 0 : name.includes(needle) ? 1 : 2;
+  };
+  suggestions = commands(needle)
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, 8);
   suggestionIndex = Math.min(
     suggestionIndex,
     Math.max(0, suggestions.length - 1),
@@ -433,20 +437,25 @@ function renderExtensionUI(data) {
   $('extension-dialog-terminal').hidden = request.kind !== 'terminal';
   dialog.classList.toggle('terminal-dialog', request.kind === 'terminal');
   $('cancel-extension-dialog').disabled = false;
+  $('cancel-extension-dialog').textContent =
+    request.kind === 'info' ? 'Close' : 'Cancel';
+  $('submit-extension-dialog').textContent =
+    request.kind === 'info' ? 'OK' : 'Continue';
+  $('extension-dialog-search').hidden =
+    request.kind !== 'select' || !request.searchable;
+  $('extension-dialog-search').value = '';
+  $('extension-dialog-current').hidden =
+    request.kind !== 'select' || !request.selected;
+  $('extension-dialog-current').textContent = request.selected
+    ? `Current: ${request.selected}`
+    : '';
   $('extension-dialog-input').hidden = request.kind !== 'input';
   $('extension-dialog-editor').hidden = request.kind !== 'editor';
   $('extension-dialog-select').hidden = request.kind !== 'select';
   $('extension-dialog-input').value = request.prefill || '';
   $('extension-dialog-input').placeholder = request.placeholder || '';
   $('extension-dialog-editor').value = request.prefill || '';
-  $('extension-dialog-select').replaceChildren(
-    ...(request.options || []).map(value => {
-      const option = node('option', '', value);
-      option.value = value;
-      return option;
-    }),
-  );
-  if (request.options?.length) $('extension-dialog-select').selectedIndex = 0;
+  renderDialogOptions();
   dialog.showModal();
   if (request.kind === 'terminal') {
     renderTerminal(request);
@@ -458,17 +467,50 @@ function renderExtensionUI(data) {
       : request.kind === 'editor'
         ? 'extension-dialog-editor'
         : request.kind === 'select'
-          ? 'extension-dialog-select'
+          ? request.searchable
+            ? 'extension-dialog-search'
+            : 'extension-dialog-select'
           : 'submit-extension-dialog';
   $(target).focus();
+}
+function renderDialogOptions() {
+  const request = activeDialog;
+  if (!request || request.kind !== 'select') {
+    $('extension-dialog-select').replaceChildren();
+    return;
+  }
+  const select = $('extension-dialog-select');
+  const needle = request.searchable
+    ? $('extension-dialog-search').value.toLocaleLowerCase()
+    : '';
+  const values = (request.options || []).filter(value =>
+    value.toLocaleLowerCase().includes(needle),
+  );
+  select.replaceChildren(
+    ...values.map(value => {
+      const option = node('option', '', value);
+      option.value = value;
+      return option;
+    }),
+  );
+  const preferred = request.selection || request.selected;
+  if (values.includes(preferred)) select.value = preferred;
+  else if (values.length) select.selectedIndex = 0;
+  $('submit-extension-dialog').disabled = dialogBusy || !values.length;
 }
 async function respond(cancelled) {
   if (!activeDialog || dialogBusy) return;
   const request = activeDialog;
   if (request.kind === 'terminal' && !cancelled) return;
+  if (
+    request.kind === 'select' &&
+    !cancelled &&
+    $('extension-dialog-select').selectedIndex < 0
+  )
+    return;
   const value = cancelled
     ? undefined
-    : request.kind === 'confirm'
+    : ['confirm', 'info'].includes(request.kind)
       ? true
       : request.kind === 'select'
         ? $('extension-dialog-select').value
@@ -586,6 +628,11 @@ export function initSessionFeatures(options) {
   );
   $('parent-prompt').addEventListener('blur', () => {
     $('command-suggestions').hidden = true;
+  });
+  $('extension-dialog-search').addEventListener('input', renderDialogOptions);
+  $('extension-dialog-select').addEventListener('change', () => {
+    if (activeDialog?.kind === 'select')
+      activeDialog.selection = $('extension-dialog-select').value;
   });
   $('extension-dialog-form').addEventListener('submit', event => {
     event.preventDefault();

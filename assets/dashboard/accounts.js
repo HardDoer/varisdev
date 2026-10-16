@@ -1,7 +1,13 @@
 /* global document */
 
 export function initAccounts(api) {
-  if (!api?.getAccounts || !api.onAccounts) return () => {};
+  if (!api?.getAccounts || !api.onAccounts) {
+    const cleanup = () => {};
+    cleanup.open = async () => {
+      throw new Error('Accounts are unavailable.');
+    };
+    return cleanup;
+  }
   const $ = id => document.getElementById(id);
   const dialog = $('accounts-dialog');
   const provider = $('accounts-provider');
@@ -15,6 +21,7 @@ export function initAccounts(api) {
   let providerSignature;
   let linksSignature;
   let disposed = false;
+  let logoutProvider;
 
   function render() {
     const signature = JSON.stringify(state.providers);
@@ -47,6 +54,14 @@ export function initAccounts(api) {
       $(id).hidden = !available;
       $(id).disabled = working;
     }
+    const confirmingLogout =
+      logoutProvider === selected?.id && selected?.stored;
+    $('accounts-logout-confirmation').hidden = !confirmingLogout;
+    $('accounts-logout-confirm').disabled = working;
+    $('accounts-logout-cancel').disabled = working;
+    $('accounts-logout-question').textContent = confirmingLogout
+      ? `Sign out of ${selected.name}? This removes its saved credentials.`
+      : '';
     $('accounts-key').textContent =
       selected?.id === 'llama.cpp'
         ? 'Connect server'
@@ -130,15 +145,39 @@ export function initAccounts(api) {
       if (!disposed) render();
     }
   }
-  function open() {
+  async function open(options = {}) {
     const menu = $('app-menu-panel');
     if (menu.matches(':popover-open')) menu.hidePopover();
     $('session-settings-dialog').close();
+    logoutProvider = undefined;
     if (!dialog.open) dialog.showModal();
-    void run(() => api.getAccounts());
+    await run(() => api.getAccounts());
+    if (options.provider) {
+      const match = state.providers.find(
+        item =>
+          item.id.toLocaleLowerCase() ===
+            options.provider.toLocaleLowerCase() ||
+          item.name.toLocaleLowerCase() ===
+            options.provider.toLocaleLowerCase(),
+      );
+      if (!match || (state.attempt && state.attempt.provider !== match.id)) {
+        failure = !match
+          ? `Unknown account provider: ${options.provider}`
+          : 'Finish or cancel the current sign-in before choosing another provider.';
+        render();
+        throw new Error(failure);
+      }
+      provider.value = match.id;
+    }
+    if (options.logout) logoutProvider = provider.value;
+    render();
+    if (options.logout && !$('accounts-logout-confirmation').hidden)
+      $('accounts-logout-confirm').focus();
+    else provider.focus();
   }
   async function close() {
     if (busy) return;
+    logoutProvider = undefined;
     input.value = '';
     if (state.attempt) {
       await run(() => api.cancelAccount(state.attempt.id));
@@ -166,8 +205,27 @@ export function initAccounts(api) {
     listeners.push(() => element.removeEventListener(event, callback));
   }
   for (const id of ['open-accounts', 'welcome-accounts', 'settings-accounts'])
-    listen(id, 'click', open);
-  listen('accounts-provider', 'change', render);
+    listen(id, 'click', () => void open());
+  listen('accounts-provider', 'change', () => {
+    logoutProvider = undefined;
+    render();
+  });
+  listen('accounts-logout', 'click', () => {
+    logoutProvider = provider.value;
+    render();
+    $('accounts-logout-confirm').focus();
+  });
+  listen('accounts-logout-cancel', 'click', () => {
+    logoutProvider = undefined;
+    render();
+    $('accounts-logout').focus();
+  });
+  listen('accounts-logout-confirm', 'click', () => {
+    if (logoutProvider !== provider.value) return;
+    const selectedProvider = logoutProvider;
+    logoutProvider = undefined;
+    void run(() => api.startAccount(selectedProvider, 'logout'));
+  });
   listen('accounts-close', 'click', () => void close());
   listen('accounts-dialog', 'cancel', cancel);
   listen('accounts-form', 'submit', submit);
@@ -178,7 +236,6 @@ export function initAccounts(api) {
   for (const [id, method] of [
     ['accounts-oauth', 'oauth'],
     ['accounts-key', 'api_key'],
-    ['accounts-logout', 'logout'],
   ])
     listen(
       id,
@@ -238,10 +295,12 @@ export function initAccounts(api) {
     });
   });
   const unsubscribe = api.onAccounts(receive);
-  return () => {
+  const cleanup = () => {
     disposed = true;
     input.value = '';
     unsubscribe();
     for (const remove of listeners) remove();
   };
+  cleanup.open = open;
+  return cleanup;
 }

@@ -15,6 +15,8 @@ async function invoke(channel, ...args) {
 }
 
 contextBridge.exposeInMainWorld('pidev', {
+  desktopCommand: (action, input) =>
+    invoke('pidev:desktop-command', action, input),
   getZoom: () => webFrame.getZoomFactor(),
   setZoom: factor => {
     if (!Number.isFinite(factor) || factor < 0.25 || factor > 5)

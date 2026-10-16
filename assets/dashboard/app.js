@@ -10,6 +10,10 @@ import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
 import {initUpdates} from './updates.js';
 import {initAccounts} from './accounts.js';
+import {
+  createNativeCommandRouter,
+  createNavigationReceiver,
+} from './native-commands.js';
 import {initToolSettings} from './tool-settings.js';
 import {initModelDefaults} from './model-defaults.js';
 import {initAppMenu} from './app-menu.js';
@@ -1777,6 +1781,7 @@ function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
   state.hub = agentControls.filterHub(hub);
+  void receiveNavigation(hub);
   (scene || fallbackScene)?.updateHub(state.hub);
   toolSettings.observe(hub);
   const next =
@@ -1903,8 +1908,11 @@ async function openFolder(folder) {
   }
 }
 async function startSession(submission) {
-  const session = snapshot()?.session;
-  if (creating || closingSessions.size || !api?.closeSession) return;
+  const session = submission
+    ? state.hub.sessions.find(item => item.session.id === submission.id)
+        ?.session
+    : snapshot()?.session;
+  if (creating || closingSessions.size || !api?.closeSession) return false;
   const retrying =
     pendingReplacement &&
     (!submission || submission.id === pendingReplacement.id);
@@ -1915,7 +1923,7 @@ async function startSession(submission) {
       cwd: session.cwd,
       submission,
     });
-  if (!replacement) return;
+  if (!replacement) return false;
   saveDraft();
   saveConversationDisclosures();
   creating = 'session';
@@ -1938,8 +1946,10 @@ async function startSession(submission) {
     const submitted = replacement.submission;
     if (submitted) clearSubmittedDraft(submitted.id, submitted.draft);
     await selectOpenedSession(result.id);
+    return true;
   } catch (error) {
     showError(error);
+    return false;
   } finally {
     closingSessions.delete(replacement.id);
     creating = false;
@@ -1989,20 +1999,20 @@ async function sendPrompt(event) {
     return;
   saveDraft();
   const submitted = {...promptDrafts.get(id)};
-  if (/^\/new(?:\s|$)/.test(prompt)) {
-    if (prompt !== '/new') {
-      showError(new Error('Usage: /new'), $('prompt-error'));
-      return;
-    }
-    $('prompt-error').hidden = true;
-    await startSession({id, draft: submitted});
-    return;
-  }
   sending.add(id);
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
   renderInspector();
   try {
+    const routing = routeNativeCommand({
+      prompt,
+      data: state.hub.sessions.find(item => item.session.id === id),
+      submission: {id, draft: submitted},
+    });
+    if (routing !== undefined) {
+      if (await routing) clearSubmittedDraft(id, submitted);
+      return;
+    }
     if (!(await toolSettings.beforePrompt(prompt))) return;
     if (session.status === 'idle') {
       if (stopEffectSession === id) clearStopEffect();
@@ -2271,6 +2281,55 @@ const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
 });
 const cleanupZoom = initZoom(api);
 const cleanupAccounts = initAccounts(api);
+const routeNativeCommand = createNativeCommandRouter({
+  api,
+  accounts: options => cleanupAccounts.open(options),
+  newSession: startSession,
+  resume: () => $('resume-session').click(),
+  hotkeys: () => {
+    if (!$('hotkeys-dialog').open) $('hotkeys-dialog').showModal();
+  },
+});
+$('hotkeys-close').addEventListener('click', () => $('hotkeys-dialog').close());
+const receiveNavigation = createNavigationReceiver({
+  api,
+  async opened(id, draft) {
+    // Save the currently displayed editor before selecting or seeding another one.
+    saveDraft();
+    if (draft) {
+      const existing = promptDrafts.get(id);
+      const value = existing?.value ? `${existing.value}\n\n${draft}` : draft;
+      promptDrafts.set(id, {
+        ...existing,
+        value,
+        revision: (existing?.revision || 0) + 1,
+        start: value.length,
+        end: value.length,
+        direction: 'none',
+        scrollTop: 0,
+        scrollLeft: 0,
+        height: existing?.height || '',
+      });
+      persistComposerDraft(id);
+      if (state.sessionId === id) restoreDraft(id);
+    }
+    await selectOpenedSession(id);
+  },
+  failed(cause, retry) {
+    showError(cause);
+    const button = node(
+      'button',
+      'quiet-button',
+      'Retry opening prepared conversation',
+    );
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      button.remove();
+      void retry();
+    });
+    $('native-navigation-actions').append(button);
+  },
+});
 const toolSettings = initToolSettings({
   api,
   selectedSessionId: () => state.sessionId,

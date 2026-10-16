@@ -110,6 +110,28 @@
   font-size: 0.625rem;
   pointer-events: none;
 }
+.factory-cane-layer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+.factory-cane-layer[hidden] {
+  display: none;
+}
+.factory-cane-layer::backdrop {
+  background: transparent;
+  pointer-events: none;
+}
 .factory-cane-overlay {
   position: absolute;
   inset: 0;
@@ -127,9 +149,13 @@
 .scene[data-cane-equipped='true'] {
   user-select: none;
 }
-.cane-in-scene,
-.cane-in-scene canvas,
-.cane-in-scene .fallback-station {
+/* CSS suppression is app-local, including the macOS shake-to-locate pointer.
+ * Do not alter a user's system-wide accessibility preferences. */
+.factory-cane-active,
+.factory-cane-active *,
+.factory-cane-active *::before,
+.factory-cane-active *::after,
+.factory-cane-active *::backdrop {
   cursor: none !important;
 }
 .cane-outline {

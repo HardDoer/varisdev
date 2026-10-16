@@ -1,6 +1,7 @@
 {
   "name": "varisdev",
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
@@ -22,6 +23,9 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/",
     "build-info.json",
     "npm-shrinkwrap.json",
     "bin/",

@@ -20,7 +20,6 @@ import {registerAgentTools} from '../tools/agents.ts';
 import {registerProjectTools} from '../tools/index.ts';
 import type {DashboardParent, ParentRequest, StoppedMessages} from './hub.ts';
 import {
-  desktopCommands,
   sessionFeatures,
   supportedThinkingLevels,
   type SessionConfiguration,
@@ -35,6 +34,10 @@ import {createAppResourceFilter} from './resources.ts';
 import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
 import {createLlamaExtension} from './llama.ts';
 import {createBuiltinExtensions} from '../builtin-extensions.ts';
+import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
+import {runSettingsCommand} from './settings-commands.ts';
+import {runSessionCommand} from './session-commands.ts';
+import {runReportCommand} from './report-commands.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -207,9 +210,15 @@ export async function createDashboardParent(
     Reflect.set(session.agent.state, 'model', undefined);
   // SDK initialization can append model metadata to an otherwise blank branch.
   if (startup?.leafId) sessionManager.branch(startup.leafId);
-  // Deliver every desktop correction together at the next model turn.
-  // Keep this policy local to the session rather than changing Pi settings.
-  session.agent.steeringMode = 'all';
+  // Preserve VarisDev's default while honoring explicit queue preferences.
+  const applyQueueSettings = () => {
+    session.agent.steeringMode =
+      settingsManager.getProjectSettings().steeringMode ??
+      settingsManager.getGlobalSettings().steeringMode ??
+      'all';
+    session.agent.followUpMode = settingsManager.getFollowUpMode();
+  };
+  applyQueueSettings();
   const refreshAutocomplete = () =>
     ui.configureBaseAutocomplete(
       request.cwd,
@@ -219,7 +228,7 @@ export async function createDashboardParent(
     diagnostics.length = 0;
     await session.reload({
       beforeSessionStart: async () => {
-        session.agent.steeringMode = 'all';
+        applyQueueSettings();
         ui.resetExtensions();
         refreshAutocomplete();
       },
@@ -296,6 +305,7 @@ export async function createDashboardParent(
   let stoppedMessages: StoppedMessages | undefined;
   interface PromptRun {
     cancelled: boolean;
+    controller: AbortController;
     operation: Promise<void>;
     trackExtensionOperations: boolean;
     extensionOperations: Promise<void>[];
@@ -337,7 +347,10 @@ export async function createDashboardParent(
     const running = [...activePrompts];
     const recovered: StoppedMessages = {steering: [], followUp: []};
     stoppedMessages = recovered;
-    for (const prompt of running) prompt.cancelled = true;
+    for (const prompt of running) {
+      prompt.cancelled = true;
+      prompt.controller.abort();
+    }
     stopping = Promise.resolve()
       .then(async () => {
         try {
@@ -387,11 +400,12 @@ export async function createDashboardParent(
     )
       throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
     if (model && (options.modelId !== undefined || model !== session.model))
-      await session.setModel(model);
+      await session.setModel(model, {persist: false});
     requireOpen();
     if (options.thinkingLevel !== undefined)
       session.setThinkingLevel(
         options.thinkingLevel as Parameters<typeof session.setThinkingLevel>[0],
+        {persist: false},
       );
     state!.updateSession({
       model: session.model
@@ -399,51 +413,61 @@ export async function createDashboardParent(
         : undefined,
       thinkingLevel: session.thinkingLevel,
     });
+    refreshAutocomplete();
   };
-  const localCommand = async (name: string, args: string) => {
-    switch (name) {
-      case 'compact':
-        await session.compact(args || undefined);
-        break;
-      case 'reload':
-        await reload();
-        break;
-      case 'model': {
-        const slash = args.indexOf('/');
-        if (slash < 1 || slash === args.length - 1)
-          throw new Error('Use /model provider/model.');
-        await configurationAction({
-          provider: args.slice(0, slash),
-          modelId: args.slice(slash + 1),
-        });
-        break;
-      }
-      case 'thinking':
-        await configurationAction({thinkingLevel: args});
-        break;
-      case 'name':
-        if (!args)
-          throw new Error('Use /name followed by a conversation name.');
-        session.setSessionName(args);
-        state!.updateSession({name: args});
-        break;
-      case 'session': {
-        const model = session.model;
-        const content = [
-          `Session: ${session.sessionManager.getSessionName() ?? session.sessionId}`,
-          `Directory: ${request.cwd}`,
-          `Model: ${model ? `${model.provider}/${model.id}` : 'none'}`,
-          `Thinking: ${session.thinkingLevel}`,
-          `History: ${session.sessionManager.getSessionFile() ?? 'in memory'}`,
-        ].join('\n');
-        await session.sendCustomMessage(
-          {customType: 'desktop-session', content, display: true},
-          {triggerTurn: false},
-        );
-        state!.record('session', content);
-        break;
-      }
+  const localCommand = async (
+    name: string,
+    args: string,
+    signal: AbortSignal,
+  ) => {
+    const commandUI = ui.forCommand(signal);
+    const commandContext = {
+      session,
+      ui: commandUI,
+      signal,
+      configure: async (options: SessionConfiguration) => {
+        if (!signal.aborted) await configurationAction(options);
+      },
+    };
+    if (name === 'compact') {
+      await session.compact(args || undefined);
+      return;
     }
+    if (name === 'reload') {
+      if (args) throw new Error('Usage: /reload');
+      await reload();
+      return;
+    }
+    if (await runSettingsCommand(name, args, commandContext)) return;
+    const result = await runSessionCommand(name, args, commandContext);
+    if (result) {
+      if (signal.aborted) return;
+      if (result.kind === 'replace') {
+        const replacement = result.replacement;
+        const target = SessionManager.open(replacement.sessionFile);
+        commandUI.navigate(
+          replacement.cwd,
+          target.getSessionId(),
+          replacement.editorText,
+        );
+      } else if (result.kind === 'done') {
+        showCustomMessage?.restore(context!);
+        state!.updateSession({
+          name:
+            session.sessionManager.getSessionName() ||
+            state!.snapshot().session.name,
+          model: session.model
+            ? `${session.model.provider}/${session.model.id}`
+            : undefined,
+          thinkingLevel: session.thinkingLevel,
+        });
+        if (result.message) commandUI.context.notify(result.message);
+      }
+      return;
+    }
+    if (await runReportCommand(name, args, commandContext)) return;
+    // Never send a known native command to the model as ordinary prompt text.
+    throw new Error(`/${name} must be opened from the VarisDev desktop.`);
   };
   const sessionAction = async (
     action: () => Promise<unknown>,
@@ -455,6 +479,7 @@ export async function createDashboardParent(
     if (!allowRunning) requireIdle();
     const running = {
       cancelled: false,
+      controller: new AbortController(),
       operation: Promise.resolve(),
       trackExtensionOperations: false,
       extensionOperations: [] as Promise<void>[],
@@ -491,6 +516,7 @@ export async function createDashboardParent(
       ]);
     },
     configure: configurationAction,
+    lastAssistantText: () => session.getLastAssistantText(),
     compact: instructions => sessionAction(() => session.compact(instructions)),
     reload: () => sessionAction(reload),
     async prompt(text, images) {
@@ -500,6 +526,7 @@ export async function createDashboardParent(
       const steering = activePrompts.size > 0;
       const running: PromptRun = {
         cancelled: false,
+        controller: new AbortController(),
         operation: Promise.resolve(),
         trackExtensionOperations: false,
         extensionOperations: [],
@@ -514,23 +541,22 @@ export async function createDashboardParent(
               aborting = stop().catch(() => {});
           });
           try {
-            const commandMatch = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
-            const name = commandMatch?.[1];
-            const args = commandMatch?.[2]?.trim() ?? '';
+            const parsed = parseSlashCommand(text);
+            const name = parsed?.name;
+            const args = parsed?.args ?? '';
             if (
               name?.startsWith('skill:') &&
               !settingsManager.getEnableSkillCommands()
             )
               throw new Error('Skill commands are disabled in settings.');
-            const local =
-              name && desktopCommands.some(command => command.name === name);
+            const local = name ? nativeCommand(name) : undefined;
             const extension = name && session.extensionRunner.getCommand(name);
             if (local) {
-              if (steering && name !== 'model' && name !== 'thinking')
+              if (steering && !local.live)
                 throw new Error(
                   'Wait until this session is idle to run this command.',
                 );
-              await localCommand(name!, args);
+              await localCommand(name!, args, running.controller.signal);
               return;
             }
             if (!session.model && !extension)

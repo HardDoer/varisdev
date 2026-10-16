@@ -22,6 +22,17 @@ async function waitFor(check: () => boolean, description: string) {
   assert.ok(check(), description);
 }
 
+async function commandDialog(parent: DesktopDashboardParent, text: string) {
+  const operation = parent.prompt(text);
+  // A failed command must not become an unhandled rejection while waiting for UI.
+  void operation.catch(() => {});
+  await waitFor(
+    () => parent.ui.snapshot().dialogs.length > 0,
+    `${text} opens a native dialog`,
+  );
+  return {operation, dialog: parent.ui.snapshot().dialogs[0]};
+}
+
 async function fixture(t: TestContext, configuredVarisdev = false) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-features-'));
   const cwd = join(root, 'project');
@@ -340,6 +351,21 @@ void test(
       skillPath,
     } = await fixture(t, true);
     const catalog = await parent.features();
+    const {BUILTIN_SLASH_COMMANDS} = (await import(
+      new URL(
+        './core/slash-commands.js',
+        import.meta.resolve('@earendil-works/pi-coding-agent'),
+      ).href
+    )) as {BUILTIN_SLASH_COMMANDS: Array<{name: string}>};
+    for (const {name} of BUILTIN_SLASH_COMMANDS) {
+      const matches = catalog.commands.filter(command => command.name === name);
+      assert.equal(
+        matches.length,
+        1,
+        `SDK builtin /${name} is discoverable once`,
+      );
+      assert.equal(matches[0].source, 'builtin', `/${name} stays native`);
+    }
     assert.ok(
       catalog.models.some(
         model =>
@@ -461,7 +487,22 @@ void test(
     await parent.prompt('/model desktop-fixture/second-model');
     await parent.prompt('/thinking high');
     await parent.prompt('/name Renamed fixture');
-    await parent.prompt('/session');
+    const transcriptBeforeReport = parent.state.snapshot().conversation;
+    const report = await commandDialog(parent, '/session');
+    assert.equal(report.dialog.kind, 'info');
+    assert.equal(report.dialog.title, 'Session information');
+    assert.match(report.dialog.message!, /Name: Renamed fixture/);
+    assert.ok(report.dialog.message!.includes(cwd));
+    assert.match(
+      report.dialog.message!,
+      /Messages:.*\nTool calls:.*\nTokens:.*\nCost:/,
+    );
+    parent.ui.respond(report.dialog.id);
+    await report.operation;
+    assert.deepEqual(
+      parent.state.snapshot().conversation,
+      transcriptBeforeReport,
+    );
     assert.equal(requests.length, before);
     assert.deepEqual((await parent.features()).model, {
       provider: 'desktop-fixture',
@@ -470,12 +511,6 @@ void test(
     assert.equal((await parent.features()).thinkingLevel, 'high');
     assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
     assert.equal(parent.state.snapshot().session.name, 'Renamed fixture');
-    const report = parent.state
-      .snapshot()
-      .conversation.find(message =>
-        message.text.includes('Session: Renamed fixture'),
-      );
-    assert.ok(report?.text.includes(cwd));
     await parent.configure({
       provider: 'configured-fixture',
       modelId: 'configured-model',
@@ -502,6 +537,8 @@ void test(
       parent.configure({provider: 'missing', modelId: 'missing'}),
       /Model is unavailable/,
     );
+    // A local session report no longer adds artificial history to compact.
+    await parent.prompt('Keep the fixture decision for the next task.');
     await parent.prompt('/compact Preserve the fixture decision.');
     assert.ok(requests.length > before);
     assert.ok(
@@ -516,6 +553,234 @@ void test(
     const afterCompaction = requests.length;
     await parent.prompt('/reload');
     assert.equal(requests.length, afterCompaction);
+  },
+);
+
+void test(
+  'native thinking and model selectors preselect current values, apply changes and cancel without model requests',
+  {timeout: 15000},
+  async t => {
+    const {parent, requests} = await fixture(t);
+    const transcript = parent.state.snapshot().conversation;
+    const thinking = await commandDialog(parent, '/thinking');
+    assert.equal(thinking.dialog.kind, 'select');
+    assert.equal(thinking.dialog.title, 'Thinking level');
+    assert.equal(thinking.dialog.selected, 'low');
+    assert.deepEqual(
+      thinking.dialog.options,
+      (await parent.features()).thinkingLevels,
+    );
+    parent.ui.respond(thinking.dialog.id, 'high');
+    await thinking.operation;
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
+
+    const cancelledThinking = await commandDialog(parent, '/thinking');
+    assert.equal(cancelledThinking.dialog.selected, 'high');
+    parent.ui.respond(cancelledThinking.dialog.id);
+    await cancelledThinking.operation;
+    assert.equal((await parent.features()).thinkingLevel, 'high');
+
+    const model = await commandDialog(parent, '/model');
+    assert.equal(model.dialog.kind, 'select');
+    assert.equal(model.dialog.title, 'Select model: provider');
+    assert.equal(model.dialog.selected, 'desktop-fixture');
+    assert.ok(model.dialog.options!.includes('configured-fixture'));
+    parent.ui.respond(model.dialog.id, 'desktop-fixture');
+    await waitFor(
+      () => parent.ui.snapshot().dialogs[0]?.title === 'Select model',
+      'Provider selection opens the model selector',
+    );
+    const selection = parent.ui.snapshot().dialogs[0];
+    assert.equal(selection.kind, 'select');
+    assert.equal(selection.searchable, true);
+    assert.equal(selection.selected, 'desktop-fixture/first-model');
+    assert.deepEqual(selection.options, [
+      'desktop-fixture/first-model',
+      'desktop-fixture/second-model',
+    ]);
+    parent.ui.respond(selection.id, 'desktop-fixture/second-model');
+    await model.operation;
+    assert.deepEqual((await parent.features()).model, {
+      provider: 'desktop-fixture',
+      id: 'second-model',
+    });
+
+    const cancelledProvider = await commandDialog(parent, '/model');
+    parent.ui.respond(cancelledProvider.dialog.id);
+    await cancelledProvider.operation;
+    const cancelledModel = await commandDialog(parent, '/model');
+    parent.ui.respond(cancelledModel.dialog.id, 'desktop-fixture');
+    await waitFor(
+      () => parent.ui.snapshot().dialogs[0]?.title === 'Select model',
+      'Model selector reopens with the current model',
+    );
+    const currentModel = parent.ui.snapshot().dialogs[0];
+    assert.equal(currentModel.selected, 'desktop-fixture/second-model');
+    parent.ui.respond(currentModel.id);
+    await cancelledModel.operation;
+    assert.equal((await parent.features()).model?.id, 'second-model');
+
+    // Stop must also cancel a queued follow-on dialog, not just remove its DOM.
+    for (const command of ['/thinking', '/model']) {
+      const stopped = await commandDialog(parent, command);
+      await parent.abort();
+      await stopped.operation;
+      parent.ui.respond(stopped.dialog.id, 'low');
+      await delay(20);
+      assert.deepEqual(parent.ui.snapshot().dialogs, []);
+    }
+    const stoppedBetweenMenus = await commandDialog(parent, '/model');
+    parent.ui.respond(stoppedBetweenMenus.dialog.id, 'desktop-fixture');
+    await parent.abort();
+    await stoppedBetweenMenus.operation;
+    await delay(20);
+    assert.deepEqual(parent.ui.snapshot().dialogs, []);
+    assert.equal((await parent.features()).thinkingLevel, 'high');
+    assert.equal((await parent.features()).model?.id, 'second-model');
+    assert.deepEqual(parent.state.snapshot().conversation, transcript);
+    assert.equal(requests.length, 0);
+    await assert.rejects(
+      parent.prompt('/thinking unsupported'),
+      /Thinking level/,
+    );
+    await assert.rejects(
+      parent.prompt('/model missing'),
+      /\/model provider\/model/,
+    );
+    await assert.rejects(
+      parent.prompt('/model missing/model'),
+      /Model is unavailable/,
+    );
+    const stoppedBeforeOpen = parent.prompt('/model');
+    await parent.abort();
+    await stoppedBeforeOpen;
+    await delay(20);
+    assert.deepEqual(parent.ui.snapshot().dialogs, []);
+
+    await parent.configure({
+      provider: 'configured-fixture',
+      modelId: 'configured-model',
+    });
+    const unsupportedThinking = await commandDialog(parent, '/thinking');
+    assert.deepEqual(unsupportedThinking.dialog.options, ['off']);
+    assert.equal(unsupportedThinking.dialog.selected, 'off');
+    parent.ui.respond(unsupportedThinking.dialog.id);
+    await unsupportedThinking.operation;
+    assert.equal(requests.length, 0);
+  },
+);
+
+void test(
+  'native settings roundtrip through Pi settings and Stop does not reopen nested menus',
+  {timeout: 15000},
+  async t => {
+    const {parent, requests, settingsPath} = await fixture(t);
+    const settings = await commandDialog(parent, '/settings');
+    assert.equal(settings.dialog.kind, 'select');
+    assert.equal(settings.dialog.title, 'Session settings');
+    assert.ok(settings.dialog.options!.includes('Auto retry: off'));
+    parent.ui.respond(settings.dialog.id, 'Auto retry: off');
+    await waitFor(
+      () => parent.ui.snapshot().dialogs[0]?.title === 'Auto retry',
+      'Settings opens the retry submenu',
+    );
+    const retry = parent.ui.snapshot().dialogs[0];
+    assert.equal(retry.selected, 'off');
+    assert.deepEqual(retry.options, ['on', 'off']);
+    parent.ui.respond(retry.id, 'on');
+    await waitFor(
+      () =>
+        !!parent.ui.snapshot().dialogs[0]?.options?.includes('Auto retry: on'),
+      'Changed setting is reflected in the menu',
+    );
+    parent.ui.respond(parent.ui.snapshot().dialogs[0].id);
+    await settings.operation;
+    assert.equal(
+      JSON.parse(await readFile(settingsPath, 'utf8')).retry.enabled,
+      true,
+    );
+
+    await parent.reload();
+    const reloaded = await commandDialog(parent, '/settings');
+    assert.ok(reloaded.dialog.options!.includes('Auto retry: on'));
+    parent.ui.respond(reloaded.dialog.id, 'Auto retry: on');
+    await waitFor(
+      () => parent.ui.snapshot().dialogs[0]?.title === 'Auto retry',
+      'Reloaded settings retain the selected value',
+    );
+    const cancelledRetry = parent.ui.snapshot().dialogs[0];
+    assert.equal(cancelledRetry.selected, 'on');
+    parent.ui.respond(cancelledRetry.id);
+    await waitFor(
+      () => parent.ui.snapshot().dialogs[0]?.title === 'Session settings',
+      'Cancelling a submenu returns to settings',
+    );
+    const nested = parent.ui.snapshot().dialogs[0];
+    parent.ui.respond(nested.id, 'Auto retry: on');
+    await waitFor(
+      () => parent.ui.snapshot().dialogs[0]?.title === 'Auto retry',
+      'Retry submenu opens before Stop',
+    );
+    const stoppedRetry = parent.ui.snapshot().dialogs[0];
+    await parent.abort();
+    await reloaded.operation;
+    parent.ui.respond(stoppedRetry.id, 'off');
+    await delay(20);
+    assert.deepEqual(parent.ui.snapshot().dialogs, []);
+    assert.equal(
+      JSON.parse(await readFile(settingsPath, 'utf8')).retry.enabled,
+      true,
+    );
+    await assert.rejects(
+      parent.prompt('/settings unsupported'),
+      /Usage|arguments/i,
+    );
+    assert.deepEqual(parent.ui.snapshot().dialogs, []);
+    assert.equal(requests.length, 0);
+  },
+);
+
+void test(
+  'native name input and session information can be dismissed or stopped without transcript messages',
+  {timeout: 15000},
+  async t => {
+    const {parent, requests, cwd} = await fixture(t);
+    const transcript = parent.state.snapshot().conversation;
+    const rename = await commandDialog(parent, '/name');
+    assert.equal(rename.dialog.kind, 'input');
+    assert.equal(rename.dialog.title, 'Session name');
+    parent.ui.respond(rename.dialog.id, '  Named through input  ');
+    await rename.operation;
+    assert.equal(parent.state.snapshot().session.name, 'Named through input');
+    const cancel = await commandDialog(parent, '/name');
+    parent.ui.respond(cancel.dialog.id);
+    await cancel.operation;
+    assert.equal(parent.state.snapshot().session.name, 'Named through input');
+    const stopped = await commandDialog(parent, '/name');
+    await parent.abort();
+    await stopped.operation;
+    parent.ui.respond(stopped.dialog.id, 'Stale name');
+    assert.equal(parent.state.snapshot().session.name, 'Named through input');
+
+    const info = await commandDialog(parent, '/session');
+    assert.equal(info.dialog.kind, 'info');
+    assert.equal(info.dialog.title, 'Session information');
+    assert.match(info.dialog.message!, /Name: Named through input/);
+    assert.ok(info.dialog.message!.includes(cwd));
+    parent.ui.respond(info.dialog.id);
+    await info.operation;
+    const stoppedInfo = await commandDialog(parent, '/session');
+    await parent.abort();
+    await stoppedInfo.operation;
+    await delay(20);
+    assert.deepEqual(parent.ui.snapshot().dialogs, []);
+    assert.deepEqual(parent.state.snapshot().conversation, transcript);
+    assert.equal(requests.length, 0);
+    await assert.rejects(
+      parent.prompt('/session unsupported'),
+      /Usage|arguments/i,
+    );
+    assert.deepEqual(parent.ui.snapshot().dialogs, []);
   },
 );
 

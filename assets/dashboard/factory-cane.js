@@ -170,8 +170,15 @@ export function createFactoryCane(
   hint.className = inToolbar
     ? 'factory-cane-toolbar-hint'
     : 'factory-cane-hint';
-  hint.textContent = 'Wave to swing · Esc to holster';
+  hint.textContent = 'Wave to swing · Right-click or Esc to holster';
   hint.setAttribute('role', 'status');
+  // A manual top-layer popover stays above app panels, menus and dialogs without
+  // stealing focus or pointer events. Never change macOS's global cursor setting:
+  // hide the native pointer only where our visible, app-local cane replaces it.
+  const overlayLayer = document.createElement('div');
+  overlayLayer.className = 'factory-cane-layer';
+  overlayLayer.setAttribute('popover', 'manual');
+  overlayLayer.setAttribute('aria-hidden', 'true');
   const overlay = svg('svg', {
     class: 'factory-cane-overlay',
     'aria-hidden': 'true',
@@ -188,7 +195,9 @@ export function createFactoryCane(
     svg('path', {d: 'M-3 -18 H3 M-3 2 H3', class: 'cane-band'}),
   );
   overlay.append(trail, impacts, cane);
-  container.append(overlay, hint);
+  overlayLayer.append(overlay);
+  document.body.append(overlayLayer);
+  container.append(hint);
   if (inToolbar) holsterContainer.prepend(holster);
   else container.append(holster);
   let equipped = false,
@@ -198,7 +207,8 @@ export function createFactoryCane(
   let frame = 0,
     samples = [],
     sparks = [];
-  let previousRect = '';
+  let previousRect = '',
+    wasInScene = false;
 
   function stopEffects() {
     if (frame) window.cancelAnimationFrame(frame);
@@ -213,21 +223,36 @@ export function createFactoryCane(
     swing.reset();
     cane.style.display = 'none';
     container.classList.remove('cane-in-scene');
+    document.documentElement.classList.remove('factory-cane-active');
     stopEffects();
     previousRect = '';
+    wasInScene = false;
+  }
+  function raiseOverlay() {
+    if (!equipped || disposed || !overlayLayer.showPopover) return;
+    if (overlayLayer.matches(':popover-open')) overlayLayer.hidePopover();
+    overlayLayer.showPopover();
+  }
+  function onLayerToggle(event) {
+    if (event.target !== overlayLayer && event.newState === 'open')
+      raiseOverlay();
   }
   function equip(value) {
     if (disposed) return;
     equipped = Boolean(value);
     resetPointer();
     container.dataset.caneEquipped = String(equipped);
+    if (!equipped && overlayLayer.matches(':popover-open'))
+      overlayLayer.hidePopover();
+    overlayLayer.hidden = !equipped;
+    if (equipped) raiseOverlay();
     holster.setAttribute('aria-pressed', String(equipped));
     holster.setAttribute(
       'aria-label',
       equipped ? 'Return cane to holster' : 'Pick up cane',
     );
     holster.title = equipped
-      ? 'Return cane to holster (Esc)'
+      ? 'Return cane to holster (right-click or Esc)'
       : 'Pick up cane, then wave the mouse over a robot or drone';
     action.textContent = equipped ? 'Holster' : 'Pick up';
     stored.style.visibility = equipped ? 'hidden' : '';
@@ -261,49 +286,51 @@ export function createFactoryCane(
   }
   function onMove(event) {
     if (!equipped || event.pointerType === 'touch') return;
-    if (holster.contains(event.target)) {
-      resetPointer();
-      return;
-    }
-    // Keep the factory camera steady while the mouse is driving the cane.
-    event.stopPropagation();
     const rect = container.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
+    const x = event.clientX,
+      y = event.clientY;
+    const inScene =
+      container.contains(event.target) &&
+      !holster.contains(event.target) &&
+      rect.width > 0 &&
+      rect.height > 0 &&
+      x >= rect.left &&
+      x <= rect.right &&
+      y >= rect.top &&
+      y <= rect.bottom;
+    // Stop only scene moves: the rest of the app keeps normal hover/click behavior.
+    if (inScene) event.stopPropagation();
     const rectKey = `${rect.x}:${rect.y}:${rect.width}:${rect.height}`;
-    if (rectKey !== previousRect) {
-      resetPointer();
+    if (rectKey !== previousRect || inScene !== wasInScene) {
+      swing.reset();
+      samples = [];
       previousRect = rectKey;
     }
-    const x = event.clientX - rect.left,
-      y = event.clientY - rect.top;
-    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
-      resetPointer();
-      return;
-    }
+    wasInScene = inScene;
     const now = window.performance.now();
-    const targets = getTargets()
-      .filter(
-        target =>
-          [target.x, target.y, target.radius].every(Number.isFinite) &&
-          target.radius > 0 &&
-          target.x >= rect.left &&
-          target.x <= rect.right &&
-          target.y >= rect.top &&
-          target.y <= rect.bottom,
-      )
-      .map(target => ({
-        ...target,
-        x: target.x - rect.left,
-        y: target.y - rect.top,
-      }));
+    const targets = inScene
+      ? getTargets().filter(
+          target =>
+            [target.x, target.y, target.radius].every(Number.isFinite) &&
+            target.radius > 0 &&
+            target.x >= rect.left &&
+            target.x <= rect.right &&
+            target.y >= rect.top &&
+            target.y <= rect.bottom,
+        )
+      : [];
     const result = swing.move(x, y, now, targets, motion);
-    overlay.setAttribute('viewBox', `0 0 ${rect.width} ${rect.height}`);
+    overlay.setAttribute(
+      'viewBox',
+      `0 0 ${window.innerWidth} ${window.innerHeight}`,
+    );
     cane.style.display = '';
     cane.setAttribute(
       'transform',
       `translate(${x} ${y}) rotate(${(result.angle * 180) / Math.PI})`,
     );
-    container.classList.add('cane-in-scene');
+    container.classList.toggle('cane-in-scene', inScene);
+    document.documentElement.classList.add('factory-cane-active');
     if (motion) {
       const tip = canePoints(x, y, result.angle)[5];
       samples.push({x: tip[0], y: tip[1], at: now});
@@ -332,8 +359,9 @@ export function createFactoryCane(
       paintEffects(now);
     }
   }
-  function toggle() {
+  function toggle(event) {
     equip(!equipped);
+    if (equipped && event.detail > 0) onMove(event);
   }
   function stow() {
     equip(false);
@@ -345,13 +373,20 @@ export function createFactoryCane(
       stow();
     }
   }
-  function onOutside(event) {
-    if (
-      equipped &&
-      !container.contains(event.target) &&
-      !holster.contains(event.target)
-    )
-      stow();
+  function onContextMenu(event) {
+    if (!equipped) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    stow();
+  }
+  function onSceneLeave() {
+    // A fresh sweep on reentry, but keep drawing the cane over the other panels.
+    swing.reset();
+    wasInScene = false;
+    container.classList.remove('cane-in-scene');
+  }
+  function onWindowLeave(event) {
+    if (equipped && !event.relatedTarget) resetPointer();
   }
   function onClick(event) {
     if (equipped && !holster.contains(event.target) && event.detail !== 0) {
@@ -363,14 +398,15 @@ export function createFactoryCane(
     if (document.hidden) stow();
   }
   holster.addEventListener('click', toggle);
-  container.addEventListener('pointermove', onMove, true);
-  container.addEventListener('pointerleave', resetPointer);
-  container.addEventListener('pointercancel', stow);
+  document.addEventListener('pointermove', onMove, true);
+  document.addEventListener('pointerout', onWindowLeave);
+  document.addEventListener('pointercancel', stow);
+  document.addEventListener('contextmenu', onContextMenu, true);
+  document.addEventListener('toggle', onLayerToggle, true);
+  container.addEventListener('pointerleave', onSceneLeave);
   container.addEventListener('click', onClick, true);
   container.addEventListener('webglcontextlost', stow, true);
   document.addEventListener('keydown', onKey, true);
-  document.addEventListener('pointerdown', onOutside, true);
-  document.addEventListener('focusin', onOutside);
   document.addEventListener('visibilitychange', onVisibility);
   document.addEventListener('scroll', resetPointer, true);
   window.addEventListener('blur', stow);
@@ -386,6 +422,7 @@ export function createFactoryCane(
       }
     },
     setMotion(value) {
+      if (disposed) return;
       motion = Boolean(value);
       resetPointer();
     },
@@ -394,19 +431,20 @@ export function createFactoryCane(
       stow();
       disposed = true;
       holster.removeEventListener('click', toggle);
-      container.removeEventListener('pointermove', onMove, true);
-      container.removeEventListener('pointerleave', resetPointer);
-      container.removeEventListener('pointercancel', stow);
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerout', onWindowLeave);
+      document.removeEventListener('pointercancel', stow);
+      document.removeEventListener('contextmenu', onContextMenu, true);
+      document.removeEventListener('toggle', onLayerToggle, true);
+      container.removeEventListener('pointerleave', onSceneLeave);
       container.removeEventListener('click', onClick, true);
       container.removeEventListener('webglcontextlost', stow, true);
       document.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('pointerdown', onOutside, true);
-      document.removeEventListener('focusin', onOutside);
       document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('scroll', resetPointer, true);
       window.removeEventListener('blur', stow);
       window.removeEventListener('resize', resetPointer);
-      overlay.remove();
+      overlayLayer.remove();
       hint.remove();
       holster.remove();
       delete container.dataset.caneEquipped;

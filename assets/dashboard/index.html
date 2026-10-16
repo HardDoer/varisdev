@@ -67,6 +67,10 @@
         height="80"
       />
       <p id="about-credit">VarisDev by Joonas Nousiainen 2026</p>
+      <p>Open source under the MIT License.</p>
+      <p>
+        Built on Pi, the open-source coding harness by Mario Zechner and contributors.
+      </p>
     </dialog>
     <dialog id="updates-dialog" aria-labelledby="updates-title">
       <div class="updates-heading">
@@ -111,6 +115,29 @@
         <button id="accounts-logout" class="quiet-button" type="button">
           Sign out
         </button>
+      </div>
+      <div
+        id="accounts-logout-confirmation"
+        class="account-confirmation"
+        hidden
+      >
+        <p id="accounts-logout-question"></p>
+        <div class="accounts-actions">
+          <button
+            id="accounts-logout-cancel"
+            class="quiet-button"
+            type="button"
+          >
+            Keep signed in
+          </button>
+          <button
+            id="accounts-logout-confirm"
+            class="primary-button"
+            type="button"
+          >
+            Confirm sign out
+          </button>
+        </div>
       </div>
       <p id="accounts-message" role="status" aria-live="polite"></p>
       <div id="accounts-device" hidden>
@@ -358,11 +385,7 @@
               >
                 <h2 id="app-menu-project-heading">Project &amp; session</h2>
                 <div class="app-menu-actions">
-                  <button
-                    id="new-session"
-                    class="primary-button"
-                    type="button"
-                  >
+                  <button id="new-session" class="primary-button" type="button">
                     Open folder
                   </button>
                   <button
@@ -534,7 +557,12 @@
             <h3 id="recent-projects-title">Recent projects</h3>
             <ul id="recent-projects-list" aria-label="Recent projects"></ul>
             <p id="recent-projects-status" role="status"></p>
-            <p id="recent-projects-error" class="form-error" role="alert" hidden></p>
+            <p
+              id="recent-projects-error"
+              class="form-error"
+              role="alert"
+              hidden
+            ></p>
           </section>
         </div>
       </section>
@@ -1255,7 +1283,41 @@
         </aside>
       </div>
       <p id="app-error" class="app-error" role="alert" hidden></p>
+      <div id="native-navigation-actions"></div>
     </main>
+    <dialog id="hotkeys-dialog" aria-labelledby="hotkeys-title">
+      <div class="dialog-heading">
+        <h2 id="hotkeys-title">VarisDev keyboard shortcuts</h2>
+        <button id="hotkeys-close" class="quiet-button" type="button">
+          Close
+        </button>
+      </div>
+      <dl class="hotkeys-list">
+        <dt><kbd>Enter</kbd></dt>
+        <dd>Send a message or steer the running session.</dd>
+        <dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt>
+        <dd>Insert a newline in the composer.</dd>
+        <dt><kbd>Esc</kbd></dt>
+        <dd>
+          Stop the selected parent's running work. When a dialog is open,
+          dismiss it instead.
+        </dd>
+        <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt>
+        <dd>Choose a slash-command suggestion.</dd>
+        <dt><kbd>Tab</kbd> / <kbd>Enter</kbd></dt>
+        <dd>Insert the highlighted slash-command suggestion.</dd>
+        <dt><kbd>←</kbd> / <kbd>→</kbd>, <kbd>Home</kbd> / <kbd>End</kbd></dt>
+        <dd>Switch tabs when a tab is focused.</dd>
+        <dt><kbd>⌘/Ctrl</kbd> + <kbd>S</kbd></dt>
+        <dd>Save the focused Markdown editor.</dd>
+        <dt><kbd>⌘/Ctrl</kbd> + <kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd></dt>
+        <dd>Zoom in, zoom out, or reset zoom.</dd>
+      </dl>
+      <p class="muted">
+        These are desktop app shortcuts. Terminal shortcuts apply only inside a
+        terminal.
+      </p>
+    </dialog>
     <dialog id="commands-dialog" aria-labelledby="commands-title">
       <div class="dialog-heading">
         <h2 id="commands-title">Skills &amp; commands</h2>
@@ -1385,6 +1447,14 @@
         >
         <input id="extension-dialog-input" type="text" hidden />
         <textarea id="extension-dialog-editor" rows="8" hidden></textarea>
+        <input
+          id="extension-dialog-search"
+          type="search"
+          placeholder="Search options…"
+          aria-label="Search options"
+          hidden
+        />
+        <p id="extension-dialog-current" class="muted" hidden></p>
         <select
           id="extension-dialog-select"
           size="6"
