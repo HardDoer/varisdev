@@ -301,9 +301,16 @@ export function createParentFallback(container) {
     const fade = Math.max(0, 1 - progress);
     return {
       lateral:
-        recoil.direction * fade * (1 + Math.sin(progress * Math.PI * 3) * 0.3),
-      jump: Math.sin(progress * Math.PI) * fade,
-      angle: recoil.direction * Math.sin(progress * Math.PI * 4) * fade,
+        recoil.direction *
+        fade *
+        (1 + Math.sin(progress * Math.PI * 3) * 0.3) *
+        recoil.strength,
+      jump: Math.sin(progress * Math.PI) * fade * recoil.strength,
+      angle:
+        recoil.direction *
+        Math.sin(progress * Math.PI * 4) *
+        fade *
+        recoil.strength,
     };
   }
 
@@ -885,7 +892,7 @@ export function createParentFallback(container) {
     caneTargets() {
       return caneTargetList();
     },
-    hitWithCane(id, direction = 1) {
+    hitWithCane(id, direction = 1, strength = 1) {
       if (disposed || !caneTargetList().some(target => target.id === id))
         return false;
       if (!motion) return true;
@@ -895,6 +902,9 @@ export function createParentFallback(container) {
       caneRecoils.set(id, {
         age: 0,
         direction: Number(direction) < 0 ? -1 : 1,
+        strength: Number.isFinite(strength)
+          ? Math.max(0.35, Math.min(2.2, strength))
+          : 1,
         element: caneElement(id),
       });
       while (caneRecoils.size > 12) {

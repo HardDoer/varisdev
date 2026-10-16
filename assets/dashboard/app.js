@@ -2261,9 +2261,10 @@ try {
 }
 if (!scene) fallbackScene = createParentFallback($('fallback-units'));
 const factoryCane = createFactoryCane($('scene'), {
+  holsterContainer: $('application-controls'),
   getTargets: () => (scene || fallbackScene)?.caneTargets() || [],
-  onHit: (id, direction) =>
-    (scene || fallbackScene)?.hitWithCane(id, direction),
+  onHit: (id, direction, strength) =>
+    (scene || fallbackScene)?.hitWithCane(id, direction, strength),
 });
 const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
   deferDiscovery: true,

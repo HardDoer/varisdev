@@ -2,6 +2,7 @@
 const NS = 'http://www.w3.org/2000/svg';
 const SHAFT = 'M0 6 V-92 A12 12 0 0 1 24 -92 V-82';
 const COOLDOWN = 320;
+const MIN_SWING_SPEED = 0.18; // CSS pixels per millisecond.
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
 export function canePoints(x, y, angle) {
@@ -76,7 +77,7 @@ export function createCaneSwing() {
     move(x, y, now, targets, motion = true) {
       if (![x, y, now].every(Number.isFinite)) {
         previous = null;
-        return {angle: -0.3, hits: [], direction: 1};
+        return {angle: -0.3, hits: [], direction: 1, strength: 0.35};
       }
       const dt = previous ? now - previous.now : 0;
       const continuous = previous && dt > 0 && dt <= 180;
@@ -89,9 +90,12 @@ export function createCaneSwing() {
               (1 - Math.exp(-dt / 55))
           : -0.3;
       const points = canePoints(x, y, angle);
+      const speed = continuous ? distance / dt : 0;
+      // A gentle wave nudges; a fast flick kicks, without unbounded impulses.
+      const strength = clamp(0.35 + (speed - MIN_SWING_SPEED) * 0.6, 0.35, 2.2);
       const struck = [];
       for (const [id, at] of hits) if (now - at >= COOLDOWN) hits.delete(id);
-      if (continuous && distance >= 1.5 && distance / dt >= 0.18) {
+      if (continuous && distance >= 1.5 && speed >= MIN_SWING_SPEED) {
         for (const target of targets) {
           if (
             !hits.has(target.id) &&
@@ -103,14 +107,18 @@ export function createCaneSwing() {
         }
       }
       previous = {x, y, now, angle, points};
-      return {angle, hits: struck, direction: dx < 0 ? -1 : 1};
+      return {angle, hits: struck, direction: dx < 0 ? -1 : 1, strength};
     },
   };
 }
 
 export function createFactoryCane(
   container,
-  {getTargets = () => [], onHit = () => true} = {},
+  {
+    holsterContainer = container,
+    getTargets = () => [],
+    onHit = () => true,
+  } = {},
 ) {
   const document = container.ownerDocument,
     window = document.defaultView;
@@ -123,7 +131,10 @@ export function createFactoryCane(
   };
   const holster = document.createElement('button');
   holster.type = 'button';
+  const inToolbar = holsterContainer !== container;
   holster.className = 'factory-cane-holster';
+  holster.classList.toggle('factory-cane-toolbar', inToolbar);
+  holster.hidden = inToolbar;
   const icon = svg('svg', {
     viewBox: '0 0 36 48',
     'aria-hidden': 'true',
@@ -156,7 +167,9 @@ export function createFactoryCane(
   label.append(name, action);
   holster.append(icon, label);
   const hint = document.createElement('span');
-  hint.className = 'factory-cane-hint';
+  hint.className = inToolbar
+    ? 'factory-cane-toolbar-hint'
+    : 'factory-cane-hint';
   hint.textContent = 'Wave to swing · Esc to holster';
   hint.setAttribute('role', 'status');
   const overlay = svg('svg', {
@@ -175,7 +188,9 @@ export function createFactoryCane(
     svg('path', {d: 'M-3 -18 H3 M-3 2 H3', class: 'cane-band'}),
   );
   overlay.append(trail, impacts, cane);
-  container.append(overlay, hint, holster);
+  container.append(overlay, hint);
+  if (inToolbar) holsterContainer.prepend(holster);
+  else container.append(holster);
   let equipped = false,
     motion = true,
     disposed = false,
@@ -236,7 +251,7 @@ export function createFactoryCane(
       spark.element.setAttribute('opacity', motion ? String(1 - age) : '1');
       spark.element.setAttribute(
         'transform',
-        `translate(${spark.x} ${spark.y}) scale(${motion ? 0.7 + age * 0.7 : 1})`,
+        `translate(${spark.x} ${spark.y}) scale(${(motion ? 0.7 + age * 0.7 : 1) * spark.strength})`,
       );
       return true;
     });
@@ -295,13 +310,20 @@ export function createFactoryCane(
       if (samples.length > 12) samples.shift();
     }
     for (const target of result.hits) {
-      if (onHit(target.id, result.direction) === false) continue;
+      if (onHit(target.id, result.direction, result.strength) === false)
+        continue;
       const element = svg('path', {
         class: 'cane-impact',
         d: 'M-18 0 H-10 M10 0 H18 M0 -18 V-10 M0 10 V18 M-12 -12 L-7 -7 M7 7 L12 12 M12 -12 L7 -7 M-7 7 L-12 12',
       });
       impacts.append(element);
-      sparks.push({element, x: target.x, y: target.y, at: now});
+      sparks.push({
+        element,
+        x: target.x,
+        y: target.y,
+        at: now,
+        strength: result.strength,
+      });
       if (sparks.length > 12) sparks.shift().element.remove();
       container.dataset.caneHit = target.id;
     }
@@ -324,7 +346,12 @@ export function createFactoryCane(
     }
   }
   function onOutside(event) {
-    if (equipped && !container.contains(event.target)) stow();
+    if (
+      equipped &&
+      !container.contains(event.target) &&
+      !holster.contains(event.target)
+    )
+      stow();
   }
   function onClick(event) {
     if (equipped && !holster.contains(event.target) && event.detail !== 0) {
@@ -351,6 +378,8 @@ export function createFactoryCane(
   equip(false);
   return {
     setSession(id) {
+      if (disposed) return;
+      if (inToolbar) holster.hidden = !id;
       if (id !== sessionId) {
         sessionId = id;
         stow();

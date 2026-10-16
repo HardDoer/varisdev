@@ -1,4 +1,4 @@
-/* global process, __dirname, document, requestAnimationFrame, setTimeout,
+/* global process, __dirname, document, requestAnimationFrame, setTimeout, localStorage,
    NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
@@ -1381,6 +1381,8 @@ async function main() {
           const editor = document.getElementById('parent-prompt');
           const send = document.getElementById('send-prompt');
           const overview = document.querySelector('.overview');
+          const cane = document.querySelector('.factory-cane-holster');
+          const menu = document.getElementById('app-menu-button');
           const rect = item => {
             const {top, bottom, left, right, height} =
               item.getBoundingClientRect();
@@ -1395,6 +1397,14 @@ async function main() {
             send: rect(send),
             inspector: rect(inspector),
             overview: rect(overview),
+            cane: rect(cane),
+            menu: rect(menu),
+            caneInline:
+              getComputedStyle(cane).position === 'static' &&
+              cane.parentElement === menu.parentElement,
+            noCaneControlsOverScene: !document
+              .getElementById('scene')
+              .querySelector('.factory-cane-holster, .factory-cane-hint'),
             overviewInFactory:
               overview.parentElement.classList.contains('factory-column'),
             parent: composer.parentElement === inspector,
@@ -1434,6 +1444,12 @@ async function main() {
         assert.equal(geometry.flex, 'flex');
         assert.equal(geometry.workspaceInChanges, true);
         assert.equal(geometry.overviewInFactory, true);
+        assert.equal(geometry.caneInline, true);
+        assert.equal(geometry.noCaneControlsOverScene, true);
+        assert.ok(geometry.cane.right <= geometry.menu.left);
+        assert.ok(geometry.cane.left >= geometry.inspector.left);
+        assert.ok(geometry.menu.right <= width);
+        assert.equal(geometry.cane.height, 32);
         assert.ok(
           geometry.overview.right <= geometry.inspector.left,
           'Overview must sit in the factory column beside the inspector',

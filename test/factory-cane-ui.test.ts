@@ -53,7 +53,7 @@ void test(
       );
     }
     assert.ifError(report.fatal);
-    assert.equal(report.cases.length, 5, 'Every cane scenario must execute');
+    assert.equal(report.cases.length, 6, 'Every cane scenario must execute');
     for (const result of report.cases) {
       await t.test(result.name, () => assert.ifError(result.error));
     }

@@ -104,6 +104,23 @@ void test('motion off keeps a rigid mouse-controlled cane but still detects hits
   );
 });
 
+void test('swing strength increases with speed, not distance or event frequency', () => {
+  const target = {id: 'parent', x: 200, y: 150, radius: 15};
+  const wave = (distance: number, dt: number) => {
+    const swing = createCaneSwing();
+    swing.move(100, 200, 0, [target]);
+    return swing.move(100 + distance, 200, dt, [target]);
+  };
+  const gentle = wave(200, 160);
+  const fast = wave(200, 20);
+  assert.equal(gentle.hits.length, 1);
+  assert.equal(fast.hits.length, 1);
+  assert.ok(fast.strength > gentle.strength * 2);
+  assert.equal(fast.strength, 2.2, 'Extreme speeds must remain bounded');
+  assert.equal(wave(100, 80).strength, gentle.strength);
+  assert.equal(wave(1, 100).strength, 0.35);
+});
+
 void test('invalid coordinates and non-increasing timestamps cannot strike', () => {
   const swing = createCaneSwing();
   const targets = [{id: 'parent', x: 200, y: 150, radius: 15}];

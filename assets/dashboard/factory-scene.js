@@ -768,12 +768,18 @@ export function createFactoryScene(
     const progress = recoil.age / CANE_RECOIL_DURATION;
     const fade = 1 - progress;
     return {
-      jump: Math.sin(progress * Math.PI) * 0.34,
+      jump: Math.sin(progress * Math.PI) * 0.34 * recoil.strength,
       lateral:
         recoil.direction *
         fade *
-        (0.32 + Math.sin(progress * Math.PI * 3) * 0.1),
-      wobble: recoil.direction * Math.sin(progress * Math.PI * 4) * fade * 0.08,
+        (0.32 + Math.sin(progress * Math.PI * 3) * 0.1) *
+        recoil.strength,
+      wobble:
+        recoil.direction *
+        Math.sin(progress * Math.PI * 4) *
+        fade *
+        0.08 *
+        recoil.strength,
     };
   }
 
@@ -1875,7 +1881,7 @@ export function createFactoryScene(
     caneTargets() {
       return caneTargetList();
     },
-    hitWithCane(id, direction = 1) {
+    hitWithCane(id, direction = 1, strength = 1) {
       if (disposed || contextLost) return false;
       const target = caneTargetList().find(item => item.id === id);
       if (!target) return false;
@@ -1884,6 +1890,9 @@ export function createFactoryScene(
       caneRecoils.set(id, {
         age: 0,
         direction: Number(direction) < 0 ? -1 : 1,
+        strength: Number.isFinite(strength)
+          ? Math.max(0.35, Math.min(2.2, strength))
+          : 1,
       });
       while (caneRecoils.size > 12)
         caneRecoils.delete(caneRecoils.keys().next().value);

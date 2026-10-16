@@ -192,9 +192,9 @@ async function main() {
         const hits = [];
         const cane = createFactoryCane(host, {
           getTargets: () => scene.caneTargets(),
-          onHit: (id, direction) => {
-            hits.push({id, direction});
-            return scene.hitWithCane(id, direction);
+          onHit: (id, direction, strength) => {
+            hits.push({id, direction, strength});
+            return scene.hitWithCane(id, direction, strength);
           },
         });
         cane.setSession('cane-session');
@@ -303,6 +303,58 @@ async function main() {
           return result;
         },
 
+        toolbar() {
+          clearRoot();
+          const toolbar = document.createElement('div');
+          toolbar.id = 'application-controls';
+          const menu = document.createElement('button');
+          menu.textContent = 'Menu';
+          toolbar.append(menu);
+          const host = document.createElement('section');
+          host.className = 'plain-stage';
+          root.append(toolbar, host);
+          const hits = [];
+          const cane = createFactoryCane(host, {
+            holsterContainer: toolbar,
+            getTargets: () => {
+              const rect = host.getBoundingClientRect();
+              return [{id: 'parent', x: rect.left + 200, y: rect.top + 150, radius: 20}];
+            },
+            onHit: (id, direction, strength) => hits.push({id, direction, strength}),
+          });
+          const holster = toolbar.querySelector('.factory-cane-holster');
+          const initiallyHidden = getComputedStyle(holster).display === 'none';
+          cane.setSession('toolbar-session');
+          const bounds = holster.getBoundingClientRect();
+          const menuBounds = menu.getBoundingClientRect();
+          const inline = getComputedStyle(holster).position === 'static' &&
+            bounds.right <= menuBounds.left && bounds.height === 32;
+          const noFloatingControls = !host.querySelector('.factory-cane-holster, .factory-cane-hint');
+          pointer(holster, bounds.x + 4, bounds.y + 4, 'pointerdown');
+          holster.focus();
+          holster.click();
+          const pickedUp = host.dataset.caneEquipped;
+          const sceneBounds = host.getBoundingClientRect();
+          pointer(host, sceneBounds.x + 100, sceneBounds.y + 200);
+          pointer(host, sceneBounds.x + 300, sceneBounds.y + 200);
+          pointer(holster, bounds.x + 4, bounds.y + 4, 'pointerdown');
+          holster.focus();
+          const readyToReturn = host.dataset.caneEquipped;
+          holster.click();
+          const returned = host.dataset.caneEquipped;
+          holster.click();
+          pointer(menu, menuBounds.x + 4, menuBounds.y + 4, 'pointerdown');
+          menu.focus();
+          const menuStows = host.dataset.caneEquipped;
+          cane.setSession(null);
+          const hiddenWithoutSession = getComputedStyle(holster).display === 'none';
+          cane.dispose();
+          const cleanedUp = !toolbar.querySelector('.factory-cane-holster') && toolbar.contains(menu);
+          clearRoot();
+          return {initiallyHidden, inline, noFloatingControls, pickedUp, hits,
+            readyToReturn, returned, menuStows, hiddenWithoutSession, cleanedUp};
+        },
+
         webglSwing() {
           const fixture = createWebGL();
           const {host, canvas, scene, cane, hits} = fixture;
@@ -390,6 +442,11 @@ async function main() {
           const acceptedStill = scene.hitWithCane('parent', -1);
           const noStaticRecoil = fixture.dynamicHash() === still;
           scene.setMotion(true);
+          const baselineX = targetById(scene, 'parent').x;
+          scene.hitWithCane('parent', 1, 0.35);
+          const gentleDisplacement = Math.abs(targetById(scene, 'parent').x - baselineX);
+          scene.hitWithCane('parent', 1, 2.2);
+          const strongDisplacement = Math.abs(targetById(scene, 'parent').x - baselineX);
           const before = fixture.dynamicHash();
           const accepted = scene.hitWithCane('parent', 1);
           const after = fixture.dynamicHash();
@@ -404,6 +461,8 @@ async function main() {
             invalid,
             changed: after !== before,
             animated: animated !== after,
+            gentleDisplacement,
+            strongDisplacement,
           };
           fixture.dispose();
           return result;
@@ -428,6 +487,10 @@ async function main() {
           const targets = fallback.caneTargets();
           const robot = container.querySelector('.parent-fallback-robot g:last-child');
           const glyph = container.querySelector('.agent .robot-glyph');
+          fallback.hitWithCane('drone', 1, 0.35);
+          const gentleDisplacement = Math.abs(parseFloat(glyph.style.left));
+          fallback.hitWithCane('drone', 1, 2.2);
+          const strongDisplacement = Math.abs(parseFloat(glyph.style.left));
           const acceptedParent = fallback.hitWithCane('parent', -1);
           const parentStart = robot.getAttribute('transform') || '';
           const acceptedDrone = fallback.hitWithCane('drone', 1);
@@ -459,6 +522,8 @@ async function main() {
             noStaticRecoil,
             invalid,
             afterDispose,
+            gentleDisplacement,
+            strongDisplacement,
           };
         },
 
@@ -542,6 +607,32 @@ async function main() {
   );
 
   await run(
+    'toolbar holster never covers the scene and returns without reequipping',
+    async () => {
+      const result = await evaluate('toolbar');
+      for (const key of [
+        'initiallyHidden',
+        'inline',
+        'noFloatingControls',
+        'hiddenWithoutSession',
+        'cleanedUp',
+      ])
+        assert.equal(result[key], true, key);
+      assert.equal(result.pickedUp, 'true');
+      assert.equal(
+        result.readyToReturn,
+        'true',
+        'Pointerdown/focus on the external holster must not stow early',
+      );
+      assert.equal(result.returned, 'false');
+      assert.equal(result.menuStows, 'false');
+      assert.equal(result.hits.length, 1);
+      assert.equal(result.hits[0].id, 'parent');
+      assert.equal(result.hits[0].strength, 2.2);
+    },
+  );
+
+  await run(
     'real pointer waves hit bodies with cooldown and never teleport across leave',
     async () => {
       const result = await evaluate('webglSwing');
@@ -586,6 +677,7 @@ async function main() {
         'drone',
         'parent',
       ]);
+      assert.ok(result.strongDisplacement > result.gentleDisplacement * 2);
       assert.equal(result.acceptedStill, true);
       assert.equal(result.noStaticRecoil, true);
       assert.equal(result.accepted, true);
@@ -612,6 +704,7 @@ async function main() {
         assert.ok(Number.isFinite(target.y));
         assert.ok(target.radius >= 18);
       }
+      assert.ok(result.strongDisplacement > result.gentleDisplacement * 2);
       assert.equal(result.acceptedParent, true);
       assert.equal(result.acceptedDrone, true);
       assert.notEqual(result.parentStart, '');
