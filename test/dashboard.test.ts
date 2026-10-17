@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFile as execFileCallback} from 'node:child_process';
-import {
-  mkdtemp,
-  mkdir,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {setImmediate as nextTick} from 'node:timers/promises';
@@ -20,6 +13,7 @@ import {DashboardState} from '../src/dashboard/state.ts';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import type {SessionFeatures} from '../src/dashboard/features.ts';
 import {readWorkspaceDiff} from '../src/dashboard/workspace.ts';
+import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
 const execFile = promisify(execFileCallback);
 
@@ -801,6 +795,21 @@ void test('dismissing external sessions ignores stale updates but allows fresh I
   assert.deepEqual(actions, []);
 });
 
+void test('dashboard bounds unresolved prompt submissions per session', async t => {
+  const current = controlledParent('bounded-prompts', process.cwd());
+  const hub = new DashboardHub(undefined, async () => current.parent);
+  t.after(() => hub.close());
+  await hub.createSession({cwd: process.cwd()});
+  for (let index = 0; index < 32; index++)
+    await hub.promptSession('bounded-prompts', {prompt: `Task ${index}`});
+  assert.equal(current.runs.length, 32);
+  await assert.rejects(
+    hub.promptSession('bounded-prompts', {prompt: 'One too many'}),
+    /32 pending prompts/,
+  );
+  await hub.abortSession('bounded-prompts');
+});
+
 void test('dashboard snapshots keep transitions, cap history and never mutate source records', () => {
   const view = state('terminal');
   const record: AgentRecord = {
@@ -844,7 +853,7 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
   assert.equal(view.snapshot().events.at(-1)?.message, '199');
 });
 
-void test('workspace diff includes staged, unstaged and untracked files without following symlinks', async t => {
+void test('workspace diff includes staged, unstaged and untracked files without previewing outside files through directory links', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-workspace-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
   const cwd = join(directory, 'repo');
@@ -877,8 +886,13 @@ void test('workspace diff includes staged, unstaged and untracked files without 
   await execFile('git', ['-C', cwd, 'add', '.']);
   await writeFile(join(cwd, 'tracked.txt'), 'working\n');
   await writeFile(join(cwd, 'new.txt'), 'new content\n');
-  await writeFile(join(directory, 'outside.txt'), 'outside secret marker');
-  await symlink(join(directory, 'outside.txt'), join(cwd, 'link.txt'));
+  const outside = join(directory, 'outside');
+  await mkdir(outside);
+  await writeFile(
+    join(outside, 'secret.txt'),
+    'outside directory secret marker',
+  );
+  await createDirectoryLink(outside, join(cwd, 'linked-directory'));
   const diff = await readWorkspaceDiff(cwd);
   assert.equal(diff.git, true);
   assert.ok(
@@ -889,9 +903,21 @@ void test('workspace diff includes staged, unstaged and untracked files without 
   assert.match(diff.diff, /-before/);
   assert.match(diff.diff, /\+working/);
   assert.match(diff.diff, /\+new content/);
-  assert.doesNotMatch(diff.diff, /outside secret marker/);
-  assert.match(diff.diff, /symlink/);
+  assert.doesNotMatch(diff.diff, /outside directory secret marker/);
+  assert.match(diff.diff, /symlink|outside workspace/);
   assert.equal(await readFile(join(cwd, 'tracked.txt'), 'utf8'), 'working\n');
+
+  await t.test('direct file symlinks remain opaque when supported', async t => {
+    const target = join(directory, 'outside.txt');
+    await writeFile(target, 'outside file secret marker');
+    if (
+      !(await createFileSymlinkOrSkip(t, target, join(cwd, 'linked-file.txt')))
+    )
+      return;
+    const linked = await readWorkspaceDiff(cwd);
+    assert.doesNotMatch(linked.diff, /outside file secret marker/);
+    assert.match(linked.diff, /symlink/);
+  });
 });
 
 void test('native feature controls stay live during compaction and keep reload idle-only', async t => {
@@ -1009,13 +1035,21 @@ void test('native extension dialogs appear in hub snapshots and receive validate
   let changes = 0;
   current.parent.ui = new DesktopExtensionUI(() => {
     changes++;
-    current.parent.state.record('session', 'Extension UI changed');
+    current.parent.state.touch();
   });
   t.after(async () => {
     current.parent.ui!.dispose();
     await hub.close();
   });
   await hub.createSession({cwd: process.cwd()});
+  const beforeUiChange = hub.deliverySnapshot();
+  current.parent.ui.context.notify('UI-only notification');
+  const afterUiChange = hub.deliverySnapshot();
+  assert.notEqual(afterUiChange, beforeUiChange);
+  assert.equal(
+    afterUiChange.sessions[0].ui!.notifications[0].message,
+    'UI-only notification',
+  );
   await hub.promptSession('dialogs', {prompt: 'Wait for input'});
   await until(() => current.runs.length === 1);
   const response = current.parent.ui.context.select('Choose one', [

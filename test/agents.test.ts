@@ -1355,7 +1355,10 @@ void test('controller observes activity and inbox with copied state and resets w
   assert.ok(
     observed.some(state => state?.agents[0]?.activity === 'Using read'),
   );
+  const firstDelivery = parent.control.deliverySnapshot()!;
+  assert.equal(parent.control.deliverySnapshot(), firstDelivery);
   await reporter.execute('agent_send', {id: 'parent', message: 'Findings'});
+  assert.notEqual(parent.control.deliverySnapshot(), firstDelivery);
   const state = observed.at(-1)!;
   assert.equal(state.sessionId, 'observed-parent');
   assert.equal(state.messages[0].message, 'Findings');
@@ -1377,10 +1380,12 @@ void test('controller observes activity and inbox with copied state and resets w
   await parent.shutdown('new');
   assert.equal(observed.at(-1), undefined);
   assert.equal(parent.control.snapshot(), undefined);
+  assert.equal(parent.control.deliverySnapshot()?.sessionId, 'observed-parent');
   assert.equal(reporter.controlled.disposed, 1);
   await assert.rejects(parent.spawn('During shutdown'), /shutting down/);
   await parent.emit('session_start');
   assert.equal(parent.control.snapshot(), undefined);
+  assert.equal(parent.control.deliverySnapshot(), undefined);
   const nextId = await parent.spawn('Next');
   await until(() => workers.byId.get(nextId)?.controlled.runs.length === 1);
   assert.deepEqual(
@@ -1599,7 +1604,7 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   // Execute also enforces policy even when callers bypass schema validation.
   await assert.rejects(
     parent.spawn('Inherited denied'),
-    /Menu → Model settings.*other\/model/,
+    /Menu → Tool models.*other\/model/,
   );
   await assert.rejects(parent.execute('agent_spawn', params), /not allowed/);
   assert.equal(workers.created.length, 0);
@@ -1698,7 +1703,7 @@ void test('model policy is checked when queued workers start, including initiali
     result.details.agents.every(
       agent =>
         agent.status === 'failed' &&
-        agent.error?.includes('Menu → Model settings'),
+        agent.error?.includes('Menu → Tool models'),
     ),
   );
   assert.equal(workers.byId.has(uninitialized), false);
@@ -1755,22 +1760,22 @@ void test('fresh and cleared agent policies deny explicit and inherited models w
   const params = {name: 'Explicit', task: 'Must not start', model};
   const assertEmptyPolicy = async () => {
     const tool = parent.tools.get('agent_spawn')!;
-    assert.match(tool.description, /No models enabled.*Menu → Model settings/);
+    assert.match(tool.description, /No models enabled.*Menu → Tool models/);
     const schema = tool.parameters as {
       properties: {model: {enum?: string[]; description: string}};
     };
     assert.equal(Object.hasOwn(schema.properties.model, 'enum'), false);
     assert.doesNotMatch(
       schema.properties.model.description,
-      /Menu → Model settings/,
+      /Menu → Tool models/,
     );
     await assert.rejects(
       parent.spawn('Inherited denied'),
-      /No agent models selected.*Choose a model in Menu → Model settings/,
+      /No agent models selected.*Choose a model in Menu → Tool models/,
     );
     await assert.rejects(
       parent.execute('agent_spawn', params),
-      /No agent models selected.*Choose a model in Menu → Model settings/,
+      /No agent models selected.*Choose a model in Menu → Tool models/,
     );
     assert.equal(workers.created.length, 0);
   };

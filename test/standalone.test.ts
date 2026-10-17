@@ -31,6 +31,8 @@ const parentURL = pathToFileURL(
 const displayAvailable =
   process.platform !== 'linux' ||
   Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+const fixtureProvider = 'standalone-fixture-provider';
+const fixtureModel = 'offline-model';
 
 interface Fixture {
   directory: string;
@@ -217,6 +219,20 @@ import {createRequire} from 'node:module';
 const require = createRequire(${JSON.stringify(join(packageRoot, 'package.json'))});
 export default function(api) {
   let timer;
+  api.registerProvider(${JSON.stringify(fixtureProvider)}, {
+    api: 'openai-completions',
+    apiKey: 'standalone-fixture-key',
+    baseUrl: 'https://standalone-fixture.invalid/v1',
+    models: [{
+      id: ${JSON.stringify(fixtureModel)},
+      name: 'Offline fixture model',
+      reasoning: false,
+      input: ['text'],
+      contextWindow: 32000,
+      maxTokens: 1000,
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+    }],
+  });
   api.registerCommand('standalone-fixture', {
     description: 'Verify an installed standalone plugin',
     handler: async (args, ctx) => {
@@ -264,6 +280,8 @@ export default function(api) {
   const originalSettings = {
     quietStartup: true,
     packages: [{source: existingPlugin, extensions: []}, oldApp],
+    defaultProvider: fixtureProvider,
+    defaultModel: fixtureModel,
     retry: {enabled: false},
   };
   await writeFile(
@@ -346,6 +364,16 @@ async function parentFeatures(
 
 async function assertFeatures(features: SessionFeatures) {
   assert.deepEqual(features.diagnostics, []);
+  assert.deepEqual(features.model, {
+    provider: fixtureProvider,
+    id: fixtureModel,
+  });
+  assert.ok(
+    features.models.some(
+      model => model.provider === fixtureProvider && model.id === fixtureModel,
+    ),
+    'Installed fixture model is missing',
+  );
   assert.ok(
     features.commands.some(
       command =>

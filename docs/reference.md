@@ -8,7 +8,7 @@ This page covers VarisDev's additions. See [Pi's documentation](https://github.c
 
 Each agent has its own conversation and shares its selected working directory. It inherits the parent model and thinking level unless explicitly configured. Without a parent model, `agent_spawn` requires a model choice.
 
-The **Agent models** section in **Menu → Model settings** controls which models `agent_spawn` may use. The restriction also applies to inherited models. The tool shows the configured choices to the parent model and checks them when agents start or resume. See [model configuration](configuration.md#agent-models).
+The **Agent models** section in **Menu → Tool models** controls which models `agent_spawn` may use. The restriction also applies to inherited models. The tool shows the configured choices to the parent model and checks them when agents start or resume. See [model configuration](configuration.md#agent-models).
 
 | Tool | Purpose |
 | --- | --- |
@@ -32,7 +32,7 @@ Spawn, send, and cancel return short acknowledgements. Status and wait return re
 
 The GUI provides individual and collective cancellation. **Stop** stops the parent while its agents continue.
 
-Select a parent and click **Close session** beside **Context files**, or use **Menu → Close session**. Closing a desktop parent stops its work and agents, closes its embedded terminal, and frees its session slot. Saved history remains available through **Menu → Resume session**. Closing the last parent returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a session attached from another terminal, **Close session** dismisses it from this window.
+Select a parent and click **Close session** in its header, or use **Menu → Close session**. Closing a desktop parent stops its work and agents, closes its embedded terminal, and frees its session slot. Saved history remains available through **Menu → Resume session**. Closing the last parent returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a session attached from another terminal, **Close session** dismisses it from this window.
 
 Resuming a saved session replaces other open sessions in the same folder, stopping their work and agents; sessions in other folders stay open. If the chosen session is already open, it is reused rather than duplicated. If the saved session cannot be loaded, the current sessions stay open.
 
@@ -40,7 +40,7 @@ Each factory has a stable, theme-aware color and architectural variation. Idle p
 
 ## Commit and push
 
-`/commit [instructions]` delegates committing and pushing to an agent. Choose its model and reasoning level in **Menu → Model settings → Commit**, or inherit those values from the parent session. Its model must be allowed in **Agent models**. The agent inspects the changes, runs checks, and reports the result.
+`/commit [instructions]` delegates committing and pushing to an agent. Choose its model and reasoning level in **Menu → Tool models → Commit**, or inherit those values from the parent session. Its model must be allowed in **Agent models**. The agent inspects the changes, runs checks, and reports the result.
 
 ## Browsing and files
 
@@ -71,7 +71,7 @@ The query tools accept paths or globs. JSON fields support dotted paths and RFC 
 
 `openai_image` generates or edits images through the OpenAI Images API. It uses the OpenAI account connected in **Accounts**, or `OPENAI_API_KEY`, and requires a user-selected image model.
 
-Choose the model on first GUI use or in **Accounts → Tool models**. The `model` parameter and `OPENAI_IMAGE_MODEL` can override the saved choice.
+Choose the model on first GUI use or in **Accounts → Image and audio models**. The `model` parameter and `OPENAI_IMAGE_MODEL` can override the saved choice.
 
 - `prompt`: generation or editing instructions.
 - `inputImagePaths`: local reference images for editing.
@@ -90,7 +90,7 @@ See [OpenAI's image API reference](https://platform.openai.com/docs/api-referenc
 - `text_to_speech`: generate speech using `voiceId` and `text`.
 - `sound_effects`: generate audio from a description in `text`.
 
-Speech and effects have separate user-selected models. Choose them on first GUI use or in **Accounts → Tool models**. `modelId` overrides the saved choice for one request.
+Speech and effects have separate user-selected models. Choose them on first GUI use or in **Accounts → Image and audio models**. `modelId` overrides the saved choice for one request.
 
 Optional controls include `voiceSettings`, `languageCode`, `seed`, `durationSeconds`, `loop`, `promptInfluence`, and `outputFormat`, depending on the action and model. The current sound-effects endpoint accepts `eleven_text_to_sound_v2`.
 

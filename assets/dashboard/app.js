@@ -1,5 +1,6 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createTerminalTabs} from './terminal.js';
+import {createRenderScheduler} from './render-scheduler.js';
 import {renderFileLinks} from './file-links.js';
 import {createFactoryScene} from './factory-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
@@ -165,6 +166,7 @@ let lastFeedId;
 let changeKey = '';
 let conversationKey = '';
 let conversationFollowing = true;
+let conversationPointerActive = false;
 let conversationScrollFrame;
 let lastLayout = [];
 let workspaceRendered = '';
@@ -176,6 +178,26 @@ let pendingDraftPosition = null;
 const composingEditors = new Set();
 let snapshotVersion = 0;
 const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
+const renderScheduler = createRenderScheduler(render);
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+const messageFields = [
+  'role',
+  'toolName',
+  'text',
+  'input',
+  'at',
+  'finishedAt',
+  'status',
+  'streaming',
+  'truncated',
+  'error',
+];
 
 function node(tag, className, content) {
   const item = document.createElement(tag);
@@ -198,7 +220,8 @@ function statusName(status) {
   return STATUS[status] || 'Unknown';
 }
 function badge(item, status) {
-  item.className = `status-badge ${Object.hasOwn(STATUS, status) ? status : ''}`;
+  const className = `status-badge ${Object.hasOwn(STATUS, status) ? status : ''}`;
+  if (item.className !== className) item.className = className;
   text(item, statusName(status));
 }
 function canControl(session) {
@@ -233,15 +256,7 @@ function selectedUnit() {
 function date(value) {
   if (!value) return '—';
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? '—'
-    : parsed.toLocaleString([], {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      });
+  return Number.isNaN(parsed.getTime()) ? '—' : dateFormatter.format(parsed);
 }
 function duration(item) {
   const start = Date.parse(item.startedAt || item.createdAt || '');
@@ -327,12 +342,18 @@ function saveDraft() {
   if (!state.sessionId) return;
   const textarea = $('parent-prompt');
   const previous = promptDrafts.get(state.sessionId);
+  const position = editorPosition(textarea);
+  if (
+    previous?.value === textarea.value &&
+    Object.keys(position).every(key => previous[key] === position[key])
+  )
+    return;
   const revision =
     (previous?.revision || 0) + Number(previous?.value !== textarea.value);
   promptDrafts.set(state.sessionId, {
     value: textarea.value,
     revision,
-    ...editorPosition(textarea),
+    ...position,
   });
   persistComposerDraft(state.sessionId);
 }
@@ -634,16 +655,16 @@ function layoutLabels(layout) {
       labelNodes.set(anchor.id, entry);
     }
 
-    text(
-      entry.name,
-      anchor.detail ? `${unit.name} · ${anchor.detail}` : unit.name,
-    );
-    entry.element.classList.toggle('selected', state.unitId === anchor.id);
-    entry.element.setAttribute(
-      'aria-pressed',
-      String(state.unitId === anchor.id),
-    );
-    entry.element.title = `${unit.name}${anchor.detail ? `\n${anchor.detail}` : ''}\n${anchor.id === 'parent' ? unit.prompt || '' : unit.task}\n${unit.activity || ''}`;
+    const name = anchor.detail ? `${unit.name} · ${anchor.detail}` : unit.name;
+    const selected = state.unitId === anchor.id;
+    const title = `${unit.name}${anchor.detail ? `\n${anchor.detail}` : ''}\n${anchor.id === 'parent' ? unit.prompt || '' : unit.task}\n${unit.activity || ''}`;
+    text(entry.name, name);
+    if (entry.selected !== selected) {
+      entry.selected = selected;
+      entry.element.classList.toggle('selected', selected);
+      entry.element.setAttribute('aria-pressed', String(selected));
+    }
+    if (entry.element.title !== title) entry.element.title = title;
   }
 }
 function sceneAgents(data) {
@@ -806,7 +827,6 @@ function renderFactory() {
   $('context-meter').hidden = !context;
   text($('parent-activity'), session.activity || 'Waiting for a task');
   $('parent-activity').title = $('parent-activity').textContent;
-  sizeScene();
   renderProcessing(data);
   agentControls.render();
   processingEffects.update(data, {
@@ -915,6 +935,15 @@ function renderWorkers() {
   );
 }
 function facts(target, pairs) {
+  if (
+    target._facts?.length === pairs.length &&
+    pairs.every(
+      ([key, value], index) =>
+        target._facts[index][0] === key && target._facts[index][1] === value,
+    )
+  )
+    return;
+  target._facts = pairs;
   target.replaceChildren(
     ...pairs.flatMap(([key, value]) => [
       node('dt', '', key),
@@ -949,16 +978,7 @@ function detailValue(value) {
   if (value === undefined || value === null || value === '') return undefined;
   return formatToolResult(value);
 }
-function findEventTool(event, data) {
-  const messages =
-    event.sourceId === 'parent'
-      ? data.conversation
-      : data.agents.find(item => item.id === event.sourceId)?.conversation;
-  return messages?.find(item => item.id === event.conversationId);
-}
-function renderFeedDetails(entry, event, data) {
-  const tool = findEventTool(event, data);
-  const worker = data.agents.find(item => item.id === event.sourceId);
+function renderFeedDetails(entry, event, tool, worker) {
   const fields = {
     ...(worker
       ? {
@@ -973,7 +993,7 @@ function renderFeedDetails(entry, event, data) {
       ? {
           Tool: tool.toolName,
           Status: statusName(tool.status),
-          Input: formatToolInput(tool.toolName, tool.input),
+          Input: tool.input ?? '',
           Output:
             tool.text ||
             (tool.status === 'running'
@@ -988,14 +1008,11 @@ function renderFeedDetails(entry, event, data) {
   if (fields.Message === event.message) delete fields.Message;
   if (fields.Status && STATUS[fields.Status])
     fields.Status = statusName(fields.Status);
-  const values = Object.entries(fields)
-    .map(([label, value]) => [
-      label,
-      label === 'Input' && !tool && value !== undefined
-        ? formatToolInput(fields.Tool, value)
-        : detailValue(value),
-    ])
-    .filter(([, value]) => value !== undefined);
+  const values = Object.entries(fields).filter(
+    ([label, value]) =>
+      (label === 'Input' && value !== undefined) ||
+      (value !== undefined && value !== null && value !== ''),
+  );
   const selection = window.getSelection();
   reconcile(
     entry.content,
@@ -1018,10 +1035,16 @@ function renderFeedDetails(entry, event, data) {
       return {element, content, textNode, previous: undefined};
     },
     (field, [label, value]) => {
-      if (label === 'Diff') {
-        if (field.previous !== value) renderDiff(field.content, value);
-        field.previous = value;
-      } else updateStreamText(field.textNode, value, selection);
+      const toolName = label === 'Input' ? fields.Tool : undefined;
+      if (field.previous === value && field.toolName === toolName) return;
+      field.previous = value;
+      field.toolName = toolName;
+      const formatted =
+        label === 'Input'
+          ? formatToolInput(toolName, value)
+          : detailValue(value);
+      if (label === 'Diff') renderDiff(field.content, formatted);
+      else updateStreamText(field.textNode, formatted, selection);
     },
   );
 }
@@ -1034,6 +1057,13 @@ function renderFeed(data) {
     feedKey = key;
   }
   const events = data.events.filter(item => item.sourceId === state.unitId);
+  const worker = data.agents.find(item => item.id === state.unitId);
+  const tools = new Map(
+    (state.unitId === 'parent'
+      ? data.conversation
+      : worker?.conversation || []
+    ).map(message => [message.id, message]),
+  );
   const body = $('panel-feed');
   const nearBottom =
     body.scrollHeight - body.scrollTop - body.clientHeight < 70;
@@ -1061,11 +1091,12 @@ function renderFeed(data) {
       return {element, kind, status, at, message, content, fields: new Map()};
     },
     (entry, event) => {
+      const tool = tools.get(event.conversationId);
       // Event details preserve the status at that point in the agent's work.
       const status =
         event.kind === 'error'
           ? 'failed'
-          : event.details?.Status || findEventTool(event, data)?.status;
+          : event.details?.Status || tool?.status;
       const hasStatus = Object.hasOwn(STATUS, status);
       if (hasStatus) entry.element.dataset.status = status;
       else delete entry.element.dataset.status;
@@ -1074,9 +1105,7 @@ function renderFeed(data) {
       entry.element.classList.toggle('error', event.kind === 'error');
       const [kind, label] =
         event.kind === 'tool'
-          ? toolAction(
-              event.details?.Tool || findEventTool(event, data)?.toolName,
-            )
+          ? toolAction(event.details?.Tool || tool?.toolName)
           : [
               event.kind,
               {
@@ -1091,7 +1120,7 @@ function renderFeed(data) {
       text(entry.at, date(event.at));
       entry.at.dateTime = event.at;
       text(entry.message, event.message);
-      renderFeedDetails(entry, event, data);
+      renderFeedDetails(entry, event, tool, worker);
     },
   );
   const latest = events.at(-1)?.id;
@@ -1195,16 +1224,22 @@ function followConversationBottom() {
   $('follow-conversation').checked = true;
   scheduleConversationBottom();
 }
-function scheduleConversationBottom() {
+function cancelConversationBottom() {
   window.cancelAnimationFrame(conversationScrollFrame);
+  conversationScrollFrame = undefined;
+}
+function scheduleConversationBottom() {
   if (
     state.tab !== 'conversation' ||
     !conversationFollowing ||
-    !$('follow-conversation').checked
+    conversationPointerActive ||
+    !$('follow-conversation').checked ||
+    conversationScrollFrame !== undefined
   )
     return;
   const key = conversationScope();
-  const scroll = () => {
+  conversationScrollFrame = window.requestAnimationFrame(() => {
+    conversationScrollFrame = undefined;
     if (
       state.disposed ||
       state.tab !== 'conversation' ||
@@ -1213,12 +1248,14 @@ function scheduleConversationBottom() {
       !$('follow-conversation').checked
     )
       return;
-    $('panel-conversation').scrollTop = $('panel-conversation').scrollHeight;
-  };
-  scroll();
-  conversationScrollFrame = window.requestAnimationFrame(() => {
-    scroll();
-    conversationScrollFrame = window.requestAnimationFrame(scroll);
+    const selection = window.getSelection();
+    if (
+      !selection?.isCollapsed &&
+      $('conversation').contains(selection?.anchorNode)
+    )
+      return;
+    const body = $('panel-conversation');
+    body.scrollTop = body.scrollHeight;
   });
 }
 // Keep existing text nodes so selection and open tool details survive snapshots.
@@ -1348,18 +1385,16 @@ function renderConversation(snapshot) {
   const data = conversationData(snapshot);
   const parent = state.unitId === 'parent';
   const key = conversationScope();
-  const body = $('panel-conversation');
   const sessionChanged = conversationKey !== key;
   if (sessionChanged) {
     conversationVisualizations.reset();
     conversationNodes.clear();
     $('conversation').replaceChildren();
     conversationKey = key;
+    cancelConversationBottom();
     conversationFollowing = true;
     $('follow-conversation').checked = true;
   }
-  const nearBottom =
-    body.scrollHeight - body.scrollTop - body.clientHeight < 70;
   const selection = window.getSelection();
   const selectedText =
     selection &&
@@ -1388,6 +1423,14 @@ function renderConversation(snapshot) {
     item => `${key}:${item.id}`,
     conversationEntry,
     (entry, message) => {
+      entry.visualizations.update(message);
+      if (
+        entry.message &&
+        messageFields.every(field => entry.message[field] === message[field])
+      )
+        return;
+      entry.message = message;
+      changed = true;
       const tool = message.role === 'tool';
       entry.element.classList.toggle('user', message.role === 'user');
       text(
@@ -1451,7 +1494,6 @@ function renderConversation(snapshot) {
             updateStreamText(target, value, selection),
           );
       changed = outputChanged || changed;
-      entry.visualizations.update(message);
       entry.truncated.hidden = !message.truncated;
       entry.error.hidden =
         !message.error || (tool && message.error === message.text);
@@ -1496,7 +1538,7 @@ function renderConversation(snapshot) {
     state.tab === 'conversation' &&
     $('follow-conversation').checked &&
     !selectedText &&
-    (nearBottom || sessionChanged) &&
+    (conversationFollowing || sessionChanged) &&
     changed
   ) {
     conversationFollowing = true;
@@ -1563,7 +1605,6 @@ function renderInspector() {
   );
   $('back-to-parent').hidden = parent;
   $('tab-context').hidden = !parent;
-  $('open-context').hidden = !parent;
   if (!parent) {
     const active = WORKING.has(unit.status);
     $('processing-state').hidden = !active;
@@ -1576,6 +1617,20 @@ function renderInspector() {
       unit.status === 'cancelling' ? 'Stopping' : 'Agent working',
     );
   }
+  renderInspectorPanel(data, unit, parent);
+  renderSteering(data);
+  renderSessionFeatures(data, {parent});
+  updateMarkdownFiles();
+  renderComposer(data, unit, parent);
+}
+function renderInspectorPanel(data, unit, parent) {
+  if (state.tab === 'conversation') renderConversation(data);
+  else if (state.tab === 'feed') renderFeed(data);
+  else if (state.tab === 'changes') {
+    renderChanges(data);
+    renderWorkspace();
+  } else if (state.tab === 'tokens') renderUsage(data);
+  if (state.tab !== 'details') return;
   facts($('unit-facts'), [
     [
       'Status',
@@ -1624,13 +1679,8 @@ function renderInspector() {
         ]
       : []),
   ]);
-  renderFeed(data);
-  renderChanges(data);
-  renderConversation(data);
-  renderSteering(data);
-  renderUsage(data);
-  renderSessionFeatures(data, {parent});
-  updateMarkdownFiles();
+}
+function renderComposer(data, unit, parent) {
   if (!parent) {
     $('extension-notifications').hidden = true;
     $('extension-statuses').hidden = true;
@@ -1694,8 +1744,6 @@ function renderInspector() {
   $('parent-prompt').placeholder = steering
     ? 'Guide the current task…'
     : 'Describe the next task…';
-  renderWorkspace();
-  sizeInspector();
 }
 function renderWorkspace() {
   const cached = workspaceCache.get(state.sessionId);
@@ -1743,6 +1791,9 @@ function setTab(tab) {
     $(`tab-${name}`).tabIndex = selected ? 0 : -1;
     $(`panel-${name}`).hidden = !selected;
   }
+  const data = snapshot();
+  const unit = selectedUnit();
+  if (data && unit) renderInspectorPanel(data, unit, state.unitId === 'parent');
   if (tab === 'context') refreshContext();
   if (tab === 'conversation' && previousTab !== 'conversation')
     followConversationBottom();
@@ -1753,6 +1804,7 @@ let themeSessionId;
 let themesDiscovered = false;
 function render() {
   if (state.disposed) return;
+  renderScheduler.rendered();
   const hasSession = Boolean(snapshot());
   if (!hasSession && $('welcome').hidden) void recentProjects.refresh();
   $('welcome').hidden = hasSession;
@@ -1772,7 +1824,11 @@ function render() {
     renderInspector();
   } else {
     clearStopEffect();
+    cancelConversationBottom();
     conversationVisualizations.reset();
+    conversationNodes.clear();
+    $('conversation').replaceChildren();
+    conversationKey = '';
     renderSessionFeatures(undefined, {parent: false});
     updateMarkdownFiles();
   }
@@ -1809,7 +1865,7 @@ function receive(hub) {
     !snapshot()?.agents.some(item => item.id === state.unitId)
   )
     state.unitId = 'parent';
-  render();
+  renderScheduler.schedule();
 }
 function applyMotion() {
   const enabled = state.motion && !motionPreference.matches;
@@ -2211,11 +2267,6 @@ $('motion-toggle').addEventListener('click', () => {
   }
   applyMotion();
 });
-$('open-context').addEventListener('click', () => {
-  selectUnit('parent');
-  setTab('context');
-  $('tab-context').focus();
-});
 for (const tab of TABS) {
   $(`tab-${tab}`).addEventListener('click', () => setTab(tab));
   $(`tab-${tab}`).addEventListener('keydown', event => {
@@ -2234,20 +2285,50 @@ for (const tab of TABS) {
     $(`tab-${tabs[next]}`).focus();
   });
 }
+$('panel-conversation').addEventListener(
+  'wheel',
+  event => {
+    if (event.deltaY < 0) {
+      cancelConversationBottom();
+      conversationFollowing = false;
+    }
+  },
+  {passive: true},
+);
+$('panel-conversation').addEventListener('pointerdown', () => {
+  conversationPointerActive = true;
+  cancelConversationBottom();
+});
+document.addEventListener('pointerup', () => {
+  if (!conversationPointerActive) return;
+  conversationPointerActive = false;
+  scheduleConversationBottom();
+});
+document.addEventListener('pointercancel', () => {
+  if (!conversationPointerActive) return;
+  conversationPointerActive = false;
+  conversationFollowing = false;
+});
+$('panel-conversation').addEventListener('keydown', event => {
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) {
+    cancelConversationBottom();
+    conversationFollowing = false;
+  }
+});
 $('panel-conversation').addEventListener('scroll', () => {
+  // Replacing a conversation can emit a scroll event before its scheduled paint.
+  if (conversationScrollFrame !== undefined) return;
   const body = $('panel-conversation');
   conversationFollowing =
     body.scrollHeight - body.clientHeight - body.scrollTop < 70;
-  if (!conversationFollowing)
-    window.cancelAnimationFrame(conversationScrollFrame);
+  if (!conversationFollowing) cancelConversationBottom();
 });
 $('follow-conversation').addEventListener('change', () => {
   conversationFollowing = $('follow-conversation').checked;
   if (conversationFollowing) scheduleConversationBottom();
 });
 const conversationResize = new window.ResizeObserver(() => {
-  if (conversationFollowing && !window.getSelection()?.toString())
-    scheduleConversationBottom();
+  if (conversationFollowing) scheduleConversationBottom();
 });
 for (const id of [
   'conversation',
@@ -2265,6 +2346,10 @@ $('follow-feed').addEventListener('change', () => {
 });
 motionPreference.addEventListener('change', applyMotion);
 window.addEventListener('resize', resizeFactory);
+document.addEventListener(
+  'visibilitychange',
+  renderScheduler.visibilityChanged,
+);
 const workspaceResize = new window.ResizeObserver(sizeInspector);
 workspaceResize.observe($('factory-workspace'));
 const sceneResize = new window.ResizeObserver(sizeScene);
@@ -2358,7 +2443,10 @@ const agentControls = initAgentControls({
   api,
   selected: snapshot,
   selectedAgent: () => state.unitId,
-  removed: () => receive(state.hub),
+  removed: () => {
+    receive(state.hub);
+    render();
+  },
   refresh: () => {
     renderFactory();
     renderInspector();
@@ -2438,6 +2526,11 @@ window.addEventListener('unload', () => {
   promptDraftStore.flush();
   state.disposed = true;
   unsubscribe?.();
+  renderScheduler.dispose();
+  document.removeEventListener(
+    'visibilitychange',
+    renderScheduler.visibilityChanged,
+  );
   clearInterval(clock);
   clearStopEffect();
   motionPreference.removeEventListener('change', applyMotion);

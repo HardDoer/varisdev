@@ -63,7 +63,7 @@ export function createFactoryBridge(
     child.send(
       {
         type: 'snapshot',
-        snapshot: attachment.state.snapshot(),
+        snapshot: attachment.state.deliverySnapshot(),
         controllable: true,
       },
       () => {
@@ -74,7 +74,7 @@ export function createFactoryBridge(
   };
   const detach = (state?: DashboardState) => {
     if (state && attachment?.state !== state) return;
-    const id = attachment?.state.snapshot().session.id;
+    const id = attachment?.state.deliverySnapshot().session.id;
     attachment = undefined;
     unsubscribe?.();
     unsubscribe = undefined;
@@ -130,8 +130,8 @@ export function createFactoryBridge(
     if (
       !ready ||
       !current ||
-      request.sessionId !== current.state.snapshot().session.id ||
-      current.state.snapshot().session.status === 'closed'
+      request.sessionId !== current.state.deliverySnapshot().session.id ||
+      current.state.deliverySnapshot().session.status === 'closed'
     ) {
       reply(false, 'This parent session is no longer attached to the app.');
       return;
@@ -261,10 +261,10 @@ async function openFactory(state: DashboardState): Promise<FactoryWindow> {
     require('electron') as string,
     [
       join(root, 'desktop/build/src/desktop/main.js'),
-      `--pidev-cwd=${state.snapshot().session.cwd}`,
+      `--pidev-cwd=${state.deliverySnapshot().session.cwd}`,
     ],
     {
-      cwd: state.snapshot().session.cwd,
+      cwd: state.deliverySnapshot().session.cwd,
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env,

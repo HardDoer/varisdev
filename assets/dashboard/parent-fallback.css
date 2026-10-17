@@ -146,9 +146,9 @@
   border-radius: 2px;
   background: linear-gradient(
     90deg,
-    var(--text) 40%,
+    var(--robot-eyes) 40%,
     transparent 40% 60%,
-    var(--text) 60%
+    var(--robot-eyes) 60%
   );
   box-shadow: none;
 }
@@ -158,7 +158,7 @@
 }
 
 .robot-glyph.robot-damage-corpse::before {
-  background: var(--muted);
+  background: var(--robot-outline);
   box-shadow: none;
 }
 

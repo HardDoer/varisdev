@@ -12,7 +12,7 @@
   border-radius: 9px;
   background: var(--panel, #12232c);
   color: var(--text, #edf4f6);
-  box-shadow: 0 3px 10px #0005;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--bg, #101c27) 55%, transparent);
   cursor: grab;
   text-align: left;
 }
@@ -82,17 +82,17 @@
 }
 .cane-stored {
   fill: none;
-  stroke: #e1ac68;
+  stroke: var(--amber, #ffcb7a);
   stroke-width: 4;
   stroke-linecap: round;
 }
 .cane-pocket {
-  fill: #654631;
-  stroke: #ac8053;
+  fill: var(--robot-screen, #071f26);
+  stroke: var(--robot-outline, #0b1318);
 }
 .cane-stitch {
   fill: none;
-  stroke: #e3bf87;
+  stroke: var(--robot-eyes, #edf4f6);
   stroke-width: 1;
   stroke-dasharray: 2 2;
 }
@@ -158,33 +158,38 @@
 .factory-cane-active *::backdrop {
   cursor: none !important;
 }
+.cane-held {
+  filter: drop-shadow(
+    0 1px 2px color-mix(in srgb, var(--robot-outline, #0b1318) 75%, transparent)
+  );
+}
 .cane-outline {
-  stroke: #181b20;
+  stroke: var(--robot-outline, #0b1318);
   stroke-width: 9;
 }
 .cane-wood {
-  stroke: #daa568;
+  stroke: var(--amber, #ffcb7a);
   stroke-width: 6;
 }
 .cane-shine {
-  stroke: #ffe1a5;
+  stroke: var(--robot-eyes, #edf4f6);
   stroke-width: 1.5;
 }
 .cane-grip {
-  stroke: #4b3830;
+  stroke: var(--robot-screen, #071f26);
   stroke-width: 8;
   stroke-dasharray: 2 1;
 }
 .cane-band {
-  stroke: #ffda87;
+  stroke: var(--violet, #d1b7ff);
   stroke-width: 3;
 }
 .cane-trail {
-  stroke: #ffe1a5;
+  stroke: var(--cyan, #75d9ff);
   stroke-width: 3;
-  opacity: 0.25;
+  opacity: 0.45;
 }
 .cane-impact {
-  stroke: #ffe1a5;
+  stroke: var(--amber, #ffcb7a);
   stroke-width: 3;
 }

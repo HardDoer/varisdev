@@ -1,3 +1,4 @@
+import {isDeepStrictEqual} from 'node:util';
 import {
   ConversationState,
   type ConversationMessage,
@@ -78,22 +79,32 @@ function preview(text: string, limit = textLimit): string {
 
 function projectAgent(
   agent: AgentRecord & Partial<ConversationSnapshot>,
+  conversationIsBounded = false,
 ): DashboardAgent {
-  const conversation = new ConversationState();
-  conversation.replace(
-    agent.conversation ?? [
-      {
-        id: `task-${agent.id}`,
-        role: 'user',
-        text: agent.task,
-        at: agent.createdAt,
-      },
-    ],
-    agent.conversationTruncated,
-  );
+  let conversation: ConversationSnapshot;
+  if (conversationIsBounded && agent.conversation) {
+    conversation = {
+      conversation: agent.conversation.map(message => ({...message})),
+      conversationTruncated: !!agent.conversationTruncated,
+    };
+  } else {
+    const bounded = new ConversationState();
+    bounded.replace(
+      agent.conversation ?? [
+        {
+          id: `task-${agent.id}`,
+          role: 'user',
+          text: agent.task,
+          at: agent.createdAt,
+        },
+      ],
+      agent.conversationTruncated,
+    );
+    conversation = bounded.snapshot();
+  }
   return {
     ...agent,
-    ...conversation.snapshot(),
+    ...conversation,
     usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
     task: preview(agent.task),
     activity: preview(agent.activity, 2000),
@@ -120,6 +131,9 @@ export class DashboardState {
   private previousAgents = new Map<string, DashboardAgent>();
   private seenMessages = new Set<string>();
   private readonly listeners = new Set<() => void>();
+  private cachedSnapshot?: DashboardSnapshot;
+  private batchDepth = 0;
+  private notificationPending = false;
   private sequence = 0;
 
   constructor(session: DashboardSession) {
@@ -134,9 +148,34 @@ export class DashboardState {
     return () => this.listeners.delete(listener);
   }
 
-  private changed(): void {
-    this.session.updatedAt = new Date().toISOString();
+  /** Apply related mutations while publishing a single synchronous change. */
+  batch<T>(update: () => T): T {
+    this.batchDepth++;
+    try {
+      return update();
+    } finally {
+      this.batchDepth--;
+      if (!this.batchDepth && this.notificationPending) {
+        this.notificationPending = false;
+        this.notify();
+      }
+    }
+  }
+
+  private notify(): void {
     for (const listener of this.listeners) listener();
+  }
+
+  private changed(): void {
+    this.cachedSnapshot = undefined;
+    this.session.updatedAt = new Date().toISOString();
+    if (this.batchDepth) this.notificationPending = true;
+    else this.notify();
+  }
+
+  /** Invalidate delivery state changed by a separately owned backend view. */
+  touch(): void {
+    this.changed();
   }
 
   private append(
@@ -199,7 +238,7 @@ export class DashboardState {
   }
 
   updateSession(patch: Partial<DashboardSession>): void {
-    this.session = {
+    const next = {
       ...this.session,
       ...patch,
       ...(patch.context ? {context: {...patch.context}} : {}),
@@ -209,14 +248,17 @@ export class DashboardState {
         ? {response: preview(patch.response)}
         : {}),
     };
+    if (isDeepStrictEqual(this.session, next)) return;
+    this.session = next;
     this.changed();
   }
 
   updateTeam(
     records: (AgentRecord & Partial<ConversationSnapshot>)[],
     messages: ParentMessage[],
+    conversationsAreBounded = false,
   ): void {
-    this.totalAgents = records.length;
+    const nextTotalAgents = records.length;
     const active = records.filter(agent => !isAgentFinished(agent.status));
     const history = records
       .filter(agent => isAgentFinished(agent.status))
@@ -226,8 +268,12 @@ export class DashboardState {
         ),
       )
       .slice(0, historyLimit);
-    this.agents = [...active, ...history].map(projectAgent);
-    for (const agent of this.agents) {
+    const nextAgents = [...active, ...history].map(agent =>
+      projectAgent(agent, conversationsAreBounded),
+    );
+    this.totalAgents = nextTotalAgents;
+    this.agents = nextAgents;
+    for (const agent of nextAgents) {
       const context: EventContext = {
         fields: {
           Project: agent.cwd,
@@ -283,13 +329,11 @@ export class DashboardState {
   }
 
   replaceConversation(messages: Iterable<ConversationMessage>): void {
-    this.conversation.replace(messages);
-    this.changed();
+    if (this.conversation.replace(messages)) this.changed();
   }
 
   updateConversation(message: ConversationMessage): void {
-    this.conversation.update(message);
-    this.changed();
+    if (this.conversation.update(message)) this.changed();
   }
 
   conversationMessage(id: string): ConversationMessage | undefined {
@@ -297,15 +341,16 @@ export class DashboardState {
   }
 
   settleConversation(): void {
-    this.conversation.settle();
-    this.changed();
+    if (this.conversation.settle()) this.changed();
   }
 
   updateQueue(steering: readonly string[], followUp: readonly string[]): void {
-    this.queue = {
+    const next = {
       steering: steering.map(text => preview(text)),
       followUp: followUp.map(text => preview(text)),
     };
+    if (isDeepStrictEqual(this.queue, next)) return;
+    this.queue = next;
     this.changed();
   }
 
@@ -333,8 +378,9 @@ export class DashboardState {
     this.changed();
   }
 
-  snapshot(): DashboardSnapshot {
-    return {
+  /** A cached snapshot for immediate serialization. Callers must not mutate it. */
+  deliverySnapshot(): DashboardSnapshot {
+    return (this.cachedSnapshot ??= {
       session: {
         ...this.session,
         context: this.session.context ? {...this.session.context} : undefined,
@@ -358,6 +404,10 @@ export class DashboardState {
           }
         : undefined,
       usage: this.usage.snapshot(),
-    };
+    });
+  }
+
+  snapshot(): DashboardSnapshot {
+    return structuredClone(this.deliverySnapshot());
   }
 }

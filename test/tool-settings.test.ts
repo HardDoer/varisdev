@@ -37,7 +37,7 @@ void test('tool settings default to no allowed models and persist independent se
   assert.deepEqual(await readToolSettings(), defaults);
   await assert.rejects(
     assertAgentModelAllowed('custom/organization/model'),
-    /No agent models selected.*Choose a model in Menu → Model settings/,
+    /No agent models selected.*Choose a model in Menu → Tool models/,
   );
   await saveToolSettings('agents', {
     allowedModels: ['custom/organization/model', 'custom/organization/model'],
@@ -54,7 +54,7 @@ void test('tool settings default to no allowed models and persist independent se
   settings.agents.allowedModels!.push('other/model');
   await assert.rejects(
     assertAgentModelAllowed('other/model'),
-    /Menu → Model settings.*custom\/organization\/model/,
+    /Menu → Tool models.*custom\/organization\/model/,
   );
   await saveToolSettings('agents', {allowedModels: null});
   await assertAgentModelAllowed('other/model');
@@ -119,7 +119,7 @@ void test('invalid combined settings leave both saved sections intact and allow 
         agents: {allowedModels},
         commit: {model: 'p/c', thinkingLevel: 'high'},
       }),
-      /Commit model p\/c must be allowed.*Update Agent models or Commit in Menu → Model settings/,
+      /Commit model p\/c must be allowed.*Update Agent models or Commit in Menu → Tool models/,
     );
     assert.equal(await readFile(path, 'utf8'), before);
   }
@@ -269,11 +269,11 @@ void test('empty selections persist and deny models while legacy null stays read
   );
   await assert.rejects(
     assertAgentModelAllowed('p/a'),
-    /No agent models selected.*Menu → Model settings/,
+    /No agent models selected.*Menu → Tool models/,
   );
   await assert.rejects(
     saveToolSettings('commit', {model: 'p/a', thinkingLevel: null}),
-    /No agent models selected.*Menu → Model settings/,
+    /No agent models selected.*Menu → Tool models/,
   );
   assert.equal((await readToolSettings()).commit.model, null);
 });

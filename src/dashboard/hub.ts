@@ -173,6 +173,7 @@ export class DashboardHub {
   private externalControl?: ExternalSessionControl;
   private readonly launchCwd: string;
   private readonly factory: ParentFactory;
+  private cachedSnapshot?: DashboardHubSnapshot;
   private closed = false;
   private closing?: Promise<void>;
 
@@ -181,26 +182,26 @@ export class DashboardHub {
     factory: ParentFactory,
     launchCwd = process.cwd(),
   ) {
-    const session = initial?.snapshot().session;
+    const session = initial?.deliverySnapshot().session;
     this.selectedSessionId = session?.id;
     this.launchCwd = session?.cwd ?? launchCwd;
     this.factory = factory;
     if (initial) this.add(initial);
   }
 
-  updateExternal(snapshot: DashboardSnapshot): void {
+  updateExternal(snapshot: DashboardSnapshot, copy = true): void {
     if (
       this.closed ||
       this.dismissedExternalSessions.has(snapshot.session.id) ||
       this.sessions.has(snapshot.session.id)
     )
       return;
-    this.external = structuredClone(snapshot);
+    this.external = copy ? structuredClone(snapshot) : snapshot;
     this.changed();
   }
 
   setExternalControl(control: ExternalSessionControl | undefined): void {
-    if (this.closed) return;
+    if (this.closed || this.externalControl === control) return;
     this.externalControl = control;
     this.changed();
   }
@@ -208,8 +209,14 @@ export class DashboardHub {
   closeExternal(): void {
     this.externalControl = undefined;
     if (!this.external) return;
-    this.external.session.status = 'closed';
-    this.external.session.activity = 'Terminal disconnected';
+    this.external = {
+      ...this.external,
+      session: {
+        ...this.external.session,
+        status: 'closed',
+        activity: 'Terminal disconnected',
+      },
+    };
     this.changed();
   }
 
@@ -224,7 +231,7 @@ export class DashboardHub {
       maintaining: false,
       unsubscribe: state.subscribe(() => this.changed()),
     };
-    this.sessions.set(state.snapshot().session.id, entry);
+    this.sessions.set(state.deliverySnapshot().session.id, entry);
     this.changed();
     return entry;
   }
@@ -242,11 +249,11 @@ export class DashboardHub {
       entry.parent.state === entry.state
     )
       return;
-    const previousId = entry.state.snapshot().session.id;
+    const previousId = entry.state.deliverySnapshot().session.id;
     entry.unsubscribe();
     entry.state = entry.parent.state;
     entry.unsubscribe = entry.state.subscribe(() => this.changed());
-    const nextId = entry.state.snapshot().session.id;
+    const nextId = entry.state.deliverySnapshot().session.id;
     if (nextId !== previousId) {
       this.sessions.delete(previousId);
       this.sessions.set(nextId, entry);
@@ -260,17 +267,20 @@ export class DashboardHub {
   }
 
   private changed(): void {
+    this.cachedSnapshot = undefined;
     for (const listener of this.listeners) listener();
   }
 
-  snapshot(): DashboardHubSnapshot {
+  /** A cached snapshot for immediate IPC serialization. Do not mutate it. */
+  deliverySnapshot(): DashboardHubSnapshot {
+    if (this.cachedSnapshot) return this.cachedSnapshot;
     const sessions: DashboardHubSnapshot['sessions'] = [
       ...(this.external
         ? [
             {
-              ...structuredClone(this.external),
+              ...this.external,
               session: {
-                ...structuredClone(this.external.session),
+                ...this.external.session,
                 owned: false,
                 controllable:
                   !!this.externalControl &&
@@ -280,7 +290,7 @@ export class DashboardHub {
           ]
         : []),
       ...[...this.sessions.values()].map(entry => {
-        const snapshot = entry.state.snapshot();
+        const snapshot = entry.state.deliverySnapshot();
         return {
           ...snapshot,
           ...(entry.parent?.ui
@@ -298,7 +308,7 @@ export class DashboardHub {
         };
       }),
     ];
-    return {
+    return (this.cachedSnapshot = {
       selectedSessionId: sessions.some(
         item => item.session.id === this.selectedSessionId,
       )
@@ -306,7 +316,11 @@ export class DashboardHub {
         : sessions[0]?.session.id,
       launchCwd: this.launchCwd,
       sessions,
-    };
+    });
+  }
+
+  snapshot(): DashboardHubSnapshot {
+    return structuredClone(this.deliverySnapshot());
   }
 
   /** Adopt the idle CLI session as a native desktop parent. */
@@ -315,7 +329,7 @@ export class DashboardHub {
     prompts: Array<{text: string; images?: ImageContent[]}> = [],
   ): void {
     this.ensureOpen();
-    const id = parent.state.snapshot().session.id;
+    const id = parent.state.deliverySnapshot().session.id;
     if (this.sessions.has(id))
       throw new DashboardInputError('This session is already open.');
     this.dismissedExternalSessions.delete(id);
@@ -346,7 +360,7 @@ export class DashboardHub {
       return readWorkspaceDiff(this.external.session.cwd);
     const entry = this.sessions.get(id);
     if (!entry) throw new DashboardInputError('Unknown parent session.');
-    return readWorkspaceDiff(entry.state.snapshot().session.cwd);
+    return readWorkspaceDiff(entry.state.deliverySnapshot().session.cwd);
   }
 
   private markdownCwd(id: string): string {
@@ -356,7 +370,7 @@ export class DashboardHub {
     if (this.external?.session.id === id) return this.external.session.cwd;
     const entry = this.sessions.get(id);
     if (!entry) throw new DashboardInputError('Unknown parent session.');
-    return entry.state.snapshot().session.cwd;
+    return entry.state.deliverySnapshot().session.cwd;
   }
 
   async readMarkdown(id: string, path: unknown): Promise<MarkdownFile> {
@@ -418,7 +432,7 @@ export class DashboardHub {
           }
           this.ensureOpen();
         }
-        const opened = this.snapshot().sessions.find(
+        const opened = this.deliverySnapshot().sessions.find(
           item => item.session.id === id && item.session.status !== 'closed',
         );
         const replacements = await this.resumeReplacements(cwd, id);
@@ -501,7 +515,7 @@ export class DashboardHub {
     for (const [id, entry] of this.sessions) {
       if (
         id !== targetId &&
-        (await sameFolder(entry.state.snapshot().session.cwd))
+        (await sameFolder(entry.state.deliverySnapshot().session.cwd))
       )
         replacements.push({id, entry});
     }
@@ -569,7 +583,7 @@ export class DashboardHub {
           'The dashboard closed while starting the session.',
         );
       }
-      const id = parent.state.snapshot().session.id;
+      const id = parent.state.deliverySnapshot().session.id;
       if (this.sessions.has(id) || this.external?.session.id === id) {
         await parent.close();
         // A concurrent adoption/open of the requested saved session wins.
@@ -730,7 +744,7 @@ export class DashboardHub {
     allowRunning = false,
   ): Promise<void> {
     const entry = this.owned(id);
-    const status = entry.state.snapshot().session.status;
+    const status = entry.state.deliverySnapshot().session.status;
     if (
       status === 'closed' ||
       (!allowRunning &&
@@ -781,6 +795,10 @@ export class DashboardHub {
     const attached = this.attached(id);
     if (attached) return attached.prompt(id, prompt);
     const entry = this.owned(id);
+    if (entry.running.size >= 32)
+      throw new DashboardInputError(
+        'This session already has 32 pending prompts.',
+      );
     const command = parseSlashCommand(prompt);
     if (entry.maintaining && !(command && nativeCommand(command.name)?.live))
       throw new DashboardInputError(
@@ -827,7 +845,7 @@ export class DashboardHub {
     const parents: DesktopStartup[] = [];
     for (const entry of this.sessions.values()) {
       if (!entry.parent) continue;
-      const snapshot = entry.state.snapshot();
+      const snapshot = entry.state.deliverySnapshot();
       if (snapshot.session.status === 'closed') continue;
       if (
         entry.running.size ||

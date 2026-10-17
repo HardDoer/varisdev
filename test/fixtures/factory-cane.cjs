@@ -129,6 +129,7 @@ async function main() {
         const y = Math.min(bounds.bottom - 4, target.y + 64);
         pointer(element, left, y);
         pointer(element, right, y);
+        advance();
         return {left, right, y};
       }
       function clickTarget(canvas, target, detail = 1) {
@@ -628,6 +629,7 @@ async function main() {
           const sceneBounds = host.getBoundingClientRect();
           pointer(host, sceneBounds.x + 100, sceneBounds.y + 200);
           pointer(host, sceneBounds.x + 300, sceneBounds.y + 200);
+          advance();
           pointer(holster, bounds.x + 4, bounds.y + 4, 'pointerdown');
           holster.focus();
           const readyToReturn = host.dataset.caneEquipped;
@@ -662,6 +664,7 @@ async function main() {
           );
           pointer(canvas, parent.x, stationaryY);
           pointer(canvas, parent.x, stationaryY);
+          advance();
           const stationaryHits = hits.length;
 
           hits.length = 0;
@@ -669,10 +672,12 @@ async function main() {
           const parentHitHash = fixture.dynamicHash();
           pointer(canvas, parentSweep.left, parentSweep.y);
           pointer(canvas, parentSweep.right, parentSweep.y);
+          advance();
           const duringCooldown = hits.filter(hit => hit.id === 'parent').length;
           clock += 400;
           pointer(canvas, parentSweep.left, parentSweep.y);
           pointer(canvas, parentSweep.right, parentSweep.y);
+          advance();
           const afterCooldown = hits.filter(hit => hit.id === 'parent').length;
 
           hits.length = 0;
@@ -680,6 +685,7 @@ async function main() {
           pointer(canvas, parentSweep.left, parentSweep.y);
           pointer(host, parentSweep.left, parentSweep.y, 'pointerleave');
           pointer(canvas, parentSweep.right, parentSweep.y);
+          advance();
           const teleportHits = hits.length;
 
           hits.length = 0;
@@ -850,6 +856,7 @@ async function main() {
             x => document.elementFromPoint(x, parent.y + 64) === panel);
           pointer(panel, parent.x - 90, parent.y + 64);
           pointer(panel, parent.x + 90, parent.y + 64);
+          advance();
           const panelHits = fixture.hits.length;
           // The first scene move crosses the body from the last outside sample.
           // Removing the panel must not turn that teleport into a real swing.
@@ -857,6 +864,7 @@ async function main() {
           panel.hidden = true;
           pointer(fixture.canvas, parent.x + 90, parent.y + 64);
           panel.hidden = false;
+          advance();
           const teleportHits = fixture.hits.length;
           const held = document.querySelector('.cane-held');
           const beforeLeave = held.getAttribute('transform');
@@ -867,11 +875,13 @@ async function main() {
           panel.focus();
           clickTarget(panel, {x: 390, y: 320});
           pointer(panel, 390, 320);
+          advance();
           const panelCursor = getComputedStyle(panel).cursor;
           const panelEquipped = fixture.host.dataset.caneEquipped;
           const holster = fixture.host.querySelector('.factory-cane-holster');
           const rect = holster.getBoundingClientRect();
           pointer(holster, rect.x + 10, rect.y + 10);
+          advance();
           const holsterCursor = getComputedStyle(holster).cursor;
           const holsterFollow = held.getAttribute('transform').startsWith(
             'translate(' + (rect.x + 10) + ' ' + (rect.y + 10) + ')');
@@ -887,6 +897,7 @@ async function main() {
           dialog.showModal();
           await opened;
           pointer(dialog, 390, 320);
+          advance();
           return {open: dialog.open, topLayer: document.querySelector('.factory-cane-layer').matches(':popover-open'),
             cursor: getComputedStyle(dialog).cursor};
         },
@@ -901,6 +912,7 @@ async function main() {
           popover.showPopover();
           await opened;
           pointer(popover, 390, 320);
+          advance();
           return {open: popover.matches(':popover-open'),
             cursor: getComputedStyle(popover).cursor};
         },
@@ -943,6 +955,7 @@ async function main() {
           const x = bounds.left + 180;
           const y = bounds.top + 230;
           pointer(fixture.canvas, x, y);
+          advance();
           const held = document.querySelector('.cane-held');
           const point = new DOMPoint(0, 0).matrixTransform(held.getScreenCTM());
           const overlay = document.querySelector('.factory-cane-overlay');
@@ -980,6 +993,7 @@ async function main() {
           holster.click();
           const bounds = host.getBoundingClientRect();
           pointer(host, bounds.left + 100, bounds.top + 160);
+          advance();
           const beforeDispose = {
             equipped: host.dataset.caneEquipped,
             nodes: host.children.length,

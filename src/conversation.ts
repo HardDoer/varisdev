@@ -1,3 +1,4 @@
+import {isDeepStrictEqual} from 'node:util';
 import {conversationImageRegistry} from './conversation-images.ts';
 import {
   MAX_VISUALIZATION_BLOCKS,
@@ -381,21 +382,31 @@ export class ConversationState {
     }
   }
 
-  replace(messages: Iterable<ConversationMessage>, truncated = false): void {
+  replace(messages: Iterable<ConversationMessage>, truncated = false): boolean {
+    const previousMessages = this.messages;
+    const previousTruncated = this.truncated;
     this.messages = [];
     this.truncated = truncated;
     for (const message of messages) {
       const previous = this.get(message.id);
       this.update({...previous, ...message, at: previous?.at ?? message.at});
     }
+    return (
+      previousTruncated !== this.truncated ||
+      !isDeepStrictEqual(previousMessages, this.messages)
+    );
   }
 
-  update(message: ConversationMessage): void {
+  update(message: ConversationMessage): boolean {
     const entry = projectMessage(message);
     const index = this.messages.findIndex(item => item.id === entry.id);
     if (index < 0) this.messages.push(entry);
-    else this.messages[index] = entry;
+    else {
+      if (isDeepStrictEqual(this.messages[index], entry)) return false;
+      this.messages[index] = entry;
+    }
     this.trim();
+    return true;
   }
 
   get(id: string): ConversationMessage | undefined {
@@ -403,16 +414,25 @@ export class ConversationState {
     return message ? projectMessage(message) : undefined;
   }
 
-  settle(status: 'cancelled' | 'failed' = 'cancelled', error?: string): void {
+  settle(
+    status: 'cancelled' | 'failed' = 'cancelled',
+    error?: string,
+  ): boolean {
     const now = new Date().toISOString();
+    let changed = false;
     for (const message of this.messages) {
-      if (message.streaming) message.streaming = false;
+      if (message.streaming) {
+        message.streaming = false;
+        changed = true;
+      }
       if (message.role === 'tool' && message.status === 'running') {
         message.status = status;
         message.finishedAt = now;
         if (error) message.error = publicText(error).slice(0, 4000);
+        changed = true;
       }
     }
+    return changed;
   }
 
   snapshot(): ConversationSnapshot {

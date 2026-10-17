@@ -189,7 +189,13 @@ async function main() {
         }
       };
       const canvas = document.querySelector('canvas');
-      const gl = canvas.getContext('webgl');
+      let canvasLayoutReads = 0;
+      const canvasRect = canvas.getBoundingClientRect.bind(canvas);
+      canvas.getBoundingClientRect = () => {
+        canvasLayoutReads++;
+        return canvasRect();
+      };
+      const gl = canvas.getContext('webgl', {preserveDrawingBuffer: true});
       if (!gl)
         throw new Error('Electron could not create a real WebGL context');
       const buffers = [];
@@ -487,6 +493,122 @@ async function main() {
             })),
           });
         },
+        materialPalette() {
+          const watched = {
+            shell: [0.11, 0.01, 0.01],
+            outline: [0.12, 0.02, 0.02],
+            screen: [0.13, 0.03, 0.03],
+            eyes: [0.14, 0.04, 0.04],
+            running: [0.21, 0.01, 0.02],
+            queued: [0.22, 0.02, 0.03],
+            completed: [0.23, 0.03, 0.04],
+            failed: [0.24, 0.04, 0.05],
+            cancelling: [0.25, 0.05, 0.06],
+            compacting: [0.26, 0.06, 0.07],
+            cancelled: [0.27, 0.07, 0.08],
+          };
+          scene.setMotion(false);
+          scene.setPalette(watched);
+          const countColor = color => {
+            let count = 0;
+            for (let offset = 0; offset < dynamic.length; offset += 10) {
+              if (
+                color.every(
+                  (channel, index) =>
+                    Math.abs(dynamic[offset + 6 + index] - channel) < 0.00001,
+                )
+              )
+                count++;
+            }
+            return count;
+          };
+          data = {
+            session: {
+              id: 'material-parent-signal',
+              status: 'running',
+              activity: 'Thinking',
+            },
+            agents: [],
+          };
+          scene.update(data, 'parent');
+          const parentSignals = {running: countColor(watched.running)};
+          data.session.status = 'compacting';
+          data.session.activity = 'Compacting context';
+          scene.update(data, 'parent');
+          parentSignals.compacting = countColor(watched.compacting);
+          data = {
+            session: {id: 'material-parent', status: 'idle'},
+            agents: [
+              'running',
+              'queued',
+              'completed',
+              'failed',
+              'cancelling',
+              'compacting',
+              'cancelled',
+            ].map(status => ({id: `material-${status}`, status})),
+          };
+          scene.update(data, 'parent');
+          const counts = Object.fromEntries(
+            Object.entries(watched).map(([name, color]) => [
+              name,
+              countColor(color),
+            ]),
+          );
+          scene.setMotion(true);
+          return {
+            counts,
+            parentSignals,
+            finite: dynamic.every(Number.isFinite),
+          };
+        },
+        performanceScenario() {
+          data = {
+            session: {id: 'performance-parent', status: 'running'},
+            agents: Array.from({length: 6}, (_, index) => ({
+              id: `performance-agent-${index}`,
+              status: 'running',
+            })),
+          };
+          scene.update(data, 'parent');
+          const beforeBurst = draws;
+          for (let index = 0; index < 40; index++) {
+            data.session.activity = `Streaming ${index}`;
+            scene.update(data, 'parent');
+          }
+          const burstDraws = draws - beforeBurst;
+          const beforeFrames = draws;
+          canvasLayoutReads = 0;
+          for (let index = 0; index < 60; index++) {
+            clock += 16;
+            const queued = [...callbacks];
+            callbacks.clear();
+            for (const [, callback] of queued) callback(clock);
+          }
+          const animatedDraws = draws - beforeFrames;
+          const layoutReads = canvasLayoutReads;
+          document.body.hidden = true;
+          const beforeHidden = draws;
+          scene.update(data, 'parent');
+          for (let index = 0; index < 5; index++) {
+            clock += 16;
+            const queued = [...callbacks];
+            callbacks.clear();
+            for (const [, callback] of queued) callback(clock);
+          }
+          const hiddenDraws = draws - beforeHidden;
+          const hiddenPending = callbacks.size;
+          document.body.hidden = false;
+          scene.update(data, 'parent');
+          return {
+            burstDraws,
+            animatedDraws,
+            layoutReads,
+            hiddenDraws,
+            hiddenPending,
+            resumedPending: callbacks.size,
+          };
+        },
         mode: () => canvas.dataset.parentMode,
         inspect,
         advance(frames) {
@@ -680,6 +802,7 @@ async function main() {
       assert.equal(working.mode, 'work');
       assert.ok(Math.abs(working.centerX + 6.25) < 0.001);
       await evaluate(() => window.fixture.update('idle'));
+      await advance();
       await stillRest(await inspect());
     },
   );
@@ -696,6 +819,7 @@ async function main() {
       assert.equal(fresh.activity, '');
       assert.ok(Math.abs(fresh.centerX + 6.25) < 0.001);
       await evaluate(() => window.fixture.update('compacting'));
+      await advance();
       assert.equal((await inspect()).mode, 'startled');
       finiteRendered(await until('work'));
     },
@@ -807,6 +931,30 @@ async function main() {
   );
 
   await run(
+    'heavy scene updates coalesce, cap geometry paints, avoid frame layout reads, and stop while hidden',
+    async () => {
+      const result = await evaluate(() => window.fixture.performanceScenario());
+      assert.equal(
+        result.burstDraws,
+        0,
+        'snapshot bursts must wait for the already queued frame',
+      );
+      assert.ok(
+        result.animatedDraws >= 45 && result.animatedDraws <= 75,
+        `30 fps rendering should issue 45–75 draws, got ${result.animatedDraws}`,
+      );
+      assert.equal(
+        result.layoutReads,
+        0,
+        'animation frames must use ResizeObserver dimensions',
+      );
+      assert.equal(result.hiddenDraws, 0);
+      assert.equal(result.hiddenPending, 0);
+      assert.equal(result.resumedPending, 1);
+    },
+  );
+
+  await run(
     'an idle parent visits another open factory, disappears locally, and runs from the remote position all the way home when prompted',
     async () => {
       const home = await reset('visit-source');
@@ -892,6 +1040,18 @@ async function main() {
       );
       assert.equal(poses.stopped, '');
       assert.equal(poses.disabled, '');
+    },
+  );
+
+  await run(
+    'WebGL robots keep shell, outline, visor, eyes, and every status light distinct',
+    async () => {
+      const result = await evaluate(() => window.fixture.materialPalette());
+      assert.equal(result.finite, true);
+      assert.ok(result.parentSignals.running > 0);
+      assert.ok(result.parentSignals.compacting > 0);
+      for (const [material, count] of Object.entries(result.counts))
+        assert.ok(count > 0, `${material} must reach uploaded scene geometry`);
     },
   );
 

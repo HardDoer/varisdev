@@ -24,25 +24,78 @@ function decodedLabel(label) {
   }
 }
 
+export function fileLinkParts(text) {
+  const parts = [];
+  const openings = /\[|file:\/\//gi;
+  const uri = /[^\s<>`]+/y;
+  const endings = new Map();
+  // Reuse forward searches when many opening delimiters have no closing pair.
+  const next = (character, from) => {
+    let position = endings.get(character);
+    if (position === undefined || position < from) {
+      position = text.indexOf(character, from);
+      if (position < 0) position = text.length;
+      endings.set(character, position);
+    }
+    return position;
+  };
+  let start = 0;
+  for (let match; (match = openings.exec(text));) {
+    const index = match.index;
+    let end;
+    let label;
+    let target;
+    if (match[0] === '[') {
+      const lineEnd = next('\n', index + 1);
+      const labelEnd = next(']', index + 1);
+      if (
+        labelEnd <= index + 1 ||
+        labelEnd >= lineEnd ||
+        text[labelEnd + 1] !== '('
+      )
+        continue;
+      const targetStart = labelEnd + 2;
+      let targetEnd = next(')', targetStart);
+      if (text[targetStart] === '<') {
+        const angleEnd = next('>', targetStart + 1);
+        if (
+          angleEnd > targetStart + 1 &&
+          angleEnd < lineEnd &&
+          text[angleEnd + 1] === ')'
+        )
+          targetEnd = angleEnd + 1;
+      }
+      if (targetEnd <= targetStart || targetEnd >= lineEnd) continue;
+      label = text.slice(index + 1, labelEnd);
+      target = text.slice(targetStart, targetEnd);
+      end = targetEnd + 1;
+    } else {
+      uri.lastIndex = openings.lastIndex;
+      const value = uri.exec(text);
+      if (!value) continue;
+      end = uri.lastIndex;
+      target = text.slice(index, end);
+    }
+    openings.lastIndex = end;
+    const path = fileLinkPath(target);
+    if (!path) continue;
+    if (index > start) parts.push({text: text.slice(start, index)});
+    parts.push({
+      text: decodedLabel(label || path.split(/[/\\]/).at(-1) || path),
+      path,
+    });
+    start = end;
+  }
+  if (start < text.length || !parts.length)
+    parts.push({text: text.slice(start)});
+  return parts;
+}
+
 // Reuse unchanged nodes so streaming messages retain native text selection.
 export function renderFileLinks(target, text, updateText) {
   if (target._linkText === text) return false;
   target._linkText = text;
-  const parts = [];
-  const links = /\[([^\]\n]+)\]\((<[^>\n]+>|[^)\n]+)\)|file:\/\/[^\s<>`]+/gi;
-  let start = 0;
-  for (const match of text.matchAll(links)) {
-    const path = fileLinkPath(match[2] || match[0]);
-    if (!path) continue;
-    if (match.index > start) parts.push({text: text.slice(start, match.index)});
-    parts.push({
-      text: decodedLabel(match[1] || path.split(/[/\\]/).at(-1) || path),
-      path,
-    });
-    start = match.index + match[0].length;
-  }
-  if (start < text.length || !parts.length)
-    parts.push({text: text.slice(start)});
+  const parts = fileLinkParts(text);
   for (const [index, part] of parts.entries()) {
     let node = target.childNodes[index];
     if (part.path) {

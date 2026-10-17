@@ -2,6 +2,7 @@
 const NS = 'http://www.w3.org/2000/svg';
 const SHAFT = 'M0 6 V-92 A12 12 0 0 1 24 -92 V-82';
 const COOLDOWN = 320;
+const MAX_PENDING_MOVES = 128;
 const MIN_SWING_SPEED = 0.18; // CSS pixels per millisecond.
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
@@ -205,6 +206,8 @@ export function createFactoryCane(
     disposed = false,
     sessionId;
   let frame = 0,
+    moveFrame = 0,
+    pendingMoves = [],
     samples = [],
     sparks = [];
   let previousRect = '',
@@ -221,6 +224,9 @@ export function createFactoryCane(
   }
   function resetPointer() {
     swing.reset();
+    if (moveFrame) window.cancelAnimationFrame(moveFrame);
+    moveFrame = 0;
+    pendingMoves = [];
     cane.style.display = 'none';
     container.classList.remove('cane-in-scene');
     document.documentElement.classList.remove('factory-cane-active');
@@ -284,22 +290,16 @@ export function createFactoryCane(
     if (samples.length || sparks.length)
       frame = window.requestAnimationFrame(paintEffects);
   }
-  function onMove(event) {
-    if (!equipped || event.pointerType === 'touch') return;
-    const rect = container.getBoundingClientRect();
-    const x = event.clientX,
-      y = event.clientY;
+  function paintMove(move, rect, visibleTargets) {
+    const {x, y, at: now} = move;
     const inScene =
-      container.contains(event.target) &&
-      !holster.contains(event.target) &&
+      move.inScene &&
       rect.width > 0 &&
       rect.height > 0 &&
       x >= rect.left &&
       x <= rect.right &&
       y >= rect.top &&
       y <= rect.bottom;
-    // Stop only scene moves: the rest of the app keeps normal hover/click behavior.
-    if (inScene) event.stopPropagation();
     const rectKey = `${rect.x}:${rect.y}:${rect.width}:${rect.height}`;
     if (rectKey !== previousRect || inScene !== wasInScene) {
       swing.reset();
@@ -307,23 +307,11 @@ export function createFactoryCane(
       previousRect = rectKey;
     }
     wasInScene = inScene;
-    const now = window.performance.now();
-    const targets = inScene
-      ? getTargets().filter(
-          target =>
-            [target.x, target.y, target.radius].every(Number.isFinite) &&
-            target.radius > 0 &&
-            target.x >= rect.left &&
-            target.x <= rect.right &&
-            target.y >= rect.top &&
-            target.y <= rect.bottom,
-        )
-      : [];
+    const targets = inScene ? visibleTargets : [];
     const result = swing.move(x, y, now, targets, motion);
-    overlay.setAttribute(
-      'viewBox',
-      `0 0 ${window.innerWidth} ${window.innerHeight}`,
-    );
+    const viewBox = `0 0 ${window.innerWidth} ${window.innerHeight}`;
+    if (overlay.getAttribute('viewBox') !== viewBox)
+      overlay.setAttribute('viewBox', viewBox);
     cane.style.display = '';
     cane.setAttribute(
       'transform',
@@ -359,6 +347,57 @@ export function createFactoryCane(
       paintEffects(now);
     }
   }
+  function paintMoves() {
+    moveFrame = 0;
+    if (!equipped || disposed || !pendingMoves.length) return;
+    const moves = pendingMoves;
+    pendingMoves = [];
+    const rect = container.getBoundingClientRect();
+    const visibleTargets = moves.some(move => move.inScene)
+      ? getTargets().filter(
+          target =>
+            [target.x, target.y, target.radius].every(Number.isFinite) &&
+            target.radius > 0 &&
+            target.x >= rect.left &&
+            target.x <= rect.right &&
+            target.y >= rect.top &&
+            target.y <= rect.bottom,
+        )
+      : [];
+    for (const move of moves) {
+      if (move.reset) {
+        swing.reset();
+        samples = [];
+        wasInScene = false;
+      } else paintMove(move, rect, visibleTargets);
+    }
+  }
+  function queueMove(move) {
+    if (pendingMoves.length >= MAX_PENDING_MOVES) {
+      // Keep the start and latest pointer position without sweeping across the
+      // omitted middle of an input flood.
+      pendingMoves.length = MAX_PENDING_MOVES - 2;
+      pendingMoves.push({reset: true});
+    }
+    pendingMoves.push(move);
+    if (!moveFrame) moveFrame = window.requestAnimationFrame(paintMoves);
+  }
+  function onMove(event) {
+    if (!equipped || event.pointerType === 'touch') return;
+    const inScene =
+      container.contains(event.target) && !holster.contains(event.target);
+    // Stop only scene moves: the rest of the app keeps normal hover/click behavior.
+    if (inScene) event.stopPropagation();
+    const move = {
+      x: event.clientX,
+      y: event.clientY,
+      at: window.performance.now(),
+      inScene,
+    };
+    // Preserve curved paths between frames. Geometry and target bounds are
+    // still measured once when the batch is painted.
+    queueMove(move);
+  }
   function toggle(event) {
     equip(!equipped);
     if (equipped && event.detail > 0) onMove(event);
@@ -380,8 +419,10 @@ export function createFactoryCane(
     stow();
   }
   function onSceneLeave() {
-    // A fresh sweep on reentry, but keep drawing the cane over the other panels.
+    if (!equipped) return;
+    // Preserve the reset boundary when moves on both sides of it share a frame.
     swing.reset();
+    if (pendingMoves.length) queueMove({reset: true});
     wasInScene = false;
     container.classList.remove('cane-in-scene');
   }

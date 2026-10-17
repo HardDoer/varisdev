@@ -196,6 +196,31 @@ const report = {cases: []};
       await until(() => $('markdown-editor').value === '# Retained across sessions');
       assert($('markdown-tabs').children.length === 2, 'Original project pins restored');
     });
+    await check('Matching tab paths rebuild their handlers when the project changes', async () => {
+      fixture.put('mirror-one', '/shared/FIRST.md', '# First project original');
+      fixture.put('mirror-one', '/shared/SECOND.md', '# First project second');
+      fixture.put('mirror-two', '/shared/FIRST.md', '# Second project original');
+      fixture.put('mirror-two', '/shared/SECOND.md', '# Second project second');
+      fixture.select('mirror-one', '/scope/one');
+      await fixture.open('/shared/FIRST.md', {pin: true});
+      await fixture.open('/shared/SECOND.md', {pin: true});
+      fixture.select('mirror-two', '/scope/two');
+      await fixture.open('/shared/FIRST.md', {pin: true});
+      await fixture.open('/shared/SECOND.md', {pin: true});
+      fixture.put('mirror-one', '/shared/FIRST.md', '# First project updated');
+      fixture.select('mirror-one', '/scope/one');
+      $('markdown-tabs').querySelector('button').click();
+      await wait(100);
+      assert(
+        $('markdown-preview').textContent.includes('First project updated'),
+        'Tab refresh uses the selected project document',
+      );
+      assert(
+        !$('markdown-preview').textContent.includes('Second project'),
+        'Matching paths do not retain another project handler',
+      );
+      fixture.select('one');
+    });
     await check('Unpin persists and panel Escape returns focus without discarding edits', async () => {
       $('markdown-pin').click();
       const stored = JSON.parse(localStorage.getItem('varisdev.markdown-pins.v1'));
@@ -527,7 +552,10 @@ const report = {cases: []};
         ),
         'Other project recovers its own same-name draft',
       );
-      await evaluate("document.getElementById('markdown-cancel').click()");
+      await evaluate(`(() => {
+      document.getElementById('markdown-cancel').click();
+      window.markdownFixture.flush();
+    })()`);
       assert(
         await evaluate(
           "!JSON.parse(localStorage.getItem('varisdev.markdown-drafts.v1')).some(([, value]) => value.cwd === '/project/two' && value.path.endsWith('RECOVERY.md'))",
@@ -554,6 +582,7 @@ const report = {cases: []};
     async () => {
       await evaluate("document.getElementById('markdown-reload').click()");
       await new Promise(resolve => setTimeout(resolve, 100));
+      await evaluate('window.markdownFixture.flush()');
       assert(
         await evaluate(
           "document.getElementById('markdown-editor').value === '# Agent changed disk during restart' && !JSON.parse(localStorage.getItem('varisdev.markdown-drafts.v1')).some(([, value]) => value.cwd === '/project/one' && value.path.endsWith('RECOVERY.md'))",
@@ -567,6 +596,7 @@ const report = {cases: []};
       document.getElementById('markdown-save').click();
     })()`);
       await new Promise(resolve => setTimeout(resolve, 100));
+      await evaluate('window.markdownFixture.flush()');
       assert(
         await evaluate(
           "document.getElementById('markdown-status').textContent === 'Saved' && !JSON.parse(localStorage.getItem('varisdev.markdown-drafts.v1')).some(([, value]) => value.cwd === '/project/one' && value.path.endsWith('RECOVERY.md'))",
@@ -595,6 +625,7 @@ const report = {cases: []};
       const draft = value => {editor.value = value; editor.dispatchEvent(new Event('input', {bubbles: true}));};
       const restartBlocked = () => {try {fixture.flush(); return false;} catch {return true;}};
       draft('# Previously stored draft');
+      fixture.flush();
       fixture.failDraftWrites(true);
       draft('# Still editable after quota failure');
       const failed = restartBlocked() && document.getElementById('markdown-storage-status').textContent.includes('could not be saved') && editor.value === '# Still editable after quota failure';

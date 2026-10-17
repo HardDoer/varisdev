@@ -1,6 +1,7 @@
 /* global document */
 const $ = id => document.getElementById(id);
-const number = value => new Intl.NumberFormat().format(value || 0);
+const numberFormatter = new Intl.NumberFormat();
+const number = value => numberFormatter.format(value || 0);
 const cost = value => `$${(value || 0).toFixed(4)}`;
 let current;
 let reveal;

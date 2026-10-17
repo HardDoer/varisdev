@@ -382,6 +382,12 @@ async function main() {
   report.cases.push(
     'account controls remain reachable from the app menu in an open parent session',
   );
+  assert.equal(
+    await evaluate(() =>
+      document.querySelector('#tool-models > summary').textContent.trim(),
+    ),
+    'Image and audio models',
+  );
   await evaluate(() => {
     document.getElementById('tool-models').open = true;
   });
@@ -402,7 +408,7 @@ async function main() {
     'user-image-model',
   );
   report.cases.push(
-    'tool model choices are editable and saved through the GUI',
+    'Image and audio model choices are clearly labelled, editable and saved through the GUI',
   );
   runtime.registerNativeProvider({
     ...runtime.getProvider('openai'),

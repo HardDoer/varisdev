@@ -150,7 +150,7 @@ void test('/commit rejects unavailable models, disallowed inheritance and stale 
   });
   await assert.rejects(
     fixture.run(),
-    /unavailable.*Menu → Model settings → Commit/,
+    /unavailable.*Menu → Tool models → Commit/,
   );
   await saveToolSettings('commit', {model: null, thinkingLevel: null});
   await saveToolSettings('agents', {
@@ -158,7 +158,7 @@ void test('/commit rejects unavailable models, disallowed inheritance and stale 
   });
   await assert.rejects(
     fixture.run(),
-    /Menu → Model settings.*custom\/organization\/model/,
+    /Menu → Tool models.*custom\/organization\/model/,
   );
   // An externally edited file can contain an obsolete explicit choice.
   await writeFile(
@@ -177,7 +177,7 @@ void test('/commit surfaces SDK effort limits and missing parent selection befor
   await saveToolSettings('commit', {model: 'p/simple', thinkingLevel: 'high'});
   await assert.rejects(
     fixture.run(),
-    /unsupported.*Supported levels: off.*Menu → Model settings → Commit/,
+    /unsupported.*Supported levels: off.*Menu → Tool models → Commit/,
   );
   await saveToolSettings('commit', {model: 'p/parent', thinkingLevel: 'xhigh'});
   await assert.rejects(fixture.run(), /xhigh is unsupported/);
@@ -193,7 +193,7 @@ void test('/commit requires an agent model selection with fresh settings', async
   const fixture = await setup(t, false);
   await assert.rejects(
     fixture.run(),
-    /No agent models selected.*Choose a model in Menu → Model settings/,
+    /No agent models selected.*Choose a model in Menu → Tool models/,
   );
   assert.equal(fixture.messages.length, 0);
 });

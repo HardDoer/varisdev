@@ -50,9 +50,7 @@ function agents(value: unknown): ToolSettings['agents'] {
   const {allowedModels} = object(value, ['allowedModels']);
   if (allowedModels === null) return {allowedModels: null};
   if (!Array.isArray(allowedModels) || allowedModels.length > 512)
-    throw new Error(
-      'Choose up to 512 allowed models in Menu → Model settings.',
-    );
+    throw new Error('Choose up to 512 allowed models in Menu → Tool models.');
   return {allowedModels: [...new Set(Array.from(allowedModels, modelId))]};
 }
 
@@ -126,7 +124,7 @@ export async function saveToolSettings(
         !settings.agents.allowedModels.includes(settings.commit.model)
       )
         throw new Error(
-          `Commit model ${settings.commit.model} must be allowed. Update Agent models or Commit in Menu → Model settings. Allowed models: ${settings.agents.allowedModels.join(', ')}.`,
+          `Commit model ${settings.commit.model} must be allowed. Update Agent models or Commit in Menu → Tool models. Allowed models: ${settings.agents.allowedModels.join(', ')}.`,
         );
       await assertAgentModelAllowed(settings.commit.model, settings);
     }
@@ -158,10 +156,10 @@ export async function assertAgentModelAllowed(
   const {allowedModels} = (settings ?? (await readToolSettings())).agents;
   if (allowedModels?.length === 0)
     throw new Error(
-      'No agent models selected. Choose a model in Menu → Model settings.',
+      'No agent models selected. Choose a model in Menu → Tool models.',
     );
   if (allowedModels !== null && !allowedModels.includes(model))
     throw new Error(
-      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Model settings. Allowed models: ${allowedModels.join(', ')}.`,
+      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Tool models. Allowed models: ${allowedModels.join(', ')}.`,
     );
 }

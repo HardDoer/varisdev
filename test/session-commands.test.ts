@@ -8,11 +8,10 @@ import {
   readFile,
   readdir,
   rm,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {
   createAgentSessionFromServices,
@@ -27,6 +26,7 @@ import {
   type SessionCommandResult,
   type SessionCommandUI,
 } from '../src/dashboard/session-commands.ts';
+import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
 function nativeUI() {
   const inputs: Array<string | undefined> = [];
@@ -648,16 +648,30 @@ void test('/import uses SDK migrations for legacy sessions and rejects oversized
   await assert.rejects(run('import', huge), /128 MiB/);
 });
 
-void test('/export detects symlink and hardlink aliases of the live transcript', async t => {
+void test('/export detects directory and hardlink aliases of the live transcript', async t => {
   const {run, session, root} = await fixture(t);
-  const original = await readFile(session.sessionFile!, 'utf8');
-  const symbolic = join(root, 'live-symlink.jsonl');
+  const live = session.sessionFile!;
+  const original = await readFile(live, 'utf8');
+  const directoryAlias = join(root, 'live-directory-alias');
   const hard = join(root, 'live-hardlink.jsonl');
-  await symlink(session.sessionFile!, symbolic);
-  await link(session.sessionFile!, hard);
-  await assert.rejects(run('export', symbolic), /live session/);
+  await createDirectoryLink(dirname(live), directoryAlias);
+  await link(live, hard);
+  await assert.rejects(
+    run('export', join(directoryAlias, basename(live))),
+    /live session/,
+  );
   await assert.rejects(run('export', hard), /live session/);
-  assert.equal(await readFile(session.sessionFile!, 'utf8'), original);
+  assert.equal(await readFile(live, 'utf8'), original);
+});
+
+void test('/export detects file symlink aliases of the live transcript when supported', async t => {
+  const {run, session, root} = await fixture(t);
+  const live = session.sessionFile!;
+  const original = await readFile(live, 'utf8');
+  const symbolic = join(root, 'live-symlink.jsonl');
+  if (!(await createFileSymlinkOrSkip(t, live, symbolic))) return;
+  await assert.rejects(run('export', symbolic), /live session/);
+  assert.equal(await readFile(live, 'utf8'), original);
 });
 
 void test('/clone preserves the SDK compaction anchor when label entries are canonicalized', async t => {

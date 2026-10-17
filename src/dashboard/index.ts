@@ -65,7 +65,7 @@ export function registerFactory(
     allowRunning = false,
   ) => {
     ensureAttached(current);
-    const status = current.state.snapshot().session.status;
+    const status = current.state.deliverySnapshot().session.status;
     if (
       current.stopping ||
       status === 'closed' ||
@@ -343,7 +343,10 @@ export function registerFactory(
           current.stopping = true;
           cancelBeforeStart = true;
           state.record('session', 'Stopping');
-          const queued = state.snapshot().queue ?? {steering: [], followUp: []};
+          const queued = state.deliverySnapshot().queue ?? {
+            steering: [],
+            followUp: [],
+          };
           ctx.abort();
           try {
             await Promise.allSettled([...current.configurations]);

@@ -55,7 +55,7 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      12,
+      14,
       'Every animation scenario must execute',
     );
     for (const result of report.cases) {

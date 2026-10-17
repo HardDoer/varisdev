@@ -310,21 +310,23 @@ function installHandlers(): void {
       sessionId === undefined
         ? undefined
         : hub
-            .snapshot()
+            .deliverySnapshot()
             .sessions.find(item => item.session.id === id(sessionId));
     if (sessionId !== undefined && !selected)
       throw new DashboardInputError('Choose a valid parent session.');
     return loadPluginThemes({cwd: selected?.session.cwd ?? launchCwd});
   });
-  handle('pidev:get-state', () => hub.snapshot());
+  handle('pidev:get-state', () => hub.deliverySnapshot());
   handle('pidev:recent-projects', () => preferences.recentProjects());
   handle('pidev:list-sessions', cwd => hub.listSessions(cwd));
   handle('pidev:create-session', async input => {
-    const previousIds = hub.snapshot().sessions.map(item => item.session.id);
+    const previousIds = hub
+      .deliverySnapshot()
+      .sessions.map(item => item.session.id);
     try {
       const result = await hub.createSession(input);
       const cwd = hub
-        .snapshot()
+        .deliverySnapshot()
         .sessions.find(item => item.session.id === result.id)!.session.cwd;
       try {
         preferences.rememberFolder(cwd);
@@ -338,7 +340,7 @@ function installHandlers(): void {
       // Resume may replace sessions without going through the explicit close
       // handler. Release their native terminals even after a partial failure.
       const retained = new Set(
-        hub.snapshot().sessions.map(item => item.session.id),
+        hub.deliverySnapshot().sessions.map(item => item.session.id),
       );
       for (const sessionId of previousIds)
         if (!retained.has(sessionId)) terminals.close(sessionId);
@@ -384,14 +386,16 @@ function installHandlers(): void {
   handle('pidev:open-terminal', async sessionId => {
     const parentId = id(sessionId);
     const selected = hub
-      .snapshot()
+      .deliverySnapshot()
       .sessions.find(item => item.session.id === parentId);
     if (!selected || closingSessions.has(parentId))
       throw new DashboardInputError('Choose an open parent session.');
     const terminal = await terminals.open(parentId, selected.session.cwd);
     if (
       closingSessions.has(parentId) ||
-      !hub.snapshot().sessions.some(item => item.session.id === parentId)
+      !hub
+        .deliverySnapshot()
+        .sessions.some(item => item.session.id === parentId)
     ) {
       terminals.close(parentId);
       throw new DashboardInputError('This parent session has closed.');
@@ -407,7 +411,7 @@ function installHandlers(): void {
   handle('pidev:terminal-close', sessionId => terminals.close(id(sessionId)));
   handle('pidev:open-file', (sessionId, path) => {
     const selected = hub
-      .snapshot()
+      .deliverySnapshot()
       .sessions.find(item => item.session.id === id(sessionId));
     if (!selected)
       throw new DashboardInputError('Choose a valid parent session.');
@@ -533,7 +537,7 @@ async function createWindow(): Promise<void> {
 }
 
 async function restartForUpdate(selectedSessionId?: unknown): Promise<void> {
-  const snapshot = hub.snapshot();
+  const snapshot = hub.deliverySnapshot();
   const selectedId =
     selectedSessionId === undefined
       ? snapshot.selectedSessionId
@@ -584,7 +588,11 @@ async function restartForUpdate(selectedSessionId?: unknown): Promise<void> {
       command.env.VARISDEV_DESKTOP_RESTORE = restorePath;
       command.args = [join(installRoot, 'bin', 'varisdev.mjs'), '--overview'];
     }
-    requireUpdateRestart(runtime.status(), hub.snapshot(), sessionOperations);
+    requireUpdateRestart(
+      runtime.status(),
+      hub.deliverySnapshot(),
+      sessionOperations,
+    );
     if (!process.env.VARISDEV_NODE_EXECUTABLE) {
       // ELECTRON_RUN_AS_NODE also affects Electron's relaunch helper. Use a
       // separate CLI process that waits until this desktop has fully exited.
@@ -629,7 +637,7 @@ async function openProject(project?: string): Promise<void> {
   showWindow();
   if (!project || shuttingDown || restarting) return;
   const existing = hub
-    .snapshot()
+    .deliverySnapshot()
     .sessions.find(
       item => item.session.cwd === project && item.session.status !== 'closed',
     );
@@ -718,7 +726,7 @@ const unsubscribe = hub.subscribe(() => {
       !mainWindow.isDestroyed() &&
       !mainWindow.webContents.isDestroyed()
     ) {
-      mainWindow.webContents.send('pidev:snapshot', hub.snapshot());
+      mainWindow.webContents.send('pidev:snapshot', hub.deliverySnapshot());
     }
   }, 80);
   snapshotTimer.unref();
@@ -764,7 +772,7 @@ process.on('message', (message: unknown) => {
     if (attachedSessionId !== nextId)
       requests.disconnect('The attached parent session changed.');
     attachedSessionId = nextId;
-    hub.updateExternal(payload.snapshot);
+    hub.updateExternal(payload.snapshot, false);
     hub.setExternalControl(nextId ? externalControl : undefined);
   } else if (
     payload.type === 'detach' &&
@@ -798,7 +806,7 @@ async function shutdown(): Promise<void> {
     if (
       attachedSessionId &&
       hub
-        .snapshot()
+        .deliverySnapshot()
         .sessions.some(item => item.session.id === attachedSessionId)
     ) {
       try {

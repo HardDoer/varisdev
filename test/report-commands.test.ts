@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import type {AgentSession} from '@earendil-works/pi-coding-agent';
 import type {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
@@ -474,7 +475,10 @@ void test('zip delivery remains local, is confirmed, and records its path', asyn
   await f.run('bug');
   assert.equal(kinds(f, 'uploadBug').length, 0);
   const exported = kinds(f, 'exportBug')[0].data as {path: string};
-  assert.equal(exported.path, '/workspace/pi-bug-report-report-id.zip');
+  assert.equal(
+    exported.path,
+    join('/workspace', 'pi-bug-report-report-id.zip'),
+  );
   assert.match(kinds(f, 'confirm')[0].message!, /Nothing will be uploaded/);
   assert.deepEqual(
     (kinds(f, 'recordBug')[0].data as {delivery: unknown}).delivery,

@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-import {lstat, open} from 'node:fs/promises';
+import {lstat, open, realpath} from 'node:fs/promises';
 import {isAbsolute, relative, resolve} from 'node:path';
 
 export interface WorkspaceDiff {
@@ -11,6 +11,16 @@ export interface WorkspaceDiff {
 }
 
 const outputLimit = 200000;
+
+function leaves(root: string, path: string): boolean {
+  const local = relative(root, path);
+  return (
+    isAbsolute(local) ||
+    local === '..' ||
+    local.startsWith('../') ||
+    local.startsWith('..\\')
+  );
+}
 
 function git(
   cwd: string,
@@ -72,6 +82,8 @@ export async function readWorkspaceDiff(cwd: string): Promise<WorkspaceDiff> {
   ]);
   if (status.code !== 0 && !status.truncated)
     throw new Error('Could not read workspace status.');
+  const workspaceRoot = resolve(root.text.trim());
+  const canonicalRoot = await realpath(workspaceRoot);
   const entries = status.text.split('\0');
   for (let index = 0; index < entries.length; index++) {
     const line = entries[index];
@@ -109,23 +121,22 @@ export async function readWorkspaceDiff(cwd: string): Promise<WorkspaceDiff> {
       result.truncated = true;
       break;
     }
-    const path = resolve(root.text.trim(), file.path);
-    const local = relative(root.text.trim(), path);
-    if (
-      isAbsolute(local) ||
-      local === '..' ||
-      local.startsWith('../') ||
-      local.startsWith('..\\')
-    )
-      continue;
+    const path = resolve(workspaceRoot, file.path);
+    if (leaves(workspaceRoot, path)) continue;
     output += `\n--- /dev/null\n+++ ${file.path}\n`;
     try {
-      // Do not follow an untracked symlink to files outside the workspace.
+      // Reject leaf links as well as regular files reached through a directory
+      // link that Git traversed while collecting untracked paths.
       if (!(await lstat(path)).isFile()) {
         output += '[Untracked symlink or non-regular file]\n';
         continue;
       }
-      const handle = await open(path, 'r');
+      const canonical = await realpath(path);
+      if (leaves(canonicalRoot, canonical)) {
+        output += '[Untracked file outside workspace]\n';
+        continue;
+      }
+      const handle = await open(canonical, 'r');
       try {
         const bytes = Buffer.alloc(8193);
         const {bytesRead} = await handle.read(bytes, 0, bytes.length, 0);

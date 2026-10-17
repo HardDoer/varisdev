@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFile as execFileCallback} from 'node:child_process';
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -16,6 +9,7 @@ import {test} from 'node:test';
 import {promisify} from 'node:util';
 import {loadPluginThemes} from '../src/desktop/plugin-themes.ts';
 import {THEMES} from '../assets/dashboard/themes.js';
+import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
 async function fixture(t: {after(fn: () => Promise<void>): void}) {
   const root = await mkdtemp(join(tmpdir(), 'varisdev-plugin-themes-'));
@@ -204,13 +198,15 @@ void test('project installations override duplicate global theme IDs and retain 
 
 void test('malformed themes, outside resources, and oversized CSS produce bounded diagnostics', async t => {
   const f = await fixture(t);
+  const outside = join(f.root, 'outside');
+  await mkdir(outside);
   await writeFile(
-    join(f.root, 'outside.json'),
+    join(outside, 'outside.json'),
     JSON.stringify({id: 'outside', name: 'Outside'}),
   );
-  await symlink(join(f.root, 'outside.json'), join(f.plugin, 'linked.json'));
+  await createDirectoryLink(outside, join(f.plugin, 'linked'));
   const paths = [
-    './linked.json',
+    './linked/outside.json',
     '../../../outside.json',
     './bad.json',
     './base.json',
@@ -247,6 +243,25 @@ void test('malformed themes, outside resources, and oversized CSS produce bounde
   assert.ok(result.errors.some(error => error.includes('six digit hex')));
   assert.ok(result.errors.some(error => error.includes('128 KB')));
   assert.ok(result.errors.every(error => error.length <= 770));
+});
+
+void test('outside theme file symlinks are rejected when supported', async t => {
+  const f = await fixture(t);
+  const outside = join(f.root, 'outside.json');
+  const linked = join(f.plugin, 'linked.json');
+  await writeFile(outside, JSON.stringify({id: 'outside', name: 'Outside'}));
+  if (!(await createFileSymlinkOrSkip(t, outside, linked))) return;
+  await writeFile(
+    join(f.plugin, 'package.json'),
+    JSON.stringify({
+      name: 'test-style',
+      varisdev: {themes: ['./linked.json']},
+    }),
+  );
+  const result = await loadPluginThemes(f);
+  assert.deepEqual(result.themes, []);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /leaves the package/);
 });
 
 void test('theme registration count is bounded', async t => {

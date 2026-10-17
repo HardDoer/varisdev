@@ -72,36 +72,106 @@ function node(tag, text, className) {
 
 // File text is always appended as text nodes. Markdown never creates raw HTML.
 function inline(target, text, linkFiles) {
-  const tokens =
-    /(`+)([^`\n]+)\1|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+  const candidates = /[`*_[]/g;
   let start = 0;
-  for (const match of text.matchAll(tokens)) {
-    target.append(document.createTextNode(text.slice(start, match.index)));
-    const item = match[2]
-      ? node('code', match[2])
-      : match[3] || match[4]
-        ? node('strong', match[3] || match[4])
-        : match[5]
-          ? node('em', match[5])
-          : node('span', match[6], 'markdown-link');
-    if (match[7]) item.title = match[7];
-    const path = linkFiles && match[7] && fileLinkPath(match[7]);
-    if (path) {
-      const link = document.createElement('a');
-      link.href = '#';
-      link.dataset.filePath = path;
-      link.title = path;
-      try {
-        link.textContent = decodeURIComponent(match[6]);
-      } catch {
-        link.textContent = match[6];
-      }
-      target.append(link);
-      start = match.index + match[0].length;
-      continue;
+  let bracketEnd = -1;
+  let parenEnd = -1;
+  let lineEnd = -1;
+  for (let match; (match = candidates.exec(text));) {
+    const index = match.index;
+    const marker = match[0];
+    if (lineEnd <= index) {
+      lineEnd = text.indexOf('\n', index);
+      if (lineEnd < 0) lineEnd = text.length;
+      bracketEnd = -1;
+      parenEnd = -1;
     }
-    target.append(item);
-    start = match.index + match[0].length;
+    let end;
+    let content;
+    let kind;
+    let destination;
+    if (marker === '`') {
+      let runEnd = index + 1;
+      while (text[runEnd] === '`') runEnd++;
+      const width = runEnd - index;
+      const close = text.indexOf('`', runEnd);
+      if (close > runEnd && close < lineEnd) {
+        let closeEnd = close + 1;
+        while (text[closeEnd] === '`') closeEnd++;
+        if (closeEnd - close >= width) {
+          content = text.slice(runEnd, close);
+          end = close + width;
+          kind = 'code';
+        }
+      }
+      if (!end) candidates.lastIndex = runEnd;
+    } else if (marker === '*') {
+      const strong = text[index + 1] === '*';
+      const contentStart = index + (strong ? 2 : 1);
+      const close = text.indexOf('*', contentStart);
+      if (
+        close > contentStart &&
+        close < lineEnd &&
+        (!strong || text[close + 1] === '*')
+      ) {
+        content = text.slice(contentStart, close);
+        end = close + (strong ? 2 : 1);
+        kind = strong ? 'strong' : 'em';
+      }
+    } else if (marker === '_' && text[index + 1] === '_') {
+      const contentStart = index + 2;
+      const close = text.indexOf('_', contentStart);
+      if (close > contentStart && close < lineEnd && text[close + 1] === '_') {
+        content = text.slice(contentStart, close);
+        end = close + 2;
+        kind = 'strong';
+      }
+    } else if (marker === '[') {
+      if (bracketEnd <= index) {
+        bracketEnd = text.indexOf(']', index + 1);
+        if (bracketEnd < 0 || bracketEnd >= lineEnd) bracketEnd = lineEnd;
+      }
+      if (
+        bracketEnd > index + 1 &&
+        bracketEnd < lineEnd &&
+        text[bracketEnd + 1] === '('
+      ) {
+        const destinationStart = bracketEnd + 2;
+        if (parenEnd < destinationStart) {
+          parenEnd = text.indexOf(')', destinationStart);
+          if (parenEnd < 0 || parenEnd >= lineEnd) parenEnd = lineEnd;
+        }
+        if (parenEnd > destinationStart && parenEnd < lineEnd) {
+          content = text.slice(index + 1, bracketEnd);
+          destination = text.slice(destinationStart, parenEnd);
+          end = parenEnd + 1;
+          kind = 'link';
+        }
+      }
+    }
+    if (!end) continue;
+    target.append(document.createTextNode(text.slice(start, index)));
+    if (kind === 'link') {
+      const path = linkFiles && fileLinkPath(destination);
+      if (path) {
+        const link = document.createElement('a');
+        link.href = '#';
+        link.dataset.filePath = path;
+        link.title = path;
+        try {
+          link.textContent = decodeURIComponent(content);
+        } catch {
+          link.textContent = content;
+        }
+        target.append(link);
+      } else {
+        const item = node('span', content, 'markdown-link');
+        item.title = destination;
+        target.append(item);
+      }
+    } else target.append(node(kind, content));
+    start = end;
+    candidates.lastIndex = end;
   }
   target.append(document.createTextNode(text.slice(start)));
 }
@@ -547,34 +617,47 @@ function render() {
       : current.catalogError
         ? 'Could not load the file list. Enter a file path.'
         : 'Choose a file or enter its path.';
-  const tabFocused = $('markdown-tabs').contains(document.activeElement);
-  $('markdown-tabs').replaceChildren(
-    ...[...(current?.documents.values() || [])].map(item => {
-      const button = node(
-        'button',
-        `${item.pinned ? '● ' : ''}${item.path.split(/[\\/]/).pop()}${dirty(item) ? ' *' : ''}`,
-      );
-      button.type = 'button';
-      button.title = item.path;
-      button.setAttribute(
-        'aria-label',
-        `${item.path}${item.pinned ? ', pinned' : ''}${dirty(item) ? ', unsaved changes' : ''}`,
-      );
-      button.setAttribute('role', 'tab');
-      button.setAttribute('aria-selected', String(item === doc));
-      button.setAttribute('aria-controls', 'markdown-document');
-      button.tabIndex = item === doc ? 0 : -1;
-      button.addEventListener('click', () => {
-        current.active = item.path;
-        render();
-        void refresh(current, item);
-        $('markdown-tabs').querySelector('[aria-selected="true"]')?.focus();
-      });
-      return button;
-    }),
-  );
-  if (tabFocused)
-    $('markdown-tabs').querySelector('[aria-selected="true"]')?.focus();
+  const tabs = $('markdown-tabs');
+  const tabItems = [...(current?.documents.values() || [])];
+  const tabSignature = JSON.stringify([
+    current?.key,
+    tabItems.map(item => [
+      item.path,
+      Boolean(item.pinned),
+      dirty(item),
+      item === doc,
+    ]),
+  ]);
+  if (tabs.dataset.tabs !== tabSignature) {
+    const tabFocused = tabs.contains(document.activeElement);
+    tabs.replaceChildren(
+      ...tabItems.map(item => {
+        const button = node(
+          'button',
+          `${item.pinned ? '● ' : ''}${item.path.split(/[\\/]/).pop()}${dirty(item) ? ' *' : ''}`,
+        );
+        button.type = 'button';
+        button.title = item.path;
+        button.setAttribute(
+          'aria-label',
+          `${item.path}${item.pinned ? ', pinned' : ''}${dirty(item) ? ', unsaved changes' : ''}`,
+        );
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', String(item === doc));
+        button.setAttribute('aria-controls', 'markdown-document');
+        button.tabIndex = item === doc ? 0 : -1;
+        button.addEventListener('click', () => {
+          current.active = item.path;
+          render();
+          void refresh(current, item);
+          tabs.querySelector('[aria-selected="true"]')?.focus();
+        });
+        return button;
+      }),
+    );
+    tabs.dataset.tabs = tabSignature;
+    if (tabFocused) tabs.querySelector('[aria-selected="true"]')?.focus();
+  }
   $('markdown-document').hidden = !doc;
   $('markdown-empty').hidden = Boolean(doc);
   if (!doc) return;
@@ -637,7 +720,12 @@ function render() {
       updated.dataset.update = updateKey;
     }
   }
-  const tasks = progress(doc.disk?.content || '');
+  const taskContent = doc.disk?.content || '';
+  if (doc.taskContent !== taskContent) {
+    doc.taskContent = taskContent;
+    doc.taskProgress = progress(taskContent);
+  }
+  const tasks = doc.taskProgress;
   $('markdown-progress').hidden = !tasks.total;
   $('markdown-progress-text').textContent =
     `${tasks.complete} / ${tasks.total} tasks complete`;
@@ -792,7 +880,10 @@ export function updateMarkdownFiles() {
 export function initMarkdownFiles(options) {
   api = options.api;
   selected = options.selected;
-  $('open-context')?.insertAdjacentElement('afterend', $('markdown-launcher'));
+  $('close-parent-session')?.insertAdjacentElement(
+    'beforebegin',
+    $('markdown-launcher'),
+  );
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
@@ -816,6 +907,7 @@ export function initMarkdownFiles(options) {
   }
   draftStore = createDraftStore(DRAFT_KEY, {
     validate: validDraft,
+    debounceMs: 200,
     onError: () => {
       draftStorageError =
         'Markdown draft recovery could not be saved. Your changes remain in this window.';

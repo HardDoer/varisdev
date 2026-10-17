@@ -27,6 +27,12 @@
   stroke-linejoin: round;
   stroke-linecap: round;
 }
+.prompt-jolt-tail-start {
+  stop-color: var(--violet, #d1b7ff);
+}
+.prompt-jolt-tail-end {
+  stop-color: var(--cyan, #75d9ff);
+}
 .prompt-jolt-glow {
   stroke: url(#prompt-packet-tail);
   stroke-width: 6px;
@@ -37,16 +43,18 @@
   stroke-width: 1.5px;
 }
 .prompt-jolt-head {
-  fill: #edfff9;
-  filter: drop-shadow(0 0 4px #74f3c0) drop-shadow(0 0 9px #74f3c0);
+  fill: var(--robot-eyes, #edf4f6);
+  filter: drop-shadow(0 0 4px var(--cyan, #75d9ff))
+    drop-shadow(0 0 9px var(--violet, #d1b7ff));
 }
 .prompt-jolt-impact {
   position: absolute;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--mint, #74f3c0);
+  border: 2px solid var(--violet, #d1b7ff);
   border-radius: 50%;
-  box-shadow: 0 0 14px #74f3c060;
+  box-shadow: 0 0 14px
+    color-mix(in srgb, var(--violet, #d1b7ff) 55%, transparent);
   transform: translate(-50%, -50%);
   opacity: 0;
 }
@@ -67,31 +75,46 @@
   gap: 6px;
   transform: translate(-50%, -120%);
   padding: 4px 7px;
-  border: 1px solid var(--mint, #74f3c0);
+  border: 1px solid var(--status-running, #78e6a1);
   border-radius: 5px;
   background: var(--panel, #101c27);
   color: var(--text, #edf4f6);
   font-size: 0.65rem;
   font-weight: 800;
   line-height: 1;
-  box-shadow: 0 0 12px #74f3c050;
+  box-shadow: 0 0 12px
+    color-mix(in srgb, var(--status-running, #78e6a1) 45%, transparent);
 }
 .agent-work-marker::before {
   content: '';
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--mint, #74f3c0);
-  box-shadow: 0 0 6px var(--mint, #74f3c0);
+  background: var(--status-running, #78e6a1);
+  box-shadow: 0 0 6px var(--status-running, #78e6a1);
   animation: working-beacon 1.25s ease-in-out infinite;
 }
+.agent-work-marker[data-status='cancelling'] {
+  border-color: var(--status-cancelling, #ffcb7a);
+  box-shadow: 0 0 12px
+    color-mix(in srgb, var(--status-cancelling, #ffcb7a) 45%, transparent);
+}
+.agent-work-marker[data-status='cancelling']::before {
+  background: var(--status-cancelling, #ffcb7a);
+  box-shadow: 0 0 6px var(--status-cancelling, #ffcb7a);
+}
 .fallback-station.agent.running {
-  border: 2px solid var(--mint, #74f3c0);
-  box-shadow: 0 0 22px #74f3c040;
+  border: 2px solid var(--status-running, #78e6a1);
+  box-shadow: 0 0 22px
+    color-mix(in srgb, var(--status-running, #78e6a1) 35%, transparent);
 }
 .fallback-station.agent.running::after {
   border-width: 3px;
-  border-color: var(--mint, #74f3c0);
+  border-color: var(--status-running, #78e6a1);
+}
+.fallback-station.agent.running.selected::after {
+  border-color: var(--selection-text, #102735);
+  box-shadow: 0 0 0 2px var(--status-running, #78e6a1);
 }
 .processing-effects.motion-off .agent-work-marker::before {
   animation: none;
@@ -108,7 +131,17 @@
 }
 @keyframes working-beacon {
   50% {
-    box-shadow: 0 0 12px 3px #74f3c090;
+    box-shadow: 0 0 12px 3px
+      color-mix(in srgb, var(--status-running, #78e6a1) 60%, transparent);
+  }
+}
+.agent-work-marker[data-status='cancelling']::before {
+  animation-name: cancelling-beacon;
+}
+@keyframes cancelling-beacon {
+  50% {
+    box-shadow: 0 0 12px 3px
+      color-mix(in srgb, var(--status-cancelling, #ffcb7a) 60%, transparent);
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -107,7 +107,7 @@ export async function selectToolModel(
     if (saved) return saved;
     if (!ctx.hasUI)
       throw new Error(
-        `${label} needs a model choice before its first use. Set it in Accounts → Tool models, specify it in the request, or set ${environment}.`,
+        `${label} needs a model choice before its first use. Set it in Accounts → Image and audio models, specify it in the request, or set ${environment}.`,
       );
     const choice = await ctx.ui.input(
       `${label} needs its own model. Choose one now; it will be saved for future requests.`,

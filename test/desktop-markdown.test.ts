@@ -10,7 +10,6 @@ import {
   realpath,
   rm,
   stat,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -23,6 +22,7 @@ import {
   saveMarkdownFile,
 } from '../src/dashboard/markdown-files.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
+import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-markdown-'));
@@ -70,13 +70,16 @@ void test('Markdown reads current disk text and saves atomically with a content 
   assert.deepEqual(await readdir(cwd), ['PLAN.MD']);
 });
 
-void test('Markdown saves through symlinks use the canonical regular target and competing versions cannot overwrite each other', async t => {
+void test('Markdown saves through directory links use the canonical regular target and competing versions cannot overwrite each other', async t => {
   const {root, cwd} = await fixture(t);
-  const target = join(root, 'GLOBAL.md');
-  const alias = join(cwd, 'linked.md');
+  const targetDirectory = join(root, 'global');
+  const linkedDirectory = join(cwd, 'linked');
+  const target = join(targetDirectory, 'GLOBAL.md');
+  const alias = join(linkedDirectory, 'GLOBAL.md');
+  await mkdir(targetDirectory);
   await writeFile(target, 'GLOBAL INSTRUCTIONS');
-  await symlink(target, alias);
-  const initial = await readMarkdownFile(cwd, 'linked.md');
+  await createDirectoryLink(targetDirectory, linkedDirectory);
+  const initial = await readMarkdownFile(cwd, 'linked/GLOBAL.md');
   assert.equal(initial.path, await realpath(target));
   const results = await Promise.allSettled([
     saveMarkdownFile(cwd, alias, 'FIRST SAVE', initial.version),
@@ -91,16 +94,47 @@ void test('Markdown saves through symlinks use the canonical regular target and 
   ) as PromiseRejectedResult;
   assert.match(rejected.reason.message, /changed on disk/);
   assert.ok((await stat(alias)).isFile());
-  assert.ok((await lstat(alias)).isSymbolicLink());
+  assert.ok((await lstat(linkedDirectory)).isSymbolicLink());
   const saved = await readMarkdownFile(cwd, alias);
   assert.equal(saved.path, initial.path);
   assert.match(saved.content, /^(FIRST|SECOND) SAVE$/);
   assert.equal(await realpath(alias), initial.path);
-  await writeFile(join(root, 'plain.txt'), 'NOT MARKDOWN');
-  await symlink(join(root, 'plain.txt'), join(cwd, 'wrong.md'));
-  await assert.rejects(readMarkdownFile(cwd, 'wrong.md'), /resolve to a .md/);
-  await symlink(join(root, 'absent.md'), join(cwd, 'missing.md'));
-  await assert.rejects(readMarkdownFile(cwd, 'missing.md'), /no longer exists/);
+});
+
+void test('Markdown reads and saves through file symlinks when supported', async t => {
+  const {root, cwd} = await fixture(t);
+  const target = join(root, 'GLOBAL.md');
+  const alias = join(cwd, 'linked.md');
+  await writeFile(target, 'GLOBAL INSTRUCTIONS');
+  if (!(await createFileSymlinkOrSkip(t, target, alias))) return;
+  const initial = await readMarkdownFile(cwd, alias);
+  assert.equal(initial.path, await realpath(target));
+  const saved = await saveMarkdownFile(
+    cwd,
+    alias,
+    'UPDATED INSTRUCTIONS',
+    initial.version,
+  );
+  assert.equal(saved.path, initial.path);
+  assert.equal(await readFile(target, 'utf8'), 'UPDATED INSTRUCTIONS');
+  assert.ok((await lstat(alias)).isSymbolicLink());
+});
+
+void test('Markdown rejects file symlinks whose targets change the extension when supported', async t => {
+  const {root, cwd} = await fixture(t);
+  const target = join(root, 'plain.txt');
+  const alias = join(cwd, 'wrong.md');
+  await writeFile(target, 'NOT MARKDOWN');
+  if (!(await createFileSymlinkOrSkip(t, target, alias))) return;
+  await assert.rejects(readMarkdownFile(cwd, alias), /resolve to a .md/);
+});
+
+void test('Markdown reports dangling file symlinks when supported', async t => {
+  const {root, cwd} = await fixture(t);
+  const alias = join(cwd, 'missing.md');
+  if (!(await createFileSymlinkOrSkip(t, join(root, 'absent.md'), alias)))
+    return;
+  await assert.rejects(readMarkdownFile(cwd, alias), /no longer exists/);
 });
 
 void test('Markdown rejects invalid inputs, special files, binary data, and oversized reads and writes', async t => {

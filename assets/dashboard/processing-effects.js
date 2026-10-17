@@ -12,12 +12,10 @@ function svgNode(tag, attributes = {}) {
 }
 
 function visibleOrigin(element) {
-  if (
-    !element?.getClientRects().length ||
-    window.getComputedStyle(element).visibility !== 'visible'
-  )
+  if (!element || window.getComputedStyle(element).visibility !== 'visible')
     return null;
   const box = element.getBoundingClientRect();
+  if (!box.width || !box.height) return null;
   const left = Math.max(0, box.left);
   const right = Math.min(window.innerWidth, box.right);
   const top = Math.max(0, box.top);
@@ -73,8 +71,12 @@ export function createProcessingEffects(
     gradientUnits: 'userSpaceOnUse',
   });
   gradient.append(
-    svgNode('stop', {offset: 0, 'stop-color': '#74f3c0', 'stop-opacity': 0}),
-    svgNode('stop', {offset: 1, 'stop-color': '#c8ffed'}),
+    svgNode('stop', {
+      offset: 0,
+      class: 'prompt-jolt-tail-start',
+      'stop-opacity': 0,
+    }),
+    svgNode('stop', {offset: 1, class: 'prompt-jolt-tail-end'}),
   );
   defs.append(gradient);
   const glow = svgNode('path', {class: 'prompt-jolt-glow'});
@@ -90,7 +92,9 @@ export function createProcessingEffects(
   const queuedOrigins = new Map();
   const markerNodes = new Map();
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  let layout = [];
+  let layoutById = new Map();
+  let containerBounds;
+  let fallbackTarget = null;
   let data;
   let sessionId;
   let frame;
@@ -102,26 +106,37 @@ export function createProcessingEffects(
 
   function clear() {
     window.cancelAnimationFrame(frame);
+    frame = undefined;
     flight = null;
     jolt.hidden = true;
     jolt.classList.remove('has-arrived');
   }
+  function refreshPositions() {
+    containerBounds = container.getBoundingClientRect();
+    fallbackTarget = null;
+    if (layoutById.get('parent')?.visible) return;
+    const fallback = container.querySelector(
+      '.fallback-station.parent-session',
+    );
+    if (fallback) {
+      const box = fallback.getBoundingClientRect();
+      if (box.width && box.height)
+        fallbackTarget = {
+          x: box.left + box.width / 2,
+          y: box.top + box.height * 0.35,
+        };
+    }
+  }
   function targetPosition() {
-    const target = layout.find(item => item.id === 'parent' && item.visible);
-    const bounds = container.getBoundingClientRect();
-    if (target)
+    const target = layoutById.get('parent');
+    const bounds = containerBounds;
+    if (target?.visible && bounds)
       return {
         x: bounds.left + target.x * bounds.width,
         y: bounds.top + target.y * bounds.height,
       };
-    const fallback = container.querySelector(
-      '.fallback-station.parent-session',
-    );
-    if (fallback?.getClientRects().length) {
-      const box = fallback.getBoundingClientRect();
-      return {x: box.left + box.width / 2, y: box.top + box.height * 0.35};
-    }
-    if (bounds.width && bounds.height)
+    if (fallbackTarget) return fallbackTarget;
+    if (bounds?.width && bounds.height)
       return {
         x: bounds.left + bounds.width / 2,
         y: bounds.top + bounds.height * 0.45,
@@ -130,11 +145,14 @@ export function createProcessingEffects(
   }
   function placeMarkers() {
     for (const [id, marker] of markerNodes) {
-      const anchor = layout.find(item => item.id === id);
-      marker.hidden = !anchor?.visible;
+      const anchor = layoutById.get(id);
+      const hidden = !anchor?.visible;
+      if (marker.hidden !== hidden) marker.hidden = hidden;
       if (anchor) {
-        marker.style.left = `${anchor.x * 100}%`;
-        marker.style.top = `${anchor.y * 100}%`;
+        const left = `${anchor.x * 100}%`;
+        const top = `${anchor.y * 100}%`;
+        if (marker.style.left !== left) marker.style.left = left;
+        if (marker.style.top !== top) marker.style.top = top;
       }
     }
   }
@@ -145,13 +163,12 @@ export function createProcessingEffects(
     const elapsed = now - flight.started;
     const duration = flight.still ? 700 : FLIGHT_MS + PULSE_MS;
     if (elapsed >= duration) return clear();
-    svg.setAttribute(
-      'viewBox',
-      `0 0 ${window.innerWidth} ${window.innerHeight}`,
-    );
+    const viewBox = `0 0 ${window.innerWidth} ${window.innerHeight}`;
+    if (svg.getAttribute('viewBox') !== viewBox)
+      svg.setAttribute('viewBox', viewBox);
     impact.style.left = `${target.x}px`;
     impact.style.top = `${target.y}px`;
-    const origin = visibleOrigin(getOrigin()) || flight.origin;
+    const origin = flight.origin;
     if (!flight.still) {
       // A short fading tail travels with the packet; no stationary full path.
       const progress = Math.min(1, elapsed / FLIGHT_MS);
@@ -195,6 +212,7 @@ export function createProcessingEffects(
   }
   function start(origin) {
     clear();
+    refreshPositions();
     if (!targetPosition()) return;
     const still = !motion || reducedMotion.matches;
     if (!still && !origin) return;
@@ -233,12 +251,22 @@ export function createProcessingEffects(
         markers.append(marker);
         markerNodes.set(id, marker);
       }
-      marker.textContent =
-        agent.status === 'cancelling' ? 'Cancelling' : 'Working';
-      marker.title = `${agent.name}: ${marker.textContent.toLowerCase()}`;
+      const text = agent.status === 'cancelling' ? 'Cancelling' : 'Working';
+      if (marker.textContent !== text) marker.textContent = text;
+      if (marker.dataset.status !== agent.status)
+        marker.dataset.status = agent.status;
+      const title = `${agent.name}: ${text.toLowerCase()}`;
+      if (marker.title !== title) marker.title = title;
     }
     placeMarkers();
   }
+  refreshPositions();
+  const resizeObserver = window.ResizeObserver
+    ? new window.ResizeObserver(refreshPositions)
+    : null;
+  resizeObserver?.observe(container);
+  window.addEventListener('scroll', refreshPositions, true);
+  window.addEventListener('resize', refreshPositions);
   return {
     update(snapshot, options = {}) {
       if (disposed) return;
@@ -249,17 +277,23 @@ export function createProcessingEffects(
       const switched = sessionId !== data.session.id;
       if (switched) {
         sessionId = data.session.id;
-        layout = [];
+        layoutById = new Map();
         clear();
       }
       const origin = visibleOrigin(getOrigin());
       const queued = queuedOrigins.get(sessionId) || new Map();
-      const messages = (data.conversation || []).filter(
-        message => message.role === 'user',
-      );
+      const conversation = data.conversation || [];
       const previous = seen.get(sessionId);
       if (previous) {
-        const added = messages.filter(message => !previous.has(message.id));
+        const added = [];
+        // Conversation snapshots are append-only during a run. Scan backward
+        // to the newest known user message instead of filtering all history.
+        for (let index = conversation.length - 1; index >= 0; index--) {
+          const message = conversation[index];
+          if (message.role !== 'user') continue;
+          if (previous.has(message.id)) break;
+          added.push(message);
+        }
         for (const message of added) previous.add(message.id);
         while (previous.size > 1000)
           previous.delete(previous.values().next().value);
@@ -269,13 +303,20 @@ export function createProcessingEffects(
           !stopping &&
           data.session.status !== 'closed'
         ) {
-          const message = added.at(-1);
+          const message = added[0];
           const queuedOrigin = queued.get(message.text);
           // Hidden composers only produce a flight for steering captured earlier.
           if (origin || queuedOrigin) start(origin || queuedOrigin);
         }
       } else {
-        seen.set(sessionId, new Set(messages.map(message => message.id)));
+        seen.set(
+          sessionId,
+          new Set(
+            conversation
+              .filter(message => message.role === 'user')
+              .map(message => message.id),
+          ),
+        );
         if (seen.size > 64) {
           const oldest = seen.keys().next().value;
           seen.delete(oldest);
@@ -292,13 +333,17 @@ export function createProcessingEffects(
     },
     layout(anchors) {
       if (disposed) return;
-      layout = anchors;
+      layoutById = new Map(anchors.map(anchor => [anchor.id, anchor]));
+      if (flight) refreshPositions();
       placeMarkers();
     },
     dispose() {
       disposed = true;
       clear();
       reducedMotion.removeEventListener('change', motionChanged);
+      resizeObserver?.disconnect();
+      window.removeEventListener('scroll', refreshPositions, true);
+      window.removeEventListener('resize', refreshPositions);
       markerNodes.clear();
       seen.clear();
       queuedOrigins.clear();

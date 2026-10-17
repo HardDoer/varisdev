@@ -77,7 +77,7 @@ export async function createDashboardParent(
   const resourceOptions: Partial<ReturnType<typeof desktopResourceOptions>> =
     args ? desktopResourceOptions(args) : {};
   let state: DashboardState | undefined;
-  const ui = new DesktopExtensionUI(() => state?.updateSession({}));
+  const ui = new DesktopExtensionUI(() => state?.touch());
   let context: ExtensionContext | undefined;
   let control: AgentSessionController | undefined;
   let showCustomMessage: ReturnType<typeof observeDashboardSession> | undefined;

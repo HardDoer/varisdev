@@ -395,6 +395,9 @@ main > .welcome {
   top: 9px;
 }
 .status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--muted);
   border: 1px solid #516571;
   background: #a0b5c310;
@@ -410,13 +413,23 @@ main > .welcome {
   border-color: #4c8d75;
   background: #74f3c010;
 }
-.status-badge.queued,
-.status-badge.cancelling,
-.status-badge.cancelled,
-.status-badge.compacting {
+.status-badge.queued {
   color: var(--status-queued);
-  border-color: #85643e;
-  background: #ffcb7a0d;
+  border-color: currentColor;
+  background: var(--panel-raised);
+}
+.status-badge.cancelling {
+  color: var(--status-cancelling, var(--amber));
+  border-color: currentColor;
+}
+.status-badge.cancelled {
+  color: var(--status-cancelled, var(--muted));
+  border-color: currentColor;
+  border-style: dashed;
+}
+.status-badge.compacting {
+  color: var(--status-compacting, var(--violet));
+  border-color: currentColor;
 }
 .status-badge.completed {
   color: var(--status-completed);
@@ -424,9 +437,52 @@ main > .welcome {
   background: #75d9ff0d;
 }
 .status-badge.failed {
-  color: var(--red);
-  border-color: #8a4d58;
-  background: #ff93970d;
+  color: var(--status-failed, var(--red));
+  border-color: currentColor;
+  background: var(--panel-raised);
+}
+/* Shape and text preserve status distinctions when hues look alike. */
+.status-badge,
+.tool-status {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='none' stroke='black' stroke-width='2'/%3E%3C/svg%3E");
+}
+.status-badge::before,
+.tool-status::before {
+  content: '';
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  background: currentColor;
+  mask: var(--status-icon) center / contain no-repeat;
+}
+.status-badge.running,
+.tool-status.running {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 2 14 8 4 14Z'/%3E%3C/svg%3E");
+}
+.status-badge.queued {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='black' stroke-width='2'/%3E%3Cpath d='M8 4v4l3 2' fill='none' stroke='black' stroke-width='2'/%3E%3C/svg%3E");
+}
+.status-badge.completed,
+.tool-status.completed {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m2 8 4 4 8-9' fill='none' stroke='black' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.status-badge.failed,
+.tool-status.failed {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1 15 14H1Z' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M7 5h2v5H7zm0 6h2v2H7z'/%3E%3C/svg%3E");
+}
+.status-badge.cancelling {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='1'/%3E%3C/svg%3E");
+}
+.status-badge.cancelled,
+.tool-status.cancelled {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='black' stroke-width='2'/%3E%3Cpath d='m4 12 8-8' stroke='black' stroke-width='2'/%3E%3C/svg%3E");
+}
+.status-badge.compacting {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m1 3 4 5-4 5m14-10-4 5 4 5M8 2v12' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.status-badge.closed {
+  --status-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='7' width='10' height='7' rx='1'/%3E%3Cpath d='M5 7V5a3 3 0 0 1 6 0v2' fill='none' stroke='black' stroke-width='2'/%3E%3C/svg%3E");
 }
 .factory-workspace {
   flex: 1;
@@ -714,9 +770,11 @@ main > .welcome {
   background: #13252e;
   border-color: #34545d;
 }
-.worker-card[data-status='queued'],
-.worker-card[data-status='cancelling'] {
+.worker-card[data-status='queued'] {
   --agent-color: var(--status-queued);
+}
+.worker-card[data-status='cancelling'] {
+  --agent-color: var(--status-cancelling, var(--amber));
 }
 .worker-card-header {
   display: flex;
@@ -979,18 +1037,24 @@ main > .welcome {
 .feed-event[data-status='running'] {
   --event-color: var(--status-running);
 }
-.feed-event[data-status='queued'],
-.feed-event[data-status='cancelling'],
-.feed-event[data-status='cancelled'],
-.feed-event[data-status='compacting'] {
+.feed-event[data-status='queued'] {
   --event-color: var(--status-queued);
+}
+.feed-event[data-status='cancelling'] {
+  --event-color: var(--status-cancelling, var(--amber));
+}
+.feed-event[data-status='cancelled'] {
+  --event-color: var(--status-cancelled, var(--muted));
+}
+.feed-event[data-status='compacting'] {
+  --event-color: var(--status-compacting, var(--violet));
 }
 .feed-event[data-status='completed'] {
   --event-color: var(--status-completed);
 }
 .feed-event[data-status='failed'],
 .feed-event.error {
-  --event-color: var(--red);
+  --event-color: var(--status-failed, var(--red));
 }
 .feed-event summary {
   padding: 7px 9px;
@@ -1590,6 +1654,9 @@ dialog::backdrop {
     monospace;
 }
 .tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--muted);
   font-size: 0.875rem;
   font-weight: 600;
@@ -1602,10 +1669,10 @@ dialog::backdrop {
   color: var(--status-running);
 }
 .tool-status.failed {
-  color: var(--red);
+  color: var(--status-failed, var(--red));
 }
 .tool-status.cancelled {
-  color: var(--status-queued);
+  color: var(--status-cancelled, var(--muted));
 }
 .conversation-activity {
   display: flex;
@@ -1673,8 +1740,7 @@ dialog::backdrop {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-#tab-context[hidden],
-#open-context[hidden] {
+#tab-context[hidden] {
   display: block !important;
   visibility: hidden;
 }
@@ -2638,9 +2704,6 @@ select:focus-visible {
   margin-top: 10px;
   overflow: auto;
   font-size: 0.75rem;
-}
-#open-context {
-  flex-shrink: 0;
 }
 .composer-tabs {
   display: flex;

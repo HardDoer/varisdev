@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en" data-theme="factory">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Theme accessibility preview</title>
+    <link rel="stylesheet" href="../../assets/dashboard/style.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/themes.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/parent-fallback.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/factory-cane.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/processing-effects.css" />
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+      }
+      body {
+        display: block;
+      }
+      .theme-preview {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 12px;
+        width: 100%;
+        height: 100%;
+        padding: 18px;
+      }
+      .preview-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-width: 0;
+      }
+      .preview-heading > div {
+        min-width: 0;
+      }
+      .preview-heading h1 {
+        font-size: 1.55rem;
+      }
+      .preview-heading .eyebrow {
+        margin-bottom: 3px;
+      }
+      .preview-grid {
+        display: grid;
+        grid-template-columns: 430px minmax(0, 1fr);
+        gap: 14px;
+        min-height: 0;
+      }
+      .component-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+        padding: 14px;
+      }
+      .component-panel > h2,
+      .component-panel > p {
+        flex: 0 0 auto;
+      }
+      .component-row,
+      .button-row,
+      .accent-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .component-row > * {
+        min-width: 0;
+      }
+      .raised-card {
+        padding: 10px;
+      }
+      .raised-card .muted {
+        display: block;
+        margin-top: 3px;
+      }
+      .parent-card {
+        width: 100%;
+      }
+      .parent-card .robot-glyph {
+        display: inline-block;
+      }
+      .status-section {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px;
+      }
+      .status-section .status-badge {
+        width: 100%;
+      }
+      .button-row {
+        flex-wrap: wrap;
+      }
+      .button-row button {
+        min-height: 38px;
+      }
+      #focus-control {
+        min-height: 40px;
+      }
+      .app-error {
+        margin-top: 0;
+        padding: 9px 11px;
+        font-size: 0.8125rem;
+      }
+      .accent-row {
+        margin-top: auto;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+      .accent-row span {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .accent-row i {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+      .accent-row .prompt-accent {
+        background: var(--violet);
+      }
+      .accent-row .work-accent {
+        background: var(--status-running);
+      }
+      .accent-row .cane-accent {
+        background: var(--amber);
+      }
+      .visual-column {
+        display: grid;
+        grid-template-rows: minmax(0, 1.35fr) minmax(285px, 0.9fr);
+        gap: 14px;
+        min-width: 0;
+        min-height: 0;
+      }
+      .visual-panel {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+      }
+      .visual-panel .scene-legend {
+        flex: 0 0 auto;
+      }
+      .visual-panel .scene {
+        min-height: 0;
+      }
+      #webgl-scene {
+        flex: 1;
+      }
+      #factory-canvas {
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+      }
+      .scene-caption {
+        position: absolute;
+        z-index: 4;
+        left: 12px;
+        top: 10px;
+        padding: 4px 7px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--text);
+        background: var(--panel);
+        font-size: 0.72rem;
+      }
+      #fallback-scene {
+        flex: 1;
+      }
+      #fallback-scene .fallback-units {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-rows: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+        padding: 18px 14px 14px;
+      }
+      #fallback-scene .fallback-station {
+        border-radius: 10px;
+      }
+      #fallback-scene .fallback-station .robot-glyph {
+        transform: scale(1.15);
+        margin-bottom: 12px;
+      }
+      #fallback-scene .fallback-station.parent-session .robot-glyph {
+        transform: scale(1.35);
+        margin-bottom: 18px;
+      }
+      #fallback-scene .fallback-station strong {
+        line-height: 1.1;
+      }
+      #fallback-scene .fallback-station p {
+        padding: 2px 5px;
+        line-height: 1.1;
+      }
+      #fallback-scene .fallback-station .status-badge {
+        margin-top: 3px;
+        padding: 0 4px;
+        font-size: 0.62rem;
+      }
+      #fallback-scene .parent-fallback-robot {
+        max-height: 88px;
+        margin-bottom: 1px;
+      }
+      #scene-toolbar {
+        display: flex;
+        align-items: center;
+        margin-left: auto;
+      }
+      #scene-toolbar .factory-cane-holster {
+        display: flex;
+      }
+    </style>
+  </head>
+  <body class="motion-off">
+    <main class="theme-preview">
+      <header class="preview-heading">
+        <div>
+          <p class="eyebrow">SHIPPED THEME ACCESSIBILITY REVIEW</p>
+          <h1><span id="theme-name">Factory</span> renderer preview</h1>
+        </div>
+        <div id="scene-toolbar" aria-label="Scene tools"></div>
+      </header>
+      <div class="preview-grid">
+        <section id="component-panel" class="component-panel panel">
+          <h2>Components on real surfaces</h2>
+          <p id="panel-copy">
+            Parent and agent controls remain readable on the panel.
+          </p>
+
+          <div id="raised-card" class="raised-card worker-card">
+            <strong>Raised agent card</strong>
+            <span id="raised-muted" class="muted"
+              >Secondary activity and supporting details</span
+            >
+          </div>
+
+          <button id="selected-card" class="parent-card selected" type="button">
+            <span class="parent-card-header">
+              <span class="robot-glyph"><i></i></span>
+              <span class="parent-card-name">Selected parent session</span>
+              <span class="status-badge running">Working</span>
+            </span>
+            <span class="project-path">D:/projects/accessible-factory</span>
+            <span class="parent-card-activity">Rendering every theme</span>
+          </button>
+
+          <div id="status-section" class="status-section" aria-label="Job statuses">
+            <span class="status-badge running" data-status="running">Working</span>
+            <span class="status-badge queued" data-status="queued">Queued</span>
+            <span class="status-badge completed" data-status="completed"
+              >Completed</span
+            >
+            <span class="status-badge failed" data-status="failed">Failed</span>
+            <span class="status-badge cancelling" data-status="cancelling"
+              >Stopping</span
+            >
+            <span class="status-badge compacting" data-status="compacting"
+              >Compacting</span
+            >
+            <span class="status-badge cancelled" data-status="cancelled"
+              >Cancelled</span
+            >
+          </div>
+
+          <div class="button-row">
+            <button id="primary-button" class="primary-button" type="button">
+              Primary action
+            </button>
+            <button id="hover-button" class="quiet-button" type="button">
+              Hovered action
+            </button>
+            <button id="danger-button" class="danger-button" type="button">
+              Stop job
+            </button>
+          </div>
+
+          <input
+            id="focus-control"
+            type="text"
+            aria-label="Focused theme input"
+            value="Visible keyboard focus"
+          />
+          <p id="error-message" class="app-error" role="alert">
+            Example error: Agent could not start.
+          </p>
+
+          <div class="accent-row" aria-label="Effect accents">
+            <span><i class="prompt-accent"></i>Prompt packet</span>
+            <span><i class="work-accent"></i>Working beacon</span>
+            <span><i class="cane-accent"></i>Cane impact</span>
+          </div>
+        </section>
+
+        <div class="visual-column">
+          <section class="visual-panel panel" aria-labelledby="webgl-heading">
+            <div class="scene-legend">
+              <span id="webgl-heading">Live WebGL factory</span>
+              <span><i></i>working</span>
+              <span><i class="amber"></i>queued</span>
+              <span><i class="cyan"></i>completed</span>
+            </div>
+            <div id="webgl-scene" class="scene">
+              <span class="scene-caption">Semantic lights · themed effects</span>
+              <canvas
+                id="factory-canvas"
+                aria-label="Factory scene showing the parent and seven job states"
+              ></canvas>
+            </div>
+          </section>
+
+          <section class="visual-panel panel" aria-labelledby="fallback-heading">
+            <div class="scene-legend">
+              <span id="fallback-heading">SVG and CSS fallback robots</span>
+              <span>shell · visor · eyes · status ring</span>
+            </div>
+            <div id="fallback-scene" class="scene">
+              <div class="fallback" aria-label="Fallback factory scene">
+                <div class="fallback-grid"></div>
+                <div id="fallback-units" class="fallback-units"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <form id="prompt-form" hidden>
+      <textarea id="parent-prompt" aria-label="Prompt"></textarea>
+    </form>
+    <svg width="0" height="0" aria-hidden="true">
+      <path class="cane-impact"></path>
+    </svg>
+    <script type="module">
+      import {THEMES} from '../../assets/dashboard/themes.js';
+      import {createFactoryScene} from '../../assets/dashboard/factory-scene.js';
+      import {createParentFallback} from '../../assets/dashboard/parent-fallback.js';
+      import {createProcessingEffects} from '../../assets/dashboard/processing-effects.js';
+      import {createFactoryCane} from '../../assets/dashboard/factory-cane.js';
+
+      const STATUS = [
+        ['running', 'Working'],
+        ['queued', 'Queued'],
+        ['completed', 'Completed'],
+        ['failed', 'Failed'],
+        ['cancelling', 'Stopping'],
+        ['compacting', 'Compacting'],
+        ['cancelled', 'Cancelled'],
+      ];
+      const byId = new Map(THEMES.map(theme => [theme.id, theme]));
+      const fallbackUnits = document.querySelector('#fallback-units');
+      fallbackUnits.innerHTML = [
+        `<div class="fallback-station parent-session" data-unit-id="parent">
+          <span class="robot-glyph"><i></i></span>
+          <strong>Parent</strong><p class="muted">Compacting context</p>
+          <span class="status-badge compacting">Compacting</span>
+        </div>`,
+        ...STATUS.map(
+          ([status, label]) => `<div id="fallback-${status}" class="fallback-station agent ${status}${status === 'running' ? ' selected' : ''}" data-unit-id="${status}" data-status="${status}">
+            <span class="robot-glyph agent"><i></i></span>
+            <strong>${label}</strong><p class="muted">${status} agent</p>
+            <span class="status-badge ${status}">${label}</span>
+          </div>`,
+        ),
+      ].join('');
+
+      const canvas = document.querySelector('#factory-canvas');
+      const gl = canvas.getContext('webgl');
+      if (!gl) throw new Error('Electron could not create the WebGL theme preview');
+      const gpuBuffers = new Map();
+      let boundArrayBuffer = null;
+      const originalBindBuffer = gl.bindBuffer.bind(gl);
+      const originalBufferData = gl.bufferData.bind(gl);
+      gl.bindBuffer = (target, buffer) => {
+        if (target === gl.ARRAY_BUFFER) boundArrayBuffer = buffer;
+        return originalBindBuffer(target, buffer);
+      };
+      gl.bufferData = (target, data, usage) => {
+        if (
+          target === gl.ARRAY_BUFFER &&
+          boundArrayBuffer &&
+          ArrayBuffer.isView(data)
+        ) {
+          gpuBuffers.set(
+            boundArrayBuffer,
+            new Float32Array(
+              data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+            ),
+          );
+        }
+        return originalBufferData(target, data, usage);
+      };
+
+      let latestLayout = [];
+      let processingEffects;
+      const factoryScene = createFactoryScene(canvas, {
+        onLayout(layout) {
+          latestLayout = layout;
+          processingEffects?.layout(layout);
+        },
+      });
+      if (!factoryScene)
+        throw new Error('The production WebGL factory scene did not initialize');
+      const webglScene = document.querySelector('#webgl-scene');
+      processingEffects = createProcessingEffects(webglScene, {
+        getOrigin: () => document.querySelector('#primary-button'),
+      });
+      processingEffects.layout(latestLayout);
+      const fallbackScene = createParentFallback(fallbackUnits);
+      const cane = createFactoryCane(webglScene, {
+        holsterContainer: document.querySelector('#scene-toolbar'),
+        getTargets: () => factoryScene.caneTargets(),
+        onHit: (id, direction, strength) =>
+          factoryScene.hitWithCane(id, direction, strength),
+      });
+      cane.setSession('theme-accessibility-parent');
+      factoryScene.setMotion(false);
+      fallbackScene.setMotion(false);
+
+      let sequence = 0;
+      const snapshot = () => ({
+        session: {
+          id: 'theme-accessibility-parent',
+          name: 'Theme accessibility parent',
+          status: 'compacting',
+          activity: 'Compacting context',
+        },
+        agents: STATUS.map(([status, label]) => ({
+          id: status,
+          name: label,
+          status,
+          task: `${label} fixture task`,
+          activity: `${label} renderer state`,
+        })),
+        conversation: [
+          {id: 'seed', role: 'user', text: 'Seed the processing effect'},
+          ...Array.from({length: sequence}, (_, index) => ({
+            id: `theme-${index + 1}`,
+            role: 'user',
+            text: `Render theme ${index + 1}`,
+          })),
+        ],
+        queue: {steering: [], followUp: []},
+      });
+      processingEffects.update(snapshot(), {motion: false});
+
+      function parseColor(value) {
+        const text = String(value).trim().toLowerCase();
+        if (/^#[0-9a-f]{3,8}$/.test(text)) {
+          let hex = text.slice(1);
+          if (hex.length === 3 || hex.length === 4)
+            hex = [...hex].map(character => character + character).join('');
+          const alpha = hex.length === 8 ? parseInt(hex.slice(6), 16) / 255 : 1;
+          return [
+            parseInt(hex.slice(0, 2), 16) / 255,
+            parseInt(hex.slice(2, 4), 16) / 255,
+            parseInt(hex.slice(4, 6), 16) / 255,
+            alpha,
+          ];
+        }
+        const rgbMatch = text.match(/^rgba?\((.+)\)$/);
+        if (rgbMatch) {
+          const parts = rgbMatch[1]
+            .replace('/', ' ')
+            .split(/[\s,]+/)
+            .filter(Boolean);
+          const channel = part =>
+            part.endsWith('%') ? parseFloat(part) / 100 : parseFloat(part) / 255;
+          return [
+            channel(parts[0]),
+            channel(parts[1]),
+            channel(parts[2]),
+            parts[3] === undefined
+              ? 1
+              : parts[3].endsWith('%')
+                ? parseFloat(parts[3]) / 100
+                : parseFloat(parts[3]),
+          ];
+        }
+        const colorMatch = text.match(/^color\(srgb\s+(.+)\)$/);
+        if (colorMatch) {
+          const parts = colorMatch[1]
+            .replace('/', ' ')
+            .split(/\s+/)
+            .filter(Boolean)
+            .map(Number);
+          return [parts[0], parts[1], parts[2], parts[3] ?? 1];
+        }
+        throw new Error(`Unsupported computed color: ${value}`);
+      }
+
+      function composite(foreground, background) {
+        const alpha = foreground[3] + background[3] * (1 - foreground[3]);
+        return [
+          ...foreground.slice(0, 3).map((channel, index) =>
+            alpha
+              ? (channel * foreground[3] +
+                  background[index] * background[3] * (1 - foreground[3])) /
+                alpha
+              : 0,
+          ),
+          alpha,
+        ];
+      }
+
+      function luminance(color) {
+        const values = color.slice(0, 3).map(value =>
+          value <= 0.04045
+            ? value / 12.92
+            : ((value + 0.055) / 1.055) ** 2.4,
+        );
+        return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
+      }
+
+      function contrast(foreground, background) {
+        const back = parseColor(background);
+        const front = composite(parseColor(foreground), back);
+        const values = [luminance(front), luminance(back)].sort((a, b) => a - b);
+        return (values[1] + 0.05) / (values[0] + 0.05);
+      }
+
+      function rgbKey(value) {
+        return parseColor(value)
+          .slice(0, 3)
+          .map(channel => Math.round(channel * 255))
+          .join(',');
+      }
+
+      function style(selector, pseudo = null) {
+        const element = document.querySelector(selector);
+        if (!element) throw new Error(`Missing fixture element: ${selector}`);
+        return getComputedStyle(element, pseudo);
+      }
+
+      function variable(name) {
+        return style(':root').getPropertyValue(name).trim();
+      }
+
+      function gpuHasColor(rgb) {
+        return [...gpuBuffers.values()].some(values => {
+          if (values.length % 10 !== 0) return false;
+          for (let offset = 6; offset < values.length; offset += 10)
+            if (
+              Math.abs(values[offset] - rgb[0]) < 0.0001 &&
+              Math.abs(values[offset + 1] - rgb[1]) < 0.0001 &&
+              Math.abs(values[offset + 2] - rgb[2]) < 0.0001
+            )
+              return true;
+          return false;
+        });
+      }
+
+      function contrastCheck(checks, name, foreground, background, minimum) {
+        checks.push({
+          name,
+          foreground,
+          background,
+          ratio: contrast(foreground, background),
+          minimum,
+        });
+      }
+
+      async function applyTheme(id) {
+        const theme = byId.get(id);
+        if (!theme) throw new Error(`Unknown shipped theme: ${id}`);
+        document.documentElement.dataset.theme = id;
+        document.querySelector('#theme-name').textContent = theme.name;
+        gpuBuffers.clear();
+        factoryScene.setPalette(theme.scenePalette);
+        sequence++;
+        const data = snapshot();
+        factoryScene.update(data, 'running');
+        fallbackScene.update(data, 'running');
+        processingEffects.update(data, {motion: false});
+        processingEffects.layout(latestLayout);
+        await new Promise(resolve => requestAnimationFrame(() => resolve()));
+        return theme.name;
+      }
+
+      function audit(id) {
+        const theme = byId.get(id);
+        const checks = [];
+        const equality = [];
+        const presence = [];
+        const equal = (name, actual, expected) =>
+          equality.push({
+            name,
+            actual,
+            expected,
+            matches: rgbKey(actual) === rgbKey(expected),
+          });
+        const panel = style('#component-panel').backgroundColor;
+        const raised = style('#raised-card').backgroundColor;
+        const selected = style('#selected-card').backgroundColor;
+        const input = style('#focus-control').backgroundColor;
+        const hover = style('#hover-button').backgroundColor;
+        const danger = style('#error-message').backgroundColor;
+        const scene = variable('--scene');
+
+        contrastCheck(checks, 'body text on panel', style('#panel-copy').color, panel, 4.5);
+        contrastCheck(checks, 'raised card text', style('#raised-card').color, raised, 4.5);
+        contrastCheck(checks, 'raised card muted text', style('#raised-muted').color, raised, 4.5);
+        contrastCheck(checks, 'selected card text', style('#selected-card .parent-card-name').color, selected, 4.5);
+        contrastCheck(checks, 'selected card secondary text', style('#selected-card .project-path').color, selected, 4.5);
+        contrastCheck(checks, 'input text', style('#focus-control').color, input, 4.5);
+        contrastCheck(checks, 'hovered button text', style('#hover-button').color, hover, 4.5);
+        contrastCheck(checks, 'primary button text', style('#primary-button').color, style('#primary-button').backgroundColor, 4.5);
+        contrastCheck(checks, 'danger button text', style('#danger-button').color, style('#danger-button').backgroundColor, 4.5);
+        contrastCheck(checks, 'error message text', style('#error-message').color, danger, 4.5);
+
+        contrastCheck(checks, 'panel boundary', style('#component-panel').borderColor, variable('--bg'), 3);
+        contrastCheck(checks, 'raised card boundary', style('#raised-card').borderColor, panel, 3);
+        contrastCheck(checks, 'input boundary', style('#focus-control').borderColor, panel, 3);
+        contrastCheck(checks, 'hovered control boundary', style('#hover-button').borderColor, hover, 3);
+        contrastCheck(checks, 'focused input indicator', style('#focus-control').outlineColor, panel, 3);
+        contrastCheck(checks, 'selected surface against panel', selected, panel, 3);
+        contrastCheck(checks, 'selected border against panel', style('#selected-card').borderColor, panel, 3);
+        contrastCheck(checks, 'selected inset indicator', variable('--selection-text'), selected, 3);
+        contrastCheck(checks, 'primary control against panel', style('#primary-button').backgroundColor, panel, 3);
+        contrastCheck(checks, 'error boundary against panel', style('#error-message').borderColor, panel, 3);
+
+        const statuses = STATUS.map(([status, label]) => {
+          const selector = `.status-section [data-status='${status}']`;
+          const badge = style(selector);
+          const icon = style(selector, '::before');
+          contrastCheck(checks, `${label} status text`, badge.color, badge.backgroundColor, 4.5);
+          contrastCheck(checks, `${label} status border and icon`, badge.borderColor, badge.backgroundColor, 3);
+          equal(
+            `${label} status uses its semantic token`,
+            badge.color,
+            variable(`--status-${status}`),
+          );
+          return {
+            status,
+            label,
+            color: badge.color,
+            key: rgbKey(badge.color),
+            mask: icon.maskImage || icon.webkitMaskImage,
+          };
+        });
+
+        const glyph = '#fallback-queued .robot-glyph';
+        const glyphStyle = style(glyph);
+        const glyphScreen = style(glyph, '::after').backgroundColor;
+        const station = style('#fallback-queued').backgroundColor;
+        contrastCheck(checks, 'robot shell against station', glyphStyle.backgroundColor, station, 3);
+        contrastCheck(checks, 'robot visor against shell', glyphScreen, glyphStyle.backgroundColor, 3);
+        contrastCheck(checks, 'robot eyes against visor', variable('--robot-eyes'), glyphScreen, 4.5);
+        contrastCheck(
+          checks,
+          'running robot status ring',
+          style('#fallback-running', '::after').borderColor,
+          style('#fallback-running').backgroundColor,
+          3,
+        );
+
+        const runningMarker = style(".agent-work-marker[data-agent-id='running']");
+        const runningBeacon = style(".agent-work-marker[data-agent-id='running']", '::before');
+        const stoppingMarker = style(".agent-work-marker[data-agent-id='cancelling']");
+        const stoppingBeacon = style(".agent-work-marker[data-agent-id='cancelling']", '::before');
+        contrastCheck(checks, 'working marker text', runningMarker.color, runningMarker.backgroundColor, 4.5);
+        contrastCheck(checks, 'working marker border', runningMarker.borderColor, runningMarker.backgroundColor, 3);
+        contrastCheck(checks, 'working marker beacon', runningBeacon.backgroundColor, runningMarker.backgroundColor, 3);
+        contrastCheck(checks, 'stopping marker text', stoppingMarker.color, stoppingMarker.backgroundColor, 4.5);
+        contrastCheck(checks, 'stopping marker border', stoppingMarker.borderColor, stoppingMarker.backgroundColor, 3);
+        contrastCheck(checks, 'stopping marker beacon', stoppingBeacon.backgroundColor, stoppingMarker.backgroundColor, 3);
+        contrastCheck(checks, 'prompt impact on scene', style('.prompt-jolt-impact').borderColor, scene, 3);
+
+        equal('prompt tail start uses violet', style('.prompt-jolt-tail-start').stopColor, variable('--violet'));
+        equal('prompt tail end uses cyan', style('.prompt-jolt-tail-end').stopColor, variable('--cyan'));
+        equal('prompt head uses robot eyes', style('.prompt-jolt-head').fill, variable('--robot-eyes'));
+        equal('prompt impact uses violet', style('.prompt-jolt-impact').borderColor, variable('--violet'));
+        equal('working marker uses running status', runningMarker.borderColor, variable('--status-running'));
+        equal('working beacon uses running status', runningBeacon.backgroundColor, variable('--status-running'));
+        equal('stopping marker uses stopping status', stoppingMarker.borderColor, variable('--status-cancelling'));
+        equal('stopping beacon uses stopping status', stoppingBeacon.backgroundColor, variable('--status-cancelling'));
+        equal('cane outline uses robot outline', style('.cane-outline').stroke, variable('--robot-outline'));
+        equal('cane wood uses amber', style('.cane-wood').stroke, variable('--amber'));
+        equal('cane shine uses robot eyes', style('.cane-shine').stroke, variable('--robot-eyes'));
+        equal('cane grip uses robot screen', style('.cane-grip').stroke, variable('--robot-screen'));
+        equal('cane band uses violet', style('.cane-band').stroke, variable('--violet'));
+        equal('cane trail uses cyan', style('.cane-trail').stroke, variable('--cyan'));
+        equal('cane impact uses amber', style('.cane-impact').stroke, variable('--amber'));
+
+        presence.push({
+          name: 'selected item has a visible inset indicator',
+          present: style('#selected-card').boxShadow !== 'none',
+        });
+        const svgMarkup = document.querySelector('.parent-fallback-robot')?.innerHTML || '';
+        for (const token of [
+          '--robot-shell',
+          '--robot-outline',
+          '--robot-screen',
+          '--robot-eyes',
+        ])
+          presence.push({
+            name: `SVG fallback uses ${token}`,
+            present: svgMarkup.includes(`var(${token})`),
+          });
+        for (const key of [
+          'shell',
+          'outline',
+          'screen',
+          'eyes',
+          'running',
+          'queued',
+          'completed',
+          'failed',
+          'cancelling',
+          'compacting',
+          'cancelled',
+        ])
+          presence.push({
+            name: `WebGL buffer contains scene ${key}`,
+            present: gpuHasColor(theme.scenePalette[key]),
+          });
+
+        const rootTokens = Object.fromEntries(
+          [
+            'bg',
+            'panel',
+            'panel-raised',
+            'hover',
+            'selection-bg',
+            'accent',
+            'status-running',
+            'status-queued',
+            'status-completed',
+            'status-failed',
+            'status-cancelling',
+            'status-compacting',
+            'status-cancelled',
+            'robot-shell',
+            'robot-outline',
+            'robot-screen',
+            'robot-eyes',
+          ].map(name => [name, variable(`--${name}`)]),
+        );
+        const effectColors = {
+          prompt: {
+            start: style('.prompt-jolt-tail-start').stopColor,
+            end: style('.prompt-jolt-tail-end').stopColor,
+            head: style('.prompt-jolt-head').fill,
+          },
+          cane: {
+            wood: style('.cane-wood').stroke,
+            shine: style('.cane-shine').stroke,
+            grip: style('.cane-grip').stroke,
+            band: style('.cane-band').stroke,
+            trail: style('.cane-trail').stroke,
+          },
+        };
+        return {
+          id,
+          name: theme.name,
+          checks,
+          equality,
+          presence,
+          statuses,
+          rootTokens,
+          effectColors,
+          hovered: document.querySelector('#hover-button').matches(':hover'),
+          focusState: {
+            active:
+              document.activeElement === document.querySelector('#focus-control'),
+            visible: document
+              .querySelector('#focus-control')
+              .matches(':focus-visible'),
+            style: style('#focus-control').outlineStyle,
+            width: style('#focus-control').outlineWidth,
+            color: style('#focus-control').outlineColor,
+          },
+        };
+      }
+
+      window.themeFixture = {
+        ready: true,
+        catalog: THEMES.map(({id, name}) => ({id, name})),
+        applyTheme,
+        audit,
+        hoverTarget() {
+          const box = document.querySelector('#hover-button').getBoundingClientRect();
+          return {x: box.left + box.width / 2, y: box.top + box.height / 2};
+        },
+        focusTarget() {
+          const input = document.querySelector('#focus-control');
+          input.focus({preventScroll: true});
+          return document.activeElement === input;
+        },
+      };
+    </script>
+  </body>
+</html>

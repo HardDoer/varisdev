@@ -1,4 +1,4 @@
-/* global localStorage */
+/* global localStorage, setTimeout, clearTimeout */
 
 const stores = new Set();
 
@@ -16,10 +16,11 @@ export function flushDrafts() {
 // Keep recovery records bounded without evicting another unsaved document.
 export function createDraftStore(
   key,
-  {validate, onError, maxLength = 2_200_000},
+  {validate, onError, maxLength = 2_200_000, debounceMs = 0},
 ) {
   const records = new Map();
   let serialized;
+  let flushTimer;
   try {
     const stored = localStorage.getItem(key);
     if (stored) {
@@ -43,6 +44,8 @@ export function createDraftStore(
     onError(cause);
   }
   function flush() {
+    if (flushTimer !== undefined) clearTimeout(flushTimer);
+    flushTimer = undefined;
     try {
       if ([...records].some(([id, value]) => !validate(id, value)))
         throw new Error('This draft exceeds the recovery storage limit.');
@@ -66,10 +69,10 @@ export function createDraftStore(
     get: id => records.get(id),
     save(id, value) {
       if (value === undefined) records.delete(id);
-      else {
-        records.set(id, value);
-      }
-      return flush();
+      else records.set(id, value);
+      if (!debounceMs) return flush();
+      flushTimer ??= setTimeout(flush, debounceMs);
+      return true;
     },
     flush,
   };

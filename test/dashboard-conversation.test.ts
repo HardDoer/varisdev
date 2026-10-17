@@ -5,7 +5,10 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from '@earendil-works/pi-coding-agent';
-import type {AgentSessionController} from '../src/agents/team.ts';
+import type {
+  AgentSessionController,
+  AgentSessionSnapshot,
+} from '../src/agents/team.ts';
 import {observeDashboardSession} from '../src/dashboard/observe.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
 
@@ -48,9 +51,17 @@ function observer(existingState?: DashboardState) {
       getBranch: () => branch,
     },
   } as unknown as ExtensionContext;
+  let team: AgentSessionSnapshot | undefined;
+  let teamListener: (() => void) | undefined;
   const control = {
-    snapshot: () => undefined,
-    subscribe: () => () => {},
+    snapshot: () => team,
+    deliverySnapshot: () => team,
+    subscribe: (listener: () => void) => {
+      teamListener = listener;
+      return () => {
+        teamListener = undefined;
+      };
+    },
   } as unknown as AgentSessionController;
   const customMessages = observeDashboardSession(
     pi,
@@ -79,6 +90,10 @@ function observer(existingState?: DashboardState) {
     history,
     customMessages,
     ctx,
+    team(snapshot: AgentSessionSnapshot) {
+      team = snapshot;
+      teamListener?.();
+    },
     get state() {
       return current;
     },
@@ -545,6 +560,126 @@ void test('visible extension messages appear live and restore as assistant text 
   );
 });
 
+void test('shutdown flushes a pending team publication before detaching state', async () => {
+  const fixture = observer();
+  await fixture.emit('session_start');
+  fixture.team({
+    sessionId: 'fixture',
+    agents: [
+      {
+        id: 'agent-final',
+        name: 'Final agent',
+        task: 'Finish the work',
+        cwd: '/fixture',
+        model: 'test/model',
+        status: 'completed',
+        activity: 'Completed',
+        output: 'Final output',
+        createdAt: at(1),
+        finishedAt: at(2),
+        conversation: [
+          {
+            id: 'agent-answer',
+            role: 'assistant',
+            text: 'Final output',
+            at: at(2),
+          },
+        ],
+        conversationTruncated: false,
+      },
+    ],
+    messages: [
+      {
+        id: 'message-final',
+        createdAt: at(2),
+        from: {id: 'agent-final', name: 'Final agent'},
+        message: 'Final finding',
+      },
+    ],
+    changes: [
+      {
+        id: 'change-final',
+        unitId: 'agent-final',
+        unitName: 'Final agent',
+        path: '/fixture/result.txt',
+        tool: 'write',
+        at: at(2),
+        diff: '+result',
+        summary: 'Created file',
+      },
+    ],
+  });
+  await fixture.emit('session_shutdown');
+  const snapshot = fixture.state.snapshot();
+  assert.equal(snapshot.session.status, 'closed');
+  assert.equal(snapshot.agents[0].output, 'Final output');
+  assert.equal(snapshot.changes[0].id, 'change-final');
+  assert.ok(
+    snapshot.events.some(event => event.message.includes('Final finding')),
+  );
+});
+
+void test('agent wait flushes a throttled terminal worker state with its result', async () => {
+  const fixture = observer();
+  const worker = {
+    id: 'awaited-agent',
+    name: 'Awaited agent',
+    task: 'Finish before agent_wait returns',
+    cwd: '/fixture',
+    model: 'test/model',
+    status: 'running' as const,
+    activity: 'Working',
+    createdAt: at(1),
+    conversation: [
+      {
+        id: 'agent-task',
+        role: 'user' as const,
+        text: 'Finish before agent_wait returns',
+        at: at(1),
+      },
+    ],
+    conversationTruncated: false,
+  };
+  fixture.team({
+    sessionId: 'fixture',
+    agents: [worker],
+    messages: [],
+    changes: [],
+  });
+  await fixture.emit('session_start');
+  assert.equal(fixture.state.snapshot().agents[0].status, 'running');
+
+  fixture.team({
+    sessionId: 'fixture',
+    agents: [
+      {
+        ...worker,
+        status: 'completed',
+        activity: 'Completed',
+        output: 'Finished',
+        finishedAt: at(2),
+      },
+    ],
+    messages: [],
+    changes: [],
+  });
+  await fixture.emit('tool_execution_end', {
+    toolCallId: 'wait-call',
+    toolName: 'agent_wait',
+    result: {content: [text('Finished')]},
+    isError: false,
+  });
+
+  const snapshot = fixture.state.snapshot();
+  assert.equal(snapshot.agents[0].status, 'completed');
+  assert.equal(snapshot.agents[0].output, 'Finished');
+  assert.equal(
+    snapshot.conversation.find(message => message.toolCallId === 'wait-call')
+      ?.status,
+    'completed',
+  );
+});
+
 void test('conversation bounds stored input, output, errors and total history and isolates snapshots', () => {
   const state = new DashboardState({
     id: 'bounds',
@@ -611,6 +746,109 @@ void test('conversation bounds stored input, output, errors and total history an
   assert.ok(
     state.snapshot().conversation.every(item => item.status !== 'running'),
   );
+});
+
+void test('state batches publications, caches delivery snapshots and suppresses repeated values', () => {
+  const state = new DashboardState({
+    id: 'delivery',
+    cwd: '/fixture',
+    name: 'Delivery',
+    status: 'idle',
+    activity: 'Ready',
+    startedAt: at(0),
+    updatedAt: at(0),
+  });
+  const initial = state.deliverySnapshot();
+  assert.equal(state.deliverySnapshot(), initial);
+  let notifications = 0;
+  state.subscribe(() => notifications++);
+  state.batch(() => {
+    state.updateSession({status: 'running', activity: 'Responding'});
+    state.updateConversation({
+      id: 'answer',
+      role: 'assistant',
+      text: 'Partial answer',
+      at: at(1),
+      streaming: true,
+    });
+  });
+  assert.equal(notifications, 1);
+  const delivered = state.deliverySnapshot();
+  assert.notEqual(delivered, initial);
+  assert.equal(state.deliverySnapshot(), delivered);
+  state.updateSession({status: 'running', activity: 'Responding'});
+  state.updateConversation({...delivered.conversation[0]});
+  assert.equal(notifications, 1);
+  const isolated = state.snapshot();
+  isolated.session.activity = 'Mutated';
+  isolated.conversation[0].text = 'Mutated';
+  assert.equal(state.deliverySnapshot().session.activity, 'Responding');
+  assert.equal(state.deliverySnapshot().conversation[0].text, 'Partial answer');
+});
+
+void test('assistant stream ignores non-display deltas and stops publishing after its preview is full', async () => {
+  const fixture = observer();
+  await fixture.emit('session_start');
+  const assistant = message('assistant', 1, []);
+  await fixture.emit('message_start', {message: assistant});
+  let notifications = 0;
+  fixture.state.subscribe(() => notifications++);
+  assistant.content = [{type: 'thinking', thinking: 'private'}];
+  await fixture.emit('message_update', {
+    message: assistant,
+    assistantMessageEvent: {
+      type: 'thinking_delta',
+      contentIndex: 0,
+      delta: 'private',
+      partial: assistant,
+    },
+  });
+  assert.equal(notifications, 0);
+  assistant.content = [text('Visible')];
+  await fixture.emit('message_update', {
+    message: assistant,
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 0,
+      delta: 'Visible',
+      partial: assistant,
+    },
+  });
+  assert.equal(notifications, 1);
+  assert.equal(fixture.state.snapshot().session.response, 'Visible');
+  await fixture.emit('message_update', {
+    message: assistant,
+    assistantMessageEvent: {
+      type: 'text_end',
+      contentIndex: 0,
+      content: 'Visible',
+      partial: assistant,
+    },
+  });
+  assert.equal(notifications, 1);
+  assistant.content = [text('x'.repeat(17000))];
+  await fixture.emit('message_update', {
+    message: assistant,
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 0,
+      delta: 'x'.repeat(16993),
+      partial: assistant,
+    },
+  });
+  assert.equal(notifications, 2);
+  assert.equal(fixture.state.snapshot().conversation[0].truncated, true);
+  assistant.content = [text('x'.repeat(18000))];
+  await fixture.emit('message_update', {
+    message: assistant,
+    assistantMessageEvent: {
+      type: 'text_delta',
+      contentIndex: 0,
+      delta: 'x'.repeat(1000),
+      partial: assistant,
+    },
+  });
+  assert.equal(notifications, 2);
 });
 
 void test('agent conversations project separate bounded copies and preserve history truncation across team updates', () => {

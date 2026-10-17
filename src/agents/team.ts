@@ -43,19 +43,25 @@ class AgentTeam {
   private readonly changes: UnitChange[] = [];
   private context: ExtensionContext;
   private closed = false;
+  private cachedSnapshot?: AgentSessionSnapshot;
   readonly sessionId: string;
   private readonly unsubscribe: () => void;
-  private readonly changed: () => void;
+  private readonly publish: () => void;
 
   constructor(ctx: ExtensionContext, changed: () => void) {
     this.context = ctx;
-    this.changed = changed;
+    this.publish = changed;
     this.sessionId = ctx.sessionManager.getSessionId();
     this.unsubscribe = this.manager.subscribe(() => {
       this.updateStatus();
       this.changed();
     });
     this.updateStatus();
+  }
+
+  private changed(): void {
+    this.cachedSnapshot = undefined;
+    this.publish();
   }
 
   getManager(): AgentOrchestrator {
@@ -179,8 +185,9 @@ class AgentTeam {
     this.changed();
   }
 
-  snapshot(): AgentSessionSnapshot {
-    return {
+  /** A cached snapshot for observers. Callers must not mutate it. */
+  deliverySnapshot(): AgentSessionSnapshot {
+    return (this.cachedSnapshot ??= {
       sessionId: this.sessionId,
       agents: this.manager.list().map(agent => ({
         ...agent,
@@ -188,7 +195,11 @@ class AgentTeam {
       })),
       messages: this.messages.map(copyMessage),
       changes: this.changes.map(change => ({...change})),
-    };
+    });
+  }
+
+  snapshot(): AgentSessionSnapshot {
+    return structuredClone(this.deliverySnapshot());
   }
 
   close(): Promise<void> {
@@ -204,12 +215,14 @@ class AgentTeam {
 /** One controller per parent extension registration. */
 export class AgentSessionController {
   private team?: AgentTeam;
+  private finalSnapshot?: AgentSessionSnapshot;
   private shuttingDown = false;
   private readonly listeners = new Set<() => void>();
 
   constructor(pi: ExtensionAPI) {
     pi.on('session_start', () => {
       this.shuttingDown = false;
+      this.finalSnapshot = undefined;
     });
     pi.on('agent_start', (_event, ctx) => {
       if (this.shuttingDown) return;
@@ -219,6 +232,7 @@ export class AgentSessionController {
       this.shuttingDown = true;
       const team = this.team;
       this.team = undefined;
+      this.finalSnapshot = team?.deliverySnapshot();
       const closing = team?.close();
       this.changed();
       await closing;
@@ -232,7 +246,13 @@ export class AgentSessionController {
 
   /** Reading state never creates a team. Messages are in arrival order. */
   snapshot(): AgentSessionSnapshot | undefined {
-    return this.team?.snapshot();
+    const snapshot = this.team?.deliverySnapshot();
+    return snapshot ? structuredClone(snapshot) : undefined;
+  }
+
+  /** A cached snapshot for state delivery. Callers must not mutate it. */
+  deliverySnapshot(): AgentSessionSnapshot | undefined {
+    return this.team?.deliverySnapshot() ?? this.finalSnapshot;
   }
 
   private changed(): void {

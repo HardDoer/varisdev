@@ -49,7 +49,7 @@ For sessions attached from a terminal, open picker dialogs in that terminal. Exa
 
 ### Agent models
 
-The **Agent models** section in **Menu → Model settings** controls which models background agents may use. Fresh settings start with none selected.
+The **Agent models** section in **Menu → Tool models** controls which models background agents may use. Fresh settings start with none selected.
 
 **Agent models** and **Commit** use the selected session's Pi scoped models, or the saved global scope when no session is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
 
@@ -59,11 +59,11 @@ For virtual models, the router's extension must also be loaded from the worker's
 
 ### Commit
 
-**Menu → Model settings → Commit** selects the model and reasoning level for VarisDev's [`/commit` agent](reference.md#commit-and-push), or lets them inherit from the parent. Its model must be allowed in **Agent models**.
+**Menu → Tool models → Commit** selects the model and reasoning level for VarisDev's [`/commit` agent](reference.md#commit-and-push), or lets them inherit from the parent. Its model must be allowed in **Agent models**.
 
 ### Image and audio models
 
-Image and audio tools require separate model choices. The GUI asks on first use; change them in **Menu → Accounts → Tool models**.
+Image and audio tools require separate model choices. The GUI asks on first use; change them in **Menu → Accounts → Image and audio models**.
 
 Request parameters or these environment variables override saved choices:
 

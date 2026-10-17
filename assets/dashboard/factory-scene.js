@@ -17,22 +17,30 @@ import {drawCleanupBot} from './robot-cleanup.js';
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
 const COLORS = {
-  floor: [0.095, 0.14, 0.16],
-  edge: [0.14, 0.21, 0.23],
-  dark: [0.065, 0.095, 0.115],
-  metal: [0.29, 0.37, 0.39],
-  shell: [0.66, 0.75, 0.73],
-  white: [0.83, 0.91, 0.86],
-  mint: [0.33, 1, 0.77],
-  cyan: [0.15, 0.77, 1],
-  amber: [1, 0.63, 0.22],
-  red: [1, 0.22, 0.2],
-  dim: [0.19, 0.34, 0.35],
-  screen: [0.027, 0.13, 0.15],
-  selection: [0.725, 0.91, 1],
-  running: [0.47, 0.902, 0.631],
-  queued: [0.961, 0.843, 0.431],
-  completed: [0.569, 0.729, 1],
+  floor: [0.094118, 0.141176, 0.160784],
+  edge: [0.141176, 0.211765, 0.231373],
+  dark: [0.066667, 0.094118, 0.113725],
+  metal: [0.290196, 0.368627, 0.388235],
+  shell: [0.721569, 0.788235, 0.784314],
+  outline: [0.384314, 0.505882, 0.552941],
+  screen: [0.031373, 0.105882, 0.145098],
+  eyes: [0.729412, 1, 0.87451],
+  white: [0.831373, 0.909804, 0.858824],
+  mint: [0.329412, 1, 0.768627],
+  cyan: [0.14902, 0.768627, 1],
+  amber: [1, 0.631373, 0.219608],
+  violet: [0.784314, 0.611765, 1],
+  rose: [1, 0.513725, 0.776471],
+  red: [1, 0.219608, 0.2],
+  dim: [0.188235, 0.341176, 0.34902],
+  selection: [0.72549, 0.909804, 1],
+  running: [0.470588, 0.901961, 0.631373],
+  queued: [0.960784, 0.843137, 0.431373],
+  completed: [0.568627, 0.729412, 1],
+  failed: [1, 0.576471, 0.592157],
+  cancelling: [1, 0.678431, 0.439216],
+  compacting: [0.819608, 0.717647, 1],
+  cancelled: [0.627451, 0.709804, 0.764706],
 };
 const BAYS = [
   [-1.5, -3.1],
@@ -712,14 +720,16 @@ export function createFactoryScene(
   }
   function makeBuffer(geometry, usage) {
     const buffer = gl.createBuffer();
+    const storage = new Float32Array(geometry.data);
     resources.buffers.push(buffer);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.data), usage);
-    return {buffer, count: geometry.data.length / 10};
+    gl.bufferData(gl.ARRAY_BUFFER, storage, usage);
+    return {buffer, count: geometry.data.length / 10, storage};
   }
   let C = Object.fromEntries(
     Object.entries(COLORS).map(([key, color]) => [key, [...color]]),
   );
+  let robotC = {...C, dark: C.outline, white: C.eyes};
   let identity = factoryIdentity('');
   let factory = makeBuffer(buildFactory(C, identity), gl.STATIC_DRAW);
   let dynamic = makeBuffer(new Geometry(), gl.DYNAMIC_DRAW);
@@ -749,6 +759,18 @@ export function createFactoryScene(
   const parentMotion = createParentMotion();
   const whip = createRobotWhip();
   const visitors = createFactoryVisitors();
+  const geometryPool = [];
+  let geometryPoolIndex = 0;
+  function temporaryGeometry() {
+    let geometry = geometryPool[geometryPoolIndex];
+    if (!geometry) {
+      geometry = new Geometry();
+      geometryPool.push(geometry);
+    }
+    geometryPoolIndex++;
+    geometry.data.length = 0;
+    return geometry;
+  }
 
   function syncWhip() {
     const mode = parentMotion.pose().mode;
@@ -772,6 +794,7 @@ export function createFactoryScene(
   }
   let cameraTarget = [-5.6, 1.6, 0];
   let lastFrame = 0,
+    lastPaint = 0,
     time = 0,
     width = 1,
     height = 1,
@@ -780,17 +803,22 @@ export function createFactoryScene(
     cameraOffset = [0, 0],
     lastLayout = '';
 
+  function setCanvasData(name, value) {
+    const text = String(value);
+    if (canvas.dataset[name] !== text) canvas.dataset[name] = text;
+  }
+  function setCanvasAttribute(name, value) {
+    if (canvas.getAttribute(name) !== value) canvas.setAttribute(name, value);
+  }
+
   function statusColor(status) {
-    if (status === 'failed') return C.red;
-    if (
-      status === 'queued' ||
-      status === 'cancelling' ||
-      status === 'cancelled' ||
-      status === 'compacting'
-    )
-      return C.queued;
     if (status === 'running') return C.running;
+    if (status === 'queued') return C.queued;
     if (status === 'completed') return C.completed;
+    if (status === 'failed') return C.failed;
+    if (status === 'cancelling') return C.cancelling;
+    if (status === 'compacting') return C.compacting;
+    if (status === 'cancelled') return C.cancelled;
     return C.dim;
   }
   function positionFor(unit) {
@@ -875,7 +903,7 @@ export function createFactoryScene(
         )
           burst(positionFor(agent), C.completed, 62);
         else if (shown && old !== agent.status && agent.status === 'failed')
-          burst(positionFor(agent), C.red, 48);
+          burst(positionFor(agent), C.failed, 48);
       }
     }
     previous = new Map(agents.map(a => [a.id, a.status]));
@@ -893,8 +921,8 @@ export function createFactoryScene(
       const a = [x + 0.571 * scale, yy + 0.09 * scale, zz - 0.07 * scale];
       const b = [x + 0.58 * scale, yy, zz];
       const c = [x + 0.575 * scale, yy - 0.11 * scale, zz + 0.12 * scale];
-      g.rod(a, b, 0.022 * scale, C.dark);
-      g.rod(b, c, 0.026 * scale, C.dark);
+      g.rod(a, b, 0.022 * scale, C.outline);
+      g.rod(b, c, 0.026 * scale, C.outline);
       if (amount > 0.45)
         g.rod(
           b,
@@ -908,7 +936,7 @@ export function createFactoryScene(
       g.box(
         [x + 0.05 * scale, y + 0.08 * scale, z + 0.574 * scale],
         [0.32 * scale, 0.2 * scale, 0.018 * scale],
-        C.dark,
+        C.screen,
       );
       g.box(
         [x + 0.16 * scale, y + 0.1 * scale, z + 0.61 * scale],
@@ -1039,8 +1067,8 @@ export function createFactoryScene(
           ),
         )
       : 0;
-    const g = new Geometry(),
-      fx = new Geometry();
+    const g = temporaryGeometry(),
+      fx = temporaryGeometry();
     const state = visitor?.status || snapshot?.session?.status || 'idle';
     const active =
       !visitor &&
@@ -1054,13 +1082,16 @@ export function createFactoryScene(
       /using|tool|running (bash|read|write|edit|agent_)/i.test(activity);
     const writing = active && !tools && /responding|writing/i.test(activity);
     const thinking = active && !tools && !writing;
-    const color = corpse
+    const signalColor = corpse ? C.dim : statusColor(state);
+    const activityColor = corpse
       ? C.dim
       : tools
         ? C.amber
         : thinking
           ? C.cyan
-          : statusColor(state);
+          : writing
+            ? C.mint
+            : signalColor;
     const t = active ? time : 0;
     const x = -6.25,
       bob = active
@@ -1090,7 +1121,7 @@ export function createFactoryScene(
     sceneGeometry.cylinder(
       [pose.x, pose.ground + 0.38, pose.z],
       [2.25 - jump * 0.35, 0.045, 1.5 - jump * 0.2],
-      [0.026, 0.055, 0.06],
+      C.dark,
     );
     // The feet leave the dais, kick outward, then plant for the landing squash.
     for (const side of [-1, 1]) {
@@ -1113,19 +1144,19 @@ export function createFactoryScene(
         [footX - 0.15, 0.7 + footY, footZ],
         [x - 0.25, 1.15 + lift, z],
         0.2,
-        C.dark,
+        C.outline,
       );
       g.octagon([x - 0.23, 1.03 + lift, z], [0.52, 0.25, 0.52], C.metal);
       g.box([x - 0.1, 1.2 + lift, z], [0.52, 0.45, 0.44], C.shell);
     }
-    g.octagon([x, y + 1, 0], [1.2, 0.3, 1.24], C.dark);
+    g.octagon([x, y + 1, 0], [1.2, 0.3, 1.24], C.outline);
     g.box([x, y + 1.55, 0], [1.45, 1.12, 1.52], C.shell);
-    g.box([x + 0.74, y + 1.54, 0], [0.09, 0.84, 1.15], C.edge);
-    g.box([x + 0.8, y + 1.62, 0], [0.035, 0.27, 0.68], C.dark);
+    g.box([x + 0.74, y + 1.54, 0], [0.09, 0.84, 1.15], C.outline);
+    g.box([x + 0.8, y + 1.62, 0], [0.035, 0.27, 0.68], C.screen);
     g.box(
       [x + 0.825, y + 1.62, 0],
       [0.025, 0.11, 0.46],
-      color,
+      signalColor,
       corpse ? 0 : 0.85,
     );
     for (const z of [-0.44, 0.44])
@@ -1135,12 +1166,18 @@ export function createFactoryScene(
         corpse ? C.dim : C.amber,
         corpse ? 0 : 0.5,
       );
-    g.cylinder([x, y + 2.22, 0], [0.56, 0.34, 0.56], C.dark);
-    // Wide helmet, dark wraparound visor, two independently glowing eyes.
+    g.cylinder([x, y + 2.22, 0], [0.56, 0.34, 0.56], C.outline);
+    // The outline and visor remain separate from shell, eyes and status lights.
     g.box([x + 0.05, y + 2.62, 0], [1.54, 0.88, 1.66], C.shell);
     g.box([x + 0.12, y + 3.09, 0], [1.35, 0.11, 1.5], C.white);
-    g.box([x + 0.84, y + 2.61, 0], [0.095, 0.47, 1.45], C.dark);
-    g.box([x + 0.9, y + 2.58, 0], [0.035, 0.05, 1.23], color, corpse ? 0 : 0.7);
+    g.box([x + 0.79, y + 2.61, 0], [0.1, 0.55, 1.57], C.outline);
+    g.box([x + 0.84, y + 2.61, 0], [0.095, 0.47, 1.45], C.screen);
+    g.box(
+      [x + 0.9, y + 2.58, 0],
+      [0.035, 0.05, 1.23],
+      signalColor,
+      corpse ? 0 : 0.7,
+    );
     const eyeHeight = corpse
       ? 0
       : (relaxed?.eyeHeight || AWAKE_EYE_HEIGHT) + surprise * 0.2;
@@ -1157,20 +1194,21 @@ export function createFactoryScene(
         g.box(
           [x + 0.91, y + 2.67, z],
           [0.04, eyeHeight, 0.3 + surprise * 0.08],
-          surprise ? C.white : color,
+          C.eyes,
           1,
         );
       if (surprise > 0)
         g.box(
           [x + 0.935, y + 2.69, z],
           [0.015, surprise * 0.14, surprise * 0.12],
-          C.dark,
+          C.outline,
         );
       g.box([x - 0.08, y + 2.64, z * 2.23], [0.56, 0.5, 0.14], C.metal);
+      g.box([x - 0.01, y + 2.66, z * 2.39], [0.25, 0.3, 0.05], C.screen);
       g.box(
-        [x + 0.01, y + 2.66, z * 2.43],
-        [0.21, 0.22, 0.03],
-        color,
+        [x + 0.02, y + 2.66, z * 2.43],
+        [0.17, 0.16, 0.025],
+        signalColor,
         corpse ? 0 : 0.8,
       );
     }
@@ -1178,15 +1216,20 @@ export function createFactoryScene(
       g.box(
         [x + 0.92, y + 2.43, 0],
         [0.04, surprise * 0.15, surprise * 0.19],
-        C.white,
+        C.eyes,
         0.85,
       );
     const antenna = [x - 0.53 + wobble * 0.4, y + 3.68, -0.48 + wobble * 0.18];
     g.rod([x - 0.43, y + 3.05, -0.48], antenna, 0.037, C.metal);
     g.octagon(
-      [antenna[0], antenna[1] + 0.04, antenna[2]],
-      [0.19, 0.16, 0.19],
-      color,
+      [antenna[0], antenna[1] + 0.03, antenna[2]],
+      [0.23, 0.18, 0.23],
+      C.screen,
+    );
+    g.octagon(
+      [antenna[0], antenna[1] + 0.15, antenna[2]],
+      [0.15, 0.07, 0.15],
+      signalColor,
       corpse ? 0 : 0.95,
     );
     for (const side of [-1, 1]) {
@@ -1262,28 +1305,47 @@ export function createFactoryScene(
       }
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
-      g.octagon(elbow, [0.4, 0.36, 0.4], C.dark);
+      g.octagon(elbow, [0.4, 0.36, 0.4], C.outline);
       g.rod(elbow, hand, 0.15, C.metal);
       g.box(hand, [0.38, 0.23, 0.35], C.shell);
       for (const finger of [-1, 1])
         g.box(
           [hand[0] + 0.18, hand[1] - 0.13, hand[2] + finger * 0.12],
           [0.13, 0.26, 0.075],
-          C.dark,
+          C.outline,
         );
     }
-    if (active)
+    if (active) {
+      sceneGeometry.ring(
+        [pose.x, pose.ground + 0.395, pose.z],
+        2.08,
+        0.055,
+        C.screen,
+        0,
+        48,
+        0.72,
+        t * 0.28,
+      );
       sceneGeometry.ring(
         [pose.x, pose.ground + 0.4, pose.z],
         2.08,
         0.024,
-        color,
+        signalColor,
         0.9,
         48,
         0.72,
         t * 0.28,
       );
-    if (!visitor && selected === 'parent')
+    }
+    if (!visitor && selected === 'parent') {
+      sceneGeometry.ring(
+        [pose.x, pose.ground + 0.405, pose.z],
+        2.38,
+        0.12,
+        C.eyes,
+        0,
+        48,
+      );
       sceneGeometry.ring(
         [pose.x, pose.ground + 0.41, pose.z],
         2.38,
@@ -1292,12 +1354,13 @@ export function createFactoryScene(
         1,
         48,
       );
+    }
     if (active) {
       sceneEffects.ring(
         [pose.x, pose.ground + 0.44, pose.z],
         2.12,
         0.085,
-        color,
+        signalColor,
         0.08,
         40,
       );
@@ -1347,17 +1410,23 @@ export function createFactoryScene(
           [x + 1.65, 1.55 + i * 0.26, 0],
           0.48 - i * 0.1,
           0.018,
-          color,
+          activityColor,
           0.8,
           24,
           0.7,
           t * (0.6 + i * 0.2),
         );
-      g.rod([x + 1.65, 1.3, 0], [x + 1.65, 2.27, 0], 0.016, color, 0.75);
+      g.rod(
+        [x + 1.65, 1.3, 0],
+        [x + 1.65, 2.27, 0],
+        0.016,
+        activityColor,
+        0.75,
+      );
     }
     if (idle && blend > 0.5) {
-      const props = new Geometry(),
-        propEffects = new Geometry();
+      const props = temporaryGeometry(),
+        propEffects = temporaryGeometry();
       drawIdleActivity(
         props,
         propEffects,
@@ -1403,8 +1472,8 @@ export function createFactoryScene(
         position[2] + dz * Math.cos(yaw) - dx * Math.sin(yaw),
       ];
     }
-    const bodyGeometry = new Geometry(),
-      bodyEffects = new Geometry();
+    const bodyGeometry = temporaryGeometry(),
+      bodyEffects = temporaryGeometry();
     bodyGeometry.append(g, position, yaw, x);
     bodyEffects.append(fx, position, yaw, x);
     const pivot = [position[0], position[1] + 1.9, position[2]];
@@ -1434,16 +1503,19 @@ export function createFactoryScene(
     if (whipStart)
       whipStart = damagePose.phase === 'alive' ? anchor(whipStart) : null;
     if (!visitor) {
-      canvas.dataset.robotWhip = lash?.target || '';
-      canvas.dataset.parentMode = braced
-        ? corpse
-          ? damagePose.phase
-          : damagePose.surprise
-            ? 'startled'
-            : pose.mode
-        : pose.mode;
-      canvas.dataset.parentActivity = pose.activity || '';
-      canvas.dataset.parentEyes = String(eyeHeight);
+      setCanvasData('robotWhip', lash?.target || '');
+      setCanvasData(
+        'parentMode',
+        braced
+          ? corpse
+            ? damagePose.phase
+            : damagePose.surprise
+              ? 'startled'
+              : pose.mode
+          : pose.mode,
+      );
+      setCanvasData('parentActivity', pose.activity || '');
+      setCanvasData('parentEyes', eyeHeight);
     }
     return {
       p: anchor([position[0], position[1] + y + 4.0, position[2]]),
@@ -1455,8 +1527,8 @@ export function createFactoryScene(
   }
 
   function drawAgent(unit, sceneGeometry, sceneEffects, index) {
-    const g = new Geometry(),
-      fx = new Geometry();
+    const g = temporaryGeometry(),
+      fx = temporaryGeometry();
     const damagePose = damage.pose(unit.id);
     const home = damageHomes.get(unit.id);
     const slot = slots.get(unit.id),
@@ -1486,6 +1558,7 @@ export function createFactoryScene(
     drawDamageHatch(sceneGeometry, sceneEffects, [baseX, 0.24, z], damagePose);
     if (active) {
       const pulse = 0.75 + Math.sin(t * 4) * 0.2;
+      sceneGeometry.ring([baseX, 0.255, z], 0.94, 0.105, C.screen, 0, 36);
       sceneGeometry.ring([baseX, 0.26, z], 0.94, 0.065, C.running, 1, 36);
       sceneEffects.ring(
         [baseX, 0.28, z],
@@ -1494,6 +1567,16 @@ export function createFactoryScene(
         C.running,
         pulse * 0.28,
         36,
+      );
+      sceneGeometry.ring(
+        [baseX, 0.295, z],
+        1.09,
+        0.075,
+        C.screen,
+        0,
+        32,
+        0.28,
+        t * 1.8,
       );
       sceneGeometry.ring(
         [baseX, 0.3, z],
@@ -1507,15 +1590,13 @@ export function createFactoryScene(
       );
     }
     const color = corpse ? C.dim : statusColor(unit.status);
-    sceneGeometry.cylinder(
-      [baseX, 0.225, z],
-      [1.22, 0.018, 0.86],
-      [0.025, 0.055, 0.06],
-    );
-    // A compact flying machine: four nacelles, fins, armored central hull.
+    sceneGeometry.cylinder([baseX, 0.225, z], [1.22, 0.018, 0.86], C.dark);
+    // A compact flying machine with a contrasting hull, visor and status trim.
     g.octagon([x, y, bodyZ], [1.12, 0.49, 1.12], C.shell);
-    g.box([x + 0.08, y + 0.28, bodyZ], [0.7, 0.14, 0.74], C.white);
-    g.box([x + 0.55, y + 0.01, bodyZ], [0.07, 0.3, 0.7], C.dark);
+    g.ring([x, y - 0.04, bodyZ], 0.58, 0.025, C.outline, 0, 16);
+    g.box([x + 0.08, y + 0.28, bodyZ], [0.7, 0.14, 0.74], C.metal);
+    g.box([x + 0.51, y + 0.01, bodyZ], [0.08, 0.38, 0.8], C.outline);
+    g.box([x + 0.55, y + 0.01, bodyZ], [0.07, 0.3, 0.7], C.screen);
     for (const zz of [-0.2, 0.2])
       g.box(
         [x + 0.6, y + 0.04, bodyZ + zz],
@@ -1524,16 +1605,17 @@ export function createFactoryScene(
           corpse ? 0.035 : 0.09 + damagePose.surprise * 0.16,
           0.16 + damagePose.surprise * 0.06,
         ],
-        damagePose.surprise ? C.white : color,
+        C.eyes,
         corpse ? 0 : 1,
       );
-    g.box([x, y + 0.36, bodyZ], [0.34, 0.035, 0.12], color, corpse ? 0 : 0.9);
+    g.box([x, y + 0.36, bodyZ], [0.44, 0.04, 0.22], C.screen);
+    g.box([x, y + 0.385, bodyZ], [0.32, 0.018, 0.1], color, corpse ? 0 : 0.9);
     for (const side of [-1, 1]) {
       g.rod(
         [x - 0.15, y, bodyZ],
         [x - 0.17, y, bodyZ + side * 0.78],
         0.08,
-        C.dark,
+        C.outline,
       );
       g.box(
         [x - 0.2, y + 0.04, bodyZ + side * 0.71],
@@ -1543,7 +1625,7 @@ export function createFactoryScene(
       g.cylinder(
         [x - 0.2, y - 0.14, bodyZ + side * 0.71],
         [0.25, 0.16, 0.25],
-        C.dark,
+        C.outline,
       );
       g.cylinder(
         [x - 0.2, y - 0.24, bodyZ + side * 0.71],
@@ -1579,9 +1661,10 @@ export function createFactoryScene(
       0.024,
       C.metal,
     );
+    g.octagon([x - 0.38, y + 0.67, bodyZ - 0.28], [0.15, 0.11, 0.15], C.screen);
     g.octagon(
-      [x - 0.38, y + 0.68, bodyZ - 0.28],
-      [0.1, 0.09, 0.1],
+      [x - 0.38, y + 0.74, bodyZ - 0.28],
+      [0.09, 0.055, 0.09],
       color,
       corpse ? 0 : 0.85,
     );
@@ -1594,10 +1677,10 @@ export function createFactoryScene(
         damagePose.surprise * 0.4,
       bodyZ + 0.12,
     ];
-    g.rod([x + 0.1, y - 0.2, bodyZ + 0.27], elbow, 0.066, C.dark);
+    g.rod([x + 0.1, y - 0.2, bodyZ + 0.27], elbow, 0.066, C.outline);
     g.octagon(elbow, [0.2, 0.18, 0.2], C.amber);
     g.rod(elbow, hand, 0.055, C.metal);
-    g.box(hand, [0.18, 0.16, 0.16], C.dark);
+    g.box(hand, [0.18, 0.16, 0.16], C.outline);
     if (
       slot < 6 &&
       active &&
@@ -1642,6 +1725,16 @@ export function createFactoryScene(
         0.9,
       );
       sceneGeometry.ring(
+        [baseX, 0.245, z],
+        0.76,
+        0.05,
+        C.screen,
+        0,
+        28,
+        0.72,
+        t * 0.6,
+      );
+      sceneGeometry.ring(
         [baseX, 0.25, z],
         0.76,
         0.022,
@@ -1653,16 +1746,20 @@ export function createFactoryScene(
       );
     }
     if (failed) {
+      g.box([x - 0.24, y + 0.4, bodyZ], [0.27, 0.045, 0.28], C.screen);
       g.box(
-        [x, y + 0.4, bodyZ],
-        [0.19, 0.1, 0.2],
-        C.red,
+        [x - 0.24, y + 0.43, bodyZ],
+        [0.17, 0.025, 0.18],
+        C.failed,
         0.65 + Math.sin(time * 6) * 0.3,
       );
-      sceneGeometry.ring([baseX, 0.25, z], 0.8, 0.028, C.red, 0.8, 24, 0.85);
+      sceneGeometry.ring([baseX, 0.245, z], 0.8, 0.06, C.screen, 0, 24, 0.85);
+      sceneGeometry.ring([baseX, 0.25, z], 0.8, 0.028, C.failed, 0.8, 24, 0.85);
     }
-    if (selected === unit.id)
+    if (selected === unit.id) {
+      sceneGeometry.ring([baseX, 0.265, z], 1.12, 0.12, C.screen, 0, 40);
       sceneGeometry.ring([baseX, 0.27, z], 1.12, 0.075, C.selection, 1, 40);
+    }
     drawDamageScars(g, [x, y, bodyZ], damagePose.damage);
     const pivot = [baseX, baseY, z];
     const floor = damagePose.phase === 'replacing' ? 0.36 : -Infinity;
@@ -1707,9 +1804,16 @@ export function createFactoryScene(
     };
   }
   function upload(target, geometry, usage = gl.DYNAMIC_DRAW) {
+    const length = geometry.data.length;
+    if (target.storage.length < length) {
+      let capacity = Math.max(1024, target.storage.length || 1);
+      while (capacity < length) capacity *= 2;
+      target.storage = new Float32Array(capacity);
+    }
+    target.storage.set(geometry.data, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, target.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.data), usage);
-    target.count = geometry.data.length / 10;
+    gl.bufferData(gl.ARRAY_BUFFER, target.storage.subarray(0, length), usage);
+    target.count = length / 10;
   }
   function draw(target) {
     gl.bindBuffer(gl.ARRAY_BUFFER, target.buffer);
@@ -1721,9 +1825,8 @@ export function createFactoryScene(
     });
     gl.drawArrays(gl.TRIANGLES, 0, target.count);
   }
-  function resize() {
-    const rect = canvas.getBoundingClientRect(),
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
+  function resize(rect) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     width = Math.max(rect.width, 1);
     height = Math.max(rect.height, 1);
     const w = Math.round(width * dpr),
@@ -1735,7 +1838,6 @@ export function createFactoryScene(
   }
   function render() {
     if (disposed || contextLost) return;
-    resize();
     syncWhip();
     const aspect = width / height;
     // Move back on narrow canvases so the entire factory remains inside frame.
@@ -1751,8 +1853,9 @@ export function createFactoryScene(
       30 * distance,
     ];
     const matrix = cameraMatrix(eye, target, aspect);
-    const g = new Geometry(),
-      fx = new Geometry();
+    geometryPoolIndex = 0;
+    const g = temporaryGeometry(),
+      fx = temporaryGeometry();
     const visiting = visitors.visitorsAt(sessionId);
     const ownAway = visitors.isAway(sessionId);
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
@@ -1772,11 +1875,11 @@ export function createFactoryScene(
     let parentPosition;
     if (ownTravel) {
       parentPosition = drawParentSession(g, fx, ownTravel, 'parent');
-      canvas.dataset.robotWhip = '';
+      setCanvasData('robotWhip', '');
       if (!physicalParent) {
-        canvas.dataset.parentMode = ownTravel.phase;
-        canvas.dataset.parentActivity = '';
-        canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
+        setCanvasData('parentMode', ownTravel.phase);
+        setCanvasData('parentActivity', '');
+        setCanvasData('parentEyes', AWAKE_EYE_HEIGHT);
       }
     } else if (!ownAway || physicalParent)
       parentPosition = drawParentSession(g, fx);
@@ -1796,10 +1899,10 @@ export function createFactoryScene(
       g.rod([-6.75, 2.15, 0], [-5.78, 2.15, 0], 0.055, C.amber, 0.9);
       g.rod([-5.78, 2.15, 0], [-6.08, 2.42, 0], 0.055, C.amber, 0.9);
       g.rod([-5.78, 2.15, 0], [-6.08, 1.88, 0], 0.055, C.amber, 0.9);
-      canvas.dataset.robotWhip = '';
-      canvas.dataset.parentMode = 'away';
-      canvas.dataset.parentActivity = visitors.awayMessage(sessionId);
-      canvas.dataset.parentEyes = String(AWAKE_EYE_HEIGHT);
+      setCanvasData('robotWhip', '');
+      setCanvasData('parentMode', 'away');
+      setCanvasData('parentActivity', visitors.awayMessage(sessionId));
+      setCanvasData('parentEyes', AWAKE_EYE_HEIGHT);
     }
     const positions = [
       {
@@ -1849,9 +1952,9 @@ export function createFactoryScene(
       const cleanup = damage.pose(id).cleanup;
       if (!cleanup) continue;
       const home = damageHomes.get(id)?.p || homes.get(id);
-      const bot = new Geometry(),
-        botEffects = new Geometry();
-      drawCleanupBot(bot, botEffects, C, cleanup);
+      const bot = temporaryGeometry(),
+        botEffects = temporaryGeometry();
+      drawCleanupBot(bot, botEffects, robotC, cleanup);
       const botPose = {
         visible: true,
         offset: [
@@ -1866,7 +1969,7 @@ export function createFactoryScene(
       fx.appendBody(botEffects, [0, 0, 0], botPose, -Infinity, 10.4);
       cleaners.push({id, ...cleanup});
     }
-    canvas.dataset.robotCleanup = JSON.stringify(cleaners);
+    setCanvasData('robotCleanup', JSON.stringify(cleaners));
     for (const piece of robotEffects) {
       const home = damageHomes.get(piece.owner)?.p || homes.get(piece.owner);
       if (!home) continue;
@@ -1900,16 +2003,20 @@ export function createFactoryScene(
           basis,
         );
     }
-    canvas.dataset.robotDamage = JSON.stringify(
-      Object.fromEntries([...shownIds].map(id => [id, damage.pose(id)])),
+    setCanvasData(
+      'robotDamage',
+      JSON.stringify(
+        Object.fromEntries([...shownIds].map(id => [id, damage.pose(id)])),
+      ),
     );
-    canvas.dataset.robotDebris = String(robotEffects.length);
-    canvas.dataset.factoryVisitors = visiting
-      .map(visitor => visitor.id)
-      .join(',');
-    canvas.dataset.parentAway = String(ownAway);
+    setCanvasData('robotDebris', robotEffects.length);
+    setCanvasData(
+      'factoryVisitors',
+      visiting.map(visitor => visitor.id).join(','),
+    );
+    setCanvasData('parentAway', ownAway);
     const parentAwayMessage = visitors.awayMessage(sessionId);
-    canvas.dataset.parentAwayLabel = parentAwayMessage;
+    setCanvasData('parentAwayLabel', parentAwayMessage);
     const foreignNames = visiting
       .filter(visitor => visitor.id !== sessionId)
       .map(visitor => visitor.name || visitor.id);
@@ -1917,7 +2024,7 @@ export function createFactoryScene(
       parentAwayMessage ? `Parent: ${parentAwayMessage}` : '',
       foreignNames.length ? `Visiting parents: ${foreignNames.join(', ')}` : '',
     ].filter(Boolean);
-    canvas.setAttribute(
+    setCanvasAttribute(
       'aria-label',
       canvasDetails.length
         ? `${defaultCanvasLabel}. ${canvasDetails.join('. ')}.`
@@ -1928,21 +2035,21 @@ export function createFactoryScene(
     if (lashTarget && positions[0].whipStart) {
       const endpoint = [...lashTarget.body];
       endpoint[1] += 0.22;
-      drawRobotWhip(g, fx, C, positions[0].whipStart, endpoint, lash.age);
+      drawRobotWhip(g, fx, robotC, positions[0].whipStart, endpoint, lash.age);
     }
     for (const beam of dispatches) {
       const fade = Math.max(0, 1 - beam.age / beam.life);
-      g.rod(beam.from, beam.to, 0.016 * fade, C.white, 1);
-      fx.rod(beam.from, beam.to, 0.1 * fade, C.mint, fade * 0.15);
+      g.rod(beam.from, beam.to, 0.016 * fade, C.eyes, 1);
+      fx.rod(beam.from, beam.to, 0.1 * fade, C.violet, fade * 0.15);
       const head = beam.from.map(
         (v, i) => v + (beam.to[i] - v) * Math.min(1, beam.age * 2.8),
       );
-      fx.octagon(head, [0.27, 0.27, 0.27], C.mint, fade * 0.7);
+      fx.octagon(head, [0.27, 0.27, 0.27], C.violet, fade * 0.7);
       fx.ring(
         [beam.to[0], 0.3, beam.to[2]],
         0.4 + beam.age * 1.6,
         0.036,
-        C.mint,
+        C.violet,
         fade * 0.5,
         36,
       );
@@ -2059,6 +2166,7 @@ export function createFactoryScene(
       (motion || reaction?.animated) &&
       !document.hidden &&
       inView &&
+      !canvas.closest('[hidden]') &&
       !disposed &&
       !contextLost
     );
@@ -2067,6 +2175,7 @@ export function createFactoryScene(
     frame = 0;
     if (!canAnimate()) {
       lastFrame = 0;
+      lastPaint = 0;
       return;
     }
     const elapsed = lastFrame ? (now - lastFrame) / 1000 : 0;
@@ -2123,9 +2232,18 @@ export function createFactoryScene(
       });
       flashes = flashes.filter(f => f.age < f.life);
     }
-    render();
+    // Geometry generation and GPU uploads dominate scene cost. The SVG
+    // fallback already paints at this cadence, which remains smooth while
+    // bounding work when several agents animate at once.
+    if (!lastPaint || now - lastPaint >= 1000 / 30) {
+      lastPaint = now;
+      render();
+    }
     if (canAnimate()) schedule();
-    else lastFrame = 0;
+    else {
+      lastFrame = 0;
+      lastPaint = 0;
+    }
   }
   function schedule() {
     if (canAnimate() && !frame) frame = requestAnimationFrame(tick);
@@ -2134,12 +2252,28 @@ export function createFactoryScene(
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     lastFrame = 0;
+    lastPaint = 0;
   }
-  function onResize() {
-    if (!disposed) {
-      render();
-      schedule();
-    }
+  function onResize(entries) {
+    if (disposed) return;
+    const observed = entries?.[0]?.contentRect;
+    resize(observed || canvas.getBoundingClientRect());
+    if (!document.hidden && inView && !canvas.closest('[hidden]')) render();
+    schedule();
+  }
+  function renderUpdate(immediate = false) {
+    if (
+      disposed ||
+      contextLost ||
+      document.hidden ||
+      canvas.closest('[hidden]')
+    )
+      return;
+    // Structural changes must populate labels even when an offscreen canvas
+    // is waiting for its intersection callback.
+    if (!inView && !immediate) return;
+    if (immediate || !canAnimate() || !frame) render();
+    schedule();
   }
   function onVisibility() {
     // The clocks pause while hidden; permanent damage and lifecycle resume
@@ -2155,16 +2289,16 @@ export function createFactoryScene(
       ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 1.5 - 0.75,
       0.5 - (event.clientY - rect.top) / Math.max(rect.height, 1),
     ];
-    const hit = findHit(event);
-    canvas.style.cursor = hit ? 'pointer' : '';
+    const hit = findHit(event, rect);
+    const cursor = hit ? 'pointer' : '';
+    if (canvas.style.cursor !== cursor) canvas.style.cursor = cursor;
   }
   function onPointerLeave() {
     pointer = [0, 0];
     canvas.style.cursor = '';
   }
-  function findHit(event) {
-    const rect = canvas.getBoundingClientRect(),
-      x = event.clientX - rect.left,
+  function findHit(event, rect = canvas.getBoundingClientRect()) {
+    const x = event.clientX - rect.left,
       y = event.clientY - rect.top;
     let hit = null,
       distance = Infinity;
@@ -2186,11 +2320,18 @@ export function createFactoryScene(
     return hit;
   }
   function onClick(event) {
-    const hit = findHit(event);
+    const hit = findHit(event, canvas.getBoundingClientRect());
     if (hit !== null) onSelect(hit);
   }
   function caneTargetList() {
-    if (disposed || contextLost || document.hidden || !inView) return [];
+    if (
+      disposed ||
+      contextLost ||
+      document.hidden ||
+      !inView ||
+      canvas.closest('[hidden]')
+    )
+      return [];
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return [];
     return anchors
@@ -2256,10 +2397,12 @@ export function createFactoryScene(
   canvas.addEventListener('webglcontextlost', onContextLost);
   canvas.addEventListener('webglcontextrestored', onContextRestored);
   document.addEventListener('visibilitychange', onVisibility);
+  resize(canvas.getBoundingClientRect());
   const resizeObserver =
     typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null;
   resizeObserver?.observe(canvas);
-  if (!resizeObserver) window.addEventListener('resize', onResize);
+  // A DPR change does not necessarily change the observed CSS content box.
+  window.addEventListener('resize', onResize);
   const intersectionObserver =
     typeof IntersectionObserver !== 'undefined'
       ? new IntersectionObserver(entries => {
@@ -2276,20 +2419,20 @@ export function createFactoryScene(
       if (disposed) return;
       visitors.update(hub);
       parentMotion.setAway(visitors.isAway(sessionId));
-      render();
-      schedule();
+      renderUpdate();
     },
     update(data, selectedId = 'parent') {
       if (disposed) return;
       const id = data?.session?.id;
-      if (id !== sessionId) {
+      const sessionChanged = id !== sessionId;
+      if (sessionChanged) {
         reaction = null;
         damage.reset();
         damageHomes.clear();
         stop();
         sessionId = id;
         identity = factoryIdentity(id);
-        canvas.dataset.factoryIdentity = identity.token;
+        setCanvasData('factoryIdentity', identity.token);
         if (!contextLost)
           upload(factory, buildFactory(C, identity), gl.STATIC_DRAW);
         firstSnapshot = true;
@@ -2305,15 +2448,21 @@ export function createFactoryScene(
       visitors.observeLocalPose(id, parentMotion.pose());
       parentMotion.setAway(visitors.isAway(id));
       snapshot = data;
+      const selectionChanged = selected !== selectedId;
       selected = selectedId;
+      const previousLayout = units
+        .map(unit => `${unit.id}:${slots.get(unit.id)}`)
+        .join('|');
       reconcile(data);
+      const layoutChanged =
+        previousLayout !==
+        units.map(unit => `${unit.id}:${slots.get(unit.id)}`).join('|');
       if (time === 0) {
         const pose = parentMotion.pose();
         cameraTarget =
           units.length === 0 ? [pose.x + 0.65, 1.6, pose.z] : [-0.5, 0.6, 0];
       }
-      render();
-      schedule();
+      renderUpdate(sessionChanged || layoutChanged || selectionChanged);
     },
     setPalette(palette) {
       if (disposed) return;
@@ -2335,6 +2484,7 @@ export function createFactoryScene(
         effect.color = replacements.get(effect.color) ?? effect.color;
       }
       C = next;
+      robotC = {...C, dark: C.outline, white: C.eyes};
       // Reuse the existing GPU buffer; context restoration rebuilds from C.
       if (!contextLost) {
         upload(factory, buildFactory(C, identity), gl.STATIC_DRAW);

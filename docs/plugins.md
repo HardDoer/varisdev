@@ -111,12 +111,18 @@ Each file describes a palette and optionally a stylesheet:
 
 `base` is `factory`, `nord`, `dracula`, `catppuccin-mocha`, `forest`, `moss`, `kimbie-dark`, `solarized-light`, `mint-paper`, `glacier`, `rose-quartz`, or `high-contrast`. Omitted colors inherit from the base. Colors use six digit hex values. The interface palette also supplies matching factory colors; optional `scenePalette` overrides individual scene colors.
 
-Available interface colors are `bg`, `panel`, `panel-raised`, `input`, `line`, `text`, `muted`, `mint`, `cyan`, `amber`, `red`, `violet`, `rose`, `focus`, `accent-text`, `hover`, `selected`, `selection-bg`, `selection-text`, `selection-border`, `status-running`, `status-queued`, `status-completed`, `danger`, `scene`, `scene-glow`, and `page-glow`.
+Available interface colors are `bg`, `panel`, `panel-raised`, `input`, `line`, `text`, `muted`, `mint`, `cyan`, `amber`, `red`, `violet`, `rose`, `focus`, `accent-text`, `hover`, `selected`, `selection-bg`, `selection-text`, `selection-border`, `danger`, `scene`, `scene-glow`, and `page-glow`.
+
+Status colors are `status-running` (green), `status-queued` (amber), `status-completed` (blue), `status-failed` (red), `status-cancelling` (orange), `status-compacting` (violet), and `status-cancelled` (neutral). Badges also have distinct symbols and text labels.
+
+Robot colors are `robot-shell`, `robot-outline`, `robot-screen`, and `robot-eyes`. Keep the silhouette distinct from its surroundings, the visor distinct from the shell, and the eyes readable against the visor.
 
 Role colors are `accent` (buttons and active controls), `link`, `heading`, `code`, `message-user`, `message-assistant`, `action-read`, `action-edit`, `action-command`, `action-web`, `action-agent`, `action-media`, `diff-add`, and `diff-remove`. These can vary independently. `accent-text` is the text on filled accent buttons. Legacy named palette overrides provide role defaults; explicit role colors take precedence. Links use a legacy `cyan` override before `mint`.
 
-Scene overrides are `floor`, `edge`, `dark`, `metal`, `shell`, `white`, `mint`, `cyan`, `amber`, `red`, `dim`, `screen`, `selection`, `running`, `queued`, and `completed`.
+Scene overrides are `floor`, `edge`, `dark`, `metal`, `shell`, `outline`, `eyes`, `white`, `mint`, `cyan`, `amber`, `red`, `violet`, `rose`, `dim`, `screen`, `selection`, `running`, `queued`, `completed`, `failed`, `cancelling`, `compacting`, and `cancelled`.
 
-Stylesheets are relative to the theme file and must remain inside the installed package. They can use the interface's CSS variables and style app elements. Their CSS is applied while that theme is selected and removed when switching. Keep keyboard focus, readable text, and reduced-motion preferences usable in your styles.
+Use a varied accent palette for important controls, robots, and effects rather than tinting everything toward the background color. Check the rendered hover and selection states too: normal text needs at least 4.5:1 contrast, and controls, focus indicators, and meaningful graphics need 3:1.
+
+Stylesheets are relative to the theme file and must remain inside the installed package. They can use the interface's CSS variables and style app elements. Their CSS is applied while that theme is selected and removed when switching. Keep keyboard focus and reduced-motion preferences usable in your styles.
 
 The menu discovers themes from global plugins and the selected project's plugins, without executing their extension code. Theme IDs include the package name to avoid collisions. Opening the menu refreshes discovery; invalid entries appear under **Theme errors**. Each manifest, theme, or stylesheet is limited to 128 KB, with up to 64 registrations. The selected theme is saved across restarts. Removing its plugin falls back to Factory.

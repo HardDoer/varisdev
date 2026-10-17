@@ -15,6 +15,6 @@
 }
 .control-error {
   margin: 6px 0;
-  color: var(--danger, #ff8b94);
+  color: var(--status-failed, var(--red));
   font-size: 12px;
 }

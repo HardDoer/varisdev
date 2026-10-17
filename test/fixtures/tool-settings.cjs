@@ -1,9 +1,10 @@
-/* global process, __dirname, document, window, Event, setTimeout */
+/* global process, __dirname, document, window, Event, setTimeout, getComputedStyle, requestAnimationFrame */
 const assert = require('node:assert/strict');
-const {writeFileSync} = require('node:fs');
+const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
 const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
+const screenshotDirectory = process.env.VARISDEV_TOOL_MODELS_SCREENSHOTS;
 const report = {cases: []};
 let browser;
 const reads = [];
@@ -140,16 +141,117 @@ async function open() {
   );
 }
 async function assertCombinedVisible() {
-  assert.deepEqual(
-    await evaluate(() => ({
-      title: document.getElementById('tool-settings-title').textContent,
-      agents: document.getElementById('agent-model-settings').checkVisibility(),
-      commit: document
-        .getElementById('commit-model-settings')
-        .checkVisibility(),
-    })),
-    {title: 'Model settings', agents: true, commit: true},
-  );
+  const structure = await evaluate(() => ({
+    title: document.getElementById('tool-settings-title').textContent.trim(),
+    sections: ['agent-model-settings', 'commit-model-settings'].map(id => {
+      const element = document.getElementById(id);
+      return {
+        heading: document
+          .getElementById(element.getAttribute('aria-labelledby'))
+          .textContent.trim(),
+        visible: element.checkVisibility(),
+      };
+    }),
+  }));
+  assert.deepEqual(structure, {
+    title: 'Tool models',
+    sections: [
+      {heading: 'Agent models', visible: true},
+      {heading: 'Commit', visible: true},
+    ],
+  });
+}
+async function auditThemeContrast() {
+  return evaluate(() => {
+    const parseColor = value => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext('2d', {willReadFrequently: true});
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = value;
+      context.fillRect(0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)].map(
+        channel => channel / 255,
+      );
+    };
+    const luminance = value =>
+      parseColor(value)
+        .map(channel =>
+          channel <= 0.04045
+            ? channel / 12.92
+            : ((channel + 0.055) / 1.055) ** 2.4,
+        )
+        .reduce(
+          (total, channel, index) =>
+            total + channel * [0.2126, 0.7152, 0.0722][index],
+          0,
+        );
+    const contrast = (first, second) => {
+      const values = [luminance(first), luminance(second)].sort(
+        (left, right) => right - left,
+      );
+      return (values[0] + 0.05) / (values[1] + 0.05);
+    };
+    const root = document.documentElement;
+    const original = root.dataset.theme;
+    const themeIds = [...document.getElementById('factory-theme').options].map(
+      option => option.value,
+    );
+    const results = themeIds.map(theme => {
+      root.dataset.theme = theme;
+      const card = id => {
+        const element = document.getElementById(id);
+        const heading = element.querySelector('h3');
+        const style = getComputedStyle(element);
+        return {
+          background: style.backgroundColor,
+          heading: contrast(
+            getComputedStyle(heading).color,
+            style.backgroundColor,
+          ),
+          border: contrast(style.borderTopColor, style.backgroundColor),
+        };
+      };
+      const control = (id, cardId) => {
+        const style = getComputedStyle(document.getElementById(id));
+        const cardStyle = getComputedStyle(document.getElementById(cardId));
+        return {
+          text: contrast(style.color, style.backgroundColor),
+          boundary: contrast(style.borderTopColor, cardStyle.backgroundColor),
+        };
+      };
+      return {
+        theme,
+        agents: card('agent-model-settings'),
+        commit: card('commit-model-settings'),
+        search: control('tool-settings-search', 'agent-model-settings'),
+        commitModel: control('commit-model', 'commit-model-settings'),
+      };
+    });
+    root.dataset.theme = original;
+    return results;
+  });
+}
+async function captureScreenshots(themes) {
+  if (!screenshotDirectory) return;
+  mkdirSync(screenshotDirectory, {recursive: true});
+  for (const {theme} of themes) {
+    await evaluate(async theme => {
+      document.documentElement.dataset.theme = theme;
+      await new Promise(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
+    }, theme);
+    await delay(80);
+    writeFileSync(
+      join(screenshotDirectory, `${theme}.png`),
+      (await browser.webContents.capturePage()).toPNG(),
+    );
+  }
+  await evaluate(() => {
+    document.documentElement.dataset.theme = 'factory';
+  });
 }
 async function readDraft() {
   return evaluate(() => ({
@@ -303,7 +405,7 @@ async function main() {
         ),
       ].map(button => ({id: button.id, text: button.textContent.trim()})),
     ),
-    [{id: 'open-model-settings', text: 'Model settings'}],
+    [{id: 'open-model-settings', text: 'Tool models'}],
     'the menu has one entry for the combined settings',
   );
   await click('open-model-settings');
@@ -325,6 +427,59 @@ async function main() {
   await waitFor(() => !document.getElementById('tool-settings-content').hidden);
   assert.equal(reads.at(-1), 'project');
   await assertCombinedVisible();
+  const desktopLayout = await evaluate(() => {
+    const ids = [
+      'agent-model-settings',
+      'commit-model-settings',
+      'commit-model',
+      'commit-thinking',
+    ];
+    const rects = ids.map(id =>
+      document.getElementById(id).getBoundingClientRect(),
+    );
+    return {
+      beside: rects[0].right < rects[1].left,
+      visibleTogether: rects.every(
+        rect => rect.top >= 0 && rect.bottom <= window.innerHeight,
+      ),
+    };
+  });
+  assert.deepEqual(desktopLayout, {beside: true, visibleTogether: true});
+  const themeContrast = await auditThemeContrast();
+  for (const result of themeContrast) {
+    assert.notEqual(
+      result.agents.background,
+      result.commit.background,
+      `${result.theme} gives the cards distinct backgrounds`,
+    );
+    for (const [section, values] of [
+      ['Agent models', result.agents],
+      ['Commit', result.commit],
+    ]) {
+      assert.ok(
+        values.heading >= 4.5,
+        `${result.theme} ${section} heading contrast is ${values.heading}`,
+      );
+      assert.ok(
+        values.border >= 3,
+        `${result.theme} ${section} border contrast is ${values.border}`,
+      );
+    }
+    for (const [control, values] of [
+      ['Agent search', result.search],
+      ['Commit model', result.commitModel],
+    ]) {
+      assert.ok(
+        values.text >= 4.5,
+        `${result.theme} ${control} text contrast is ${values.text}`,
+      );
+      assert.ok(
+        values.boundary >= 3,
+        `${result.theme} ${control} boundary contrast is ${values.boundary}`,
+      );
+    }
+  }
+  await captureScreenshots(themeContrast);
   assert.deepEqual(
     await evaluate(() => ({
       choices: [
@@ -1043,6 +1198,18 @@ async function main() {
   await assertCombinedVisible();
   const geometry = await evaluate(() => {
     const dialog = document.getElementById('tool-settings-dialog');
+    const agents = document
+      .getElementById('agent-model-settings')
+      .getBoundingClientRect();
+    const commit = document
+      .getElementById('commit-model-settings')
+      .getBoundingClientRect();
+    const model = document
+      .getElementById('commit-model')
+      .parentElement.getBoundingClientRect();
+    const thinking = document
+      .getElementById('commit-thinking')
+      .parentElement.getBoundingClientRect();
     const rect = dialog.getBoundingClientRect();
     return {
       fits:
@@ -1051,10 +1218,26 @@ async function main() {
         rect.top >= 0 &&
         rect.bottom <= window.innerHeight,
       noHorizontalScroll: dialog.scrollWidth <= dialog.clientWidth,
+      separateCards: agents.bottom < commit.top,
+      stackedCommitControls:
+        model.bottom < thinking.top && Math.abs(model.left - thinking.left) < 1,
+      controlsFitCards:
+        model.left >= commit.left &&
+        model.right <= commit.right &&
+        thinking.left >= commit.left &&
+        thinking.right <= commit.right,
     };
   });
-  assert.deepEqual(geometry, {fits: true, noHorizontalScroll: true});
-  report.cases.push('settings fit a narrow desktop window');
+  assert.deepEqual(geometry, {
+    fits: true,
+    noHorizontalScroll: true,
+    separateCards: true,
+    stackedCommitControls: true,
+    controlsFitCards: true,
+  });
+  report.cases.push(
+    'separate settings cards and stacked Commit controls fit a narrow desktop window',
+  );
 }
 main()
   .catch(error => {

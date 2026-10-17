@@ -560,6 +560,170 @@ async function main() {
   });
 
   await run(
+    'streaming leaves history and hidden inspector panels untouched',
+    async () => {
+      const data = hub.sessions[0];
+      const at = data.conversation[0].at;
+      data.conversation = Array.from({length: 100}, (_, index) => ({
+        id: `history-${index}`,
+        role: 'tool',
+        toolName: 'read',
+        at,
+        finishedAt: at,
+        status: 'completed',
+        input: JSON.stringify({path: `file-${index}.ts`}),
+        text: 'saved output\n'.repeat(100),
+      }));
+      data.conversation.push({
+        id: 'live',
+        role: 'assistant',
+        at,
+        text: '0',
+        streaming: true,
+      });
+      data.events = Array.from({length: 160}, (_, index) => ({
+        id: `event-${index}`,
+        sourceId: 'parent',
+        sourceName: 'Parent',
+        at,
+        kind: 'message',
+        message: `Event ${index}`,
+        details: {Message: `Event ${index}`},
+      }));
+      data.changes = [
+        {
+          id: 'change',
+          unitId: 'parent',
+          unitName: 'Parent',
+          path: 'file.ts',
+          tool: 'edit',
+          at,
+          diff: '+updated',
+        },
+      ];
+      await publish();
+      await evaluate(() => {
+        window.performanceMutations = {history: 0, hidden: 0};
+        const history = new window.MutationObserver(records => {
+          window.performanceMutations.history += records.length;
+        });
+        for (const row of [
+          ...document.querySelectorAll('#conversation > li'),
+        ].slice(0, -1))
+          history.observe(row, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+          });
+        const hidden = new window.MutationObserver(records => {
+          window.performanceMutations.hidden += records.length;
+        });
+        for (const id of [
+          'live-feed',
+          'unit-changes',
+          'unit-facts',
+          'usage-calls',
+        ])
+          hidden.observe(document.getElementById(id), {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+          });
+        window.performanceObservers = [history, hidden];
+      });
+      for (let index = 1; index <= 40; index++) {
+        data.conversation.at(-1).text = `Latest ${index}`;
+        window.webContents.send('fixture:snapshot', hub);
+      }
+      await until(
+        () =>
+          document.querySelector(
+            '#conversation > li:last-child .conversation-text',
+          ).textContent === 'Latest 40',
+        'Latest streaming state was not rendered',
+      );
+      await settle();
+      assert.deepEqual(
+        await evaluate(() => {
+          for (const observer of window.performanceObservers)
+            observer.disconnect();
+          return window.performanceMutations;
+        }),
+        {history: 0, hidden: 0},
+      );
+      const dragTop = await evaluate(() => {
+        const panel = document.getElementById('panel-conversation');
+        panel.scrollTop = panel.scrollHeight;
+        panel.dispatchEvent(new Event('scroll'));
+        panel.dispatchEvent(
+          new window.PointerEvent('pointerdown', {bubbles: true}),
+        );
+        return panel.scrollTop;
+      });
+      data.conversation.at(-1).text =
+        'Output arriving during selection\n'.repeat(80);
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        ),
+        dragTop,
+        'Streaming must leave an in-progress pointer selection in place',
+      );
+      await evaluate(() =>
+        document.dispatchEvent(new window.PointerEvent('pointerup')),
+      );
+      await settle();
+      assert.ok(
+        await evaluate(() => {
+          const panel = document.getElementById('panel-conversation');
+          return panel.scrollHeight - panel.clientHeight - panel.scrollTop < 4;
+        }),
+        'Following resumes when the pointer is released without a text selection',
+      );
+      data.conversation.at(-1).text = 'Latest 40';
+      await publish();
+      await evaluate(() => document.getElementById('tab-feed').click());
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#live-feed > li').length,
+        ),
+        160,
+      );
+      data.conversation.at(-1).text = 'Arrived while hidden';
+      await publish();
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector(
+              '#conversation > li:last-child .conversation-text',
+            ).textContent,
+        ),
+        'Latest 40',
+      );
+      await evaluate(() => document.getElementById('tab-conversation').click());
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector(
+              '#conversation > li:last-child .conversation-text',
+            ).textContent,
+        ),
+        'Arrived while hidden',
+      );
+      await evaluate(() => document.getElementById('tab-changes').click());
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#unit-changes .diff').textContent,
+        ),
+        '+updated',
+      );
+    },
+  );
+
+  await run(
     'tool command, live output, selection and disclosure survive streaming',
     async () => {
       const initial = await evaluate(() => {
@@ -854,6 +1018,7 @@ async function main() {
         .find(item => item.textContent.includes('Fixture worker'))
         .click(),
     );
+    await evaluate(() => document.getElementById('tab-feed').click());
     await settle();
     const workerDetail = await evaluate(() => {
       const event = document.querySelector('#live-feed .feed-event');
@@ -1963,6 +2128,7 @@ async function main() {
       );
       hub.sessions[0].session.activity = 'Responding';
       await publish();
+      await settle();
       const writing = await frame();
       assert.equal(
         still.equals(writing),
@@ -1971,6 +2137,7 @@ async function main() {
       );
       hub.sessions[0].session.activity = 'Using bash';
       await publish();
+      await settle();
       assert.equal(
         writing.equals(await frame()),
         false,
@@ -3256,7 +3423,6 @@ async function main() {
           composer: document.getElementById('parent-controls').hidden,
           settings: document.getElementById('open-session-settings').hidden,
           context: document.getElementById('tab-context').hidden,
-          meter: document.getElementById('open-context').hidden,
           steering: document.getElementById('steering-messages').hidden,
           notifications: document.getElementById('extension-notifications')
             .hidden,
@@ -3276,7 +3442,6 @@ async function main() {
           composer: true,
           settings: false,
           context: true,
-          meter: true,
           steering: true,
           notifications: true,
           statuses: true,
@@ -3889,11 +4054,26 @@ async function main() {
       await publish();
       await evaluate(() => {
         document.querySelector('#active-workers button').click();
-        document.getElementById('open-context').click();
+        document.getElementById('back-to-parent').click();
+        document.getElementById('tab-context').focus();
+        document.getElementById('tab-context').click();
       });
       await until(
         () => document.querySelectorAll('.context-file').length === 5,
         'Context files did not load',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('open-context')),
+        null,
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            !!document
+              .getElementById('markdown-launcher')
+              .closest('.factory-file-actions'),
+        ),
+        true,
       );
       const display = await evaluate(() => ({
         parent: document.getElementById('context-recipient').textContent,
@@ -4734,7 +4914,7 @@ async function main() {
             .getElementById('parent-controls')
             .matches(':popover-open'),
           hints: /Enter sends|Shift\+Enter adds a line/.test(
-            document.body.textContent,
+            document.getElementById('parent-controls').textContent,
           ),
         };
       });

@@ -503,7 +503,7 @@ void test('desktop settings start empty and persist clearing explicit model choi
       {model: firstId, thinkingLevel: null},
       'session',
     ),
-    /No agent models selected.*Menu → Model settings/,
+    /No agent models selected.*Menu → Tool models/,
   );
 });
 

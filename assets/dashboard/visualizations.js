@@ -8,6 +8,32 @@ function node(tag, className, text) {
   return element;
 }
 
+function sameBlock(left, right) {
+  if (!left || left.type !== right.type) return false;
+  if (right.type === 'image')
+    return (
+      left.id === right.id &&
+      left.name === right.name &&
+      left.label === right.label &&
+      left.path === right.path &&
+      left.width === right.width &&
+      left.height === right.height
+    );
+  if (right.type === 'markdown') return left.text === right.text;
+  return (
+    left.value === right.value &&
+    left.total === right.total &&
+    left.label === right.label
+  );
+}
+
+function sameList(left, right, compare) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => compare(value, right[index]))
+  );
+}
+
 // Snapshots contain references only. Raster data enters through the desktop bridge.
 export function createConversationVisualizations({api, root, dialog}) {
   const cache = new Map();
@@ -26,13 +52,40 @@ export function createConversationVisualizations({api, root, dialog}) {
   const status = dialog.querySelector('[role=status]');
   const retry = dialog.querySelector('#conversation-image-retry');
   const closeButton = dialog.querySelector('#conversation-image-close');
+  const visibleCandidates = new Set();
+  let imageFrame;
+  function loadVisibleImages() {
+    imageFrame = undefined;
+    const bounds = root.getBoundingClientRect();
+    const visible = [];
+    for (const element of visibleCandidates) {
+      if (!element.isConnected || !bounds.width || !bounds.height) continue;
+      const box = element.getBoundingClientRect();
+      if (
+        box.width &&
+        box.height &&
+        box.bottom >= bounds.top - 240 &&
+        box.top <= bounds.bottom + 240 &&
+        box.right >= bounds.left - 240 &&
+        box.left <= bounds.right + 240
+      )
+        visible.push(element);
+    }
+    visibleCandidates.clear();
+    for (const element of visible) {
+      observer.unobserve(element);
+      element.loadImage?.();
+    }
+  }
   const observer = new window.IntersectionObserver(
     records => {
       for (const record of records) {
-        if (!record.isIntersecting) continue;
-        observer.unobserve(record.target);
-        record.target.loadImage?.();
+        if (record.isIntersecting) visibleCandidates.add(record.target);
+        else visibleCandidates.delete(record.target);
       }
+      // Let a pending conversation scroll settle before requesting raster data.
+      if (visibleCandidates.size && imageFrame === undefined)
+        imageFrame = window.requestAnimationFrame(loadVisibleImages);
     },
     {root, rootMargin: '240px'},
   );
@@ -216,6 +269,7 @@ export function createConversationVisualizations({api, root, dialog}) {
       dispose() {
         disposed = true;
         observer.unobserve(element);
+        visibleCandidates.delete(element);
         element.loadImage = undefined;
         thumbnail.removeAttribute('src');
         if (viewerEntry === entry) close();
@@ -255,10 +309,24 @@ export function createConversationVisualizations({api, root, dialog}) {
     const blocks = new Map();
     const warnings = node('div', 'visualization-errors');
     warnings.setAttribute('role', 'status');
+    warnings.hidden = true;
+    let previousBlocks = [];
+    let previousErrors = [];
+    let initialized = false;
     const entry = {
       element,
       update(message) {
         const values = message.visualizations || [];
+        const errors = message.visualizationErrors || [];
+        if (
+          initialized &&
+          sameList(previousBlocks, values, sameBlock) &&
+          sameList(previousErrors, errors, (left, right) => left === right)
+        )
+          return;
+        previousBlocks = values.map(block => ({...block}));
+        previousErrors = [...errors];
+        initialized = true;
         const keys = new Set();
         values.forEach((block, index) => {
           const key =
@@ -277,8 +345,7 @@ export function createConversationVisualizations({api, root, dialog}) {
                   };
             blocks.set(key, item);
           }
-          const signature = JSON.stringify(block);
-          if (item.signature !== signature) {
+          if (!sameBlock(item.block, block)) {
             if (block.type === 'image') item.update(block);
             else if (block.type === 'markdown')
               renderMarkdown(item.element, String(block.text || ''), true);
@@ -307,7 +374,7 @@ export function createConversationVisualizations({api, root, dialog}) {
                 ),
               );
             }
-            item.signature = signature;
+            item.block = {...block};
           }
           if (element.children[index] !== item.element)
             element.insertBefore(item.element, element.children[index] || null);
@@ -318,11 +385,14 @@ export function createConversationVisualizations({api, root, dialog}) {
           item.element.remove();
           blocks.delete(key);
         }
-        const errors = (message.visualizationErrors || []).join('\n');
-        if (warnings.textContent !== errors) warnings.textContent = errors;
-        warnings.hidden = !errors;
-        element.append(warnings);
-        element.hidden = !values.length && !errors;
+        const errorText = errors.join('\n');
+        if (warnings.textContent !== errorText)
+          warnings.textContent = errorText;
+        if (warnings.hidden === Boolean(errorText))
+          warnings.hidden = !errorText;
+        if (element.lastElementChild !== warnings) element.append(warnings);
+        const hidden = !values.length && !errorText;
+        if (element.hidden !== hidden) element.hidden = hidden;
       },
       dispose() {
         for (const item of blocks.values()) item.dispose();
@@ -335,6 +405,9 @@ export function createConversationVisualizations({api, root, dialog}) {
   }
   function reset() {
     generation++;
+    window.cancelAnimationFrame(imageFrame);
+    imageFrame = undefined;
+    visibleCandidates.clear();
     for (const job of queue.splice(0))
       job.reject(new Error('Conversation changed.'));
     close();

@@ -16,15 +16,39 @@ const TAU = Math.PI * 2;
 const HOME = -6.25;
 const STARTLE_SECONDS = 1.1;
 const C = {
-  shell: 'var(--mint)',
-  edge: 'var(--cyan)',
-  metal: 'var(--muted)',
+  shell: 'var(--robot-shell)',
+  outline: 'var(--robot-outline)',
+  screen: 'var(--robot-screen)',
+  eyes: 'var(--robot-eyes)',
+  edge: 'var(--line)',
+  metal: 'color-mix(in srgb, var(--robot-shell) 62%, var(--robot-outline))',
   dark: 'var(--bg)',
   white: 'var(--text)',
   dim: 'var(--line)',
   amber: 'var(--amber)',
   cyan: 'var(--cyan)',
   mint: 'var(--mint)',
+  running: 'color-mix(in srgb, var(--status-running) 60%, var(--robot-eyes))',
+  queued: 'color-mix(in srgb, var(--status-queued) 60%, var(--robot-eyes))',
+  completed:
+    'color-mix(in srgb, var(--status-completed) 60%, var(--robot-eyes))',
+  failed: 'color-mix(in srgb, var(--status-failed) 60%, var(--robot-eyes))',
+  cancelling:
+    'color-mix(in srgb, var(--status-cancelling) 60%, var(--robot-eyes))',
+  compacting:
+    'color-mix(in srgb, var(--status-compacting) 60%, var(--robot-eyes))',
+  cancelled:
+    'color-mix(in srgb, var(--status-cancelled) 60%, var(--robot-eyes))',
+};
+const ROBOT_C = {...C, dark: C.outline, white: C.eyes};
+const STATUS_COLOR = {
+  running: C.running,
+  queued: C.queued,
+  completed: C.completed,
+  failed: C.failed,
+  cancelling: C.cancelling,
+  compacting: C.compacting,
+  cancelled: C.cancelled,
 };
 const mix = (a, b, amount) =>
   a.map((value, i) => value + (b[i] - value) * amount);
@@ -188,36 +212,48 @@ export function createParentFallback(container) {
   visitorNotice.className = 'factory-away-notice';
   visitorNotice.setAttribute('aria-live', 'polite');
   let agents = [];
+  let agentElements = new Map();
+  let damageActive = false;
+  let layoutRevision = 0;
   let recoilGlyph = null;
   function clearWhip() {
     recoilGlyph?.style.removeProperty('translate');
     recoilGlyph = null;
     overlay.remove();
   }
+  function refreshAgentElements() {
+    const next = new Map();
+    for (const element of container.querySelectorAll(
+      '.fallback-station.agent',
+    )) {
+      const id = element.dataset.unitId;
+      const glyph = element.querySelector('.robot-glyph');
+      if (id && glyph) next.set(id, {station: element, glyph});
+    }
+    const changed =
+      next.size !== agentElements.size ||
+      [...next].some(([id, visual]) => {
+        const previous = agentElements.get(id);
+        return (
+          previous?.station !== visual.station ||
+          previous?.glyph !== visual.glyph
+        );
+      });
+    agentElements = next;
+    return changed;
+  }
   function whipTargets() {
     const running = new Set(
       agents.filter(a => a.status === 'running').map(a => a.id),
     );
-    return [...container.querySelectorAll('.fallback-station.agent')].filter(
-      element => {
-        const rect = element.getBoundingClientRect();
-        const glyphBounds = element
-          .querySelector('.robot-glyph')
-          ?.getBoundingClientRect();
-        return (
-          glyphBounds?.width > 0 &&
-          glyphBounds.height > 0 &&
-          running.has(element.dataset.unitId) &&
-          damage.pose(element.dataset.unitId).phase === 'alive' &&
-          rect.width > 0 &&
-          rect.height > 0 &&
-          rect.bottom > 0 &&
-          rect.top < window.innerHeight &&
-          rect.right > 0 &&
-          rect.left < window.innerWidth
-        );
-      },
-    );
+    return [...agentElements]
+      .filter(
+        ([id, visual]) =>
+          visual.station.isConnected &&
+          running.has(id) &&
+          damage.pose(id).phase === 'alive',
+      )
+      .map(([, visual]) => visual.station);
   }
   function syncWhip() {
     whip.update(
@@ -259,6 +295,14 @@ export function createParentFallback(container) {
   let visible = true;
   let identity = factoryIdentity('');
 
+  function setData(element, name, value) {
+    const text = String(value);
+    if (element.dataset[name] !== text) element.dataset[name] = text;
+  }
+  function setStyle(element, name, value) {
+    if (element.style[name] !== value) element.style[name] = value;
+  }
+
   function visibleBounds(rect) {
     return (
       rect.width > 0 &&
@@ -287,12 +331,9 @@ export function createParentFallback(container) {
       damage.pose('parent').phase === 'alive'
     )
       candidates.push({id: 'parent', geometry: robotGeometry});
-    for (const element of container.querySelectorAll(
-      '.fallback-station.agent .robot-glyph',
-    )) {
-      const id = element.closest('.fallback-station.agent')?.dataset.unitId;
-      if (id && ids.has(id) && damage.pose(id).phase === 'alive')
-        candidates.push({id, geometry: element});
+    for (const [id, visual] of agentElements) {
+      if (ids.has(id) && damage.pose(id).phase === 'alive')
+        candidates.push({id, geometry: visual.glyph});
     }
     for (const [id, visual] of visitorVisuals)
       if (damage.pose(id).phase === 'alive')
@@ -353,7 +394,7 @@ export function createParentFallback(container) {
     cleanupEffects.remove();
   }
 
-  const effectPath = (d, fill, stroke = C.dark, width = 0.8) => ({
+  const effectPath = (d, fill, stroke = C.outline, width = 0.8) => ({
     d,
     fill,
     stroke,
@@ -384,8 +425,8 @@ export function createParentFallback(container) {
             p(0.35, 0.62),
             p(0.27, 0.51),
           ]),
-          C.dark,
-          C.metal,
+          C.screen,
+          C.outline,
           0.5,
         ),
       );
@@ -407,8 +448,8 @@ export function createParentFallback(container) {
             p(0.67, 0.3),
             p(0.53, 0.25),
           ]),
-          C.dark,
-          C.metal,
+          C.screen,
+          C.outline,
           0.6,
         ),
       );
@@ -417,7 +458,7 @@ export function createParentFallback(container) {
         effectPath(
           `M${p(0.15, 0.7).join(' ')} L${p(0.37, 0.75).join(' ')} L${p(0.26, 0.84).join(' ')} M${p(0.72, 0.36).join(' ')} L${p(0.85, 0.56).join(' ')}`,
           'none',
-          C.dark,
+          C.outline,
           Math.max(1, w * 0.055),
         ),
       );
@@ -475,7 +516,10 @@ export function createParentFallback(container) {
   }
 
   function applyDamage() {
-    const bounds = container.getBoundingClientRect();
+    if (!damageActive && !damageVisuals.size) return;
+    let bounds;
+    const measureContainer = () =>
+      (bounds ||= container.getBoundingClientRect());
     const floors = [],
       fragments = [],
       cleanupShapes = [];
@@ -483,13 +527,8 @@ export function createParentFallback(container) {
     const elements = new Map([
       ['parent', {element: robot, geometry: robotGeometry}],
     ]);
-    for (const station of container.querySelectorAll(
-      '.fallback-station.agent',
-    )) {
-      const id = station.dataset.unitId;
-      const element = station.querySelector('.robot-glyph');
-      if (activeIds.has(id) && element) elements.set(id, {element});
-    }
+    for (const [id, visual] of agentElements)
+      if (activeIds.has(id)) elements.set(id, {element: visual.glyph});
     for (const [id, visual] of visitorVisuals) elements.set(id, visual);
     damage.retain([...elements.keys()]);
     const pieces = damage.effects();
@@ -524,36 +563,49 @@ export function createParentFallback(container) {
         visual = {element, marks};
         damageVisuals.set(id, visual);
       }
+      const poseKey = JSON.stringify([
+        layoutRevision,
+        pose.damage,
+        pose.phase,
+        pose.surprise,
+        pose.flinch,
+        pose.collapse,
+        pose.offset,
+        pose.corpseOffset,
+        pose.cleanup,
+        pose.door,
+        pose.lift,
+        pose.visible,
+      ]);
+      if (visual.poseKey === poseKey && visual.home) continue;
       clearCaneStyle(element);
-      // Measure the neutral geometry each frame, not a cached station position.
-      // Cane targets subsequently measure the displaced/tumbling geometry.
-      const rect = (geometry || element).getBoundingClientRect();
-      if (!rect.width || !rect.height) {
-        visual.home = null;
-        continue;
-      }
-      const local = geometry
-        ? geometry.getBBox()
-        : {x: 0, y: 0, width: 100, height: 100};
-      const unit = geometry
-        ? (rect.height / Math.max(1, local.height)) * 23
-        : rect.height / 1.65;
-      if (
-        !visual.home ||
-        visual.layoutWidth !== bounds.width ||
-        visual.layoutHeight !== bounds.height ||
-        (pose.phase === 'alive' &&
-          !pose.offset.some(value => Math.abs(value) > 0.025) &&
-          !effectOwners.has(id))
-      )
+      if (!visual.home || visual.layoutRevision !== layoutRevision) {
+        const rect = (geometry || element).getBoundingClientRect();
+        if (!rect.width || !rect.height) {
+          visual.home = null;
+          continue;
+        }
+        const local = geometry
+          ? geometry.getBBox()
+          : {x: 0, y: 0, width: 100, height: 100};
+        const unit = geometry
+          ? (rect.height / Math.max(1, local.height)) * 23
+          : rect.height / 1.65;
+        const containerBounds = measureContainer();
         visual.home = {
-          x: rect.left - bounds.left + rect.width / 2,
-          y: rect.bottom - bounds.top,
+          x: rect.left - containerBounds.left + rect.width / 2,
+          y: rect.bottom - containerBounds.top,
           width: rect.width,
           unit,
         };
-      visual.layoutWidth = bounds.width;
-      visual.layoutHeight = bounds.height;
+        visual.local = local;
+        visual.rectWidth = rect.width;
+        visual.rectHeight = rect.height;
+        visual.layoutRevision = layoutRevision;
+      }
+      const local = visual.local;
+      const unit = visual.home.unit;
+      const rect = {width: visual.rectWidth, height: visual.rectHeight};
       drawDamageMarks(visual.marks, local, pose.damage);
       element.classList.add('robot-damage-body');
       element.dataset.damage = String(number(pose.damage));
@@ -614,8 +666,9 @@ export function createParentFallback(container) {
       if (pose.phase === 'replacing') drawHatch(floors, visual.home, pose.door);
       if (pose.cleanup) {
         const g = primitives(cleanupShapes, 0, 0, 0, visual.home);
-        drawCleanupBot(g, g, C, pose.cleanup);
+        drawCleanupBot(g, g, ROBOT_C, pose.cleanup);
       }
+      visual.poseKey = poseKey;
     }
     for (const fragment of pieces) {
       const home = damageVisuals.get(fragment.owner)?.home;
@@ -634,7 +687,7 @@ export function createParentFallback(container) {
         fragment.kind === 'spark'
           ? C.amber
           : fragment.kind === 'armor'
-            ? C.mint
+            ? C.shell
             : C.metal;
       fragments.push({
         ...effectPath(
@@ -645,7 +698,7 @@ export function createParentFallback(container) {
             point(-0.45, 0.25),
           ]),
           color,
-          C.dark,
+          C.outline,
           0.6,
         ),
         opacity: Math.min(1, fragment.life * 3),
@@ -656,14 +709,28 @@ export function createParentFallback(container) {
       [debrisEffects, fragments],
       [cleanupEffects, cleanupShapes],
     ]) {
-      layer.setAttribute(
-        'viewBox',
-        `0 0 ${Math.max(1, bounds.width)} ${Math.max(1, bounds.height)}`,
-      );
+      if (shapes.length) {
+        const containerBounds = measureContainer();
+        const viewBox = `0 0 ${Math.max(1, containerBounds.width)} ${Math.max(1, containerBounds.height)}`;
+        if (layer.getAttribute('viewBox') !== viewBox)
+          layer.setAttribute('viewBox', viewBox);
+      }
       paint(layer, shapes);
       if (shapes.length && !layer.parentNode) container.append(layer);
       else if (!shapes.length) layer.remove();
     }
+    damageActive =
+      pieces.length > 0 ||
+      [...elements.keys()].some(id => {
+        const pose = damage.pose(id);
+        return (
+          pose.damage > 0 ||
+          pose.phase !== 'alive' ||
+          pose.surprise > 0 ||
+          pose.flinch > 0 ||
+          pose.offset.some(value => Math.abs(value) > 0.025)
+        );
+      });
   }
 
   function paint(group, shapes) {
@@ -676,17 +743,22 @@ export function createParentFallback(container) {
         element = document.createElementNS(NS, 'path');
         group.append(element);
       }
-      element.setAttribute('d', shape.d);
-      element.setAttribute('fill', shape.fill);
-      element.setAttribute('stroke', shape.stroke);
-      element.setAttribute('stroke-width', number(shape.width));
-      element.setAttribute('stroke-linecap', 'round');
-      element.setAttribute('stroke-linejoin', 'round');
+      for (const [name, value] of Object.entries({
+        d: shape.d,
+        fill: shape.fill,
+        stroke: shape.stroke,
+        'stroke-width': number(shape.width),
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+        opacity: shape.opacity ?? 1,
+      })) {
+        const text = String(value);
+        if (element.getAttribute(name) !== text)
+          element.setAttribute(name, text);
+      }
       // A black overlay is unnecessary: brightness also follows theme colors.
-      element.setAttribute('opacity', shape.opacity ?? 1);
-      element.style.filter = shape.shade
-        ? `brightness(${1 - shape.shade})`
-        : '';
+      const filter = shape.shade ? `brightness(${1 - shape.shade})` : '';
+      if (element.style.filter !== filter) element.style.filter = filter;
     });
   }
 
@@ -739,18 +811,20 @@ export function createParentFallback(container) {
           [footX, 0.34 + footY, side * 0.34],
           [-0.1, 0.8 + jump, side * 0.34],
           0.11,
-          C.dark,
+          C.outline,
         );
       }
-      g.box([0, 1.34 + jump, 0], [0.94, 0.86, 1], accent);
-      g.box([0.04, 2.17 + jump, 0], [1.06, 0.62, 1.14], C.metal);
-      g.box([0.59, 2.17 + jump, 0], [0.08, 0.35, 0.96], C.dark);
+      g.box([0, 1.34 + jump, 0], [0.94, 0.86, 1], C.shell);
+      g.box([0.49, 1.35 + jump, 0], [0.035, 0.22, 0.62], accent, 1);
+      g.box([0.04, 2.17 + jump, 0], [1.06, 0.62, 1.14], C.shell);
+      g.box([0.54, 2.17 + jump, 0], [0.09, 0.43, 1.08], C.outline);
+      g.box([0.59, 2.17 + jump, 0], [0.08, 0.35, 0.96], C.screen);
       for (const side of [-1, 1]) {
         if (!corpse)
           g.box(
             [0.64, 2.2 + jump, side * 0.27],
             [0.04, 0.1 + surprise * 0.12, 0.19],
-            surprise ? C.amber : accent,
+            C.eyes,
             1,
           );
         const swing = moving
@@ -760,7 +834,7 @@ export function createParentFallback(container) {
           [0, 1.65 + jump, side * 0.62],
           [-swing * 0.36, 1.05 + jump, side * 0.8],
           0.1,
-          accent,
+          C.metal,
         );
       }
       paint(visual.geometry, shapes);
@@ -770,7 +844,11 @@ export function createParentFallback(container) {
       visual.element.remove();
       visitorVisuals.delete(id);
     }
-    visitorSvg.dataset.visitors = visiting.map(visitor => visitor.id).join(',');
+    setData(
+      visitorSvg,
+      'visitors',
+      visiting.map(visitor => visitor.id).join(','),
+    );
     if (visiting.length && !visitorSvg.parentNode) container.append(visitorSvg);
     else if (!visiting.length) visitorSvg.remove();
   }
@@ -791,26 +869,31 @@ export function createParentFallback(container) {
     const ownAway = !damagePaused && visitors.isAway(session.id);
     const awayMessage = visitors.awayMessage(session.id);
     if (awayMessage) {
-      visitorNotice.textContent = awayMessage;
-      station.dataset.awayLabel = awayMessage;
+      if (visitorNotice.textContent !== awayMessage)
+        visitorNotice.textContent = awayMessage;
+      setData(station, 'awayLabel', awayMessage);
       station.classList.add('parent-is-away');
       if (!visitorNotice.parentNode) station.append(visitorNotice);
     } else {
       visitorNotice.remove();
-      delete station.dataset.awayLabel;
+      if ('awayLabel' in station.dataset) delete station.dataset.awayLabel;
       station.classList.remove('parent-is-away');
     }
     const ownTravel = visitors
       .visitorsAt(session.id)
       .find(visitor => visitor.id === session.id);
-    robot.style.display = ownAway && !ownTravel ? 'none' : '';
-    ground.style.display = robot.style.display;
-    ground.style.visibility = parentDamage.phase === 'alive' ? '' : 'hidden';
+    setStyle(robot, 'display', ownAway && !ownTravel ? 'none' : '');
+    setStyle(ground, 'display', robot.style.display);
+    setStyle(
+      ground,
+      'visibility',
+      parentDamage.phase === 'alive' ? '' : 'hidden',
+    );
     if (ownAway && !ownTravel) {
       applyDamage();
-      svg.dataset.mode = 'away';
-      svg.dataset.activity = '';
-      svg.dataset.eyes = String(AWAKE_EYE_HEIGHT);
+      setData(svg, 'mode', 'away');
+      setData(svg, 'activity', '');
+      setData(svg, 'eyes', AWAKE_EYE_HEIGHT);
       return;
     }
     const currentPose = ownTravel
@@ -884,7 +967,8 @@ export function createParentFallback(container) {
       (relaxed?.lift || 0) -
       (corpse ? 0 : parentDamage.flinch || 0) * 0.16;
     const base = 0.4 + lift;
-    const color = surprise ? C.amber : working ? C.cyan : C.mint;
+    const signalColor = corpse ? C.dim : STATUS_COLOR[session.status] || C.dim;
+    const ringColor = working ? signalColor : C.mint;
     const origin = 57 + (pose.x - HOME) * 8.8;
     const shapes = [];
     const yaw = pose.yaw + (idle?.yaw || 0) * blend - (lashPose?.turn || 0);
@@ -896,7 +980,8 @@ export function createParentFallback(container) {
       [2.25 - jump * 0.3, 0.04, 1.5 - jump * 0.18],
       C.dark,
     );
-    if (selected || working) floor.ring([0, 0.4, 0], 2.05, 0.04, color);
+    if (working) floor.ring([0, 0.395, 0], 2.05, 0.075, C.screen);
+    if (selected || working) floor.ring([0, 0.4, 0], 2.05, 0.04, ringColor);
     paint(ground, floorShapes);
     for (const [i, side] of [-1, 1].entries()) {
       const step = moving ? Math.sin(pose.stride + i * Math.PI) : 0;
@@ -913,18 +998,20 @@ export function createParentFallback(container) {
         [x - 0.15, 0.7 + y, z],
         [-0.25, 1.15 + lift, side * 0.54],
         0.18,
-        C.dark,
+        C.outline,
       );
       g.octagon([-0.23, 1.03 + lift, side * 0.54], [0.52, 0.25, 0.52], C.metal);
     }
-    g.octagon([0, base + 1, 0], [1.2, 0.3, 1.24], C.dark);
+    g.octagon([0, base + 1, 0], [1.2, 0.3, 1.24], C.outline);
     g.box([0, base + 1.55, 0], [1.45, 1.12, 1.52], C.shell);
-    g.box([0.75, base + 1.54, 0], [0.09, 0.84, 1.15], C.edge);
-    g.box([0.82, base + 1.62, 0], [0.05, 0.28, 0.68], C.dark);
-    if (!corpse) g.box([0.85, base + 1.62, 0], [0.04, 0.1, 0.46], color, 1);
-    g.cylinder([0, base + 2.22, 0], [0.56, 0.34, 0.56], C.dark);
+    g.box([0.75, base + 1.54, 0], [0.09, 0.84, 1.15], C.outline);
+    g.box([0.82, base + 1.62, 0], [0.05, 0.28, 0.68], C.screen);
+    if (!corpse)
+      g.box([0.85, base + 1.62, 0], [0.04, 0.1, 0.46], signalColor, 1);
+    g.cylinder([0, base + 2.22, 0], [0.56, 0.34, 0.56], C.outline);
     g.box([0, base + 2.72, 0], [1.65, 0.88, 1.9], C.shell);
-    g.box([0.83, base + 2.68, 0], [0.12, 0.58, 1.65], C.dark);
+    g.box([0.78, base + 2.68, 0], [0.14, 0.66, 1.77], C.outline);
+    g.box([0.83, base + 2.68, 0], [0.12, 0.58, 1.65], C.screen);
     const eyeHeight = corpse
       ? 0
       : (relaxed?.eyeHeight || AWAKE_EYE_HEIGHT) + surprise * 0.15;
@@ -933,7 +1020,7 @@ export function createParentFallback(container) {
         g.box(
           [0.92, base + 2.72, side * 0.42],
           [0.04, eyeHeight, 0.3 + surprise * 0.08],
-          surprise ? C.white : color,
+          C.eyes,
           1,
         );
       g.box([0, base + 2.65, side * 1.02], [0.5, 0.48, 0.22], C.metal);
@@ -942,7 +1029,7 @@ export function createParentFallback(container) {
       g.box(
         [0.93, base + 2.42, 0],
         [0.04, 0.14 * surprise, 0.17 * surprise],
-        C.white,
+        C.eyes,
         1,
       );
     g.rod(
@@ -951,10 +1038,11 @@ export function createParentFallback(container) {
       0.035,
       C.metal,
     );
+    g.octagon([-0.53, base + 3.67, -0.48], [0.23, 0.18, 0.23], C.screen);
     g.octagon(
-      [-0.53, base + 3.67, -0.48],
-      [0.19, 0.16, 0.19],
-      corpse ? C.metal : color,
+      [-0.53, base + 3.79, -0.48],
+      [0.15, 0.07, 0.15],
+      corpse ? C.metal : signalColor,
       corpse ? 0 : 1,
     );
     for (const [i, side] of [-1, 1].entries()) {
@@ -998,20 +1086,20 @@ export function createParentFallback(container) {
       hand = mix(hand, [1.04, base + 2.65, side * 0.85], caneSurprise);
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
-      g.octagon(elbow, [0.4, 0.36, 0.4], C.dark);
+      g.octagon(elbow, [0.4, 0.36, 0.4], C.outline);
       g.rod(elbow, hand, 0.15, C.metal);
       g.box(hand, [0.38, 0.23, 0.35], C.shell);
       for (const finger of [-1, 1])
         g.box(
           [hand[0] + 0.18, hand[1] - 0.13, hand[2] + finger * 0.12],
           [0.13, 0.26, 0.075],
-          C.dark,
+          C.outline,
         );
     }
     if (idle && blend > 0.5)
       drawIdleActivity(g, g, C, pose.activity, pose.elapsed, {...idle, lift});
     paint(robotGeometry, shapes);
-    svg.dataset.robotWhip = lash?.target || '';
+    setData(svg, 'robotWhip', lash?.target || '');
     if (lash && whipHand) {
       const target = whipTargets().find(
         element => element.dataset.unitId === lash.target,
@@ -1061,7 +1149,7 @@ export function createParentFallback(container) {
         drawRobotWhip(
           geometry,
           geometry,
-          C,
+          ROBOT_C,
           start.map(n => n / 24),
           end.map(n => n / 24),
           lash.age,
@@ -1072,14 +1160,17 @@ export function createParentFallback(container) {
       }
     }
     applyDamage();
-    svg.dataset.mode =
+    setData(
+      svg,
+      'mode',
       parentDamage.phase !== 'alive'
         ? parentDamage.phase
         : caneSurprise || reaction
           ? 'startled'
-          : pose.mode;
-    svg.dataset.activity = damagePaused ? '' : pose.activity || '';
-    svg.dataset.eyes = String(eyeHeight);
+          : pose.mode,
+    );
+    setData(svg, 'activity', damagePaused ? '' : pose.activity || '');
+    setData(svg, 'eyes', eyeHeight);
   }
 
   function drawWorkstation() {
@@ -1190,20 +1281,41 @@ export function createParentFallback(container) {
   }
   function onVisibility() {
     stopFrame();
-    if (!document.hidden) {
+    if (!document.hidden && visible && !container.closest('[hidden]')) {
       render();
       schedule();
     }
+  }
+  function renderUpdate(immediate = false) {
+    if (
+      disposed ||
+      document.hidden ||
+      !visible ||
+      container.closest('[hidden]')
+    )
+      return;
+    if (immediate || !canAnimate() || frame === null) render();
+    schedule();
   }
   document.addEventListener('visibilitychange', onVisibility);
   const observer = window.IntersectionObserver
     ? new window.IntersectionObserver(entries => {
         visible = entries.some(entry => entry.isIntersecting);
-        if (visible) schedule();
-        else stopFrame();
+        if (visible && !document.hidden && !container.closest('[hidden]')) {
+          render();
+          schedule();
+        } else stopFrame();
       })
     : null;
   observer?.observe(container);
+  const layoutObserver = window.ResizeObserver
+    ? new window.ResizeObserver(() => {
+        layoutRevision++;
+        for (const visual of damageVisuals.values()) visual.poseKey = '';
+        if (damageActive) renderUpdate(true);
+      })
+    : null;
+  layoutObserver?.observe(container);
 
   function detach() {
     whip.cancel();
@@ -1217,6 +1329,7 @@ export function createParentFallback(container) {
     visitorSvg.remove();
     for (const visual of visitorVisuals.values()) visual.element.remove();
     visitorVisuals.clear();
+    agentElements.clear();
     station = null;
     glyph = null;
   }
@@ -1226,14 +1339,15 @@ export function createParentFallback(container) {
       if (disposed) return;
       visitors.update(hub);
       controller.setAway(visitors.isAway(session?.id));
-      render();
-      schedule();
+      renderUpdate();
     },
     update(data, selectedId) {
       if (disposed) return;
+      let immediate = false;
       const next = container.querySelector('.fallback-station.parent-session');
       const nextGlyph = next?.querySelector('.robot-glyph');
       if (next !== station || nextGlyph !== glyph) {
+        immediate = true;
         detach();
         if (nextGlyph) {
           station = next;
@@ -1243,10 +1357,12 @@ export function createParentFallback(container) {
         }
       }
       if (session?.id !== data?.session?.id) {
+        immediate = true;
         reaction = null;
         damagedParentPose = null;
         clearDamageVisuals();
         damage.reset();
+        damageActive = false;
         time = 0;
         identity = factoryIdentity(data?.session?.id);
         svg.dataset.factoryIdentity = identity.token;
@@ -1254,14 +1370,24 @@ export function createParentFallback(container) {
       }
       visitors.update(data?.sessions ? data : data?.hub || data);
       session = data?.session || null;
+      const previousAgentIds = agents.map(agent => agent.id).join('|');
       agents = data?.agents || [];
-      selected = selectedId === 'parent';
+      const agentLayoutChanged =
+        refreshAgentElements() ||
+        previousAgentIds !== agents.map(agent => agent.id).join('|');
+      if (agentLayoutChanged) {
+        immediate = true;
+        layoutRevision++;
+        for (const visual of damageVisuals.values()) visual.poseKey = '';
+      }
+      const nextSelected = selectedId === 'parent';
+      if (selected !== nextSelected) immediate = true;
+      selected = nextSelected;
       controller.update(session);
       visitors.observeLocalPose(session?.id, controller.pose());
       controller.setAway(visitors.isAway(session?.id));
       if (!session || !station) stopFrame();
-      render();
-      schedule();
+      renderUpdate(immediate);
     },
     setMotion(enabled) {
       if (disposed) return;
@@ -1314,6 +1440,7 @@ export function createParentFallback(container) {
       if (disposed || !caneTargetList().some(target => target.id === id))
         return false;
       if (!damage.hit(id, direction, strength)) return false;
+      damageActive = true;
       stopFrame();
       render();
       schedule();
@@ -1324,6 +1451,7 @@ export function createParentFallback(container) {
       disposed = true;
       stopFrame();
       observer?.disconnect();
+      layoutObserver?.disconnect();
       document.removeEventListener('visibilitychange', onVisibility);
       controller.dispose();
       visitors.dispose();

@@ -13,7 +13,7 @@ export function registerCommitCommand(pi: ExtensionAPI): void {
         (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
       if (!selectedModel)
         throw new Error(
-          'Choose a parent model or select a model in Menu → Model settings → Commit.',
+          'Choose a parent model or select a model in Menu → Tool models → Commit.',
         );
       const separator = selectedModel.indexOf('/');
       const model =
@@ -25,7 +25,7 @@ export function registerCommitCommand(pi: ExtensionAPI): void {
             );
       if (!model)
         throw new Error(
-          `Commit model is unavailable: ${selectedModel}. Choose a model in Menu → Model settings → Commit.`,
+          `Commit model is unavailable: ${selectedModel}. Choose a model in Menu → Tool models → Commit.`,
         );
       await assertAgentModelAllowed(selectedModel, settings);
       const thinkingLevel =
@@ -33,7 +33,7 @@ export function registerCommitCommand(pi: ExtensionAPI): void {
       const supported = getSupportedThinkingLevels(model);
       if (!supported.some(level => level === thinkingLevel))
         throw new Error(
-          `Commit thinking level ${thinkingLevel} is unsupported for ${selectedModel}. Supported levels: ${supported.join(', ')}. Change Menu → Model settings → Commit or the parent thinking level.`,
+          `Commit thinking level ${thinkingLevel} is unsupported for ${selectedModel}. Supported levels: ${supported.join(', ')}. Change Menu → Tool models → Commit or the parent thinking level.`,
         );
       const instructions = args.trim();
       pi.sendUserMessage(

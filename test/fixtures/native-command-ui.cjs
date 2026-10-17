@@ -559,7 +559,13 @@ async function main() {
     );
   });
   await waitFor(() =>
-    evaluate(() => document.activeElement.id === 'extension-dialog-tab-model'),
+    evaluate(
+      () =>
+        document.activeElement.id === 'extension-dialog-tab-model' &&
+        document
+          .getElementById('extension-dialog-tab-model')
+          .getAttribute('aria-selected') === 'true',
+    ),
   );
   assert.equal(
     await evaluate(() =>

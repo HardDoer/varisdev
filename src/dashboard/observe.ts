@@ -49,6 +49,7 @@ export function observeDashboardSession(
   let state: DashboardState | undefined;
   let cwd = process.cwd();
   let unsubscribe: (() => void) | undefined;
+  let teamTimer: ReturnType<typeof setTimeout> | undefined;
   const tools = new Map<string, string>();
   let lastError: string | undefined;
   let sessionId: string | undefined;
@@ -190,14 +191,24 @@ export function observeDashboardSession(
   }
 
   function syncTeam(): void {
-    const team = control.snapshot();
+    clearTimeout(teamTimer);
+    teamTimer = undefined;
+    const team = control.deliverySnapshot?.() ?? control.snapshot();
     if (state && team && team.sessionId === sessionId) {
-      state.updateTeam(team.agents, team.messages);
-      for (const change of team.changes) {
-        if (!seenChanges.has(change.id)) state.recordChange(change);
-      }
-      seenChanges = new Set(team.changes.map(change => change.id));
+      state.batch(() => {
+        state!.updateTeam(team.agents, team.messages, true);
+        for (const change of team.changes) {
+          if (!seenChanges.has(change.id)) state!.recordChange(change);
+        }
+        seenChanges = new Set(team.changes.map(change => change.id));
+      });
     }
+  }
+
+  function scheduleTeamSync(): void {
+    if (teamTimer) return;
+    teamTimer = setTimeout(syncTeam, 40);
+    teamTimer.unref();
   }
 
   function restoreUsage(ctx: ExtensionContext): void {
@@ -319,9 +330,11 @@ export function observeDashboardSession(
         }
       }
     }
-    state?.replaceConversation(messages());
-    restoreUsage(ctx);
-    state?.updateSession({prompt, response});
+    state?.batch(() => {
+      state!.replaceConversation(messages());
+      restoreUsage(ctx);
+      state!.updateSession({prompt, response});
+    });
   }
 
   function showCalls(
@@ -386,6 +399,8 @@ export function observeDashboardSession(
   pi.on('session_start', (_event, ctx) => {
     cwd = ctx.cwd;
     unsubscribe?.();
+    clearTimeout(teamTimer);
+    teamTimer = undefined;
     tools.clear();
     lastError = undefined;
     seenChanges.clear();
@@ -401,36 +416,41 @@ export function observeDashboardSession(
       startedAt: ctx.sessionManager.getHeader()?.timestamp ?? now,
       updatedAt: now,
     };
-    if (existingState?.snapshot().session.id === sessionId) {
-      state = existingState;
-      state.updateSession({...session, error: undefined});
-    } else state = new DashboardState(session);
-    restoreConversation(ctx);
-    unsubscribe = control.subscribe(syncTeam);
-    syncTeam();
-    state.record('session', 'Session connected');
-    onReady(state, ctx);
+    const reused = existingState?.deliverySnapshot().session.id === sessionId;
+    state = reused ? existingState : new DashboardState(session);
+    state!.batch(() => {
+      if (reused) state!.updateSession({...session, error: undefined});
+      restoreConversation(ctx);
+      syncTeam();
+      state!.record('session', 'Session connected');
+    });
+    unsubscribe = control.subscribe(scheduleTeamSync);
+    onReady(state!, ctx);
   });
   pi.on('before_agent_start', (event, ctx) => {
-    // Pick up usage appended while idle before this run starts.
-    restoreUsage(ctx);
-    lastError = undefined;
-    const prompt = 'prompt' in event ? event.prompt : undefined;
-    state?.updateSession({
-      ...metadata(ctx),
-      ...(prompt !== undefined ? {prompt} : {}),
-      response: '',
-      error: undefined,
+    state?.batch(() => {
+      // Pick up usage appended while idle before this run starts.
+      restoreUsage(ctx);
+      lastError = undefined;
+      const prompt = 'prompt' in event ? event.prompt : undefined;
+      state!.updateSession({
+        ...metadata(ctx),
+        ...(prompt !== undefined ? {prompt} : {}),
+        response: '',
+        error: undefined,
+      });
+      if (prompt !== undefined) state!.record('message', prompt);
     });
-    if (prompt !== undefined) state?.record('message', prompt);
   });
   pi.on('agent_start', (_event, ctx) => {
-    state?.updateSession({
-      ...metadata(ctx),
-      status: 'running',
-      activity: 'Working',
+    state?.batch(() => {
+      state!.updateSession({
+        ...metadata(ctx),
+        status: 'running',
+        activity: 'Working',
+      });
+      state!.record('session', 'Parent session started working');
     });
-    state?.record('session', 'Parent session started working');
   });
   pi.on('message_start', (event, ctx) => {
     if (event.message.role === 'custom') {
@@ -439,44 +459,60 @@ export function observeDashboardSession(
     }
     if (event.message.role !== 'user' && event.message.role !== 'assistant')
       return;
-    const entry = newMessage(event.message);
-    const text = messageText(event.message);
-    const visuals = conversationVisualizations(event.message, undefined, cwd);
-    if (event.message.role === 'assistant') {
-      assistantMessage = entry;
-      state?.updateSession({
-        activity: activity(text ? 'Responding' : 'Thinking'),
-      });
-    } else userMessage = entry;
-    if (text || visuals.visualizations || visuals.visualizationErrors)
-      state?.updateConversation({
-        id: entry.id,
-        at: entry.at,
-        role: event.message.role,
-        text,
-        ...visuals,
-        streaming: event.message.role === 'assistant',
-      });
+    const message = event.message;
+    const entry = newMessage(message);
+    const text = messageText(message);
+    const visuals = conversationVisualizations(message, undefined, cwd);
+    state?.batch(() => {
+      if (message.role === 'assistant') {
+        assistantMessage = entry;
+        state!.updateSession({
+          activity: activity(text ? 'Responding' : 'Thinking'),
+        });
+      } else userMessage = entry;
+      if (text || visuals.visualizations || visuals.visualizationErrors)
+        state!.updateConversation({
+          id: entry.id,
+          at: entry.at,
+          role: message.role,
+          text,
+          ...visuals,
+          streaming: message.role === 'assistant',
+        });
+    });
   });
   pi.on('message_update', event => {
     if (event.message.role !== 'assistant') return;
+    const delta = event.assistantMessageEvent;
+    if (delta && delta.type !== 'text_delta') return;
+    const previous = assistantMessage
+      ? state?.conversationMessage(assistantMessage.id)
+      : undefined;
+    if (delta?.type === 'text_delta' && previous?.truncated) return;
     const text = messageText(event.message);
-    const visuals = conversationVisualizations(event.message, undefined, cwd);
-    if (
-      (text || visuals.visualizations || visuals.visualizationErrors) &&
-      assistantMessage
-    )
-      state?.updateConversation({
-        id: assistantMessage.id,
-        at: assistantMessage.at,
-        role: 'assistant',
-        text,
-        ...visuals,
-        streaming: true,
+    const visuals = delta
+      ? {
+          visualizations: previous?.visualizations,
+          visualizationErrors: previous?.visualizationErrors,
+        }
+      : conversationVisualizations(event.message, undefined, cwd);
+    state?.batch(() => {
+      if (
+        (text || visuals.visualizations || visuals.visualizationErrors) &&
+        assistantMessage
+      )
+        state!.updateConversation({
+          id: assistantMessage.id,
+          at: assistantMessage.at,
+          role: 'assistant',
+          text,
+          ...visuals,
+          streaming: true,
+        });
+      state!.updateSession({
+        response: text,
+        activity: activity(text ? 'Responding' : 'Thinking'),
       });
-    state?.updateSession({
-      response: text,
-      activity: activity(text ? 'Responding' : 'Thinking'),
     });
   });
   pi.on('message_end', (event, ctx) => {
@@ -485,72 +521,84 @@ export function observeDashboardSession(
       return;
     }
     if (event.message.role === 'toolResult') {
-      finishTool(
-        event.message.toolCallId,
-        event.message.toolName,
-        event.message,
-        event.message.isError,
-        new Date(event.message.timestamp).toISOString(),
-      );
-      state?.updateSession({activity: activity('Working')});
+      const message = event.message;
+      state?.batch(() => {
+        finishTool(
+          message.toolCallId,
+          message.toolName,
+          message,
+          message.isError,
+          new Date(message.timestamp).toISOString(),
+        );
+        state!.updateSession({activity: activity('Working')});
+      });
       return;
     }
     if (event.message.role !== 'assistant' && event.message.role !== 'user')
       return;
-    const text = messageText(event.message);
-    const visuals = conversationVisualizations(event.message, undefined, cwd);
+    const message = event.message;
+    const text = messageText(message);
+    const visuals = conversationVisualizations(message, undefined, cwd);
     const entry =
-      (event.message.role === 'assistant' ? assistantMessage : userMessage) ??
-      knownMessage(event.message, ctx) ??
-      newMessage(event.message);
-    rememberMessage(event.message, entry);
+      (message.role === 'assistant' ? assistantMessage : userMessage) ??
+      knownMessage(message, ctx) ??
+      newMessage(message);
+    rememberMessage(message, entry);
     const error =
-      event.message.role === 'assistant'
-        ? event.message.errorMessage
-        : undefined;
-    if (text || error || visuals.visualizations || visuals.visualizationErrors)
-      state?.updateConversation({
-        id: entry.id,
-        at: entry.at,
-        role: event.message.role,
-        text,
-        ...visuals,
-        error,
-        streaming: false,
+      message.role === 'assistant' ? message.errorMessage : undefined;
+    state?.batch(() => {
+      if (
+        text ||
+        error ||
+        visuals.visualizations ||
+        visuals.visualizationErrors
+      )
+        state!.updateConversation({
+          id: entry.id,
+          at: entry.at,
+          role: message.role,
+          text,
+          ...visuals,
+          error,
+          streaming: false,
+        });
+      if (message.role !== 'assistant') return;
+      showCalls(message, entry.at, error, message.stopReason);
+      const call = modelUsage(message, entry);
+      if (call) state!.recordUsage(call, entry.sequence);
+      if (message.errorMessage) {
+        lastError = publicText(message.errorMessage).slice(0, 4000);
+        state!.record('error', lastError);
+        state!.updateSession({error: lastError.slice(0, 4000)});
+      }
+      state!.updateSession({
+        ...metadata(ctx),
+        ...(text ? {response: text} : {}),
       });
-    if (event.message.role !== 'assistant') {
-      userMessage = undefined;
-      return;
-    }
-    showCalls(event.message, entry.at, error, event.message.stopReason);
-    const call = modelUsage(event.message, entry);
-    if (call) state?.recordUsage(call, entry.sequence);
-    assistantMessage = undefined;
-    if (event.message.errorMessage) {
-      lastError = publicText(event.message.errorMessage).slice(0, 4000);
-      state?.record('error', lastError);
-      state?.updateSession({error: lastError.slice(0, 4000)});
-    }
-    state?.updateSession({...metadata(ctx), ...(text ? {response: text} : {})});
+    });
+    if (message.role === 'assistant') assistantMessage = undefined;
+    else userMessage = undefined;
   });
   pi.on('tool_execution_start', event => {
     const previous = state?.conversationMessage(toolId(event.toolCallId));
     if (previous?.status && previous.status !== 'running') return;
     tools.set(event.toolCallId, event.toolName);
-    state?.updateConversation({
-      ...previous,
-      id: toolId(event.toolCallId),
-      role: 'tool',
-      toolName: event.toolName,
-      toolCallId: event.toolCallId,
-      input: toolInput(event.args),
-      text: previous?.text ?? '',
-      at: previous?.at ?? new Date().toISOString(),
-      status: 'running',
-      streaming: true,
+    state?.batch(() => {
+      state!.updateConversation({
+        ...previous,
+        id: toolId(event.toolCallId),
+        role: 'tool',
+        toolName: event.toolName,
+        toolCallId: event.toolCallId,
+        input: toolInput(event.args),
+        text: previous?.text ?? '',
+        at: previous?.at ?? new Date().toISOString(),
+        status: 'running',
+        streaming: true,
+      });
+      state!.updateSession({activity: activity('Working')});
+      state!.recordTool(toolId(event.toolCallId), `Using ${event.toolName}`);
     });
-    state?.updateSession({activity: activity('Working')});
-    state?.recordTool(toolId(event.toolCallId), `Using ${event.toolName}`);
   });
   pi.on('tool_execution_update', event => {
     const previous = state?.conversationMessage(toolId(event.toolCallId));
@@ -571,45 +619,57 @@ export function observeDashboardSession(
   });
   pi.on('tool_execution_end', event => {
     const previous = state?.conversationMessage(toolId(event.toolCallId));
-    finishTool(
-      event.toolCallId,
-      event.toolName,
-      event.result ?? {},
-      event.isError,
-    );
-    state?.updateSession({activity: activity('Working')});
-    if (!previous?.status || previous.status === 'running')
-      state?.recordTool(
-        toolId(event.toolCallId),
-        `${event.toolName} ${event.isError ? 'failed' : 'finished'}`,
+    state?.batch(() => {
+      // An awaited agent command is a publication boundary: its result and the
+      // terminal worker state must become visible in the same update.
+      if (event.toolName === 'agent_wait' && teamTimer) syncTeam();
+      finishTool(
+        event.toolCallId,
+        event.toolName,
+        event.result ?? {},
         event.isError,
       );
+      state!.updateSession({activity: activity('Working')});
+      if (!previous?.status || previous.status === 'running')
+        state!.recordTool(
+          toolId(event.toolCallId),
+          `${event.toolName} ${event.isError ? 'failed' : 'finished'}`,
+          event.isError,
+        );
+    });
   });
   pi.on('agent_settled', (_event, ctx) => {
-    // Streaming cache warming appends usage outside the message lifecycle.
-    restoreUsage(ctx);
-    tools.clear();
-    state?.settleConversation();
-    assistantMessage = undefined;
-    userMessage = undefined;
-    state?.updateSession({
-      ...metadata(ctx),
-      status: 'idle',
-      activity: lastError
-        ? `Error: ${lastError.slice(0, 1000)}`
-        : 'Ready for a task',
+    state?.batch(() => {
+      // Do not publish an idle parent with a worker snapshot still waiting on
+      // the throttle timer.
+      if (teamTimer) syncTeam();
+      // Streaming cache warming appends usage outside the message lifecycle.
+      restoreUsage(ctx);
+      tools.clear();
+      state!.settleConversation();
+      assistantMessage = undefined;
+      userMessage = undefined;
+      state!.updateSession({
+        ...metadata(ctx),
+        status: 'idle',
+        activity: lastError
+          ? `Error: ${lastError.slice(0, 1000)}`
+          : 'Ready for a task',
+      });
+      state!.record(
+        'session',
+        lastError ? 'Run ended with an error' : 'Parent session finished',
+      );
     });
-    state?.record(
-      'session',
-      lastError ? 'Run ended with an error' : 'Parent session finished',
-    );
   });
   pi.on('session_before_compact', () => {
-    state?.updateSession({
-      status: 'compacting',
-      activity: 'Compacting conversation',
+    state?.batch(() => {
+      state!.updateSession({
+        status: 'compacting',
+        activity: 'Compacting conversation',
+      });
+      state!.record('session', 'Compacting conversation');
     });
-    state?.record('session', 'Compacting conversation');
   });
   const afterCompaction = (ctx: ExtensionContext) => {
     state?.updateSession({
@@ -619,34 +679,38 @@ export function observeDashboardSession(
     });
   };
   pi.on('session_compact', (event, ctx) => {
-    let sequence = 0;
-    let model: string | undefined;
-    let found = false;
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type === 'model_change')
-        model = `${entry.provider}/${entry.modelId}`;
-      if (entry.type !== 'compaction') continue;
-      sequence++;
-      found ||= entry.id === event.compactionEntry.id;
-      const call = compactionUsage(
-        entry,
-        model ??
-          (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined),
-      );
-      if (call) state?.recordUsage(call, sequence);
-    }
-    if (!found) {
-      const call = compactionUsage(
-        event.compactionEntry,
-        ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
-      );
-      if (call) state?.recordUsage(call, sequence + 1);
-    }
-    afterCompaction(ctx);
+    state?.batch(() => {
+      let sequence = 0;
+      let model: string | undefined;
+      let found = false;
+      for (const entry of ctx.sessionManager.getBranch()) {
+        if (entry.type === 'model_change')
+          model = `${entry.provider}/${entry.modelId}`;
+        if (entry.type !== 'compaction') continue;
+        sequence++;
+        found ||= entry.id === event.compactionEntry.id;
+        const call = compactionUsage(
+          entry,
+          model ??
+            (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined),
+        );
+        if (call) state!.recordUsage(call, sequence);
+      }
+      if (!found) {
+        const call = compactionUsage(
+          event.compactionEntry,
+          ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+        );
+        if (call) state!.recordUsage(call, sequence + 1);
+      }
+      afterCompaction(ctx);
+    });
   });
   pi.on('session_compact_failed', (event, ctx) => {
-    afterCompaction(ctx);
-    state?.record('error', event.errorMessage ?? 'Compaction cancelled');
+    state?.batch(() => {
+      afterCompaction(ctx);
+      state!.record('error', event.errorMessage ?? 'Compaction cancelled');
+    });
   });
   pi.on('model_select', (event, ctx) => {
     state?.updateSession({
@@ -662,12 +726,17 @@ export function observeDashboardSession(
   });
   pi.on('session_tree', (_event, ctx) => restoreConversation(ctx));
   pi.on('session_shutdown', () => {
+    clearTimeout(teamTimer);
+    teamTimer = undefined;
+    syncTeam();
     unsubscribe?.();
     unsubscribe = undefined;
     tools.clear();
-    state?.settleConversation();
-    state?.updateSession({status: 'closed', activity: 'Session closed'});
-    state?.record('session', 'Session closed');
+    state?.batch(() => {
+      state!.settleConversation();
+      state!.updateSession({status: 'closed', activity: 'Session closed'});
+      state!.record('session', 'Session closed');
+    });
     state = undefined;
     messageIdentities.length = 0;
     assistantMessage = undefined;
