@@ -185,7 +185,7 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
         {
           id: 'native-model',
           kind: 'terminal',
-          title: 'Model',
+          title: 'Model & thinking',
           actions: [
             {id: 'default', label: 'Make as default'},
             {id: 'session', label: 'Apply to session'},
@@ -2639,8 +2639,8 @@ async function main() {
           () =>
             document.getElementById('extension-dialog').open &&
             document.getElementById('extension-dialog-title').textContent ===
-              'Model',
-          'Menu Model did not open the session model picker',
+              'Model & thinking',
+          'Menu Model & thinking did not open the session model picker',
         );
         assert.deepEqual(calls.at(-1), {
           method: 'prompt',

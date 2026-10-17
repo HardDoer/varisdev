@@ -184,28 +184,62 @@ async function pickModel(
     : candidates[labels.indexOf(selected)];
 }
 
+async function sessionModelSettings(
+  ctx: SettingsCommandContext,
+  activeTab: 'model' | 'thinking',
+  initialSearch?: string,
+): Promise<void> {
+  const session = ctx.session;
+  const levels = session.getAvailableThinkingLevels();
+  const defaultProvider = session.settingsManager.getDefaultProvider();
+  const defaultModel = session.settingsManager.getDefaultModel();
+  const selection = await ctx.ui.selectSessionSettings({
+    activeTab,
+    model: {
+      currentModel: session.model,
+      modelRuntime: session.modelRuntime,
+      scopedModels: session.scopedModels,
+      defaultModel:
+        defaultProvider && defaultModel
+          ? {provider: defaultProvider, id: defaultModel}
+          : undefined,
+      initialSearch,
+    },
+    thinking: {
+      currentLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+      availableLevels: levels,
+      defaultLevel:
+        session.settingsManager.getDefaultThinkingLevel() ??
+        DEFAULT_THINKING_LEVEL,
+    },
+  });
+  if (stopped(ctx) || !selection) return;
+  if (selection.kind === 'thinking') {
+    if (!levels.includes(selection.thinkingLevel))
+      throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
+    await ctx.configure({
+      thinkingLevel: selection.thinkingLevel,
+      persist: selection.persist,
+    });
+  } else {
+    await ctx.configure({
+      provider: selection.model.provider,
+      modelId: selection.model.id,
+      persist: selection.persist,
+    });
+  }
+}
+
 async function thinkingCommand(
   ctx: SettingsCommandContext,
   args: string,
 ): Promise<void> {
-  const session = ctx.session;
-  const levels = session.getAvailableThinkingLevels();
-  const selection = args
-    ? {thinkingLevel: args.toLowerCase(), persist: false}
-    : await ctx.ui.selectThinking({
-        currentLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
-        availableLevels: levels,
-        defaultLevel:
-          session.settingsManager.getDefaultThinkingLevel() ??
-          DEFAULT_THINKING_LEVEL,
-      });
-  if (stopped(ctx) || selection === undefined) return;
-  if (!levels.includes(selection.thinkingLevel as (typeof levels)[number]))
+  if (!args) return sessionModelSettings(ctx, 'thinking');
+  const levels = ctx.session.getAvailableThinkingLevels();
+  const thinkingLevel = args.toLowerCase();
+  if (!levels.includes(thinkingLevel as (typeof levels)[number]))
     throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
-  await ctx.configure({
-    thinkingLevel: selection.thinkingLevel,
-    persist: selection.persist,
-  });
+  await ctx.configure({thinkingLevel, persist: false});
 }
 
 async function exactModel(
@@ -267,25 +301,7 @@ async function modelCommand(
     });
     return;
   }
-  const session = ctx.session;
-  const defaultProvider = session.settingsManager.getDefaultProvider();
-  const defaultModel = session.settingsManager.getDefaultModel();
-  const selection = await ctx.ui.selectModel({
-    currentModel: session.model,
-    modelRuntime: session.modelRuntime,
-    scopedModels: session.scopedModels,
-    defaultModel:
-      defaultProvider && defaultModel
-        ? {provider: defaultProvider, id: defaultModel}
-        : undefined,
-    initialSearch: args || undefined,
-  });
-  if (stopped(ctx) || !selection) return;
-  await ctx.configure({
-    provider: selection.model.provider,
-    modelId: selection.model.id,
-    persist: selection.persist,
-  });
+  await sessionModelSettings(ctx, 'model', args || undefined);
 }
 
 async function flushSettings(ctx: SettingsCommandContext): Promise<void> {

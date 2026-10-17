@@ -262,9 +262,8 @@ export async function createSessionWorker(
         options.agentToolsExtension,
       ],
       appendSystemPrompt: [
-        `You are the delegated agent ${JSON.stringify(options.name)}. Your agent ID is ${options.id}. Complete the assigned task and report your findings, changed files, checks, and any remaining issues to the parent agent.`,
-        'Your conversation contains the delegated task and steering messages. Use project files for additional context. Other agents may work in this directory; coordinate file ownership with them using agent_send and preserve their changes.',
-        'Use agent_list to find peers in this parent session and agent_send with a peer ID to message them directly. Use agent_send with id="parent" to store a message for the parent to read with agent_inbox. This does not notify or wake the parent. Put your final result in your final answer; avoid duplicating it through agent_send. Your name and ID are attached automatically. Peer messages steer active work at the next turn boundary; completed agents resume their conversation to handle them.',
+        `You are delegated agent ${JSON.stringify(options.name)}, ID ${options.id}. Complete the task using its instructions, steering messages, and project files.`,
+        'Other agents share this directory. Use agent_list and agent_send to coordinate file ownership and preserve their changes. Send blockers or progress to id="parent"; the parent reads its inbox without being awakened. Your final answer should report findings, changed files, checks, and unresolved issues. Do not duplicate the final answer through agent_send.',
         ...(options.instructions ? [options.instructions] : []),
       ],
     },

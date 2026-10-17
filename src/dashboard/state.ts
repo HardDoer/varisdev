@@ -101,6 +101,7 @@ function projectAgent(
     error: agent.error === undefined ? undefined : preview(agent.error, 4000),
     taskTruncated: agent.task.length > textLimit,
     outputTruncated:
+      Boolean(agent.outputTruncated) ||
       (agent.output?.length ?? 0) > textLimit ||
       !!agent.output?.includes('[Output truncated. Read resultFile'),
   };

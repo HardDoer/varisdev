@@ -21,16 +21,17 @@ async function fixture(t: TestContext) {
     await rm(directory, {recursive: true, force: true});
   });
   const models = [first, second];
+  const scopedModels: Array<{model: typeof first; thinkingLevel?: string}> = [];
   const service = new DesktopToolSettings({
     sessionFeatures: async sessionId => {
       assert.equal(sessionId, 'session');
-      return {models};
+      return {models, scopedModels};
     },
     createRuntime: async () => {
       throw new Error('The session catalog must be used.');
     },
   });
-  return {directory, models, service};
+  return {directory, models, scopedModels, service};
 }
 
 void test('app catalog reads Pi models and refreshes local custom models', async t => {
@@ -307,4 +308,169 @@ void test('desktop settings start empty and persist clearing explicit model choi
     ),
     /No agent models selected.*Menu → Agent models/,
   );
+});
+
+void test('active Pi scope limits new choices without clearing saved global preferences', async t => {
+  const {directory, models, scopedModels, service} = await fixture(t);
+  await writeFile(
+    join(directory, 'settings.json'),
+    JSON.stringify({enabledModels: [secondId]}),
+  );
+  await saveToolSettings('agents', {allowedModels: [firstId]});
+  await saveToolSettings('commit', {model: firstId, thinkingLevel: null});
+  const before = await readToolSettings();
+  scopedModels.push({model: second, thinkingLevel: 'high'});
+  const restricted = await service.getToolSettings('session');
+  assert.deepEqual(restricted.models, [second]);
+  assert.deepEqual(restricted.settings, before);
+  assert.deepEqual(await readToolSettings(), before);
+  // Existing preferences may be retained while editing another setting.
+  await service.saveToolSettings(
+    'agents',
+    {allowedModels: [firstId, secondId]},
+    'session',
+  );
+  await service.saveToolSettings(
+    'commit',
+    {model: firstId, thinkingLevel: 'low'},
+    'session',
+  );
+  await service.saveToolSettings(
+    'commit',
+    {model: null, thinkingLevel: null},
+    'session',
+  );
+  await service.saveToolSettings('agents', {allowedModels: []}, 'session');
+  await assert.rejects(
+    service.saveToolSettings('agents', {allowedModels: [firstId]}, 'session'),
+    /Unknown model/,
+  );
+  await service.saveToolSettings(
+    'agents',
+    {allowedModels: [secondId]},
+    'session',
+  );
+  await service.saveToolSettings(
+    'commit',
+    {model: secondId, thinkingLevel: null},
+    'session',
+  );
+  assert.equal((await readToolSettings()).commit.thinkingLevel, null);
+  // Clearing the live scope restores this session's catalog, even with a
+  // different scope still saved globally in Pi.
+  scopedModels.length = 0;
+  assert.deepEqual((await service.getToolSettings('session')).models, models);
+  await service.saveToolSettings(
+    'agents',
+    {allowedModels: [firstId, secondId]},
+    'session',
+  );
+});
+
+void test('save validates against changed live scope and preserves parent inheritance', async t => {
+  const {scopedModels, service} = await fixture(t);
+  scopedModels.push({model: first});
+  assert.deepEqual((await service.getToolSettings('session')).models, [first]);
+  scopedModels.splice(0, 1, {model: second, thinkingLevel: 'high'});
+  await assert.rejects(
+    service.saveToolSettings('agents', {allowedModels: [firstId]}, 'session'),
+    /Unknown model/,
+  );
+  await saveToolSettings('agents', {allowedModels: null});
+  await assert.rejects(
+    service.saveToolSettings(
+      'commit',
+      {model: firstId, thinkingLevel: null},
+      'session',
+    ),
+    /Unknown model/,
+  );
+  const saved = await service.saveToolSettings(
+    'commit',
+    {model: null, thinkingLevel: null},
+    'session',
+  );
+  assert.deepEqual(saved.settings, {
+    agents: {allowedModels: null},
+    commit: {model: null, thinkingLevel: null},
+  });
+  // A scoped thinking annotation does not silently become a Commit override.
+  const explicit = await service.saveToolSettings(
+    'commit',
+    {model: secondId, thinkingLevel: null},
+    'session',
+  );
+  assert.deepEqual(explicit.settings.commit, {
+    model: secondId,
+    thinkingLevel: null,
+  });
+});
+
+void test('no-session pickers resolve and refresh global Pi scope through registered extension models', async t => {
+  const {directory} = await fixture(t);
+  await mkdir(join(directory, 'extensions'));
+  await copyFile(
+    new URL('./fixtures/global-model-catalog.js', import.meta.url),
+    join(directory, 'extensions', 'catalog.js'),
+  );
+  const settingsPath = join(directory, 'settings.json');
+  const physical = 'global-extension/physical';
+  const virtual = 'global-extension-router/route';
+  const writeScope = (enabledModels: string[] | undefined) =>
+    writeFile(settingsPath, JSON.stringify({enabledModels}));
+  // Physical extension models need configured provider access for Pi scoping.
+  await writeFile(
+    join(directory, 'auth.json'),
+    JSON.stringify({'global-extension': {type: 'api_key', key: 'fixture-key'}}),
+  );
+  await writeScope([`${virtual}:high`]);
+  const service = new DesktopToolSettings({
+    sessionFeatures: async () => ({models: [first]}),
+  });
+  const initial = await service.getToolSettings();
+  assert.deepEqual(
+    initial.models.map(model => `${model.provider}/${model.id}`),
+    [virtual],
+  );
+  await service.saveToolSettings('agents', {allowedModels: [virtual]});
+  await service.saveToolSettings('commit', {
+    model: virtual,
+    thinkingLevel: null,
+  });
+  await assert.rejects(
+    service.saveToolSettings('agents', {allowedModels: [virtual, physical]}),
+    /Unknown model/,
+  );
+  await writeScope(['global-extension/*:low']);
+  const changed = await service.getToolSettings();
+  assert.deepEqual(
+    changed.models.map(model => `${model.provider}/${model.id}`),
+    [physical],
+  );
+  assert.deepEqual(changed.settings.agents.allowedModels, [virtual]);
+  assert.deepEqual(changed.settings.commit, {
+    model: virtual,
+    thinkingLevel: null,
+  });
+  // Session state takes priority over saved global settings.
+  assert.deepEqual((await service.getToolSettings('session')).models, [first]);
+  await service.saveToolSettings('commit', {model: null, thinkingLevel: null});
+  await service.saveToolSettings('agents', {allowedModels: [physical]});
+  await service.saveToolSettings('commit', {
+    model: physical,
+    thinkingLevel: 'off',
+  });
+  for (const scope of [[], undefined, ['missing-provider/missing']]) {
+    await writeScope(scope);
+    const fallback = await service.getToolSettings();
+    assert.ok(fallback.models.some(model => model.provider === 'openai'));
+    assert.ok(
+      fallback.models.some(
+        model => `${model.provider}/${model.id}` === virtual,
+      ),
+    );
+    if (scope?.length)
+      assert.match(fallback.diagnostics?.join('\n') ?? '', /missing-provider/);
+    else assert.equal(fallback.diagnostics, undefined);
+  }
 });

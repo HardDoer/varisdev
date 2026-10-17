@@ -68,10 +68,6 @@
       />
       <p id="about-credit">VarisDev by Joonas Nousiainen 2026</p>
       <p>Open source under the MIT License.</p>
-      <p>
-        Built on Pi, the open-source coding harness by Mario Zechner and
-        contributors.
-      </p>
     </dialog>
     <dialog id="updates-dialog" aria-labelledby="updates-title">
       <div class="updates-heading">
@@ -456,14 +452,14 @@
                   <div class="app-menu-actions">
                     <button
                       id="open-session-settings"
-                      aria-label="Model"
+                      aria-label="Model &amp; thinking"
                       aria-haspopup="dialog"
                       aria-controls="extension-dialog"
-                      title="Choose the session model"
+                      title="Choose the session model and thinking level"
                       class="quiet-button"
                       type="button"
                     >
-                      Model
+                      Model &amp; thinking
                     </button>
                     <button
                       id="open-agent-models"
@@ -1372,6 +1368,31 @@
         <div class="dialog-heading">
           <h2 id="extension-dialog-title"></h2>
           <span id="extension-dialog-session" class="muted"></span>
+        </div>
+        <div
+          id="extension-dialog-tabs"
+          role="tablist"
+          aria-label="Session settings"
+          hidden
+        >
+          <button
+            id="extension-dialog-tab-model"
+            type="button"
+            role="tab"
+            data-tab="model"
+            aria-controls="extension-dialog-terminal"
+          >
+            Model
+          </button>
+          <button
+            id="extension-dialog-tab-thinking"
+            type="button"
+            role="tab"
+            data-tab="thinking"
+            aria-controls="extension-dialog-terminal"
+          >
+            Thinking
+          </button>
         </div>
         <p id="extension-dialog-message"></p>
         <label

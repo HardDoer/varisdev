@@ -43,13 +43,15 @@ Set `VARISDEV_SETTINGS_DIR` to use another global configuration directory. No ex
 
 Use **Menu → Accounts** to connect providers. For server setup, see Pi's [custom models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) and [llama.cpp](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/llama-cpp.md) documentation.
 
-**Menu → Model** runs `/model`. Pi's selector provides **Apply to session** and **Make as default**. Applying changes the current session; making it the default also saves the choice for new sessions. Use `/thinking` to change effort.
+**Menu → Model & thinking** opens Pi's selectors in **Model** and **Thinking** tabs. **Apply to session** changes the current session; **Make as default** also saves the choice for new sessions. `/model` and `/thinking` open the corresponding tab.
 
 For sessions attached from a terminal, open picker dialogs in that terminal. Exact `/model provider/model` and `/thinking level` commands also work from the desktop.
 
 ### Agent models
 
 **Menu → Agent models** controls which models background agents may use. Select the allowed models; fresh settings start with none selected.
+
+Agent models and Commit settings use the selected session's Pi scoped models, or the saved global scope when no session is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
 
 Agents inherit the parent's model and reasoning level unless explicitly configured. The inherited model must also be allowed. Restrictions apply across projects, including queued and resumed agents. Changes refresh the agent tool's advertised choices before the next turn, including during an ongoing run; no new session is needed. Running workers keep their current model.
 

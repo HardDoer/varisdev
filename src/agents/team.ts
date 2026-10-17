@@ -39,6 +39,7 @@ function copyMessage(message: ParentMessage): ParentMessage {
 class AgentTeam {
   private readonly manager = new AgentOrchestrator();
   private readonly messages: ParentMessage[] = [];
+  private messageSequence = 0;
   private readonly changes: UnitChange[] = [];
   private context: ExtensionContext;
   private closed = false;
@@ -104,6 +105,7 @@ class AgentTeam {
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
+    this.messageSequence++;
     this.messages.push(stored);
     if (this.messages.length > maxParentMessages) this.messages.shift();
     this.changed();
@@ -117,9 +119,24 @@ class AgentTeam {
     return copyMessage(message);
   }
 
-  listMessages(options: {offset?: number; limit?: number} = {}) {
+  listMessages(
+    options: {offset?: number; limit?: number; after?: number} = {},
+  ) {
     this.getManager();
-    const {offset = 0, limit = 10} = options;
+    const {offset = 0, limit = 10, after} = options;
+    if (after !== undefined && Object.hasOwn(options, 'offset')) {
+      throw new Error('Message cursor cannot be combined with offset.');
+    }
+    if (
+      after !== undefined &&
+      (!Number.isSafeInteger(after) ||
+        after < 0 ||
+        after > this.messageSequence)
+    ) {
+      throw new Error(
+        `Message cursor must be a safe integer from 0 to ${this.messageSequence} in this parent session.`,
+      );
+    }
     if (
       !Number.isInteger(offset) ||
       offset < 0 ||
@@ -130,6 +147,20 @@ class AgentTeam {
       throw new Error(
         'Message offset must be non-negative and limit must be 1 to 20.',
       );
+    if (after !== undefined) {
+      const retainedAfter = this.messageSequence - this.messages.length;
+      const start = Math.max(0, after - retainedAfter);
+      const messages = this.messages.slice(start, start + limit);
+      const missed = Math.max(0, retainedAfter - after);
+      return {
+        messages: messages.map(copyMessage),
+        nextAfter: messages.length
+          ? retainedAfter + start + messages.length
+          : after,
+        hasMore: start + messages.length < this.messages.length,
+        ...(missed ? {missed} : {}),
+      };
+    }
     const total = this.messages.length;
     const messages = this.messages.toReversed().slice(offset, offset + limit);
     return {

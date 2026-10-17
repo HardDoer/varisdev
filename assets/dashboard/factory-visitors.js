@@ -132,6 +132,10 @@ function shownFactory(state) {
   return state.targetId;
 }
 
+export function visitorCaneId(id) {
+  return `visitor:${id}`;
+}
+
 /** Coordinate idle parents travelling between the currently open factories. */
 export function createFactoryVisitors() {
   const states = new Map();
@@ -214,6 +218,8 @@ export function createFactoryVisitors() {
       if (ACTIVE.has(state.status) && !wasActive) recall(state);
       if (!motion || state.status === 'closed') resetWait(state);
     }
+    for (const state of states.values())
+      if (ACTIVE.has(states.get(state.targetId)?.status)) recall(state);
   }
 
   function chooseTarget(state) {
@@ -223,7 +229,11 @@ export function createFactoryVisitors() {
         .map(other => other.targetId),
     );
     const choices = openIds.filter(
-      id => id !== state.id && !occupied.has(id) && states.has(id),
+      id =>
+        id !== state.id &&
+        !occupied.has(id) &&
+        states.has(id) &&
+        !ACTIVE.has(states.get(id).status),
     );
     if (!choices.length) return null;
     return choices[Math.floor(nextRandom(state) * choices.length)];
@@ -371,12 +381,14 @@ export function createFactoryVisitors() {
       const state = states.get(id);
       return !disposed && state ? recall(state) : false;
     },
-    tick(dt) {
+    tick(dt, pausedIds = []) {
       if (disposed || !motion || !Number.isFinite(dt) || dt <= 0) return;
+      const paused = new Set(pausedIds);
       let remaining = Math.min(dt, 1);
       while (remaining > 0.0000001) {
         const step = Math.min(remaining, 1 / 60);
-        for (const state of states.values()) advance(state, step);
+        for (const state of states.values())
+          if (!paused.has(state.id)) advance(state, step);
         remaining -= step;
       }
     },

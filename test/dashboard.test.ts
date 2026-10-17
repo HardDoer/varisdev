@@ -821,7 +821,9 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
         ...record,
         status: 'completed',
         activity: 'Completed',
-        output: 'Finished',
+        output: 'x'.repeat(12000),
+        outputTruncated: true,
+        resultFile: '/project/result.txt',
       },
     ],
     [],
@@ -831,6 +833,8 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
     snapshot.events.some(event => event.message.startsWith('Dispatched:')),
   );
   assert.equal(snapshot.agents[0].taskTruncated, true);
+  assert.equal(snapshot.agents[0].outputTruncated, true);
+  assert.equal(snapshot.agents[0].resultFile, '/project/result.txt');
   snapshot.agents[0].name = 'Mutated';
   snapshot.session.name = 'Mutated';
   assert.equal(view.snapshot().agents[0].name, 'Agent');

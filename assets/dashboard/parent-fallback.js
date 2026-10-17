@@ -7,7 +7,7 @@ import {
 } from './parent-activities.js';
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
-import {createFactoryVisitors} from './factory-visitors.js';
+import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {drawCleanupBot} from './robot-cleanup.js';
 
@@ -162,6 +162,7 @@ export function createParentFallback(container) {
   const visitors = createFactoryVisitors();
   const damage = createRobotDamage({maxRobots: 16, maxEffects: 80});
   const damageVisuals = new Map();
+  const visitorVisuals = new Map();
   function effectLayer(className) {
     const layer = document.createElementNS(NS, 'svg');
     layer.setAttribute('class', className);
@@ -282,19 +283,22 @@ export function createParentFallback(container) {
     if (
       session &&
       station &&
-      !visitors.isAway(session.id) &&
+      robot.style.display !== 'none' &&
       damage.pose('parent').phase === 'alive'
     )
-      candidates.push({id: 'parent', element: robot});
+      candidates.push({id: 'parent', geometry: robotGeometry});
     for (const element of container.querySelectorAll(
       '.fallback-station.agent .robot-glyph',
     )) {
       const id = element.closest('.fallback-station.agent')?.dataset.unitId;
       if (id && ids.has(id) && damage.pose(id).phase === 'alive')
-        candidates.push({id, element});
+        candidates.push({id, geometry: element});
     }
-    return candidates.flatMap(({id, element}) => {
-      const rect = element.getBoundingClientRect();
+    for (const [id, visual] of visitorVisuals)
+      if (damage.pose(id).phase === 'alive')
+        candidates.push({id, geometry: visual.geometry});
+    return candidates.flatMap(({id, geometry}) => {
+      const rect = geometry.getBoundingClientRect();
       if (!visibleBounds(rect)) return [];
       return [
         {
@@ -309,7 +313,7 @@ export function createParentFallback(container) {
 
   function clearCaneStyle(element) {
     if (!element) return;
-    if (element === robot) element.removeAttribute('transform');
+    if (element.namespaceURI === NS) element.removeAttribute('transform');
     for (const property of [
       'left',
       'top',
@@ -476,14 +480,17 @@ export function createParentFallback(container) {
       fragments = [],
       cleanupShapes = [];
     const activeIds = new Set(agents.map(agent => agent.id));
-    const elements = new Map([['parent', robot]]);
+    const elements = new Map([
+      ['parent', {element: robot, geometry: robotGeometry}],
+    ]);
     for (const station of container.querySelectorAll(
       '.fallback-station.agent',
     )) {
       const id = station.dataset.unitId;
       const element = station.querySelector('.robot-glyph');
-      if (activeIds.has(id) && element) elements.set(id, element);
+      if (activeIds.has(id) && element) elements.set(id, {element});
     }
+    for (const [id, visual] of visitorVisuals) elements.set(id, visual);
     damage.retain([...elements.keys()]);
     const pieces = damage.effects();
     const effectOwners = new Set(pieces.map(piece => piece.owner));
@@ -493,7 +500,8 @@ export function createParentFallback(container) {
       visual.marks?.remove();
       damageVisuals.delete(id);
     }
-    for (const [id, element] of elements) {
+    for (const [id, body] of elements) {
+      const {element, geometry} = body;
       const pose = damage.pose(id);
       if (!element || (id === 'parent' && robot.style.display === 'none'))
         continue;
@@ -507,12 +515,9 @@ export function createParentFallback(container) {
       if (visual?.element !== element) {
         clearCaneStyle(visual?.element);
         visual?.marks?.remove();
-        const marks = document.createElementNS(
-          NS,
-          element === robot ? 'g' : 'svg',
-        );
+        const marks = document.createElementNS(NS, geometry ? 'g' : 'svg');
         marks.setAttribute('class', 'robot-damage-marks');
-        if (element !== robot) marks.setAttribute('viewBox', '0 0 100 100');
+        if (!geometry) marks.setAttribute('viewBox', '0 0 100 100');
         marks.setAttribute('aria-hidden', 'true');
         marks.setAttribute('focusable', 'false');
         element.append(marks);
@@ -522,19 +527,17 @@ export function createParentFallback(container) {
       clearCaneStyle(element);
       // Measure the neutral geometry each frame, not a cached station position.
       // Cane targets subsequently measure the displaced/tumbling geometry.
-      const rect = element.getBoundingClientRect();
+      const rect = (geometry || element).getBoundingClientRect();
       if (!rect.width || !rect.height) {
         visual.home = null;
         continue;
       }
-      const local =
-        element === robot
-          ? robotGeometry.getBBox()
-          : {x: 0, y: 0, width: 100, height: 100};
-      const unit =
-        element === robot
-          ? (rect.height / Math.max(1, local.height)) * 23
-          : rect.height / 1.65;
+      const local = geometry
+        ? geometry.getBBox()
+        : {x: 0, y: 0, width: 100, height: 100};
+      const unit = geometry
+        ? (rect.height / Math.max(1, local.height)) * 23
+        : rect.height / 1.65;
       if (
         !visual.home ||
         visual.layoutWidth !== bounds.width ||
@@ -591,7 +594,7 @@ export function createParentFallback(container) {
         pose.phase === 'replacing'
           ? Math.max(0, Math.min(1, 1 + pose.lift / 3.4))
           : 1;
-      if (element === robot) {
+      if (geometry) {
         const dx = (x * 0.3 - z * 0.9) * 23,
           dy =
             -y * 23 +
@@ -691,15 +694,37 @@ export function createParentFallback(container) {
     const visiting = visitors
       .visitorsAt(session?.id)
       .filter(visitor => visitor.id !== session?.id);
-    const shapes = [];
+    const shown = new Set();
     for (const visitor of visiting) {
+      const id = visitorCaneId(visitor.id);
+      shown.add(id);
+      let visual = visitorVisuals.get(id);
+      if (!visual) {
+        const element = document.createElementNS(NS, 'g');
+        const geometry = document.createElementNS(NS, 'g');
+        element.dataset.visitorId = visitor.id;
+        element.append(geometry);
+        visitorGroup.append(element);
+        visual = {element, geometry};
+        visitorVisuals.set(id, visual);
+      }
       const source = factoryIdentity(visitor.id);
       const accent = `var(--${source.accentKey})`;
       const origin = 174 + (visitor.x + 5.05) * 7;
+      const shapes = [];
       const g = primitives(shapes, origin, 0, visitor.yaw);
-      const moving = visitor.phase === 'arrive' || visitor.phase === 'depart';
+      const damagePose = damage.pose(id);
+      const corpse = ['exploding', 'wrecked', 'cleanup'].includes(
+        damagePose.phase,
+      );
+      const surprise = corpse
+        ? 0
+        : Math.max(visitor.surprise || 0, damagePose.surprise || 0);
+      const braced = damagePose.surprise > 0 || damagePose.phase !== 'alive';
+      const moving =
+        !braced && (visitor.phase === 'arrive' || visitor.phase === 'depart');
       const running = visitor.phase === 'depart';
-      const jump = visitor.jump || 0;
+      const jump = braced ? 0 : visitor.jump || 0;
       g.cylinder([0, 0.05, 0], [1.5, 0.03, 1.05], C.dark);
       for (const [index, side] of [-1, 1].entries()) {
         const phase = Math.sin(visitor.stride + index * Math.PI);
@@ -721,12 +746,13 @@ export function createParentFallback(container) {
       g.box([0.04, 2.17 + jump, 0], [1.06, 0.62, 1.14], C.metal);
       g.box([0.59, 2.17 + jump, 0], [0.08, 0.35, 0.96], C.dark);
       for (const side of [-1, 1]) {
-        g.box(
-          [0.64, 2.2 + jump, side * 0.27],
-          [0.04, 0.1 + visitor.surprise * 0.12, 0.19],
-          visitor.surprise ? C.amber : accent,
-          1,
-        );
+        if (!corpse)
+          g.box(
+            [0.64, 2.2 + jump, side * 0.27],
+            [0.04, 0.1 + surprise * 0.12, 0.19],
+            surprise ? C.amber : accent,
+            1,
+          );
         const swing = moving
           ? Math.sin(visitor.stride + (side === 1 ? Math.PI : 0))
           : 0;
@@ -737,8 +763,13 @@ export function createParentFallback(container) {
           accent,
         );
       }
+      paint(visual.geometry, shapes);
     }
-    paint(visitorGroup, shapes);
+    for (const [id, visual] of visitorVisuals) {
+      if (shown.has(id)) continue;
+      visual.element.remove();
+      visitorVisuals.delete(id);
+    }
     visitorSvg.dataset.visitors = visiting.map(visitor => visitor.id).join(',');
     if (visiting.length && !visitorSvg.parentNode) container.append(visitorSvg);
     else if (!visiting.length) visitorSvg.remove();
@@ -1128,7 +1159,22 @@ export function createParentFallback(container) {
         )
           controller.tick(dt);
         visitors.observeLocalPose(session?.id, controller.pose());
-        visitors.tick(dt);
+        const pausedVisitors = visitors
+          .visitorsAt(session?.id)
+          .filter(visitor => {
+            const pose = damage.pose(
+              visitor.id === session?.id ? 'parent' : visitorCaneId(visitor.id),
+            );
+            return pose.surprise > 0 || pose.phase !== 'alive';
+          })
+          .map(visitor => visitor.id);
+        if (
+          session?.id &&
+          (parentDamage.surprise > 0 || parentDamage.phase !== 'alive') &&
+          !pausedVisitors.includes(session.id)
+        )
+          pausedVisitors.push(session.id);
+        visitors.tick(dt, pausedVisitors);
         controller.setAway(visitors.isAway(session?.id));
         syncWhip();
         whip.tick(dt);
@@ -1168,6 +1214,9 @@ export function createParentFallback(container) {
     visitorNotice.remove();
     station?.classList.remove('parent-is-away');
     if (station) delete station.dataset.awayLabel;
+    visitorSvg.remove();
+    for (const visual of visitorVisuals.values()) visual.element.remove();
+    visitorVisuals.clear();
     station = null;
     glyph = null;
   }

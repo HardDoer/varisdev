@@ -272,7 +272,105 @@ async function main() {
         damageFixture.scene.update({session: {id: session, status: 'idle'}, agents}, 'parent');
       }
 
+      let visitorFixture;
+      let visitorRenderer;
+      let visitorData;
+      const visitorId = 'visitor:visitor';
+      function visitorSnapshot(status = 'idle') {
+        visitorData = {
+          session: {id: 'host', status},
+          agents: [{id: 'drone', status: 'running'}],
+          hub: {sessions: [
+            {session: {id: 'host', status}},
+            {session: {id: 'visitor', status: 'idle'}},
+          ]},
+        };
+        visitorFixture.scene.update(visitorData, 'parent');
+      }
+      function visitorState() {
+        const {scene, host, canvas} = visitorFixture;
+        const element = host.querySelector('[data-visitor-id="visitor"]');
+        const state = visitorRenderer === 'WebGL'
+          ? JSON.parse(canvas.dataset.robotDamage || '{}')[visitorId]
+          : element ? {
+              damage: Number(element.dataset.damage || 0),
+              phase: element.dataset.damagePhase || 'alive',
+              surprise: Number(element.dataset.damageSurprise || 0),
+            } : undefined;
+        return {
+          ...state,
+          present: Boolean(state),
+          target: scene.caneTargets().find(target => target.id === visitorId),
+          geometry: visitorRenderer === 'WebGL'
+            ? visitorFixture.dynamicHash() : element?.outerHTML,
+          cleaners: visitorRenderer === 'WebGL'
+            ? JSON.parse(canvas.dataset.robotCleanup || '[]').filter(item => item.id === visitorId).length
+            : host.querySelector('.robot-cleanup-effects')?.children.length || 0,
+          debris: visitorRenderer === 'WebGL'
+            ? Number(canvas.dataset.robotDebris || 0)
+            : host.querySelector('.robot-debris-effects')?.children.length || 0,
+        };
+      }
+      function visitorSetup(renderer) {
+        visitorFixture?.dispose();
+        visitorRenderer = renderer;
+        visitorFixture = renderer === 'WebGL' ? createWebGL() : createFallback();
+        const {scene, host, canvas} = visitorFixture;
+        if (!visitorFixture.cane) {
+          const cane = createFactoryCane(host, {
+            getTargets: () => scene.caneTargets(),
+            onHit: (id, direction, strength) => scene.hitWithCane(id, direction, strength),
+          });
+          const dispose = visitorFixture.dispose;
+          visitorFixture.cane = cane;
+          visitorFixture.dispose = () => {cane.dispose(); dispose();};
+        }
+        visitorFixture.cane.setSession('host');
+        visitorSnapshot();
+        for (let index = 0; index < 1800 && !scene.caneTargets().some(target => target.id === visitorId); index++) advance();
+        const initial = visitorState();
+        if (!initial.target) throw new Error('Visiting robot never became a cane target');
+        if (canvas) clickTarget(canvas, initial.target);
+        const selections = visitorFixture.selections || [];
+        const before = JSON.stringify(visitorData);
+        host.querySelector('.factory-cane-holster').click();
+        sweep(canvas || host, initial.target);
+        const hit = visitorState();
+        host.querySelector('.factory-cane-holster').click();
+        return {initial, hit, selections,
+          unchanged: before === JSON.stringify(visitorData)};
+      }
+
       window.fixture = {
+        visitorWebGL() {return visitorSetup('WebGL');},
+        visitorFallback() {return visitorSetup('Fallback');},
+        visitorSnapshot() {
+          visitorSnapshot();
+          return visitorState();
+        },
+        visitorDestroy() {
+          for (let index = 0; index < 4 && visitorState().phase === 'alive'; index++)
+            visitorFixture.scene.hitWithCane(visitorId, 1, 2.2);
+          return {...visitorState(), rejected: !visitorFixture.scene.hitWithCane(visitorId)};
+        },
+        visitorCleanupAndWork() {
+          advance(90);
+          const cleaning = visitorState();
+          visitorSnapshot('running');
+          return {cleaning, busy: visitorState()};
+        },
+        visitorRecover() {
+          for (let index = 0; index < 300 && visitorState().phase !== 'alive'; index++) advance();
+          return visitorState();
+        },
+        visitorDepart() {
+          advance(120);
+          return {...visitorState(), rejected: !visitorFixture.scene.hitWithCane(visitorId)};
+        },
+        visitorDispose() {
+          visitorFixture?.dispose();
+          visitorFixture = null;
+        },
         damageWebGL() {
           damageFixture?.dispose();
           damageRenderer = 'webgl';
@@ -1305,6 +1403,61 @@ async function main() {
     );
   }
 
+  for (const renderer of ['WebGL', 'Fallback']) {
+    await run(
+      renderer + ' visitors take cane hits, recover, and leave a busy host',
+      async () => {
+        try {
+          const {initial, hit, selections, unchanged} = await evaluate(
+            'visitor' + renderer,
+          );
+          assert.equal(initial.phase, 'alive');
+          assert.ok(initial.target);
+          assert.ok(
+            hit.damage > 0,
+            'A real pointer wave must damage the visitor',
+          );
+          assert.equal(hit.surprise, 1);
+          assert.notEqual(hit.geometry, initial.geometry);
+          assert.deepEqual(
+            selections,
+            [],
+            'Visitors are cane targets without selecting a local agent',
+          );
+          assert.equal(unchanged, true, 'Cane hits must not change sessions');
+          const snapshot = await evaluate('visitorSnapshot');
+          assert.equal(snapshot.damage, hit.damage);
+          assert.equal(snapshot.surprise, hit.surprise);
+          const dead = await evaluate('visitorDestroy');
+          assert.equal(dead.phase, 'exploding');
+          assert.equal(dead.target, undefined);
+          assert.equal(dead.rejected, true);
+          const {cleaning, busy} = await evaluate('visitorCleanupAndWork');
+          assert.equal(cleaning.phase, 'cleanup');
+          assert.ok(cleaning.cleaners > 0);
+          assert.equal(busy.phase, 'cleanup');
+          assert.equal(
+            busy.present,
+            true,
+            'Starting work must not discard a visitor mid cleanup',
+          );
+          const recovered = await evaluate('visitorRecover');
+          assert.equal(recovered.phase, 'alive');
+          assert.equal(recovered.damage, 0);
+          assert.ok(recovered.target, 'Replacement visitor becomes hittable');
+          const departed = await evaluate('visitorDepart');
+          assert.equal(departed.present, false);
+          assert.equal(departed.target, undefined);
+          assert.equal(departed.rejected, true);
+          assert.equal(departed.cleaners, 0);
+          assert.equal(departed.debris, 0);
+        } finally {
+          await evaluate('visitorDispose');
+        }
+      },
+    );
+  }
+
   await run(
     'held cane follows outside controls above dialogs and popovers',
     async () => {
@@ -1328,26 +1481,37 @@ async function main() {
           assert.equal(state.open, true);
           assert.equal(state.cursor, 'none');
           if ('topLayer' in state) assert.equal(state.topLayer, true);
-          // Native toggle and compositor painting are not driven by our fake RAF.
-          await delay(30);
-          const image = await browser.webContents.capturePage({
-            x: 350,
-            y: 210,
-            width: 100,
-            height: 120,
-          });
-          const pixels = image.toBitmap();
+          const viewport = await browser.webContents.executeJavaScript(
+            '({width: innerWidth, height: innerHeight})',
+          );
+          let image;
           let wood = 0;
-          for (let index = 0; index < pixels.length; index += 4) {
-            const [blue, green, red] = pixels.subarray(index, index + 3);
-            if (
-              red > 150 &&
-              green > 100 &&
-              green < 220 &&
-              blue < 150 &&
-              red > green
-            )
-              wood++;
+          // Native toggle and compositor painting are not driven by our fake RAF.
+          for (let attempt = 0; attempt < 20 && wood <= 80; attempt++) {
+            await delay(50);
+            image = await browser.webContents.capturePage();
+            const {width, height} = image.getSize();
+            const pixels = image.toBitmap();
+            // Map CSS coordinates into the captured image on scaled displays.
+            const left = Math.floor((350 / viewport.width) * width);
+            const right = Math.ceil((450 / viewport.width) * width);
+            const top = Math.floor((210 / viewport.height) * height);
+            const bottom = Math.ceil((330 / viewport.height) * height);
+            wood = 0;
+            for (let y = top; y < bottom; y++) {
+              for (let x = left; x < right; x++) {
+                const index = (y * width + x) * 4;
+                const [blue, green, red] = pixels.subarray(index, index + 3);
+                if (
+                  red > 150 &&
+                  green > 100 &&
+                  green < 220 &&
+                  blue < 150 &&
+                  red > green
+                )
+                  wood++;
+              }
+            }
           }
           assert.ok(
             wood > 80,

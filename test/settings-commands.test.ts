@@ -109,7 +109,21 @@ function harness(replies: Reply[] = [], models = [first, second, third]) {
       settings.setCacheWarmingMode(value);
     },
   };
+  const sessionSelections: Array<
+    Parameters<DesktopExtensionUI['selectSessionSettings']>[0]
+  > = [];
   const ui = {
+    selectSessionSettings: async (
+      options: Parameters<DesktopExtensionUI['selectSessionSettings']>[0],
+    ) => {
+      sessionSelections.push(options);
+      if (options.activeTab === 'thinking') {
+        const result = await ui.selectThinking(options.thinking);
+        return result ? {kind: 'thinking' as const, ...result} : undefined;
+      }
+      const result = await ui.selectModel(options.model);
+      return result ? {kind: 'model' as const, ...result} : undefined;
+    },
     selectThinking: async (
       options: Parameters<DesktopExtensionUI['selectThinking']>[0],
     ) => {
@@ -168,6 +182,7 @@ function harness(replies: Reply[] = [], models = [first, second, third]) {
     configurations,
     mutations,
     refreshes,
+    sessionSelections,
     modelSelections,
     modelReplies,
     thinkingSelections,
@@ -857,4 +872,28 @@ void test('an unconfigured scope draft starts deselected and requires an explici
   );
   assert.equal(empty.settings.getEnabledModels(), undefined);
   assert.deepEqual(empty.mutations, []);
+});
+
+void test('both session settings entry tabs receive current model-specific thinking levels', async () => {
+  const h = harness();
+  await runSettingsCommand('model', '', h.ctx);
+  assert.equal(h.sessionSelections[0].activeTab, 'model');
+  assert.deepEqual(h.sessionSelections[0].thinking.availableLevels, [
+    'off',
+    'low',
+    'medium',
+    'high',
+  ]);
+  h.state.getAvailableThinkingLevels = () => ['off'];
+  await runSettingsCommand('thinking', '', h.ctx);
+  assert.equal(h.sessionSelections[1].activeTab, 'thinking');
+  assert.deepEqual(h.sessionSelections[1].thinking.availableLevels, ['off']);
+  assert.equal(h.sessionSelections[1].model.currentModel, first);
+  h.ctx.ui.selectSessionSettings = async () => ({
+    kind: 'thinking',
+    thinkingLevel: 'off',
+    persist: true,
+  });
+  await runSettingsCommand('model', '', h.ctx);
+  assert.deepEqual(h.configurations, [{thinkingLevel: 'off', persist: true}]);
 });

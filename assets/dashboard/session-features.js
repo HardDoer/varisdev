@@ -403,6 +403,8 @@ function renderExtensionUI(data) {
     activeDialog?.sessionId === data.session.id &&
     activeDialog.id === request?.id
   ) {
+    activeDialog = {...activeDialog, ...request};
+    renderDialogTabs();
     renderTerminal(request);
     renderDialogActions();
     return;
@@ -421,6 +423,7 @@ function renderExtensionUI(data) {
   }
   activeDialog = {...request, sessionId: data.session.id};
   dialogBusy = false;
+  renderDialogTabs();
   $('extension-dialog-title').textContent = request.title;
   $('extension-dialog-session').textContent = data.session.name;
   $('extension-dialog-message').textContent = request.message || '';
@@ -468,6 +471,30 @@ function renderExtensionUI(data) {
           : 'submit-extension-dialog';
   $(target).focus();
 }
+function renderDialogTabs() {
+  const tabs = activeDialog?.tabs || [];
+  $('extension-dialog-tabs').hidden = !tabs.length;
+  for (const button of $('extension-dialog-tabs').querySelectorAll('button')) {
+    const tab = tabs.find(item => item.id === button.dataset.tab);
+    const selected = activeDialog?.activeTab === button.dataset.tab;
+    button.hidden = !tab;
+    button.disabled = dialogBusy;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (tab) button.textContent = tab.label;
+  }
+  const panel = $('extension-dialog-terminal');
+  if (tabs.length) {
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute(
+      'aria-labelledby',
+      `extension-dialog-tab-${activeDialog.activeTab}`,
+    );
+  } else {
+    panel.removeAttribute('role');
+    panel.removeAttribute('aria-labelledby');
+  }
+}
 function renderDialogActions() {
   const actions =
     activeDialog?.kind === 'terminal' ? activeDialog.actions || [] : [];
@@ -481,15 +508,19 @@ function renderDialogActions() {
     if (action) button.textContent = action.label;
   }
 }
-async function respondAction(action) {
+async function respondAction(action, focusTab) {
   const request = activeDialog;
   if (
     dialogBusy ||
     request?.kind !== 'terminal' ||
-    !request.actions?.some(item => item.id === action)
+    !(
+      request.actions?.some(item => item.id === action) ||
+      request.tabs?.some(item => `tab:${item.id}` === action)
+    )
   )
     return;
   dialogBusy = true;
+  renderDialogTabs();
   renderDialogActions();
   $('cancel-extension-dialog').disabled = true;
   try {
@@ -498,9 +529,13 @@ async function respondAction(action) {
     error($('extension-dialog-error'), cause);
   } finally {
     dialogBusy = false;
+    renderDialogTabs();
     renderDialogActions();
     $('cancel-extension-dialog').disabled = false;
-    if (activeDialog?.id === request.id) terminalView?.focus();
+    if (activeDialog?.id === request.id) {
+      if (focusTab) $(focusTab).focus();
+      else terminalView?.focus();
+    }
   }
 }
 function renderDialogOptions() {
@@ -662,6 +697,29 @@ export function initSessionFeatures(options) {
     if (activeDialog?.kind === 'select')
       activeDialog.selection = $('extension-dialog-select').value;
   });
+  for (const button of $('extension-dialog-tabs').querySelectorAll('button')) {
+    button.addEventListener(
+      'click',
+      () => void respondAction(`tab:${button.dataset.tab}`),
+    );
+    button.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key))
+        return;
+      event.preventDefault();
+      const tabs = activeDialog?.tabs || [];
+      const index = tabs.findIndex(tab => tab.id === button.dataset.tab);
+      const next =
+        event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? tabs.length - 1
+            : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) %
+              tabs.length;
+      const tab = tabs[next];
+      if (tab)
+        void respondAction(`tab:${tab.id}`, `extension-dialog-tab-${tab.id}`);
+    });
+  }
   for (const button of $('extension-dialog-actions').querySelectorAll('button'))
     button.addEventListener(
       'click',
@@ -677,7 +735,7 @@ export function initSessionFeatures(options) {
   );
   $('extension-dialog').addEventListener('cancel', event => {
     event.preventDefault();
-    if (activeDialog?.kind !== 'terminal') void respond(true);
+    void respond(true);
   });
   window.addEventListener('unload', disposeTerminal);
 }

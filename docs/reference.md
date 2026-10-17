@@ -14,7 +14,7 @@ Each agent has its own conversation and shares its selected working directory. I
 | --- | --- |
 | `agent_spawn` | Start an agent and return its ID. |
 | `agent_list` | List active agents, history, or both. |
-| `agent_status` | Read status, results, and transcript paths. |
+| `agent_status` | Read progress or results; use `details: true` for metadata and transcript paths. |
 | `agent_send` | Steer active work or resume a completed agent. |
 | `agent_inbox` | Read messages sent to the parent session. |
 | `agent_wait` | Wait for selected agents to finish. |
@@ -24,7 +24,11 @@ Each agent has its own conversation and shares its selected working directory. I
 
 Six agents run concurrently; additional agents queue. Each parent session can hold 64 agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
 
-Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaults to 60 seconds; a wait timeout leaves agents running. Messages to the parent go to its inbox and do not trigger model turns.
+Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
+
+Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current parent session. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not trigger parent turns.
+
+Spawn, send, and cancel return short acknowledgements. Status and wait return results; truncated output includes `outputTruncated` and `resultFile` for reading the full text.
 
 The GUI provides individual and collective cancellation. **Stop** stops the parent while its agents continue.
 
@@ -32,7 +36,7 @@ Select a parent and click **Close session** beside **Context files**, or use **M
 
 Resuming a saved session replaces other open sessions in the same folder, stopping their work and agents; sessions in other folders stay open. If the chosen session is already open, it is reused rather than duplicated. If the saved session cannot be loaded, the current sessions stay open.
 
-Each factory has a stable, theme-aware color and architectural variation. Idle parents can visit other open factories, then hurry back when prompted. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
+Each factory has a stable, theme-aware color and architectural variation. Idle parents can visit other idle factories, then hurry back when prompted or when their host starts working. Visiting robots react to cane hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
 ## Commit and push
 

@@ -30,7 +30,7 @@ const allowedEfforts = [
 ] as const;
 
 const idSchema = Type.String({
-  description: 'Agent ID returned by agent_spawn.',
+  description: 'Agent ID.',
 });
 const spawnSchema = Type.Object({
   name: Type.String({
@@ -52,22 +52,20 @@ const spawnSchema = Type.Object({
   cwd: Type.Optional(
     Type.String({
       description:
-        'Working directory, relative to the current project. Defaults to the current directory.',
+        'Working directory relative to the current project; defaults to it.',
     }),
   ),
   model: Type.Optional(
     Type.String({
       pattern: '^[^/]+/.+$',
-      description:
-        'Model in provider/model format from the parent model registry. Inherits the selected parent model when omitted. A model must be selected.',
+      description: 'Provider/model; defaults to the parent model.',
     }),
   ),
   thinkingLevel: Type.Optional(
     Type.Union(
       allowedEfforts.map(effort => Type.Literal(effort)),
       {
-        description:
-          'Reasoning effort for the worker, up to xhigh. Defaults to the parent thinking level.',
+        description: 'Defaults to the parent thinking level.',
       },
     ),
   ),
@@ -76,13 +74,13 @@ const spawnSchema = Type.Object({
       minimum: 1000,
       maximum: 3600000,
       description:
-        'Optional execution timeout. No deadline when omitted. Queue time is excluded. If set, resets when a completed agent receives new work.',
+        'Execution deadline, excluding queue time. Resets on resume; no deadline by default.',
     }),
   ),
   autoCleanup: Type.Optional(
     Type.Boolean({
       description:
-        'Dispose the worker session after its work finishes, including failure or cancellation. Results stay available, but a finished agent cannot resume. Defaults to false.',
+        'Dispose after completion. Results stay readable, but the agent cannot resume. Default false.',
     }),
   ),
 });
@@ -92,7 +90,7 @@ const waitSchema = Type.Object({
       minItems: 1,
       maxItems: 64,
       description:
-        'Agents to wait for. Defaults to all agents in this session.',
+        'Defaults to all agents, including history. Pass specific IDs to avoid repeated results.',
     }),
   ),
   mode: Type.Optional(
@@ -106,7 +104,7 @@ const waitSchema = Type.Object({
       minimum: 0,
       maximum: 120000,
       description:
-        'Maximum wait time. Defaults to 60000 ms. A timeout leaves agents running.',
+        'Maximum wait in milliseconds; default 60000. Timeout leaves agents running.',
     }),
   ),
 });
@@ -143,18 +141,25 @@ function agentListResult(
     id: record.id,
     name: record.name,
     status: record.status,
-    activity: record.activity,
-    finishedAt: record.finishedAt,
+    ...(record.activity.toLowerCase() !== record.status
+      ? {
+          activity:
+            record.activity.length > 240
+              ? `${record.activity.slice(0, 237)}...`
+              : record.activity,
+        }
+      : {}),
   }));
   return {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify(
-          {view, summary, agents, ...(selfId ? {selfId} : {})},
-          null,
-          2,
-        ),
+        text: JSON.stringify({
+          view,
+          summary,
+          agents,
+          ...(selfId ? {selfId} : {}),
+        }),
       },
     ],
     details: {view, summary, agents: selected, ...(selfId ? {selfId} : {})},
@@ -163,44 +168,52 @@ function agentListResult(
 
 function toolResult(
   records: AgentRecord[],
-  includeOutput = true,
-  extra: Record<string, unknown> = {},
+  view: 'ack' | 'progress' | 'result' | 'details' = 'result',
 ) {
   const budget = Math.min(
     12000,
     Math.floor(20000 / Math.max(1, records.length)),
   );
-  const agents = records.map(record => ({
-    id: record.id,
-    name: record.name,
-    status: record.status,
-    activity: record.activity,
-    cwd: record.cwd,
-    model: record.model,
-    autoCleanup: record.autoCleanup,
-    createdAt: record.createdAt,
-    startedAt: record.startedAt,
-    finishedAt: record.finishedAt,
-    sessionFile: record.sessionFile,
-    resultFile: record.resultFile,
-    error: record.error?.slice(0, 2000),
-    ...(includeOutput && record.output !== undefined
-      ? {
-          output:
-            record.output.length > budget
-              ? `${record.output.slice(0, budget)}\n[Read resultFile for the full result.]`
-              : record.output,
-        }
-      : {}),
-  }));
+  const agents = records.map(record => {
+    const includeOutput = view === 'result' || view === 'details';
+    const truncated =
+      includeOutput &&
+      record.output !== undefined &&
+      (record.outputTruncated || record.output.length > budget);
+    return {
+      id: record.id,
+      name: record.name,
+      status: record.status,
+      ...(view !== 'ack' && !isAgentFinished(record.status)
+        ? {activity: record.activity}
+        : {}),
+      ...(record.error ? {error: record.error.slice(0, 2000)} : {}),
+      ...(record.autoCleanup && record.status === 'completed'
+        ? {resumable: false}
+        : {}),
+      ...(includeOutput && record.output !== undefined
+        ? {output: record.output.slice(0, budget)}
+        : {}),
+      ...(truncated
+        ? {outputTruncated: true, resultFile: record.resultFile}
+        : {}),
+      ...(view === 'details'
+        ? {
+            cwd: record.cwd,
+            model: record.model,
+            autoCleanup: record.autoCleanup,
+            createdAt: record.createdAt,
+            startedAt: record.startedAt,
+            finishedAt: record.finishedAt,
+            sessionFile: record.sessionFile,
+            resultFile: record.resultFile,
+          }
+        : {}),
+    };
+  });
   return {
-    content: [
-      {
-        type: 'text' as const,
-        text: JSON.stringify({agents, ...extra}, null, 2),
-      },
-    ],
-    details: {agents: records, ...extra},
+    content: [{type: 'text' as const, text: JSON.stringify({agents})}],
+    details: {agents: records},
   };
 }
 
@@ -215,10 +228,10 @@ function registerAgentListTool(
     name: 'agent_list',
     label: 'List agents',
     description:
-      'List active agents and their progress in the current parent session, with counts for every status. Use view="history" for finished agents or view="all" for both. History is newest first.' +
+      'List agent IDs and progress. Defaults to active; history is newest first.' +
       (selfId
-        ? ' Includes your own selfId. Use agent_send with a listed ID to message a peer, or id="parent" to message the parent.'
-        : ' Use agent_status for full results and transcript paths.'),
+        ? ' Includes your selfId; agent_send accepts peer IDs or "parent".'
+        : ' Use agent_status for results and errors.'),
     parameters: Type.Object({
       view: Type.Optional(
         Type.Union(
@@ -229,7 +242,7 @@ function registerAgentListTool(
           ],
           {
             description:
-              'Defaults to active (queued, running, or cancelling). History includes completed, failed, and cancelled agents.',
+              'Active: queued, running, cancelling. History: completed, failed, cancelled.',
           },
         ),
       ),
@@ -258,8 +271,8 @@ function registerAgentSendTool(
     name: 'agent_send',
     label: 'Send to agent',
     description: sender
-      ? 'Send a message to another agent in this parent session, or use id="parent" to store a message in the parent inbox. Parent messages never trigger turns; the parent reads them with agent_inbox. Your name and ID are attached automatically. Peer messages steer active work at the next turn boundary and resume completed conversations. Failed or cancelled agents cannot receive messages.'
-      : 'Steer an active agent at the next turn boundary. A completed agent resumes with its existing conversation. Failed or cancelled agents must be replaced with agent_spawn.',
+      ? 'Message a peer or id="parent". Parent messages enter its inbox without waking it; sender identity is attached. Peer messages steer active work or resume completed work. Failed, cancelled, or cleaned-up agents cannot resume.'
+      : 'Steer active work at the next turn boundary or resume a completed conversation. Failed, cancelled, or cleaned-up agents require agent_spawn.',
     executionMode: 'sequential',
     parameters: Type.Object({
       id: sender
@@ -306,7 +319,7 @@ function registerAgentSendTool(
         await assertAgentModelAllowed(recipient.model);
       return toolResult(
         [await current.send(params.id, message, identity)],
-        false,
+        'ack',
       );
     },
   });
@@ -325,13 +338,13 @@ export function registerAgentTools(
       name: 'agent_spawn',
       label: 'Spawn agent',
       description:
-        'Start a background agent with its own conversation. ' +
+        'Start a background agent with its own conversation; returns an ID immediately. Six run concurrently, others queue. ' +
         (allowedModels === null
-          ? 'Accepts any model from the parent model registry in provider/model format. '
+          ? 'Accepts any model from the parent model registry. '
           : allowedModels.length === 0
-            ? 'No agent models selected. Choose a model in Menu → Agent models before spawning an agent. '
-            : `Allowed models: ${allowedModels.join(', ')}. Change these in Menu → Agent models. `) +
-        'Inherits the selected parent model when omitted; requires a model choice when the parent has none. Maximum thinkingLevel: xhigh. Returns an ID immediately; up to six agents run concurrently and additional agents queue. Agents can edit files in their working directory. Collect results with agent_status or agent_wait and worker messages with agent_inbox. Workers never add parent prompts or trigger parent turns.',
+            ? 'No models enabled; configure Menu → Agent models first. '
+            : 'Model choices are restricted by Menu → Agent models. ') +
+        'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not wake the parent.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',
       parameters: {
@@ -342,12 +355,7 @@ export function registerAgentTools(
             ...spawnSchema.properties.model,
             ...(allowedModels?.length ? {enum: allowedModels} : {}),
             description:
-              'Model in provider/model format. Inherits the selected parent model when omitted.' +
-              (allowedModels === null
-                ? ''
-                : allowedModels.length === 0
-                  ? ' No agent models selected. Choose a model in Menu → Agent models.'
-                  : ` Allowed models: ${allowedModels.join(', ')}. Inherited models must also be allowed.`),
+              'Provider/model; defaults to the parent model, which must also be allowed.',
           },
         },
       },
@@ -441,7 +449,7 @@ export function registerAgentTools(
             };
           },
         );
-        return toolResult([record], false);
+        return toolResult([record], 'ack');
       },
     });
 
@@ -466,7 +474,7 @@ export function registerAgentTools(
     name: 'agent_inbox',
     label: 'Read worker messages to parent',
     description:
-      'Read messages workers explicitly sent to the parent. Messages are stored without adding prompts or triggering turns. Lists the latest 100 retained messages, newest first, with sender, timestamp, and 500-character previews. Pass messageId for full text. Reading does not remove messages.',
+      'Read worker messages without consuming them. For new messages only, start with after=0 and reuse nextAfter. Without after, lists newest-first history. Retains 100 messages; previews are 500 characters.',
     parameters: Type.Object({
       messageId: Type.Optional(
         Type.String({
@@ -475,8 +483,16 @@ export function registerAgentTools(
             'Retrieve this message in full. Takes precedence over list options.',
         }),
       ),
+      after: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          maximum: Number.MAX_SAFE_INTEGER,
+          description:
+            'Inbox cursor for this session. Returns newer messages oldest first; cannot combine with offset.',
+        }),
+      ),
       offset: Type.Optional(
-        Type.Integer({minimum: 0, description: 'List offset. Defaults to 0.'}),
+        Type.Integer({minimum: 0, description: 'History offset; default 0.'}),
       ),
       limit: Type.Optional(
         Type.Integer({
@@ -493,7 +509,7 @@ export function registerAgentTools(
         ? {...listing, messages: listing.messages.map(messagePreview)}
         : {message: team.getMessage(params.messageId!)};
       return {
-        content: [{type: 'text', text: JSON.stringify(data, null, 2)}],
+        content: [{type: 'text', text: JSON.stringify(data)}],
         details: data,
       };
     },
@@ -502,10 +518,21 @@ export function registerAgentTools(
     name: 'agent_status',
     label: 'Agent status',
     description:
-      'Get one agent’s progress, latest result, error, and saved transcript and result paths.',
-    parameters: Type.Object({id: idSchema}),
+      'Get progress, result, or error. Truncated results include their full resultFile path.',
+    parameters: Type.Object({
+      id: idSchema,
+      details: Type.Optional(
+        Type.Boolean({
+          description:
+            'Include model, cwd, timestamps, and transcript/result paths. Default false.',
+        }),
+      ),
+    }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      return toolResult([getManager(ctx).get(params.id)]);
+      return toolResult(
+        [getManager(ctx).get(params.id)],
+        params.details ? 'details' : 'result',
+      );
     },
   });
   registerAgentSendTool(pi, getManager);
@@ -513,7 +540,7 @@ export function registerAgentTools(
     name: 'agent_wait',
     label: 'Wait for agents',
     description:
-      'Wait for agents to complete, fail, or be cancelled, then return their current results. A timeout or interrupted wait leaves agents running. Already finished agents satisfy the requested wait mode.',
+      'Wait for completion, failure, or cancellation and return results. Timeout/interruption leaves agents running. Finished agents satisfy the wait; for successive mode="any" waits, pass only unfinished IDs.',
     parameters: waitSchema,
     async execute(_id, params, signal, onUpdate, ctx) {
       const current = getManager(ctx);
@@ -521,7 +548,7 @@ export function registerAgentTools(
       onUpdate?.(
         toolResult(
           ids.map(id => current.get(id)),
-          false,
+          'progress',
         ),
       );
       return toolResult(await current.wait(ids, {...params, signal}));
@@ -531,10 +558,10 @@ export function registerAgentTools(
     name: 'agent_cancel',
     label: 'Cancel agent',
     description:
-      'Cancel a queued or running agent and clear its steering messages. Running agents report cancelling until their tools stop. Finished agents are returned as they are.',
+      'Cancel an agent and queued messages. Reports cancelling until active tools stop; finished agents are unchanged.',
     parameters: Type.Object({id: idSchema}),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      return toolResult([getManager(ctx).cancel(params.id)], false);
+      return toolResult([getManager(ctx).cancel(params.id)], 'ack');
     },
   });
 

@@ -105,6 +105,25 @@ export interface DesktopThinkingSelectorOptions {
   defaultLevel?: ThinkingSelectorArguments[5];
 }
 
+export interface DesktopSessionSettingsOptions {
+  model: DesktopModelSelectorOptions;
+  thinking: DesktopThinkingSelectorOptions;
+  activeTab: 'model' | 'thinking';
+}
+
+type SessionSettingsSelection =
+  | {
+      kind: 'model';
+      model: NonNullable<ModelSelectorArguments[1]>;
+      persist: boolean;
+    }
+  | {
+      kind: 'thinking';
+      thinkingLevel: ThinkingSelectorArguments[0];
+      persist: boolean;
+    }
+  | undefined;
+
 export interface DesktopUIDialogAction {
   action: string;
 }
@@ -121,6 +140,8 @@ export interface DesktopUIDialog {
   prefill?: string;
   terminal?: DesktopTerminalState;
   actions?: Array<{id: string; label: string}>;
+  tabs?: Array<{id: string; label: string}>;
+  activeTab?: string;
 }
 
 export interface DesktopUIState {
@@ -156,6 +177,9 @@ interface PendingDialog {
 
 interface CustomDialogControls {
   actions?: DesktopUIDialog['actions'];
+  tabs?: DesktopUIDialog['tabs'];
+  activeTab?: string;
+  onTab?(tab: string): void;
   onAction?(action: string): void;
   signal?: AbortSignal;
 }
@@ -485,6 +509,9 @@ export class DesktopExtensionUI {
     return new Proxy(this, {
       get: (target, key) => {
         if (key === 'context') return context;
+        if (key === 'selectSessionSettings')
+          return (options: DesktopSessionSettingsOptions) =>
+            this.openSessionSettings(options, signal);
         if (key === 'selectModel')
           return (options: DesktopModelSelectorOptions) =>
             this.openModelSelector(options, signal);
@@ -531,6 +558,107 @@ export class DesktopExtensionUI {
       undefined,
       true,
     ) as Promise<string | undefined>;
+  }
+
+  selectSessionSettings(options: DesktopSessionSettingsOptions) {
+    return this.openSessionSettings(options);
+  }
+
+  private openSessionSettings(
+    options: DesktopSessionSettingsOptions,
+    signal?: AbortSignal,
+  ): Promise<SessionSettingsSelection> {
+    let switchTab: ((tab: string) => void) | undefined;
+    let submit: ((action: string) => void) | undefined;
+    return this.openCustom<SessionSettingsSelection>(
+      (screen, _theme, _keys, done) => {
+        let activeTab = options.activeTab;
+        let persist = false;
+        let focused = false;
+        const selectors: {
+          model?: ModelSelectorComponent;
+          thinking?: ThinkingSelectorComponent;
+        } = {};
+        const current = () => {
+          if (activeTab === 'model') {
+            return (selectors.model ??= new ModelSelectorComponent(
+              screen,
+              options.model.currentModel,
+              options.model.modelRuntime,
+              options.model.scopedModels,
+              model => done({kind: 'model', model, persist}),
+              () => done(undefined),
+              options.model.initialSearch,
+              model => done({kind: 'model', model, persist: true}),
+              options.model.defaultModel,
+            ));
+          }
+          return (selectors.thinking ??= new ThinkingSelectorComponent(
+            options.thinking.currentLevel,
+            options.thinking.availableLevels,
+            thinkingLevel => done({kind: 'thinking', thinkingLevel, persist}),
+            () => done(undefined),
+            thinkingLevel =>
+              done({kind: 'thinking', thinkingLevel, persist: true}),
+            options.thinking.defaultLevel,
+          ));
+        };
+        switchTab = tab => {
+          if (tab !== 'model' && tab !== 'thinking') return;
+          if (tab === activeTab) return;
+          current().focused = false;
+          activeTab = tab;
+          current().focused = focused;
+          screen.requestRender(true);
+        };
+        submit = action => {
+          persist = action === 'default';
+          try {
+            const selector = current();
+            if (selector instanceof ModelSelectorComponent) {
+              const search = selector.getSearchInput();
+              search.onSubmit?.(search.getValue());
+            } else {
+              const list = selector.getSelectList();
+              const selected = list.getSelectedItem();
+              if (selected) list.onSelect?.(selected);
+            }
+          } finally {
+            persist = false;
+          }
+        };
+        current();
+        return {
+          get focused() {
+            return focused;
+          },
+          set focused(value: boolean) {
+            focused = value;
+            current().focused = value;
+          },
+          render: width => current().render(width),
+          invalidate: () => {
+            selectors.model?.invalidate();
+            selectors.thinking?.invalidate();
+          },
+          handleInput: data => current().handleInput(data),
+          dispose: () => selectors.model?.dispose(),
+        };
+      },
+      undefined,
+      'Model & thinking',
+      {
+        actions: this.selectionActions(),
+        tabs: [
+          {id: 'model', label: 'Model'},
+          {id: 'thinking', label: 'Thinking'},
+        ],
+        activeTab: options.activeTab,
+        onTab: tab => switchTab?.(tab),
+        onAction: action => submit?.(action),
+        signal,
+      },
+    );
   }
 
   selectModel(options: DesktopModelSelectorOptions) {
@@ -658,6 +786,7 @@ export class DesktopExtensionUI {
         ...(dialog.actions
           ? {actions: dialog.actions.map(action => ({...action}))}
           : {}),
+        ...(dialog.tabs ? {tabs: dialog.tabs.map(tab => ({...tab}))} : {}),
         ...(dialog.terminal ? {terminal: {...dialog.terminal}} : {}),
       })),
       notifications: this.notifications.map(item => ({...item})),
@@ -708,7 +837,8 @@ export class DesktopExtensionUI {
         value &&
         typeof value === 'object' &&
         Object.keys(value).length === 1 &&
-        item.dialog.actions?.some(action => action.id === value.action)
+        (item.dialog.actions?.some(action => action.id === value.action) ||
+          item.dialog.tabs?.some(tab => `tab:${tab.id}` === value.action))
       )
         item.onAction?.(value.action);
       return;
@@ -903,13 +1033,28 @@ export class DesktopExtensionUI {
           id: randomUUID(),
           kind: 'terminal',
           title,
+          ...(controls?.tabs
+            ? {
+                tabs: controls.tabs.map(tab => ({...tab})),
+                activeTab: controls.activeTab,
+              }
+            : {}),
           ...(controls?.actions
             ? {actions: controls.actions.map(action => ({...action}))}
             : {}),
         },
         onAction: action => {
           try {
-            this.withKeybindings(() => controls?.onAction?.(action));
+            this.withKeybindings(() => {
+              const tab = item.dialog.tabs?.find(
+                tab => `tab:${tab.id}` === action,
+              );
+              if (tab) {
+                controls?.onTab?.(tab.id);
+                item.dialog.activeTab = tab.id;
+                this.onChange();
+              } else controls?.onAction?.(action);
+            });
           } catch (error) {
             fail(error);
           }

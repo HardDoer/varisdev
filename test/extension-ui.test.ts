@@ -1006,3 +1006,131 @@ void test('public state stays bounded and excess dialogs fail instead of hanging
   adapter.dispose();
   assert.deepEqual(await Promise.all(dialogs), Array(32).fill(undefined));
 });
+
+void test('session settings switch real Pi selectors in one dialog and preserve independent searches', async t => {
+  const model = await selectorRuntime(t);
+  const adapter = new DesktopExtensionUI(() => {});
+  t.after(() => adapter.dispose());
+  let settled = false;
+  const selection = adapter.selectSessionSettings({
+    activeTab: 'model',
+    model,
+    thinking: {
+      currentLevel: 'low',
+      availableLevels: ['off', 'low', 'high'],
+      defaultLevel: 'off',
+    },
+  });
+  void selection.then(() => {
+    settled = true;
+  });
+  await waitFor(
+    () =>
+      adapter.snapshot().dialogs[0]?.terminal?.output.includes('beta') === true,
+  );
+  const dialog = adapter.snapshot().dialogs[0];
+  assert.equal(dialog.title, 'Model & thinking');
+  assert.deepEqual(dialog.tabs, [
+    {id: 'model', label: 'Model'},
+    {id: 'thinking', label: 'Thinking'},
+  ]);
+  dialog.tabs![0].id = 'mutated';
+  adapter.respond(dialog.id, {action: 'tab:unknown'});
+  assert.equal(adapter.snapshot().dialogs[0].activeTab, 'model');
+  adapter.respond(dialog.id, {action: 'tab:thinking'});
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('Thinking Level') === true,
+  );
+  adapter.respond(dialog.id, 'high');
+  await delay(30);
+  adapter.respond(dialog.id, {action: 'tab:model'});
+  assert.equal(adapter.snapshot().dialogs[0].activeTab, 'model');
+  adapter.respond(dialog.id, {action: 'tab:thinking'});
+  assert.equal(adapter.snapshot().dialogs.length, 1);
+  assert.equal(settled, false, 'Switching tabs must never apply a selection');
+  adapter.respond(dialog.id, {action: 'default'});
+  assert.deepEqual(await selection, {
+    kind: 'thinking',
+    thinkingLevel: 'high',
+    persist: true,
+  });
+
+  const next = adapter.selectSessionSettings({
+    activeTab: 'model',
+    model: {...model, initialSearch: undefined},
+    thinking: {currentLevel: 'off', availableLevels: ['off']},
+  });
+  await waitFor(
+    () =>
+      adapter.snapshot().dialogs[0]?.terminal?.output.includes('beta') === true,
+  );
+  const id = adapter.snapshot().dialogs[0].id;
+  adapter.respond(id, 'beta');
+  await delay(30);
+  adapter.respond(id, {action: 'tab:thinking'});
+  adapter.respond(id, {action: 'tab:model'});
+  adapter.respond(id, '\r');
+  const applied = await next;
+  assert.equal(applied?.kind, 'model');
+  assert.equal(applied?.kind === 'model' && applied.model.id, 'beta');
+  assert.equal(applied?.persist, false);
+});
+
+void test('session thinking tab only applies supported levels and cancellation disposes the retained model selector', async t => {
+  const model = await selectorRuntime(t);
+  const adapter = new DesktopExtensionUI(() => {});
+  t.after(() => adapter.dispose());
+  const dispose = t.mock.method(ModelSelectorComponent.prototype, 'dispose');
+  const abort = new AbortController();
+  const selection = adapter.forCommand(abort.signal).selectSessionSettings({
+    activeTab: 'thinking',
+    model,
+    thinking: {currentLevel: 'off', availableLevels: ['off']},
+  });
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('Thinking Level') === true,
+  );
+  const id = adapter.snapshot().dialogs[0].id;
+  adapter.respond(id, 'xhigh');
+  await delay(30);
+  adapter.respond(id, {action: 'session'});
+  assert.equal(
+    adapter.snapshot().dialogs.length,
+    1,
+    'An unsupported filtered level cannot apply',
+  );
+  adapter.respond(id, {action: 'tab:model'});
+  await waitFor(
+    () =>
+      adapter.snapshot().dialogs[0]?.terminal?.output.includes('beta') === true,
+  );
+  adapter.respond(id, {action: 'tab:thinking'});
+  abort.abort();
+  assert.equal(await selection, undefined);
+  assert.equal(dispose.mock.callCount(), 1);
+  assert.equal(adapter.snapshot().dialogs.length, 0);
+  adapter.respond(id, {action: 'default'});
+  const later = adapter.selectSessionSettings({
+    activeTab: 'thinking',
+    model,
+    thinking: {currentLevel: 'off', availableLevels: ['off']},
+  });
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('Thinking Level') === true,
+  );
+  adapter.respond(adapter.snapshot().dialogs[0].id, '\r');
+  assert.deepEqual(await later, {
+    kind: 'thinking',
+    thinkingLevel: 'off',
+    persist: false,
+  });
+});

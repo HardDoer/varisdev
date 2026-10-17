@@ -10,7 +10,7 @@ import {
 } from './parent-activities.js';
 import {createRobotWhip, whipPose, drawRobotWhip} from './robot-whip.js';
 import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
-import {createFactoryVisitors} from './factory-visitors.js';
+import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {drawCleanupBot} from './robot-cleanup.js';
 
@@ -879,10 +879,6 @@ export function createFactoryScene(
       }
     }
     previous = new Map(agents.map(a => [a.id, a.status]));
-    const shownIds = ['parent', ...units.map(unit => unit.id)];
-    damage.retain(shownIds);
-    for (const id of damageHomes.keys())
-      if (!shownIds.includes(id)) damageHomes.delete(id);
     firstSnapshot = false;
   }
 
@@ -987,7 +983,7 @@ export function createFactoryScene(
     sceneGeometry,
     sceneEffects,
     visitor = null,
-    caneId = visitor ? null : 'parent',
+    caneId = visitor ? visitorCaneId(visitor.id) : 'parent',
   ) {
     const pose = visitor
       ? {
@@ -1760,6 +1756,16 @@ export function createFactoryScene(
     const visiting = visitors.visitorsAt(sessionId);
     const ownAway = visitors.isAway(sessionId);
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
+    const shownIds = new Set([
+      'parent',
+      ...units.map(unit => unit.id),
+      ...visiting
+        .filter(visitor => visitor !== ownTravel)
+        .map(visitor => visitorCaneId(visitor.id)),
+    ]);
+    damage.retain(shownIds);
+    for (const id of damageHomes.keys())
+      if (!shownIds.has(id)) damageHomes.delete(id);
     // Keep the struck body and cleanup route at the impact location.
     const physicalParent =
       damageHomes.has('parent') && unsettled(damage.pose('parent'));
@@ -1811,7 +1817,12 @@ export function createFactoryScene(
     );
     for (const visitor of visiting) {
       if (visitor === ownTravel) continue;
-      drawParentSession(g, fx, visitor);
+      positions.push({
+        id: visitorCaneId(visitor.id),
+        selectable: false,
+        targetable: true,
+        ...drawParentSession(g, fx, visitor),
+      });
       const source = factoryIdentityPalette(C, factoryIdentity(visitor.id));
       g.ring(
         [visitor.x, 0.43, visitor.z],
@@ -1830,6 +1841,9 @@ export function createFactoryScene(
       }),
     );
     homes.set('parent', [pose.x, pose.ground + 0.36, pose.z]);
+    for (const visitor of visiting)
+      if (visitor !== ownTravel)
+        homes.set(visitorCaneId(visitor.id), [visitor.x, 0.36, visitor.z]);
     const cleaners = [];
     for (const id of homes.keys()) {
       const cleanup = damage.pose(id).cleanup;
@@ -1856,7 +1870,7 @@ export function createFactoryScene(
     for (const piece of robotEffects) {
       const home = damageHomes.get(piece.owner)?.p || homes.get(piece.owner);
       if (!home) continue;
-      const scale = piece.owner === 'parent' ? 1.4 : 1;
+      const scale = units.some(unit => unit.id === piece.owner) ? 1 : 1.4;
       const p = piece.position.map((n, a) => home[a] + n);
       const size = piece.size.map(n => n * scale * Math.min(1, piece.life * 4));
       const basis = [
@@ -1887,12 +1901,7 @@ export function createFactoryScene(
         );
     }
     canvas.dataset.robotDamage = JSON.stringify(
-      Object.fromEntries(
-        ['parent', ...units.map(unit => unit.id)].map(id => [
-          id,
-          damage.pose(id),
-        ]),
-      ),
+      Object.fromEntries([...shownIds].map(id => [id, damage.pose(id)])),
     );
     canvas.dataset.robotDebris = String(robotEffects.length);
     canvas.dataset.factoryVisitors = visiting
@@ -1985,49 +1994,54 @@ export function createFactoryScene(
     draw(glow);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
-    anchors = positions.map(({id, p, body, radius, targetable}) => {
-      const point = project(p, matrix),
-        center = project(body, matrix),
-        edgeX = project([body[0] + radius, body[1], body[2]], matrix),
-        edgeY = project([body[0], body[1] + radius, body[2]], matrix),
-        edgeZ = project([body[0], body[1], body[2] + radius], matrix),
-        radiusX = Math.max(
-          Math.abs(edgeX.x - center.x),
-          Math.abs(edgeY.x - center.x),
-          Math.abs(edgeZ.x - center.x),
-        ),
-        radiusY = Math.max(
-          Math.abs(edgeX.y - center.y),
-          Math.abs(edgeY.y - center.y),
-          Math.abs(edgeZ.y - center.y),
-        );
-      return {
-        id,
-        x: point.x,
-        y: point.y,
-        visible:
-          point.w > 0 &&
-          point.x > 0 &&
-          point.x < 1 &&
-          point.y > 0 &&
-          point.y < 1,
-        centerX: center.x,
-        centerY: center.y,
-        radiusX,
-        radiusY,
-        targetable,
-        targetVisible: center.w > 0,
-      };
-    });
+    anchors = positions.map(
+      ({id, p, body, radius, targetable, selectable = true}) => {
+        const point = project(p, matrix),
+          center = project(body, matrix),
+          edgeX = project([body[0] + radius, body[1], body[2]], matrix),
+          edgeY = project([body[0], body[1] + radius, body[2]], matrix),
+          edgeZ = project([body[0], body[1], body[2] + radius], matrix),
+          radiusX = Math.max(
+            Math.abs(edgeX.x - center.x),
+            Math.abs(edgeY.x - center.x),
+            Math.abs(edgeZ.x - center.x),
+          ),
+          radiusY = Math.max(
+            Math.abs(edgeX.y - center.y),
+            Math.abs(edgeY.y - center.y),
+            Math.abs(edgeZ.y - center.y),
+          );
+        return {
+          id,
+          x: point.x,
+          y: point.y,
+          visible:
+            point.w > 0 &&
+            point.x > 0 &&
+            point.x < 1 &&
+            point.y > 0 &&
+            point.y < 1,
+          centerX: center.x,
+          centerY: center.y,
+          radiusX,
+          radiusY,
+          targetable,
+          selectable,
+          targetVisible: center.w > 0,
+        };
+      },
+    );
     const awayMessage = visitors.awayMessage(sessionId);
-    const layout = anchors.map(({id, x, y, visible}) => ({
-      id,
-      x,
-      y,
-      visible,
-      away: id === 'parent' && Boolean(awayMessage),
-      detail: id === 'parent' ? awayMessage : '',
-    }));
+    const layout = anchors
+      .filter(anchor => anchor.selectable)
+      .map(({id, x, y, visible}) => ({
+        id,
+        x,
+        y,
+        visible,
+        away: id === 'parent' && Boolean(awayMessage),
+        detail: id === 'parent' ? awayMessage : '',
+      }));
     // Labels do not need subpixel DOM churn on a stationary scene.
     const key = layout
       .map(
@@ -2070,7 +2084,18 @@ export function createFactoryScene(
       const parentDamage = damage.pose('parent');
       if (!whip.pose() && !unsettled(parentDamage)) parentMotion.tick(dt);
       visitors.observeLocalPose(sessionId, parentMotion.pose());
-      visitors.tick(dt);
+      const pausedVisitors = visitors
+        .visitorsAt(sessionId)
+        .filter(visitor =>
+          unsettled(
+            damage.pose(
+              visitor.id === sessionId ? 'parent' : visitorCaneId(visitor.id),
+            ),
+          ),
+        )
+        .map(visitor => visitor.id);
+      if (unsettled(parentDamage)) pausedVisitors.push(sessionId);
+      visitors.tick(dt, pausedVisitors);
       parentMotion.setAway(visitors.isAway(sessionId));
       syncWhip();
       whip.tick(dt);
@@ -2148,7 +2173,12 @@ export function createFactoryScene(
         Math.hypot(x - a.x * rect.width, y - a.y * rect.height),
         Math.hypot(x - a.centerX * rect.width, y - a.centerY * rect.height),
       );
-      if (a.visible && d < (a.id === 'parent' ? 62 : 38) && d < distance) {
+      if (
+        a.selectable &&
+        a.visible &&
+        d < (a.id === 'parent' ? 62 : 38) &&
+        d < distance
+      ) {
         hit = a.id;
         distance = d;
       }
@@ -2363,11 +2393,13 @@ export function createFactoryScene(
       if (!target) return false;
       // Keep the flinch, wreck and cleanup route anchored across snapshots.
       if (!unsettled(damage.pose(id))) {
-        if (id === 'parent') {
-          const ownTravel = visitors
-            .visitorsAt(sessionId)
-            .find(v => v.id === sessionId);
-          const pose = ownTravel || parentMotion.pose();
+        const visitor = visitors
+          .visitorsAt(sessionId)
+          .find(v =>
+            v.id === sessionId ? id === 'parent' : visitorCaneId(v.id) === id,
+          );
+        if (id === 'parent' || visitor) {
+          const pose = visitor || parentMotion.pose();
           damageHomes.set(id, {
             p: [pose.x, (pose.ground || 0) + 0.36, pose.z],
             yaw: pose.yaw,

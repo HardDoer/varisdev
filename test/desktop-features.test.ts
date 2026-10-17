@@ -13,6 +13,7 @@ import {
   createDashboardParent,
   type DesktopDashboardParent,
 } from '../src/dashboard/parent.ts';
+import {DesktopToolSettings} from '../src/desktop/tool-settings.ts';
 
 interface Request {
   model: string;
@@ -42,7 +43,11 @@ async function commandDialog(parent: DesktopDashboardParent, text: string) {
   return {operation, dialog: parent.ui.snapshot().dialogs[0]};
 }
 
-async function fixture(t: TestContext, configuredVarisdev = false) {
+async function fixture(
+  t: TestContext,
+  configuredVarisdev = false,
+  enabledModels?: string[],
+) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-features-'));
   const cwd = join(root, 'project');
   const agentDir = join(root, 'config');
@@ -140,6 +145,7 @@ export default function(pi) {
   ]);
   const settingsPath = join(agentDir, 'settings.json');
   const settings = {
+    ...(enabledModels ? {enabledModels} : {}),
     retry: {enabled: false},
     compaction: {enabled: false, reserveTokens: 16000, keepRecentTokens: 32},
     ...(configuredVarisdev
@@ -604,7 +610,7 @@ void test(
     };
     const thinking = await commandDialog(parent, '/thinking');
     assert.equal(thinking.dialog.kind, 'terminal');
-    assert.equal(thinking.dialog.title, 'Thinking level');
+    assert.equal(thinking.dialog.title, 'Model & thinking');
     assert.deepEqual(thinking.dialog.actions, actions);
     assert.equal(parent.state.snapshot().session.thinkingLevel, 'low');
     await search('high');
@@ -623,7 +629,7 @@ void test(
 
     const model = await commandDialog(parent, '/model');
     assert.equal(model.dialog.kind, 'terminal');
-    assert.equal(model.dialog.title, 'Model');
+    assert.equal(model.dialog.title, 'Model & thinking');
     assert.deepEqual(model.dialog.actions, actions);
     assert.equal((await parent.features()).model?.id, 'first-model');
     await search('second-model');
@@ -1053,3 +1059,111 @@ void test(
     assert.equal(parent.state.snapshot().session.status, 'idle');
   },
 );
+
+void test('tool settings follow real Pi scope changes while keeping saved global tool preferences', async t => {
+  const enabledModels = ['desktop-fixture/second-model:high'];
+  const {parent, requests, settingsPath} = await fixture(
+    t,
+    false,
+    enabledModels,
+  );
+  const service = new DesktopToolSettings({
+    sessionFeatures: async id => {
+      assert.equal(id, 'session');
+      return parent.features();
+    },
+    createRuntime: async () => {
+      throw new Error('A selected session must use its live scope.');
+    },
+  });
+  const features = await parent.features();
+  assert.ok(features.models.some(model => model.id === 'first-model'));
+  assert.deepEqual(features.scopedModels, [
+    {
+      model: {
+        provider: 'desktop-fixture',
+        id: 'second-model',
+        name: 'second-model',
+      },
+      thinkingLevel: 'high',
+    },
+  ]);
+  const initial = await service.getToolSettings('session');
+  assert.deepEqual(
+    initial.models,
+    features.scopedModels!.map(scoped => scoped.model),
+  );
+  await service.saveToolSettings(
+    'agents',
+    {
+      allowedModels: ['desktop-fixture/second-model'],
+    },
+    'session',
+  );
+
+  const applyScope = async (action: string) => {
+    const {operation, dialog} = await commandDialog(parent, '/scoped-models');
+    assert.equal(dialog.kind, 'select');
+    parent.ui.respond(dialog.id, action);
+    await waitFor(
+      () =>
+        Boolean(
+          parent.ui.snapshot().dialogs[0]?.id !== dialog.id &&
+          parent.ui.snapshot().dialogs[0]?.title === 'Scoped models',
+        ),
+      'The scope editor returns to its menu',
+    );
+    parent.ui.respond(
+      parent.ui.snapshot().dialogs[0].id,
+      'Apply to this session',
+    );
+    await operation;
+  };
+  await applyScope('Enable only current model');
+  assert.deepEqual((await parent.features()).scopedModels, [
+    {
+      model: {
+        provider: 'desktop-fixture',
+        id: 'first-model',
+        name: 'first-model',
+      },
+    },
+  ]);
+  const changed = await service.getToolSettings('session');
+  assert.deepEqual(
+    changed.models.map(model => model.id),
+    ['first-model'],
+  );
+  assert.deepEqual(changed.settings.agents.allowedModels, [
+    'desktop-fixture/second-model',
+  ]);
+  await assert.rejects(
+    service.saveToolSettings(
+      'commit',
+      {
+        model: 'desktop-fixture/second-model',
+        thinkingLevel: null,
+      },
+      'session',
+    ),
+    /Unknown model/,
+  );
+  assert.deepEqual(
+    JSON.parse(await readFile(settingsPath, 'utf8')).enabledModels,
+    enabledModels,
+  );
+
+  await applyScope('Enable all models');
+  assert.deepEqual((await parent.features()).scopedModels, []);
+  const restored = await service.getToolSettings('session');
+  assert.ok(restored.models.some(model => model.id === 'first-model'));
+  assert.ok(restored.models.some(model => model.id === 'second-model'));
+  assert.deepEqual(restored.settings.agents.allowedModels, [
+    'desktop-fixture/second-model',
+  ]);
+  assert.deepEqual(
+    JSON.parse(await readFile(settingsPath, 'utf8')).enabledModels,
+    enabledModels,
+  );
+  assert.equal(requests.length, 0);
+});

@@ -1,4 +1,4 @@
-/* global process, __dirname, document, Event, setTimeout, localStorage */
+/* global process, __dirname, document, Event, KeyboardEvent, setTimeout, localStorage */
 const assert = require('node:assert/strict');
 const {writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -63,6 +63,23 @@ function parent(id) {
     conversationTruncated: false,
     queue: {steering: [], followUp: []},
     ui: {dialogs: []},
+  };
+}
+function sessionSettingsDialog() {
+  return {
+    id: 'model-thinking',
+    kind: 'terminal',
+    title: 'Model & thinking',
+    tabs: [
+      {id: 'model', label: 'Model'},
+      {id: 'thinking', label: 'Thinking'},
+    ],
+    activeTab: 'model',
+    actions: [
+      {id: 'default', label: 'Make as default'},
+      {id: 'session', label: 'Apply to session'},
+    ],
+    terminal: {columns: 100, rows: 28, output: 'Model selector', revision: 1},
   };
 }
 function publish() {
@@ -170,6 +187,7 @@ async function main() {
   handle('pidev:prompt-session', (id, input) => {
     prompts.push([id, input.prompt]);
     const data = hub.sessions.find(item => item.session.id === id);
+    if (input.prompt === '/model') data.ui.dialogs = [sessionSettingsDialog()];
     if (input.prompt === '/thinking')
       data.ui.dialogs = [
         {
@@ -195,7 +213,12 @@ async function main() {
   handle('pidev:respond-to-dialog', (id, dialogId, value) => {
     responses.push([id, dialogId, value]);
     const data = hub.sessions.find(item => item.session.id === id);
-    if (dialogId === 'navigation') {
+    if (dialogId === 'model-thinking' && value?.action?.startsWith('tab:')) {
+      const dialog = data.ui.dialogs[0];
+      dialog.activeTab = value.action.slice(4);
+      dialog.terminal.output += String.fromCharCode(13, 10) + dialog.activeTab;
+      dialog.terminal.revision++;
+    } else if (dialogId === 'navigation') {
       navigationOrder.push('ack');
       delete data.ui.navigation;
     } else data.ui.dialogs = [];
@@ -485,6 +508,113 @@ async function main() {
     'Selected draft before unselected navigation',
   );
   assert.equal(prompts.length, 6, 'desktop commands never reach promptSession');
+  await evaluate(() => {
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-session-settings').click();
+  });
+  await waitFor(() =>
+    evaluate(() => document.getElementById('extension-dialog').open),
+  );
+  assert.equal(
+    await evaluate(() =>
+      document.getElementById('open-session-settings').textContent.trim(),
+    ),
+    'Model & thinking',
+  );
+  assert.equal(
+    await evaluate(() =>
+      document
+        .getElementById('open-session-settings')
+        .getAttribute('aria-label'),
+    ),
+    'Model & thinking',
+  );
+  assert.deepEqual(prompts.at(-1), ['fresh', '/model']);
+  await evaluate(() =>
+    document.getElementById('extension-dialog-tab-thinking').click(),
+  );
+  await waitFor(() =>
+    evaluate(
+      () =>
+        document
+          .getElementById('extension-dialog-tab-thinking')
+          .getAttribute('aria-selected') === 'true',
+    ),
+  );
+  assert.equal(
+    await evaluate(() => document.querySelectorAll('dialog[open]').length),
+    1,
+  );
+  assert.equal(
+    await evaluate(() =>
+      document.activeElement.classList.contains('xterm-helper-textarea'),
+    ),
+    true,
+  );
+  await evaluate(() => {
+    const tab = document.getElementById('extension-dialog-tab-thinking');
+    tab.focus();
+    tab.dispatchEvent(
+      new KeyboardEvent('keydown', {key: 'ArrowLeft', bubbles: true}),
+    );
+  });
+  await waitFor(() =>
+    evaluate(() => document.activeElement.id === 'extension-dialog-tab-model'),
+  );
+  assert.equal(
+    await evaluate(() =>
+      document
+        .getElementById('extension-dialog-tab-model')
+        .getAttribute('aria-selected'),
+    ),
+    'true',
+  );
+  assert.equal(
+    await evaluate(() =>
+      document
+        .getElementById('extension-dialog-terminal')
+        .getAttribute('aria-labelledby'),
+    ),
+    'extension-dialog-tab-model',
+  );
+  assert.deepEqual(
+    responses.filter(item => item[1] === 'model-thinking'),
+    [
+      ['fresh', 'model-thinking', {action: 'tab:thinking'}],
+      ['fresh', 'model-thinking', {action: 'tab:model'}],
+    ],
+  );
+  await evaluate(() =>
+    document.getElementById('extension-dialog-action-default').click(),
+  );
+  await waitFor(() =>
+    evaluate(() => !document.getElementById('extension-dialog').open),
+  );
+  assert.deepEqual(responses.at(-1), [
+    'fresh',
+    'model-thinking',
+    {action: 'default'},
+  ]);
+  hub.sessions.find(item => item.session.id === 'fresh').ui.dialogs = [
+    sessionSettingsDialog(),
+  ];
+  publish();
+  await waitFor(() =>
+    evaluate(() => document.getElementById('extension-dialog').open),
+  );
+  await evaluate(() => {
+    document.getElementById('extension-dialog-tab-model').focus();
+    document
+      .getElementById('extension-dialog')
+      .dispatchEvent(new Event('cancel', {cancelable: true}));
+  });
+  await waitFor(() =>
+    evaluate(() => !document.getElementById('extension-dialog').open),
+  );
+  assert.deepEqual(responses.at(-1), ['fresh', 'model-thinking', undefined]);
+  report.cases.push(
+    'model and thinking tabs preserve one dialog, keyboard focus, actions and cancellation',
+  );
   assert.deepEqual(errors, []);
   report.cases.push(
     'unselected prepared navigation acknowledges before replacement and safely seeds only its destination draft',

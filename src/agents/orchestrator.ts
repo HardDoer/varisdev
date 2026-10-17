@@ -22,6 +22,7 @@ export interface AgentRecord extends AgentSpec {
   finishedAt?: string;
   activity: string;
   output?: string;
+  outputTruncated?: boolean;
   error?: string;
   sessionFile?: string;
   resultFile?: string;
@@ -242,6 +243,7 @@ export class AgentOrchestrator {
       job.record.activity = 'Waiting for a worker slot';
       job.record.finishedAt = undefined;
       job.record.output = undefined;
+      job.record.outputTruncated = undefined;
       this.pump();
     } else if (!(await worker.steer(text, !job.promptStarted))) {
       // The model has finished; let result persistence settle before resuming it.
@@ -392,10 +394,8 @@ export class AgentOrchestrator {
         },
       );
       signal.throwIfAborted();
-      job.record.output =
-        output.length > 12000
-          ? `${output.slice(0, 12000)}\n[Output truncated. Read resultFile for the full result.]`
-          : output;
+      job.record.output = output.slice(0, 12000);
+      job.record.outputTruncated = output.length > 12000 || undefined;
       signal.throwIfAborted();
       job.record.status = 'completed';
       job.record.activity = 'Completed';

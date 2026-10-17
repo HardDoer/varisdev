@@ -23,6 +23,7 @@ let releaseNotice;
 let noticeError = '';
 let saveError = '';
 let loadError = '';
+let scopedModels;
 let ackError = '';
 let commitAcknowledged = false;
 let commitNoticeReads = 0;
@@ -215,7 +216,7 @@ async function main() {
   handle('varisdev:get-tool-settings', id => {
     reads.push(id);
     if (loadError) throw new Error(loadError);
-    return {settings, models};
+    return {settings, models: scopedModels ?? models};
   });
   handle('varisdev:save-tool-settings', (section, value, id) => {
     writes.push({section, value, id});
@@ -698,6 +699,84 @@ async function main() {
   assert.equal(acknowledged, true);
   report.cases.push(
     'commit read retry and Continue dispatch; agent notice queues independently behind commit notice',
+  );
+
+  // The backend supplies the active Pi scope; globally saved selections stay
+  // visible and removable when a session offers a narrower model list.
+  settings.agents.allowedModels = ['alpha/small', 'beta/large'];
+  settings.commit = {model: 'beta/large', thinkingLevel: null};
+  scopedModels = [models[0]];
+  await open('agents');
+  assert.deepEqual(settings.agents.allowedModels, [
+    'alpha/small',
+    'beta/large',
+  ]);
+  assert.deepEqual(
+    await evaluate(() =>
+      [...document.querySelectorAll('#tool-settings-models input')].map(
+        input => ({
+          value: input.value,
+          checked: input.checked,
+          disabled: input.disabled,
+        }),
+      ),
+    ),
+    [
+      {value: 'alpha/small', checked: true, disabled: false},
+      {value: 'beta/large', checked: true, disabled: false},
+    ],
+  );
+  assert.match(
+    await evaluate(
+      () => document.getElementById('tool-settings-models').textContent,
+    ),
+    /current model list.*Scoped models/,
+  );
+  await click('tool-settings-close');
+  await open('commit');
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('tool-settings-save').disabled,
+    ),
+    true,
+  );
+  assert.equal(
+    await evaluate(
+      () =>
+        document.querySelector(
+          '#tool-settings-models input[value="beta/large"]',
+        ).disabled,
+    ),
+    true,
+  );
+  await click('commit-inherit-model');
+  await save();
+  assert.deepEqual(settings.commit, {model: null, thinkingLevel: null});
+  await open('agents');
+  await selectModel('beta/large');
+  await save();
+  assert.deepEqual(settings.agents.allowedModels, ['alpha/small']);
+  await open('agents');
+  assert.deepEqual(
+    await evaluate(() =>
+      [...document.querySelectorAll('#tool-settings-models input')].map(
+        input => input.value,
+      ),
+    ),
+    ['alpha/small'],
+  );
+  await click('tool-settings-close');
+  scopedModels = undefined;
+  await open('agents');
+  assert.equal(
+    await evaluate(
+      () => document.querySelectorAll('#tool-settings-models input').length,
+    ),
+    2,
+  );
+  await click('tool-settings-close');
+  report.cases.push(
+    'scoped choices preserve global preferences, allow removal and Commit parent inheritance; clearing scope restores choices',
   );
 
   browser.setContentSize(440, 600);

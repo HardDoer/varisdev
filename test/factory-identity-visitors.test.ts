@@ -8,6 +8,7 @@ import {
 import {
   createFactoryVisitors,
   HOME_ROUTE,
+  visitorCaneId,
   VISITOR_ROUTE,
 } from '../assets/dashboard/factory-visitors.js';
 
@@ -35,6 +36,19 @@ function until(
     visitors.tick(1 / 60);
   }
   assert.ok(condition(), 'visitor condition timed out');
+}
+
+function travelerAtPhase(
+  visitors: ReturnType<typeof createFactoryVisitors>,
+  ids: string[],
+  phase: string,
+) {
+  until(visitors, () => ids.some(id => visitors.snapshot(id)?.phase === phase));
+  const source = ids.find(id => visitors.snapshot(id)?.phase === phase);
+  assert.ok(source);
+  const target = visitors.snapshot(source)?.targetId;
+  assert.ok(target);
+  return {source, target};
 }
 
 void test('factory identities are stable, distinct, and add only theme-derived decorative colors', () => {
@@ -261,4 +275,146 @@ void test('active and closed visitors are recalled, closed sessions are removed,
   assert.equal(visitors.isAway('one'), false);
   visitors.dispose();
   assert.equal(visitors.snapshot('one'), null);
+});
+
+for (const [phase, activeStatus] of [
+  ['arrive', 'running'],
+  ['visit', 'compacting'],
+] as const) {
+  void test(`an idle visitor in ${phase} is shooed when its host starts ${activeStatus}`, () => {
+    const visitors = createFactoryVisitors();
+    const ids = ['aardvark', 'zebra'];
+    visitors.update(sessions(['aardvark', 'idle'], ['zebra', 'idle']));
+    const {source, target} = travelerAtPhase(visitors, ids, phase);
+    assert.equal(source, 'aardvark');
+    const before = visitors.snapshot(source)!;
+
+    // aardvark sorts before zebra, exercising the final recall pass when it
+    // is the visitor and its host status is applied later in update().
+    visitors.update(sessions([source, 'idle'], [target, activeStatus]));
+    const startled = visitors.snapshot(source)!;
+    assert.equal(startled.phase, 'startled');
+    assert.equal(startled.x, before.x, 'recall must preserve the current x');
+    assert.equal(startled.z, before.z, 'recall must preserve the current z');
+    assert.equal(startled.targetId, target);
+
+    until(visitors, () => visitors.snapshot(source)?.phase === 'depart', 2);
+    until(visitors, () => !visitors.isAway(source), 6);
+    assert.deepEqual(
+      [visitors.snapshot(source)?.x, visitors.snapshot(source)?.z],
+      HOME_ROUTE.at(-1),
+    );
+    assert.equal(visitors.snapshot(source)?.targetId, null);
+  });
+}
+
+void test('running and compacting hosts never receive new visitors regardless of hub order', () => {
+  const orders: Array<Array<[string, string]>> = [
+    [
+      ['running-host', 'running'],
+      ['idle-a', 'idle'],
+      ['compacting-host', 'compacting'],
+      ['idle-b', 'idle'],
+    ],
+    [
+      ['idle-b', 'idle'],
+      ['compacting-host', 'compacting'],
+      ['idle-a', 'idle'],
+      ['running-host', 'running'],
+    ],
+  ];
+
+  for (const order of orders) {
+    const visitors = createFactoryVisitors();
+    visitors.update(sessions(...order));
+    let sawTravel = false;
+    for (let frame = 0; frame < 120 * 60; frame++) {
+      visitors.tick(1 / 60);
+      for (const id of ['idle-a', 'idle-b']) {
+        const target = visitors.snapshot(id)?.targetId;
+        if (target) sawTravel = true;
+        assert.notEqual(target, 'running-host');
+        assert.notEqual(target, 'compacting-host');
+      }
+    }
+    assert.equal(
+      sawTravel,
+      true,
+      'idle factories should still visit each other',
+    );
+  }
+});
+
+void test('a paused visitor freezes, reacts to host work in place, and returns after release', () => {
+  const visitors = createFactoryVisitors();
+  const ids = ['aardvark', 'zebra'];
+  visitors.update(sessions(['aardvark', 'idle'], ['zebra', 'idle']));
+  const {source, target} = travelerAtPhase(visitors, ids, 'arrive');
+  assert.equal(visitorCaneId(source), `visitor:${source}`);
+
+  const pausedArrival = visitors.snapshot(source);
+  for (let second = 0; second < 120; second++) visitors.tick(1, [source]);
+  assert.deepEqual(
+    visitors.snapshot(source),
+    pausedArrival,
+    'position and phase timers must freeze while selected',
+  );
+
+  visitors.update(sessions([source, 'idle'], [target, 'running']));
+  const recalled = visitors.snapshot(source)!;
+  assert.equal(recalled.phase, 'startled');
+  assert.equal(recalled.x, pausedArrival?.x);
+  assert.equal(recalled.z, pausedArrival?.z);
+  for (let second = 0; second < 120; second++) visitors.tick(1, [source]);
+  assert.deepEqual(
+    visitors.snapshot(source),
+    recalled,
+    'the recalled visitor must remain frozen until released',
+  );
+
+  until(visitors, () => !visitors.isAway(source), 6);
+  assert.deepEqual(
+    [visitors.snapshot(source)?.x, visitors.snapshot(source)?.z],
+    HOME_ROUTE.at(-1),
+  );
+});
+
+void test('closures and disabled motion clear paused travel immediately', () => {
+  const ids = ['aardvark', 'zebra'];
+
+  const closedSource = createFactoryVisitors();
+  closedSource.update(sessions(['aardvark', 'idle'], ['zebra', 'idle']));
+  const sourceTrip = travelerAtPhase(closedSource, ids, 'arrive');
+  closedSource.tick(30, [sourceTrip.source]);
+  closedSource.update(sessions([sourceTrip.target, 'idle']));
+  assert.equal(closedSource.snapshot(sourceTrip.source), null);
+  assert.deepEqual(closedSource.visitorsAt(sourceTrip.target), []);
+
+  const closedTarget = createFactoryVisitors();
+  closedTarget.update(sessions(['aardvark', 'idle'], ['zebra', 'idle']));
+  const targetTrip = travelerAtPhase(closedTarget, ids, 'arrive');
+  closedTarget.tick(30, [targetTrip.source]);
+  closedTarget.update(sessions([targetTrip.source, 'idle']));
+  const rerouted = closedTarget.snapshot(targetTrip.source)!;
+  assert.equal(closedTarget.snapshot(targetTrip.target), null);
+  assert.equal(rerouted.targetId, null);
+  assert.equal(rerouted.phase, 'homecoming');
+  closedTarget.tick(30, [targetTrip.source]);
+  assert.deepEqual(closedTarget.snapshot(targetTrip.source), rerouted);
+  until(closedTarget, () => !closedTarget.isAway(targetTrip.source), 6);
+
+  const reducedMotion = createFactoryVisitors();
+  reducedMotion.update(sessions(['aardvark', 'idle'], ['zebra', 'idle']));
+  const motionTrip = travelerAtPhase(reducedMotion, ids, 'arrive');
+  reducedMotion.tick(30, [motionTrip.source]);
+  reducedMotion.setMotion(false);
+  assert.equal(reducedMotion.isAway(motionTrip.source), false);
+  assert.equal(reducedMotion.snapshot(motionTrip.source)?.targetId, null);
+  assert.deepEqual(
+    [
+      reducedMotion.snapshot(motionTrip.source)?.x,
+      reducedMotion.snapshot(motionTrip.source)?.z,
+    ],
+    HOME_ROUTE.at(-1),
+  );
 });

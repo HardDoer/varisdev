@@ -1,4 +1,9 @@
-import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
+import {
+  getAgentDir,
+  resolveModelScopeWithDiagnostics,
+  SettingsManager,
+  type ModelRuntime,
+} from '@earendil-works/pi-coding-agent';
 import {createGlobalModelRuntime} from './model-runtime.ts';
 import {
   readToolSettings,
@@ -19,15 +24,19 @@ export interface ToolSettingsState {
 }
 
 interface ToolSettingsDependencies {
-  sessionFeatures: (
-    sessionId: string,
-  ) => Promise<{models: ToolSettingsModel[]}>;
-  createRuntime?: () => Promise<Pick<ModelRuntime, 'refresh' | 'getModels'>>;
+  sessionFeatures: (sessionId: string) => Promise<{
+    models: ToolSettingsModel[];
+    scopedModels?: Array<{
+      model: ToolSettingsModel;
+      thinkingLevel?: string;
+    }>;
+  }>;
+  createRuntime?: () => Promise<ModelRuntime>;
 }
 
-/** Tool preferences use the selected session's registry, including extensions. */
+/** Model choices follow Pi's active session scope or its saved global scope. */
 export class DesktopToolSettings {
-  private runtime?: Promise<Pick<ModelRuntime, 'refresh' | 'getModels'>>;
+  private runtime?: Promise<ModelRuntime>;
   private readonly diagnostics = new Set<string>();
   private saving: Promise<unknown> = Promise.resolve();
   private readonly dependencies: ToolSettingsDependencies;
@@ -36,10 +45,17 @@ export class DesktopToolSettings {
     this.dependencies = dependencies;
   }
 
-  private async models(sessionId?: string): Promise<ToolSettingsModel[]> {
+  private async catalog(sessionId?: string): Promise<{
+    models: ToolSettingsModel[];
+    diagnostics?: string[];
+  }> {
     let models: readonly ToolSettingsModel[];
+    let diagnostics: string[] = [];
     if (sessionId !== undefined) {
-      models = (await this.dependencies.sessionFeatures(sessionId)).models;
+      const features = await this.dependencies.sessionFeatures(sessionId);
+      models = features.scopedModels?.length
+        ? features.scopedModels.map(scoped => scoped.model)
+        : features.models;
     } else {
       if (!this.runtime) {
         this.diagnostics.clear();
@@ -54,20 +70,32 @@ export class DesktopToolSettings {
       }
       const runtime = await this.runtime;
       await runtime.refresh({allowNetwork: false});
-      models = runtime.getModels();
+      const agentDir = getAgentDir();
+      const settings = SettingsManager.create(agentDir, agentDir, {
+        projectTrusted: false,
+      });
+      const patterns = settings.getEnabledModels();
+      const scope = patterns?.length
+        ? await resolveModelScopeWithDiagnostics(patterns, runtime)
+        : undefined;
+      models = scope?.scopedModels.length
+        ? scope.scopedModels.map(scoped => scoped.model)
+        : runtime.getModels();
+      diagnostics = [
+        ...this.diagnostics,
+        ...settings.drainErrors().map(diagnostic => diagnostic.error.message),
+        ...(scope?.diagnostics.map(diagnostic => diagnostic.message) ?? []),
+      ];
     }
-    return models.map(({provider, id, name}) => ({provider, id, name}));
+    return {
+      models: models.map(({provider, id, name}) => ({provider, id, name})),
+      ...(diagnostics.length ? {diagnostics} : {}),
+    };
   }
 
   async getToolSettings(sessionId?: string): Promise<ToolSettingsState> {
-    const models = await this.models(sessionId);
-    return {
-      settings: await readToolSettings(),
-      models,
-      ...(sessionId === undefined && this.diagnostics.size
-        ? {diagnostics: [...this.diagnostics]}
-        : {}),
-    };
+    const catalog = await this.catalog(sessionId);
+    return {settings: await readToolSettings(), ...catalog};
   }
 
   saveToolSettings(

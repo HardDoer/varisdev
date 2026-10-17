@@ -92,7 +92,7 @@ export function initToolSettings({api, selectedSessionId}) {
         if (model.unavailable || blocked) {
           const reason = document.createElement('small');
           reason.textContent = model.unavailable
-            ? 'Unavailable in Pi. Check provider access or choose another model.'
+            ? 'Unavailable in Pi’s current model list. Check Scoped models and provider access.'
             : 'Disabled by Agent models settings.';
           text.append(reason);
         }
@@ -188,8 +188,8 @@ export function initToolSettings({api, selectedSessionId}) {
     $('commit-model-settings').hidden = section !== 'commit';
     $('tool-settings-description').textContent =
       section === 'agents'
-        ? 'Choose which models background agents may use, including models inherited from the parent session. These settings apply across projects.'
-        : 'Choose the model and thinking level for the Commit tool. Models must be allowed in Agent models. These settings apply across projects.';
+        ? 'Choose which models background agents may use, including models inherited from the parent session. Choices follow Pi’s Scoped models. These settings apply across projects.'
+        : 'Choose the model and thinking level for the Commit tool. Choices follow Pi’s Scoped models and must be allowed in Agent models. These settings apply across projects.';
     $('tool-settings-search').value = '';
     render();
     if (!dialog.open) dialog.showModal();

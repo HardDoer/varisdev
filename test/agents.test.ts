@@ -428,7 +428,7 @@ void test('records are snapshots and large results link to the full result file'
   controlled.runs[0].finish('x'.repeat(20000));
   const [result] = await manager.wait([record.id]);
   assert.ok(result.output!.length < 13000);
-  assert.match(result.output!, /Read resultFile/);
+  assert.equal(result.outputTruncated, true);
   assert.equal(result.resultFile, '/result.txt');
   await manager.close();
   assert.equal(controlled.disposed, 1);
@@ -740,7 +740,6 @@ void test('agent tools select registered models and effort without adding parent
     assert.ok(Object.values(listed.summary).every(count => count === 0));
     const spawnDescription = tools.get('agent_spawn')!.description;
     assert.match(spawnDescription, /any model from the parent model registry/);
-    assert.match(spawnDescription, /Maximum thinkingLevel: xhigh/);
     for (const model of ['', 'gpt-5.6-sol', '/model', 'provider/']) {
       await assert.rejects(
         execute('agent_spawn', {name: 'bad model', task: 'test', model}),
@@ -794,6 +793,7 @@ void test('agent tools select registered models and effort without adding parent
     controlled.runs[2].finish('Checks passed');
     const cleaned = await execute('agent_wait', {ids: [routineId]});
     assert.match(JSON.stringify(cleaned.content), /Checks passed/);
+    assert.equal(visibleAgentResult(cleaned).agents[0].resumable, false);
     assert.equal(controlled.disposed, 2);
     assert.equal(notifications.length, 0);
 
@@ -1560,9 +1560,11 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   const params = {name: 'Allowed', task: 'Inspect', model: fullName};
   await saveToolSettings('agents', {allowedModels: ['other/model']});
   await parent.emit('before_agent_start');
-  assert.match(
-    parent.tools.get('agent_spawn')!.description,
-    /Allowed models: other\/model/,
+  assert.equal(
+    JSON.stringify(parent.tools.get('agent_spawn')).split('other/model')
+      .length - 1,
+    1,
+    'Allowed model choices are advertised once in the schema',
   );
   assert.equal(
     Check(parent.tools.get('agent_spawn')!.parameters, params),
@@ -1592,8 +1594,10 @@ void test('agent tools enforce live allowed models and refresh schemas between t
       model: newlyAllowed,
     }),
   );
-  assert.ok(
-    parent.tools.get('agent_spawn')!.description.includes(newlyAllowed),
+  assert.equal(
+    JSON.stringify(parent.tools.get('agent_spawn')).split(newlyAllowed).length -
+      1,
+    1,
   );
   const unchanged = parent.tools.get('agent_spawn');
   await parent.emit('turn_end');
@@ -1602,9 +1606,9 @@ void test('agent tools enforce live allowed models and refresh schemas between t
     unchanged,
     'Unchanged settings do not churn the tool registry',
   );
-  assert.match(
-    parent.tools.get('agent_spawn')!.description,
-    /Allowed models: openai-codex/,
+  assert.equal(
+    JSON.stringify(parent.tools.get('agent_spawn')).split(fullName).length - 1,
+    1,
   );
   const id = await parent.spawn('Inherited allowed');
   await untilPolicy(() => workers.byId.get(id)?.controlled.runs.length === 1);
@@ -1732,17 +1736,14 @@ void test('fresh and cleared agent policies deny explicit and inherited models w
   const params = {name: 'Explicit', task: 'Must not start', model};
   const assertEmptyPolicy = async () => {
     const tool = parent.tools.get('agent_spawn')!;
-    assert.match(
-      tool.description,
-      /No agent models selected.*Menu → Agent models/,
-    );
+    assert.match(tool.description, /No models enabled.*Menu → Agent models/);
     const schema = tool.parameters as {
       properties: {model: {enum?: string[]; description: string}};
     };
     assert.equal(Object.hasOwn(schema.properties.model, 'enum'), false);
-    assert.match(
+    assert.doesNotMatch(
       schema.properties.model.description,
-      /No agent models selected.*Menu → Agent models/,
+      /Menu → Agent models/,
     );
     await assert.rejects(
       parent.spawn('Inherited denied'),
@@ -1769,4 +1770,169 @@ void test('fresh and cleared agent policies deny explicit and inherited models w
   await saveToolSettings('agents', {allowedModels: []});
   await parent.emit('turn_end');
   await assertEmptyPolicy();
+});
+
+function visibleAgentResult(
+  result: Awaited<ReturnType<ToolDefinition['execute']>>,
+) {
+  const text = result.content.find(item => item.type === 'text');
+  assert.ok(text?.type === 'text');
+  return JSON.parse(text.text) as {
+    agents: Array<Partial<AgentRecord> & {resumable?: boolean}>;
+  };
+}
+
+void test('agent acknowledgements stay compact while status metadata remains available on request', async t => {
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
+  const workers = teamWorkers();
+  const parent = agentParent('compact-agent-output', workers.create);
+  t.after(() => parent.shutdown());
+  const spawned = await parent.execute('agent_spawn', {
+    name: 'Review',
+    task: 'Inspect the change',
+  });
+  const id = spawned.details.agents[0].id;
+  assert.deepEqual(visibleAgentResult(spawned).agents, [
+    {id, name: 'Review', status: 'running'},
+  ]);
+  assert.equal(spawned.details.agents[0].cwd, parent.ctx.cwd);
+  await until(() => workers.byId.get(id)?.controlled.runs.length === 1);
+  const status = visibleAgentResult(await parent.execute('agent_status', {id}))
+    .agents[0];
+  assert.equal(status.activity, 'Using read');
+  for (const field of [
+    'cwd',
+    'model',
+    'sessionFile',
+    'resultFile',
+    'createdAt',
+    'startedAt',
+  ])
+    assert.equal(Object.hasOwn(status, field), false, field);
+  const detail = visibleAgentResult(
+    await parent.execute('agent_status', {id, details: true}),
+  ).agents[0];
+  assert.equal(detail.cwd, parent.ctx.cwd);
+  assert.equal(detail.model, 'openai-codex/gpt-5.6-sol');
+  assert.equal(detail.sessionFile, '/worker/0/transcript.jsonl');
+  assert.equal(detail.resultFile, '/worker/0/result.txt');
+  const sent = await parent.execute('agent_send', {
+    id,
+    message: 'Check the integration too',
+  });
+  assert.deepEqual(visibleAgentResult(sent).agents, [
+    {id, name: 'Review', status: 'running'},
+  ]);
+  const cancelled = await parent.execute('agent_cancel', {id});
+  assert.deepEqual(visibleAgentResult(cancelled).agents, [
+    {id, name: 'Review', status: 'cancelling'},
+  ]);
+  const finished = await parent.execute('agent_wait', {ids: [id]});
+  const failure = visibleAgentResult(finished).agents[0];
+  assert.equal(failure.status, 'cancelled');
+  assert.match(failure.error!, /cancelled/i);
+  assert.equal(
+    Object.hasOwn(failure, 'activity'),
+    false,
+    'Do not echo the error as activity',
+  );
+});
+
+void test('fast results remain retrievable and truncation always provides a path, including across resumes', async t => {
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
+  const workers = teamWorkers();
+  const parent = agentParent('compact-agent-results', workers.create);
+  t.after(() => parent.shutdown());
+  const id = await parent.spawn('Fast worker');
+  await until(() => workers.byId.get(id)?.controlled.runs.length === 1);
+  const worker = workers.byId.get(id)!.controlled;
+  worker.runs[0].finish('x'.repeat(20000));
+  await until(
+    () => parent.control.snapshot()?.agents[0].status === 'completed',
+  );
+  const first = visibleAgentResult(await parent.execute('agent_wait'))
+    .agents[0];
+  assert.equal(first.status, 'completed');
+  assert.equal(first.output?.length, 12000);
+  assert.equal(first.outputTruncated, true);
+  assert.equal(first.resultFile, '/worker/0/result.txt');
+  assert.equal(Object.hasOwn(first, 'sessionFile'), false);
+  const repeated = visibleAgentResult(
+    await parent.execute('agent_status', {id}),
+  ).agents[0];
+  assert.deepEqual(repeated, first, 'Reading results must not consume them');
+  await parent.execute('agent_send', {id, message: 'A short follow-up'});
+  await until(() => worker.runs.length === 2);
+  worker.runs[1].finish('Done');
+  const resumed = visibleAgentResult(
+    await parent.execute('agent_wait', {ids: [id]}),
+  ).agents[0];
+  assert.equal(resumed.output, 'Done');
+  assert.equal(resumed.outputTruncated, undefined);
+  assert.equal(resumed.resultFile, undefined);
+});
+
+void test('bulk waits bound result text and identify only outputs requiring a full file read', async t => {
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
+  const workers = teamWorkers();
+  const parent = agentParent('bounded-agent-results', workers.create);
+  t.after(() => parent.shutdown());
+  const ids = [];
+  for (const name of ['Long', 'Short', 'Shorter'])
+    ids.push(await parent.spawn(name));
+  await until(
+    () =>
+      workers.created.length === ids.length &&
+      workers.created.every(worker => worker.controlled.runs.length === 1),
+  );
+  for (const [index, id] of ids.entries())
+    workers.byId
+      .get(id)!
+      .controlled.runs[0].finish(index ? 'Done' : 'x'.repeat(10000));
+  const {agents} = visibleAgentResult(
+    await parent.execute('agent_wait', {ids}),
+  );
+  assert.ok(
+    agents.reduce((length, agent) => length + (agent.output?.length || 0), 0) <=
+      20000,
+  );
+  assert.equal(agents[0].outputTruncated, true);
+  assert.equal(agents[0].resultFile, '/worker/0/result.txt');
+  assert.equal(agents[1].outputTruncated, undefined);
+  assert.equal(agents[1].resultFile, undefined);
+});
+
+void test('inbox tool forwards incremental cursors and message lookup still retrieves full text', async t => {
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
+  const workers = teamWorkers();
+  const parent = agentParent('inbox-tool-cursor', workers.create);
+  t.after(() => parent.shutdown());
+  const id = await parent.spawn('Reporter');
+  await until(() => workers.byId.get(id)?.controlled.runs.length === 1);
+  const reporter = workers.byId.get(id)!;
+  await reporter.execute('agent_send', {id: 'parent', message: 'First report'});
+  const first = await parent.execute('agent_inbox', {after: 0});
+  const content = first.content[0];
+  assert.ok(content.type === 'text');
+  const page = JSON.parse(content.text) as {
+    nextAfter: number;
+    hasMore: boolean;
+    messages: Array<{id: string; preview: string}>;
+  };
+  assert.equal(page.nextAfter, 1);
+  assert.equal(page.hasMore, false);
+  assert.equal(page.messages[0].preview, 'First report');
+  const empty = (await parent.execute('agent_inbox', {after: page.nextAfter}))
+    .content[0];
+  assert.ok(empty.type === 'text');
+  assert.deepEqual(JSON.parse(empty.text).messages, []);
+  const full = (
+    await parent.execute('agent_inbox', {
+      messageId: page.messages[0].id,
+      after: 0,
+      offset: 0,
+    })
+  ).content[0];
+  assert.ok(full.type === 'text');
+  assert.equal(JSON.parse(full.text).message.message, 'First report');
 });

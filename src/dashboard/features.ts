@@ -32,6 +32,10 @@ export interface SessionFeatures {
     path?: string;
   }>;
   models: Array<{id: string; provider: string; name: string}>;
+  scopedModels?: Array<{
+    model: {id: string; provider: string; name: string};
+    thinkingLevel?: string;
+  }>;
   model?: {id: string; provider: string};
   thinkingLevel: string;
   thinkingLevels: string[];
@@ -104,6 +108,10 @@ export function sessionFeatures(
         provider: model.provider,
         name: model.name,
       })),
+    scopedModels: session.scopedModels.map(({model, thinkingLevel}) => ({
+      model: {id: model.id, provider: model.provider, name: model.name},
+      ...(thinkingLevel !== undefined ? {thinkingLevel} : {}),
+    })),
     ...(session.model
       ? {model: {id: session.model.id, provider: session.model.provider}}
       : {}),

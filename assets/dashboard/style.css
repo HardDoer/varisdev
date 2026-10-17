@@ -2702,3 +2702,24 @@ select:focus-visible {
 .editor-expanded #terminal-sessions {
   height: calc(100% - 40px);
 }
+
+#extension-dialog-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+#extension-dialog-tabs [role='tab'] {
+  padding: 8px 16px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+}
+
+#extension-dialog-tabs [aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
