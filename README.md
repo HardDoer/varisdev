@@ -11,7 +11,7 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 - Robots drinking coffee!
 - Detailed visualizations regarding whatever the agents are doing and token usage.
 - Context files, Markdown editing, and image previews.
-- Loads Pi packages and extension commands, with native desktop dialogs for Pi's built-in slash commands. Terminal-specific plugin rendering and shortcuts have compatibility limitations.
+- Loads Pi packages and extension commands. Terminal-specific plugin rendering and shortcuts have compatibility limitations.
 - Has its own theming system that you can extend as you wish.
 - Additional tools for browsing, structured data, images, and audio.
 
@@ -53,7 +53,7 @@ Use **Updates → Check for updates** in the app, or run `varisdev update`.
 
 ## Commands
 
-Pi's built-in slash commands are routed through VarisDev's desktop UI. For example, `/thinking`, `/model`, and `/settings` open native dialogs; `/thinking high` and `/model provider/model` also accept direct arguments. Installed extensions, templates, and skills add their own commands. See [desktop commands](docs/configuration.md#slash-commands) and [Pi's command reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/slash-commands.md).
+Since VarisDev uses Pi under the hood many of the things you see in VarisDev work exactly like in Pidev. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#commands).
 
 ## VarisDev documentation
 
