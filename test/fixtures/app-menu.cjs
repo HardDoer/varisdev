@@ -220,8 +220,7 @@ async function main() {
       appearance: ['app-zoom', 'factory-theme', 'motion-toggle'],
       settings: [
         'open-session-settings',
-        'open-agent-models',
-        'open-commit-settings',
+        'open-model-settings',
         'open-accounts',
       ],
       maintenance: ['open-about'],

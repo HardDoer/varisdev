@@ -182,7 +182,7 @@
     >
       <form id="tool-settings-form">
         <div class="dialog-heading">
-          <h2 id="tool-settings-title">Agent models</h2>
+          <h2 id="tool-settings-title">Model settings</h2>
           <button
             id="tool-settings-close"
             class="quiet-button"
@@ -192,46 +192,63 @@
             Close
           </button>
         </div>
-        <p id="tool-settings-description"></p>
+        <p id="tool-settings-description">
+          These settings apply across projects.
+        </p>
         <p id="tool-settings-loading" role="status">Loading models from Pi…</p>
         <div id="tool-settings-content" hidden>
-          <div id="commit-model-settings" hidden>
-            <label for="commit-thinking">Thinking level</label>
-            <select id="commit-thinking">
-              <option value="">Inherit parent thinking level (default)</option>
-              <option value="off">Off</option>
-              <option value="minimal">Minimal</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="xhigh">Extra high</option>
-              <option value="max">Max</option>
-            </select>
-            <label class="tool-model-option">
-              <input
-                id="commit-inherit-model"
-                name="tool-settings-model"
-                type="radio"
-                value=""
-              />
-              <span>Inherit parent model (default)</span>
-            </label>
-          </div>
-          <label for="tool-settings-search">Search models</label>
-          <input
-            id="tool-settings-search"
-            type="search"
-            placeholder="Model name, provider or ID"
-            autocomplete="off"
-          />
-          <p id="tool-settings-selection" class="muted" role="status"></p>
-          <div
-            id="tool-settings-models"
-            role="group"
-            aria-label="Available models"
-          ></div>
-          <p id="tool-settings-empty" class="muted" hidden></p>
-          <p id="tool-settings-validation" class="form-error" role="status"></p>
+          <section
+            id="agent-model-settings"
+            aria-labelledby="agent-model-settings-title"
+          >
+            <h3 id="agent-model-settings-title">Agent models</h3>
+            <label for="tool-settings-search">Search models</label>
+            <input
+              id="tool-settings-search"
+              type="search"
+              placeholder="Model name, provider or ID"
+              autocomplete="off"
+            />
+            <p id="tool-settings-selection" class="muted" role="status"></p>
+            <div
+              id="tool-settings-models"
+              role="group"
+              aria-label="Allowed agent models"
+            ></div>
+            <p id="tool-settings-empty" class="muted" hidden></p>
+          </section>
+          <section
+            id="commit-model-settings"
+            aria-labelledby="commit-model-settings-title"
+          >
+            <h3 id="commit-model-settings-title">Commit</h3>
+            <div class="commit-settings-fields">
+              <div>
+                <label for="commit-model">Model</label>
+                <select id="commit-model">
+                  <option value="">Inherit parent model</option>
+                </select>
+              </div>
+              <div>
+                <label for="commit-thinking">Thinking level</label>
+                <select id="commit-thinking">
+                  <option value="">Inherit parent thinking level</option>
+                  <option value="off">Off</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra high</option>
+                  <option value="max">Max</option>
+                </select>
+              </div>
+            </div>
+            <p
+              id="tool-settings-validation"
+              class="form-error"
+              role="status"
+            ></p>
+          </section>
         </div>
         <p id="tool-settings-error" class="form-error" role="alert" hidden></p>
         <div class="dialog-footer">
@@ -257,8 +274,8 @@
       <h2 id="commit-notice-title">Your commit agent’s model and reasoning</h2>
       <p id="commit-notice-description">
         The commit agent inherits the parent session’s model and reasoning level
-        by default. Choices saved in Menu → Commit settings override these
-        values.
+        by default. Choices saved in Menu → Model settings → Commit override
+        these values.
       </p>
       <p>
         The /commit command asks that agent to review changes, create a Git
@@ -305,7 +322,7 @@
         or reasoning level.
       </p>
       <p>
-        Choose allowed models in Menu → Agent models. This also limits which
+        Choose allowed models in Menu → Model settings. This also limits which
         models agents can inherit, including agents started by /commit.
       </p>
       <p class="muted">Escape also acknowledges this notice.</p>
@@ -463,22 +480,13 @@
                       Model &amp; thinking
                     </button>
                     <button
-                      id="open-agent-models"
+                      id="open-model-settings"
                       class="quiet-button"
                       type="button"
                       aria-haspopup="dialog"
                       aria-controls="tool-settings-dialog"
                     >
-                      Agent models
-                    </button>
-                    <button
-                      id="open-commit-settings"
-                      class="quiet-button"
-                      type="button"
-                      aria-haspopup="dialog"
-                      aria-controls="tool-settings-dialog"
-                    >
-                      Commit settings
+                      Model settings
                     </button>
                   </div>
                 </div>

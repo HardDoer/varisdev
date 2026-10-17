@@ -6,6 +6,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import {createGlobalModelRuntime} from './model-runtime.ts';
 import {
+  parseToolSettingsUpdate,
   readToolSettings,
   saveToolSettings,
   type ToolSettings,
@@ -98,43 +99,44 @@ export class DesktopToolSettings {
     return {settings: await readToolSettings(), ...catalog};
   }
 
-  saveToolSettings(
+  async saveToolSettings(
     section: unknown,
     value: unknown,
     sessionId?: string,
   ): Promise<ToolSettingsState> {
+    const update = parseToolSettingsUpdate(section, value);
     const operation = this.saving.then(async () => {
       const {settings, models, diagnostics} =
         await this.getToolSettings(sessionId);
       const known = new Set(
         models.map(model => `${model.provider}/${model.id}`),
       );
-      // Persistence validates the complete IPC shape and cross-section rules.
-      // Check catalog membership only for strings that could be new selections.
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const input = value as Record<string, unknown>;
-        const selected =
-          section === 'agents' && Array.isArray(input.allowedModels)
-            ? input.allowedModels
-            : section === 'commit'
-              ? [input.model]
-              : [];
-        const previous =
-          section === 'agents'
-            ? (settings.agents.allowedModels ?? [])
-            : [settings.commit.model];
+      const assertKnown = (
+        selected: Array<string | null>,
+        previous: Array<string | null>,
+      ) => {
         for (const model of selected) {
-          if (
-            typeof model === 'string' &&
-            !known.has(model) &&
-            !previous.includes(model)
-          )
+          if (model !== null && !known.has(model) && !previous.includes(model))
             throw new Error(
               `Unknown model: ${model}. Choose a model from the catalog.`,
             );
         }
-      }
-      await saveToolSettings(section, value);
+      };
+      if (update.agents)
+        assertKnown(
+          update.agents.allowedModels ?? [],
+          settings.agents.allowedModels ?? [],
+        );
+      if (update.commit)
+        assertKnown([update.commit.model], [settings.commit.model]);
+      await saveToolSettings(
+        section,
+        section === 'all'
+          ? update
+          : section === 'agents'
+            ? update.agents
+            : update.commit,
+      );
       return {
         settings: await readToolSettings(),
         models,

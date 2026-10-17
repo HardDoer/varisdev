@@ -343,8 +343,8 @@ export function registerAgentTools(
         (allowedModels === null
           ? 'Accepts any model from the parent model registry. '
           : allowedModels.length === 0
-            ? 'No models enabled; configure Menu → Agent models first. '
-            : 'Model choices are restricted by Menu → Agent models. ') +
+            ? 'No models enabled; configure Menu → Model settings first. '
+            : 'Model choices are restricted by Menu → Model settings. ') +
         'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not wake the parent.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',

@@ -925,7 +925,7 @@ void test('commit validation failures appear in the desktop conversation', async
       .notifications.some(
         item =>
           item.type === 'error' &&
-          /No agent models selected.*Menu → Agent models/.test(item.message),
+          /No agent models selected.*Menu → Model settings/.test(item.message),
       ),
   );
 });

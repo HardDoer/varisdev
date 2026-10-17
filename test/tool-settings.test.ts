@@ -37,7 +37,7 @@ void test('tool settings default to no allowed models and persist independent se
   assert.deepEqual(await readToolSettings(), defaults);
   await assert.rejects(
     assertAgentModelAllowed('custom/organization/model'),
-    /No agent models selected.*Choose a model in Menu → Agent models/,
+    /No agent models selected.*Choose a model in Menu → Model settings/,
   );
   await saveToolSettings('agents', {
     allowedModels: ['custom/organization/model', 'custom/organization/model'],
@@ -54,7 +54,7 @@ void test('tool settings default to no allowed models and persist independent se
   settings.agents.allowedModels!.push('other/model');
   await assert.rejects(
     assertAgentModelAllowed('other/model'),
-    /Menu → Agent models.*custom\/organization\/model/,
+    /Menu → Model settings.*custom\/organization\/model/,
   );
   await saveToolSettings('agents', {allowedModels: null});
   await assertAgentModelAllowed('other/model');
@@ -82,6 +82,57 @@ void test('concurrent saves preserve both sections, copy queued input, and leave
   assert.deepEqual(await readdir(join(path, '..')), ['tool-settings.json']);
 });
 
+void test('combined saves replace disjoint selections and copy both sections before queueing', async t => {
+  const path = await isolate(t);
+  await saveToolSettings('all', {
+    agents: {allowedModels: ['p/a']},
+    commit: {model: 'p/a', thinkingLevel: 'low'},
+  });
+  const replacement = {
+    agents: {allowedModels: ['p/b', 'p/b']},
+    commit: {model: 'p/b', thinkingLevel: 'high'},
+  };
+  const pending = saveToolSettings('all', replacement);
+  replacement.agents.allowedModels[0] = 'mutated/model';
+  replacement.commit.model = 'mutated/model';
+  replacement.commit.thinkingLevel = 'invalid';
+  await pending;
+  const expected = {
+    agents: {allowedModels: ['p/b']},
+    commit: {model: 'p/b', thinkingLevel: 'high'},
+  };
+  assert.deepEqual(await readToolSettings(), expected);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), expected);
+  assert.deepEqual(await readdir(join(path, '..')), ['tool-settings.json']);
+});
+
+void test('invalid combined settings leave both saved sections intact and allow later saves', async t => {
+  const path = await isolate(t);
+  await saveToolSettings('all', {
+    agents: {allowedModels: ['p/a']},
+    commit: {model: 'p/a', thinkingLevel: 'low'},
+  });
+  const before = await readFile(path, 'utf8');
+  for (const allowedModels of [['p/b'], []]) {
+    await assert.rejects(
+      saveToolSettings('all', {
+        agents: {allowedModels},
+        commit: {model: 'p/c', thinkingLevel: 'high'},
+      }),
+      /Commit model p\/c must be allowed.*Update Agent models or Commit in Menu → Model settings/,
+    );
+    assert.equal(await readFile(path, 'utf8'), before);
+  }
+  await saveToolSettings('all', {
+    agents: {allowedModels: ['p/b']},
+    commit: {model: 'p/b', thinkingLevel: 'off'},
+  });
+  assert.deepEqual(await readToolSettings(), {
+    agents: {allowedModels: ['p/b']},
+    commit: {model: 'p/b', thinkingLevel: 'off'},
+  });
+});
+
 void test('invalid shapes and IDs fail without changing saved settings', async t => {
   await isolate(t);
   await saveToolSettings('agents', {allowedModels: ['p/m']});
@@ -100,6 +151,30 @@ void test('invalid shapes and IDs fail without changing saved settings', async t
     ['commit', {model: null, thinkingLevel: 1}],
     ['commit', {model: null, thinkingLevel: null, extra: true}],
     ...[
+      null,
+      [],
+      {},
+      {agents: {allowedModels: ['p/m']}},
+      {commit: {model: null, thinkingLevel: null}},
+      {
+        agents: {allowedModels: ['p/m']},
+        commit: {model: null, thinkingLevel: null},
+        extra: true,
+      },
+      {
+        agents: {allowedModels: ['p/m'], extra: true},
+        commit: {model: null, thinkingLevel: null},
+      },
+      {
+        agents: {allowedModels: ['p/m']},
+        commit: {model: null, thinkingLevel: 'invalid'},
+      },
+      {
+        agents: {allowedModels: ['p/m']},
+        commit: {model: null, thinkingLevel: null, extra: true},
+      },
+    ].map(value => ['all', value] as [unknown, unknown]),
+    ...[
       '',
       'model',
       '/model',
@@ -113,9 +188,10 @@ void test('invalid shapes and IDs fail without changing saved settings', async t
       null,
     ].map(model => ['agents', {allowedModels: [model]}] as [unknown, unknown]),
   ];
-  for (const [section, value] of invalid)
+  for (const [section, value] of invalid) {
     await assert.rejects(saveToolSettings(section, value));
-  assert.deepEqual(await readToolSettings(), before);
+    assert.deepEqual(await readToolSettings(), before);
+  }
 });
 
 void test('cross-section conflicts are rejected inside the write queue and later valid saves succeed', async t => {
@@ -124,7 +200,7 @@ void test('cross-section conflicts are rejected inside the write queue and later
   await saveToolSettings('commit', {model: 'p/a', thinkingLevel: null});
   await assert.rejects(
     saveToolSettings('agents', {allowedModels: []}),
-    /Commit settings first/,
+    /Commit model .* must be allowed/,
   );
   assert.deepEqual(await readToolSettings(), {
     agents: {allowedModels: ['p/a']},
@@ -132,7 +208,7 @@ void test('cross-section conflicts are rejected inside the write queue and later
   });
   await assert.rejects(
     saveToolSettings('agents', {allowedModels: ['p/b']}),
-    /Commit settings first/,
+    /Commit model .* must be allowed/,
   );
   await saveToolSettings('commit', {model: null, thinkingLevel: null});
   const results = await Promise.allSettled([
@@ -193,11 +269,11 @@ void test('empty selections persist and deny models while legacy null stays read
   );
   await assert.rejects(
     assertAgentModelAllowed('p/a'),
-    /No agent models selected.*Menu → Agent models/,
+    /No agent models selected.*Menu → Model settings/,
   );
   await assert.rejects(
     saveToolSettings('commit', {model: 'p/a', thinkingLevel: null}),
-    /No agent models selected.*Menu → Agent models/,
+    /No agent models selected.*Menu → Model settings/,
   );
   assert.equal((await readToolSettings()).commit.model, null);
 });

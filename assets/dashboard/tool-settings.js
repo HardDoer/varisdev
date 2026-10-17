@@ -7,7 +7,6 @@ export function initToolSettings({api, selectedSessionId}) {
   const commitNotice = $('commit-notice-dialog');
   const listeners = [];
   let disposed = false;
-  let section = 'agents';
   let sessionId;
   let state;
   let draft;
@@ -43,22 +42,21 @@ export function initToolSettings({api, selectedSessionId}) {
     const entries = new Map(
       (state?.models || []).map(model => [modelKey(model), model]),
     );
-    const saved = section === 'agents' ? draft?.allowedModels : [draft?.model];
-    for (const id of saved || []) {
+    const saved = [...draft.agents.allowedModels, draft.commit.model];
+    for (const id of saved) {
       if (id && !entries.has(id))
         entries.set(id, {name: id, unavailable: true});
     }
     return [...entries].map(([id, model]) => ({...model, key: id}));
   }
   function commitAllowed(id) {
-    const allowed = state.settings.agents.allowedModels;
-    return allowed === null || allowed.includes(id);
+    return draft.agents.allowedModels.includes(id);
   }
   function commitValid() {
     return (
-      draft.model === null ||
-      (state.models.some(model => modelKey(model) === draft.model) &&
-        commitAllowed(draft.model))
+      draft.commit.model === null ||
+      (state.models.some(model => modelKey(model) === draft.commit.model) &&
+        commitAllowed(draft.commit.model))
     );
   }
   function renderModels() {
@@ -72,43 +70,30 @@ export function initToolSettings({api, selectedSessionId}) {
         const label = document.createElement('label');
         label.className = 'tool-model-option';
         const input = document.createElement('input');
-        const agent = section === 'agents';
-        const checked = agent
-          ? draft.allowedModels?.includes(model.key) || false
-          : draft.model === model.key;
-        const blocked = !agent && !commitAllowed(model.key);
-        input.type = agent ? 'checkbox' : 'radio';
+        const checked = draft.agents.allowedModels.includes(model.key);
+        input.type = 'checkbox';
         input.name = 'tool-settings-model';
         input.value = model.key;
         input.checked = checked;
-        input.disabled =
-          busy || blocked || (model.unavailable && (!agent || !checked));
+        input.disabled = busy || (model.unavailable && !checked);
         const text = document.createElement('span');
         const name = document.createElement('strong');
         name.textContent = model.name;
         const detail = document.createElement('small');
         detail.textContent = model.key;
         text.append(name, detail);
-        if (model.unavailable || blocked) {
+        if (model.unavailable) {
           const reason = document.createElement('small');
-          reason.textContent = model.unavailable
-            ? 'Unavailable in Pi’s current model list. Check Scoped models and provider access.'
-            : 'Disabled by Agent models settings.';
+          reason.textContent =
+            'Unavailable in Pi’s current model list. Check Scoped models and provider access.';
           text.append(reason);
         }
-        label.classList.toggle(
-          'unavailable',
-          Boolean(model.unavailable || blocked),
-        );
+        label.classList.toggle('unavailable', Boolean(model.unavailable));
         input.addEventListener('change', () => {
-          if (agent) {
-            const selected = new Set(draft.allowedModels);
-            if (input.checked) selected.add(model.key);
-            else selected.delete(model.key);
-            draft.allowedModels = [...selected];
-          } else {
-            draft.model = model.key;
-          }
+          const selected = new Set(draft.agents.allowedModels);
+          if (input.checked) selected.add(model.key);
+          else selected.delete(model.key);
+          draft.agents.allowedModels = [...selected];
           failure = '';
           renderControls();
         });
@@ -121,8 +106,34 @@ export function initToolSettings({api, selectedSessionId}) {
       ? 'No models match your search.'
       : 'No models available. Check your provider in Menu → Accounts, then reopen these settings.';
   }
+  function renderCommitModels() {
+    const inherit = document.createElement('option');
+    inherit.value = '';
+    inherit.textContent = 'Inherit parent model';
+    $('commit-model').replaceChildren(
+      inherit,
+      ...models()
+        .filter(
+          model => commitAllowed(model.key) || draft.commit.model === model.key,
+        )
+        .map(model => {
+          const option = document.createElement('option');
+          option.value = model.key;
+          const reason = model.unavailable
+            ? ' — unavailable'
+            : !commitAllowed(model.key)
+              ? ' — not allowed'
+              : '';
+          option.textContent = `${model.name} (${model.key})${reason}`;
+          option.disabled = Boolean(
+            model.unavailable || !commitAllowed(model.key),
+          );
+          return option;
+        }),
+    );
+    $('commit-model').value = draft.commit.model ?? '';
+  }
   function renderControls() {
-    const agent = section === 'agents';
     const loaded = Boolean(state && draft);
     $('tool-settings-content').hidden = !loaded;
     $('tool-settings-loading').hidden = !busy || loaded;
@@ -137,20 +148,18 @@ export function initToolSettings({api, selectedSessionId}) {
     $('tool-settings-save').disabled = busy || !loaded;
     if (!loaded) return;
     $('tool-settings-search').disabled = busy;
-    $('commit-inherit-model').disabled = busy;
+    $('commit-model').disabled = busy;
     $('commit-thinking').disabled = busy;
-    $('commit-inherit-model').checked = draft.model === null;
-    $('commit-thinking').value = draft.thinkingLevel ?? '';
-    const invalid = !agent && !commitValid();
+    renderCommitModels();
+    $('commit-thinking').value = draft.commit.thinkingLevel ?? '';
+    const invalid = !commitValid();
     $('tool-settings-validation').textContent = invalid
-      ? 'Choose an available allowed model, or inherit the parent model.'
+      ? 'Choose an available allowed Commit model, or inherit the parent model.'
       : '';
     $('tool-settings-save').disabled = busy || invalid;
-    $('tool-settings-selection').textContent = agent
-      ? `${draft.allowedModels.length} model${draft.allowedModels.length === 1 ? '' : 's'} selected.`
-      : draft.model === null
-        ? 'Using the parent model.'
-        : `Selected: ${draft.model}`;
+    const count = draft.agents.allowedModels.length;
+    $('tool-settings-selection').textContent =
+      `${count} model${count === 1 ? '' : 's'} selected.`;
   }
   function render() {
     renderControls();
@@ -166,8 +175,8 @@ export function initToolSettings({api, selectedSessionId}) {
       const next = await api.getToolSettings(sessionId);
       if (disposed || version !== request) return;
       state = next;
-      draft = structuredClone(next.settings[section]);
-      if (section === 'agents') draft.allowedModels ??= [];
+      draft = structuredClone(next.settings);
+      draft.agents.allowedModels ??= [];
     } catch (error) {
       failure = errorText(error);
     } finally {
@@ -175,25 +184,19 @@ export function initToolSettings({api, selectedSessionId}) {
       if (!disposed && version === request) render();
     }
   }
-  function open(nextSection) {
+  async function open(focus = 'agents') {
     if (disposed || busy) return;
     hideMenu();
-    section = nextSection;
     sessionId = selectedSessionId() ?? undefined;
     state = undefined;
     draft = undefined;
     failure = '';
-    $('tool-settings-title').textContent =
-      section === 'agents' ? 'Agent models' : 'Commit settings';
-    $('commit-model-settings').hidden = section !== 'commit';
-    $('tool-settings-description').textContent =
-      section === 'agents'
-        ? 'Choose which models background agents may use, including models inherited from the parent session. Choices follow Pi’s Scoped models. These settings apply across projects.'
-        : 'Choose the model and thinking level for the Commit tool. Choices follow Pi’s Scoped models and must be allowed in Agent models. These settings apply across projects.';
     $('tool-settings-search').value = '';
     render();
     if (!dialog.open) dialog.showModal();
-    void load();
+    await load();
+    if (!disposed && dialog.open && state && draft)
+      $(focus === 'commit' ? 'commit-model' : 'tool-settings-search').focus();
   }
   async function save(event) {
     event.preventDefault();
@@ -202,7 +205,7 @@ export function initToolSettings({api, selectedSessionId}) {
     failure = '';
     render();
     try {
-      await api.saveToolSettings(section, structuredClone(draft), sessionId);
+      await api.saveToolSettings('all', structuredClone(draft), sessionId);
       if (!disposed) dialog.close();
     } catch (error) {
       failure = errorText(error);
@@ -348,13 +351,9 @@ export function initToolSettings({api, selectedSessionId}) {
     }
   }
 
-  for (const [id, value] of [
-    ['open-agent-models', 'agents'],
-    ['open-commit-settings', 'commit'],
-  ]) {
-    $(id).disabled = !api?.getToolSettings || !api?.saveToolSettings;
-    listen($(id), 'click', () => open(value));
-  }
+  $('open-model-settings').disabled =
+    !api?.getToolSettings || !api?.saveToolSettings;
+  listen($('open-model-settings'), 'click', () => void open());
   listen($('tool-settings-form'), 'submit', save);
   listen($('tool-settings-close'), 'click', () => {
     if (!busy) dialog.close();
@@ -364,13 +363,13 @@ export function initToolSettings({api, selectedSessionId}) {
   });
   listen($('tool-settings-retry'), 'click', () => void load());
   listen($('tool-settings-search'), 'input', renderModels);
-  listen($('commit-inherit-model'), 'change', () => {
-    draft.model = null;
+  listen($('commit-model'), 'change', event => {
+    draft.commit.model = event.target.value || null;
     failure = '';
-    render();
+    renderControls();
   });
   listen($('commit-thinking'), 'change', event => {
-    draft.thinkingLevel = event.target.value || null;
+    draft.commit.thinkingLevel = event.target.value || null;
     failure = '';
     renderControls();
   });

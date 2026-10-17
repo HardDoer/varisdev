@@ -12,7 +12,7 @@ const execFile = promisify(execFileCallback);
 const require = createRequire(import.meta.url);
 
 void test(
-  'tool settings, first agent notice and first commit notice through the production Electron preload',
+  'combined Model settings, first agent notice and first commit notice through the production Electron preload',
   {
     timeout: 45_000,
     skip:
@@ -50,6 +50,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 9);
+    assert.equal(report.cases.length, 11);
   },
 );

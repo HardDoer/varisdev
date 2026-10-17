@@ -130,15 +130,46 @@ async function selectModel(value) {
     value,
   );
 }
-async function open(section) {
+async function open() {
   await click('app-menu-button');
-  await click(
-    section === 'agents' ? 'open-agent-models' : 'open-commit-settings',
-  );
+  await click('open-model-settings');
   await waitFor(
     () =>
       document.getElementById('tool-settings-dialog').open &&
       !document.getElementById('tool-settings-content').hidden,
+  );
+}
+async function assertCombinedVisible() {
+  assert.deepEqual(
+    await evaluate(() => ({
+      title: document.getElementById('tool-settings-title').textContent,
+      agents: document.getElementById('agent-model-settings').checkVisibility(),
+      commit: document
+        .getElementById('commit-model-settings')
+        .checkVisibility(),
+    })),
+    {title: 'Model settings', agents: true, commit: true},
+  );
+}
+async function readDraft() {
+  return evaluate(() => ({
+    agents: {
+      allowedModels: [
+        ...document.querySelectorAll('#tool-settings-models input:checked'),
+      ].map(input => input.value),
+    },
+    commit: {
+      model: document.getElementById('commit-model').value || null,
+      thinkingLevel: document.getElementById('commit-thinking').value || null,
+    },
+  }));
+}
+async function commitChoices() {
+  return evaluate(() =>
+    [...document.getElementById('commit-model').options].map(option => ({
+      value: option.value,
+      disabled: option.disabled,
+    })),
   );
 }
 async function submit(prompt) {
@@ -235,10 +266,11 @@ async function main() {
   });
   handle('varisdev:save-tool-settings', (section, value, id) => {
     writes.push({section, value, id});
+    assert.equal(section, 'all');
+    assert.deepEqual(Object.keys(value).sort(), ['agents', 'commit']);
     if (saveError) throw new Error(saveError);
-    assert.ok(['agents', 'commit'].includes(section));
-    settings = {...settings, [section]: value};
-    return {settings, models};
+    settings = JSON.parse(JSON.stringify(value));
+    return {settings, models: scopedModels ?? models};
   });
   handle('varisdev:get-agent-notice', async () => {
     noticeReads++;
@@ -263,7 +295,18 @@ async function main() {
 
   loadError = 'Catalog temporarily unavailable';
   await click('app-menu-button');
-  await click('open-agent-models');
+  assert.deepEqual(
+    await evaluate(() =>
+      [
+        ...document.querySelectorAll(
+          '#app-menu-panel button[aria-controls="tool-settings-dialog"]',
+        ),
+      ].map(button => ({id: button.id, text: button.textContent.trim()})),
+    ),
+    [{id: 'open-model-settings', text: 'Model settings'}],
+    'the menu has one entry for the combined settings',
+  );
+  await click('open-model-settings');
   await waitFor(() => !document.getElementById('tool-settings-error').hidden);
   assert.match(
     await evaluate(
@@ -281,23 +324,27 @@ async function main() {
   await click('tool-settings-retry');
   await waitFor(() => !document.getElementById('tool-settings-content').hidden);
   assert.equal(reads.at(-1), 'project');
+  await assertCombinedVisible();
   assert.deepEqual(
     await evaluate(() => ({
-      mode: Boolean(document.getElementById('agent-model-mode')),
       choices: [
         ...document.querySelectorAll('#tool-settings-models input'),
-      ].map(input => ({checked: input.checked, disabled: input.disabled})),
+      ].map(input => ({
+        type: input.type,
+        checked: input.checked,
+        disabled: input.disabled,
+      })),
       saveDisabled: document.getElementById('tool-settings-save').disabled,
     })),
     {
-      mode: false,
       choices: [
-        {checked: false, disabled: false},
-        {checked: false, disabled: false},
+        {type: 'checkbox', checked: false, disabled: false},
+        {type: 'checkbox', checked: false, disabled: false},
       ],
       saveDisabled: false,
     },
   );
+  assert.deepEqual(await commitChoices(), [{value: '', disabled: false}]);
   await search('swift');
   assert.equal(
     await evaluate(
@@ -306,47 +353,146 @@ async function main() {
     1,
   );
   await selectModel('alpha/small');
-  await search('beta/large');
-  assert.equal(
-    await evaluate(
-      () => document.querySelector('#tool-settings-models strong').textContent,
-    ),
-    'Deep model',
-  );
-  await search('no-match');
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+  ]);
+  await change('commit-model', 'alpha/small');
+  await change('commit-thinking', 'medium');
+  const selectedCommit = {model: 'alpha/small', thinkingLevel: 'medium'};
+  for (const query of ['beta/large', 'no-match']) {
+    await search(query);
+    await assertCombinedVisible();
+    assert.deepEqual(
+      await evaluate(() => ({
+        model: document.getElementById('commit-model').value,
+        thinkingLevel: document.getElementById('commit-thinking').value,
+      })),
+      selectedCommit,
+      'agent search preserves the Commit selection',
+    );
+    assert.deepEqual(await commitChoices(), [
+      {value: '', disabled: false},
+      {value: 'alpha/small', disabled: false},
+    ]);
+  }
   assert.equal(
     await evaluate(() => document.getElementById('tool-settings-empty').hidden),
     false,
   );
   await search('');
+  const initialSettings = {
+    agents: {allowedModels: ['alpha/small']},
+    commit: selectedCommit,
+  };
+  assert.deepEqual(await readDraft(), initialSettings);
+  await save();
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0], {
+    section: 'all',
+    value: initialSettings,
+    id: 'project',
+  });
+  assert.deepEqual(settings, initialSettings);
+  report.cases.push(
+    'one combined menu and visible sections, lazy catalog retry, checkbox defaults and independent agent search',
+  );
+
+  await open();
+  await selectModel('alpha/small');
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: true},
+  ]);
   assert.equal(
     await evaluate(
-      () => document.querySelector('#tool-settings-models input').checked,
+      () => document.getElementById('tool-settings-save').disabled,
     ),
     true,
+    'removing the selected Commit model from the allowlist blocks Save',
   );
+  await selectModel('beta/large');
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: true},
+    {value: 'beta/large', disabled: false},
+  ]);
+  await change('commit-model', 'beta/large');
+  await change('commit-thinking', 'max');
+  const changedSettings = {
+    agents: {allowedModels: ['beta/large']},
+    commit: {model: 'beta/large', thinkingLevel: 'max'},
+  };
+  assert.deepEqual(await readDraft(), changedSettings);
+  const beforeFailure = writes.length;
   saveError = 'Disk is read only';
   await click('tool-settings-save');
   await waitFor(() => !document.getElementById('tool-settings-error').hidden);
-  assert.deepEqual(settings.agents, {allowedModels: []});
-  assert.equal(
+  assert.match(
     await evaluate(
-      () => document.querySelector('#tool-settings-models input').checked,
+      () => document.getElementById('tool-settings-error').textContent,
     ),
-    true,
+    /Disk is read only/,
   );
+  assert.equal(writes.length, beforeFailure + 1);
+  assert.deepEqual(writes.at(-1), {
+    section: 'all',
+    value: changedSettings,
+    id: 'project',
+  });
+  assert.deepEqual(
+    settings,
+    initialSettings,
+    'a failed save preserves both stored sections',
+  );
+  assert.deepEqual(
+    await readDraft(),
+    changedSettings,
+    'a failed save preserves both drafts',
+  );
+  await assertCombinedVisible();
   saveError = '';
   await save();
-  assert.deepEqual(settings.agents.allowedModels, ['alpha/small']);
-  await open('agents');
   assert.equal(
-    await evaluate(
-      () => document.querySelector('#tool-settings-models input').checked,
-    ),
-    true,
+    writes.length,
+    beforeFailure + 2,
+    'each Save sends one IPC request',
+  );
+  assert.deepEqual(
+    settings,
+    changedSettings,
+    'disjoint allowlists and Commit models change together',
   );
   report.cases.push(
-    'lazy catalog, load retry, explicit deselected defaults, search and save failure preservation',
+    'allowlist updates Commit choices immediately; one atomic save changes disjoint selections and preserves both drafts on failure',
+  );
+
+  const beforeDiscard = writes.length;
+  for (const close of [() => click('tool-settings-close'), escape]) {
+    await open();
+    await selectModel('beta/large');
+    await selectModel('alpha/small');
+    await change('commit-model', 'alpha/small');
+    await change('commit-thinking', 'off');
+    assert.deepEqual(await readDraft(), {
+      agents: {allowedModels: ['alpha/small']},
+      commit: {model: 'alpha/small', thinkingLevel: 'off'},
+    });
+    await close();
+    await waitFor(() => !document.getElementById('tool-settings-dialog').open);
+    assert.equal(writes.length, beforeDiscard);
+    assert.deepEqual(settings, changedSettings);
+    await open();
+    assert.deepEqual(
+      await readDraft(),
+      changedSettings,
+      'closing discards both drafts',
+    );
+    await click('tool-settings-close');
+  }
+  await open();
+  report.cases.push(
+    'Close and Escape discard agent and Commit drafts together',
   );
 
   hub.sessions[1].agents = [agent()];
@@ -388,11 +534,11 @@ async function main() {
   );
   assert.equal(acknowledged, true);
   assert.equal(acknowledgments, 1);
+  await assertCombinedVisible();
   assert.equal(
-    await evaluate(
-      () => document.getElementById('tool-settings-title').textContent,
-    ),
-    'Agent models',
+    await evaluate(() => document.activeElement.id),
+    'tool-settings-search',
+    'Agent Configure focuses the allowlist search',
   );
   assert.equal(
     await evaluate(() => document.getElementById('agent-notice-dialog').open),
@@ -423,14 +569,32 @@ async function main() {
     () =>
       document.getElementById('inspector').dataset.conversationKind === 'agent',
   );
+  settings.agents.allowedModels = ['alpha/small'];
   settings.commit = {model: 'beta/large', thinkingLevel: 'medium'};
-  await open('commit');
+  await open();
   assert.equal(reads.at(-1), 'project');
+  await assertCombinedVisible();
   assert.equal(
     await evaluate(
       () => document.getElementById('tool-settings-save').disabled,
     ),
     true,
+  );
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+    {value: 'beta/large', disabled: true},
+  ]);
+  assert.equal(
+    await evaluate(() => document.getElementById('commit-model').value),
+    'beta/large',
+    'a saved disallowed model stays selected',
+  );
+  assert.match(
+    await evaluate(
+      () => document.querySelector('#commit-model option:checked').textContent,
+    ),
+    /not allowed/,
   );
   assert.equal(
     await evaluate(
@@ -439,23 +603,45 @@ async function main() {
           '#tool-settings-models input[value="beta/large"]',
         ).disabled,
     ),
+    false,
+    'available models can be added to the allowlist',
+  );
+  await selectModel('beta/large');
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+    {value: 'beta/large', disabled: false},
+  ]);
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('tool-settings-save').disabled,
+    ),
+    false,
+    'allowing the selected Commit model enables Save immediately',
+  );
+  await selectModel('beta/large');
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('tool-settings-save').disabled,
+    ),
     true,
   );
-  assert.match(
+  await change('commit-model', 'alpha/small');
+  assert.equal(
     await evaluate(
-      () => document.getElementById('tool-settings-models').textContent,
+      () => document.getElementById('tool-settings-save').disabled,
     ),
-    /Disabled by Agent models/,
+    false,
+    'choosing an allowed Commit model enables Save',
   );
-  await selectModel('alpha/small');
   await change('commit-thinking', 'max');
   await save();
-  assert.deepEqual(settings.commit, {
-    model: 'alpha/small',
-    thinkingLevel: 'max',
+  assert.deepEqual(settings, {
+    agents: {allowedModels: ['alpha/small']},
+    commit: {model: 'alpha/small', thinkingLevel: 'max'},
   });
   assert.equal(writes.at(-1).id, 'project');
-  await open('commit');
+  await open();
   assert.equal(
     await evaluate(() => document.getElementById('commit-thinking').value),
     'max',
@@ -468,16 +654,16 @@ async function main() {
     ),
     ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   );
-  await click('commit-inherit-model');
+  await change('commit-model', '');
   await change('commit-thinking', '');
   await save();
   assert.deepEqual(settings.commit, {model: null, thinkingLevel: null});
   report.cases.push(
-    'commit filters by allowlist, preserves disabled saved model, supports thinking and parent inheritance with worker selected',
+    'selected disallowed Commit model resolves by allowing or changing it; thinking and inheritance use the parent session with a worker selected',
   );
 
   settings.agents.allowedModels.push('lost/old');
-  await open('agents');
+  await open();
   assert.match(
     await evaluate(
       () => document.getElementById('tool-settings-models').textContent,
@@ -492,11 +678,16 @@ async function main() {
     ),
     true,
   );
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+    {value: 'lost/old', disabled: true},
+  ]);
   await selectModel('lost/old');
   await save();
   assert.deepEqual(settings.agents.allowedModels, ['alpha/small']);
   settings.commit.model = 'lost/old';
-  await open('commit');
+  await open();
   assert.equal(
     await evaluate(
       () => document.getElementById('tool-settings-save').disabled,
@@ -511,37 +702,60 @@ async function main() {
     ),
     true,
   );
-  await click('commit-inherit-model');
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+    {value: 'lost/old', disabled: true},
+  ]);
+  assert.equal(
+    await evaluate(() => document.getElementById('commit-model').value),
+    'lost/old',
+  );
+  assert.match(
+    await evaluate(
+      () => document.querySelector('#commit-model option:checked').textContent,
+    ),
+    /unavailable/,
+  );
+  await change('commit-model', '');
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('tool-settings-save').disabled,
+    ),
+    false,
+    'inheritance clears an unavailable Commit model',
+  );
   await save();
-  await open('agents');
+  await open();
   await selectModel('alpha/small');
   await save();
   assert.deepEqual(settings.agents, {allowedModels: []});
-  await open('commit');
+  await open();
+  assert.deepEqual(await commitChoices(), [{value: '', disabled: false}]);
   assert.equal(
     await evaluate(
       () =>
-        document.querySelector(
-          '#tool-settings-models input[value="beta/large"]',
-        ).disabled,
+        document.querySelectorAll('#tool-settings-models input:disabled')
+          .length,
     ),
-    true,
+    0,
+    'an empty allowlist still permits selecting available agent models',
   );
   await click('tool-settings-close');
   settings.agents.allowedModels = null;
-  await open('agents');
-  assert.equal(
-    await evaluate(
-      () =>
-        document.querySelectorAll('#tool-settings-models input:checked').length,
-    ),
-    0,
-    'Legacy all-model settings open as an explicit empty draft',
+  await open();
+  assert.deepEqual(
+    await readDraft(),
+    {
+      agents: {allowedModels: []},
+      commit: {model: null, thinkingLevel: null},
+    },
+    'legacy all-model settings open as an explicit empty draft',
   );
   await save();
   assert.deepEqual(settings.agents, {allowedModels: []});
   report.cases.push(
-    'unavailable saved models stay removable; empty and legacy selections require explicit choices',
+    'unavailable saved models stay removable and invalid Commit choices require inheritance; empty and legacy allowlists stay explicit',
   );
 
   acknowledged = false;
@@ -595,7 +809,7 @@ async function main() {
     'notice read failure retries after spawn; Escape persists acknowledgment once',
   );
 
-  await open('agents');
+  await open();
   await selectModel('beta/large');
   await save();
   await submit('/commitment inspect');
@@ -638,13 +852,13 @@ async function main() {
     await evaluate(() => document.getElementById('parent-prompt').value),
     '/commit review changes',
   );
+  await assertCombinedVisible();
   assert.equal(
-    await evaluate(
-      () => document.getElementById('tool-settings-title').textContent,
-    ),
-    'Commit settings',
+    await evaluate(() => document.activeElement.id),
+    'commit-model',
+    'Commit Configure focuses the Commit model selector',
   );
-  await selectModel('beta/large');
+  await change('commit-model', 'beta/large');
   await change('commit-thinking', 'high');
   await save();
   await submit('/commit review changes');
@@ -725,28 +939,31 @@ async function main() {
   scopedModels = [models[0]];
   settings.agents.allowedModels = ['alpha/small'];
   settings.commit = {model: null, thinkingLevel: null};
-  for (const section of ['agents', 'commit']) {
-    await open(section);
-    assert.deepEqual(
-      await evaluate(() =>
-        [...document.querySelectorAll('#tool-settings-models input')].map(
-          input => input.value,
-        ),
+  await open();
+  await assertCombinedVisible();
+  assert.deepEqual(
+    await evaluate(() =>
+      [...document.querySelectorAll('#tool-settings-models input')].map(
+        input => input.value,
       ),
-      ['alpha/small'],
-      `${section} only offers models from the active Pi scope`,
-    );
-    await click('tool-settings-close');
-  }
+    ),
+    ['alpha/small'],
+    'the allowlist only offers models from the active Pi scope',
+  );
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+  ]);
+  await click('tool-settings-close');
 
-  // Saved selections outside the scope remain available for removal.
   settings.agents.allowedModels = ['alpha/small', 'beta/large'];
   settings.commit = {model: 'beta/large', thinkingLevel: null};
-  await open('agents');
-  assert.deepEqual(settings.agents.allowedModels, [
-    'alpha/small',
-    'beta/large',
-  ]);
+  await open();
+  assert.deepEqual(
+    settings.agents.allowedModels,
+    ['alpha/small', 'beta/large'],
+    'opening scoped settings preserves stored preferences',
+  );
   assert.deepEqual(
     await evaluate(() =>
       [...document.querySelectorAll('#tool-settings-models input')].map(
@@ -761,6 +978,7 @@ async function main() {
       {value: 'alpha/small', checked: true, disabled: false},
       {value: 'beta/large', checked: true, disabled: false},
     ],
+    'saved unavailable agent choices remain removable',
   );
   assert.match(
     await evaluate(
@@ -768,31 +986,36 @@ async function main() {
     ),
     /current model list.*Scoped models/,
   );
-  await click('tool-settings-close');
-  await open('commit');
+  assert.deepEqual(await commitChoices(), [
+    {value: '', disabled: false},
+    {value: 'alpha/small', disabled: false},
+    {value: 'beta/large', disabled: true},
+  ]);
   assert.equal(
     await evaluate(
       () => document.getElementById('tool-settings-save').disabled,
     ),
     true,
   );
+  await selectModel('beta/large');
+  assert.equal(
+    await evaluate(() => document.getElementById('commit-model').value),
+    'beta/large',
+    'removing an unavailable allowlist entry preserves the selected invalid Commit model',
+  );
   assert.equal(
     await evaluate(
-      () =>
-        document.querySelector(
-          '#tool-settings-models input[value="beta/large"]',
-        ).disabled,
+      () => document.getElementById('tool-settings-save').disabled,
     ),
     true,
   );
-  await click('commit-inherit-model');
+  await change('commit-model', '');
   await save();
-  assert.deepEqual(settings.commit, {model: null, thinkingLevel: null});
-  await open('agents');
-  await selectModel('beta/large');
-  await save();
-  assert.deepEqual(settings.agents.allowedModels, ['alpha/small']);
-  await open('agents');
+  assert.deepEqual(settings, {
+    agents: {allowedModels: ['alpha/small']},
+    commit: {model: null, thinkingLevel: null},
+  });
+  await open();
   assert.deepEqual(
     await evaluate(() =>
       [...document.querySelectorAll('#tool-settings-models input')].map(
@@ -803,7 +1026,7 @@ async function main() {
   );
   await click('tool-settings-close');
   scopedModels = undefined;
-  await open('agents');
+  await open();
   assert.equal(
     await evaluate(
       () => document.querySelectorAll('#tool-settings-models input').length,
@@ -812,11 +1035,12 @@ async function main() {
   );
   await click('tool-settings-close');
   report.cases.push(
-    'scoped choices preserve global preferences, allow removal and Commit parent inheritance; clearing scope restores choices',
+    'scoped choices preserve preferences and allow unavailable allowlist removal with Commit inheritance in one save',
   );
 
   browser.setContentSize(440, 600);
-  await open('agents');
+  await open();
+  await assertCombinedVisible();
   const geometry = await evaluate(() => {
     const dialog = document.getElementById('tool-settings-dialog');
     const rect = dialog.getBoundingClientRect();

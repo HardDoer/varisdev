@@ -21,18 +21,32 @@
 #commit-notice-dialog p {
   overflow-wrap: anywhere;
 }
-#tool-settings-content > label,
-#commit-model-settings > label:not(.tool-model-option) {
+#tool-settings-content section + section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+#tool-settings-content h3 {
+  margin: 0 0 12px;
+}
+#agent-model-settings > label,
+.commit-settings-fields label {
   display: block;
-  margin: 16px 0 8px;
+  margin-bottom: 8px;
+}
+.commit-settings-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
 }
 #tool-settings-search,
+#commit-model,
 #commit-thinking {
   width: 100%;
   min-width: 0;
 }
 #tool-settings-models {
-  max-height: min(320px, 40dvh);
+  max-height: min(240px, 30dvh);
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -76,4 +90,9 @@
 #agent-notice-dialog .dialog-footer,
 #commit-notice-dialog .dialog-footer {
   flex-wrap: wrap;
+}
+@media (max-width: 520px) {
+  .commit-settings-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -50,7 +50,9 @@ function agents(value: unknown): ToolSettings['agents'] {
   const {allowedModels} = object(value, ['allowedModels']);
   if (allowedModels === null) return {allowedModels: null};
   if (!Array.isArray(allowedModels) || allowedModels.length > 512)
-    throw new Error('Choose up to 512 allowed models in Menu → Agent models.');
+    throw new Error(
+      'Choose up to 512 allowed models in Menu → Model settings.',
+    );
   return {allowedModels: [...new Set(Array.from(allowedModels, modelId))]};
 }
 
@@ -72,13 +74,27 @@ function commit(value: unknown): ToolSettings['commit'] {
   };
 }
 
+function toolSettings(value: unknown): ToolSettings {
+  const input = object(value, ['agents', 'commit']);
+  return {agents: agents(input.agents), commit: commit(input.commit)};
+}
+
+export function parseToolSettingsUpdate(
+  section: unknown,
+  value: unknown,
+): Partial<ToolSettings> {
+  if (section === 'all') return toolSettings(value);
+  if (section === 'agents') return {agents: agents(value)};
+  if (section === 'commit') return {commit: commit(value)};
+  throw new Error('Tool settings section must be agents, commit, or all.');
+}
+
 async function read(path: string): Promise<ToolSettings> {
   try {
     const text = await readFile(path, 'utf8');
     if (text.length > 300000)
       throw new Error('Tool settings file is too large.');
-    const input = object(JSON.parse(text), ['agents', 'commit']);
-    return {agents: agents(input.agents), commit: commit(input.commit)};
+    return toolSettings(JSON.parse(text));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaults();
     throw new Error(
@@ -98,22 +114,19 @@ export async function saveToolSettings(
   section: unknown,
   value: unknown,
 ): Promise<void> {
-  if (section !== 'agents' && section !== 'commit')
-    throw new Error('Tool settings section must be agents or commit.');
   // Validate and copy before waiting, so callers cannot change queued inputs.
-  const update =
-    section === 'agents' ? {agents: agents(value)} : {commit: commit(value)};
+  const update = parseToolSettingsUpdate(section, value);
   const path = settingsPath();
   const operation = (writes.get(path) ?? Promise.resolve()).then(async () => {
     const settings = {...(await read(path)), ...update};
     if (settings.commit.model !== null) {
       if (
-        section === 'agents' &&
+        section !== 'commit' &&
         settings.agents.allowedModels !== null &&
         !settings.agents.allowedModels.includes(settings.commit.model)
       )
         throw new Error(
-          `Commit model ${settings.commit.model} must be allowed. Change Menu → Commit settings first, or include it in Menu → Agent models. Allowed models: ${settings.agents.allowedModels.join(', ')}.`,
+          `Commit model ${settings.commit.model} must be allowed. Update Agent models or Commit in Menu → Model settings. Allowed models: ${settings.agents.allowedModels.join(', ')}.`,
         );
       await assertAgentModelAllowed(settings.commit.model, settings);
     }
@@ -145,10 +158,10 @@ export async function assertAgentModelAllowed(
   const {allowedModels} = (settings ?? (await readToolSettings())).agents;
   if (allowedModels?.length === 0)
     throw new Error(
-      'No agent models selected. Choose a model in Menu → Agent models.',
+      'No agent models selected. Choose a model in Menu → Model settings.',
     );
   if (allowedModels !== null && !allowedModels.includes(model))
     throw new Error(
-      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Agent models. Allowed models: ${allowedModels.join(', ')}.`,
+      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Model settings. Allowed models: ${allowedModels.join(', ')}.`,
     );
 }
