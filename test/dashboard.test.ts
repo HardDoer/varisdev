@@ -13,7 +13,7 @@ import {join} from 'node:path';
 import {setImmediate as nextTick} from 'node:timers/promises';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
-import {SessionManager} from '@earendil-works/pi-coding-agent';
+import {ModelRuntime, SessionManager} from '@earendil-works/pi-coding-agent';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
 import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
@@ -983,6 +983,27 @@ void test('native feature controls stay live during compaction and keep reload i
 });
 
 void test('native extension dialogs appear in hub snapshots and receive validated responses during active work', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-dialogs-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const modelsPath = join(directory, 'models.json');
+  await writeFile(
+    modelsPath,
+    JSON.stringify({
+      providers: {
+        fixture: {
+          api: 'openai-completions',
+          baseUrl: 'https://fixture.invalid/v1',
+          apiKey: 'fixture-key',
+          models: [{id: 'alpha', name: 'Alpha model'}],
+        },
+      },
+    }),
+  );
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(directory, 'auth.json'),
+    modelsPath,
+    allowModelNetwork: false,
+  });
   const current = controlledParent('dialogs', process.cwd());
   const hub = new DashboardHub(undefined, async () => current.parent);
   let changes = 0;
@@ -1051,6 +1072,51 @@ void test('native extension dialogs appear in hub snapshots and receive validate
     );
   await hub.respondToDialog('dialogs', selector.id, {action: 'default'});
   assert.deepEqual(await thinking, {thinkingLevel: 'off', persist: true});
+  const settings = current.parent.ui.selectSessionSettings({
+    activeTab: 'model',
+    model: {
+      currentModel: modelRuntime.getModel('fixture', 'alpha')!,
+      modelRuntime,
+      scopedModels: [],
+    },
+    thinking: {
+      currentLevel: 'off',
+      availableLevels: ['off', 'high'],
+    },
+  });
+  await until(
+    () =>
+      hub
+        .snapshot()
+        .sessions[0].ui!.dialogs[0]?.terminal?.output.includes(
+          'Alpha model',
+        ) === true,
+  );
+  const settingsDialog = hub.snapshot().sessions[0].ui!.dialogs[0];
+  await assert.rejects(
+    hub.respondToDialog('dialogs', settingsDialog.id, {
+      action: 'tab:unknown',
+    }),
+    /action/,
+  );
+  await hub.respondToDialog('dialogs', settingsDialog.id, {
+    action: 'tab:thinking',
+  });
+  await until(
+    () =>
+      hub.snapshot().sessions[0].ui!.dialogs[0]?.activeTab === 'thinking' &&
+      hub
+        .snapshot()
+        .sessions[0].ui!.dialogs[0]?.terminal?.output.includes(
+          'Thinking Level',
+        ) === true,
+  );
+  await hub.respondToDialog('dialogs', settingsDialog.id, {action: 'session'});
+  assert.deepEqual(await settings, {
+    kind: 'thinking',
+    thinkingLevel: 'off',
+    persist: false,
+  });
   current.parent.ui.context.addAutocompleteProvider(provider => provider);
   const editorId = hub.snapshot().sessions[0].ui!.extensionEditor!.id;
   await hub.respondToDialog('dialogs', editorId, 'Current draft');

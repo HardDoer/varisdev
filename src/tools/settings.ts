@@ -8,11 +8,11 @@ export interface ToolSettings {
   commit: {
     model: string | null;
     thinkingLevel:
-      'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null;
+      'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
   };
 }
 
-const efforts = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const efforts = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const writes = new Map<string, Promise<void>>();
 const settingsPath = () =>
   join(getAgentDir(), 'varisdev', 'tool-settings.json');
@@ -63,7 +63,7 @@ function commit(value: unknown): ToolSettings['commit'] {
       !efforts.includes(input.thinkingLevel))
   )
     throw new Error(
-      'Commit thinkingLevel must be null, off, minimal, low, medium, high, or xhigh.',
+      'Commit thinkingLevel must be null, off, minimal, low, medium, high, xhigh, or max.',
     );
   return {
     model,

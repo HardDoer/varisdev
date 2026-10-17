@@ -760,14 +760,14 @@ void test('agent tools select registered models and effort without adding parent
         name: 'bad effort',
         task: 'test',
         model: 'openai-codex/gpt-5.6-sol',
-        thinkingLevel: 'max',
+        thinkingLevel: 'invalid',
       }),
-      /thinkingLevel must be off, minimal, low, medium, high, or xhigh/,
+      /thinkingLevel must be off, minimal, low, medium, high, xhigh, or max/,
     );
-    inheritedEffort = 'max';
+    inheritedEffort = 'invalid';
     await assert.rejects(
       execute('agent_spawn', {name: 'bad inherited effort', task: 'test'}),
-      /thinkingLevel must be off, minimal, low, medium, high, or xhigh/,
+      /thinkingLevel must be off, minimal, low, medium, high, xhigh, or max/,
     );
     inheritedEffort = 'high';
     const beforeMissingModel = optionsSeen.length;
@@ -796,6 +796,25 @@ void test('agent tools select registered models and effort without adding parent
     assert.equal(visibleAgentResult(cleaned).agents[0].resumable, false);
     assert.equal(controlled.disposed, 2);
     assert.equal(notifications.length, 0);
+
+    for (const inherit of [false, true]) {
+      inheritedEffort = inherit ? 'max' : 'high';
+      const params = {
+        name: 'Max reasoning',
+        task: 'Verify max reasoning delegation.',
+        ...(inherit ? {} : {thinkingLevel: 'max'}),
+        autoCleanup: true,
+      };
+      assert.ok(Check(tools.get('agent_spawn')!.parameters, params));
+      const beforeRuns = controlled.runs.length;
+      const spawned = await execute('agent_spawn', params);
+      const record = (spawned.details as {agents: AgentRecord[]}).agents[0];
+      await until(() => controlled.runs.length === beforeRuns + 1);
+      assert.equal(optionsSeen.at(-1)!.thinkingLevel, 'max');
+      controlled.runs.at(-1)!.finish('Max reasoning completed');
+      await execute('agent_wait', {ids: [record.id]});
+    }
+    inheritedEffort = 'high';
 
     for (const model of registeredModels) {
       const fullName = `${model.provider}/${model.id}`;

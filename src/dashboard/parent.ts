@@ -215,7 +215,10 @@ export async function createDashboardParent(
     await session.bindExtensions({
       mode: 'rpc',
       uiContext: ui.context,
-      onError: error => report(error.error, error.extensionPath),
+      onError: error => {
+        report(error.error, error.extensionPath);
+        ui.context.notify(error.error, 'error');
+      },
       commandContextActions: {
         waitForIdle: () => session.waitForIdle(),
         reload,

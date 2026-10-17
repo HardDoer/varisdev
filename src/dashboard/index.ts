@@ -141,6 +141,14 @@ export function registerFactory(
               provider: model.provider,
               name: model.name,
             })),
+            scopedModels: ctx.scopedModels.map(({model, thinkingLevel}) => ({
+              model: {
+                id: model.id,
+                provider: model.provider,
+                name: model.name,
+              },
+              ...(thinkingLevel !== undefined ? {thinkingLevel} : {}),
+            })),
             ...(ctx.model
               ? {model: {id: ctx.model.id, provider: ctx.model.provider}}
               : {}),

@@ -30,9 +30,7 @@ export function registerCommitCommand(pi: ExtensionAPI): void {
       await assertAgentModelAllowed(selectedModel, settings);
       const thinkingLevel =
         settings.commit.thinkingLevel ?? pi.getThinkingLevel();
-      const supported = getSupportedThinkingLevels(model).filter(
-        level => level !== 'max',
-      );
+      const supported = getSupportedThinkingLevels(model);
       if (!supported.some(level => level === thinkingLevel))
         throw new Error(
           `Commit thinking level ${thinkingLevel} is unsupported for ${selectedModel}. Supported levels: ${supported.join(', ')}. Change Menu → Commit settings or the parent thinking level.`,

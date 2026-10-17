@@ -80,7 +80,7 @@ export class DesktopToolSettings {
         : undefined;
       models = scope?.scopedModels.length
         ? scope.scopedModels.map(scoped => scoped.model)
-        : runtime.getModels();
+        : runtime.getAvailableSnapshot();
       diagnostics = [
         ...this.diagnostics,
         ...settings.drainErrors().map(diagnostic => diagnostic.error.message),

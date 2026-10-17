@@ -149,6 +149,19 @@ async function submit(prompt) {
     document.getElementById('prompt-form').requestSubmit();
   }, prompt);
 }
+async function enterCommand(prompt) {
+  await evaluate(prompt => {
+    const input = document.getElementById('parent-prompt');
+    input.value = prompt;
+    input.focus();
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  }, prompt);
+  await waitFor(() => !document.getElementById('command-suggestions').hidden);
+  browser.focus();
+  browser.webContents.focus();
+  browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
+  browser.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Return'});
+}
 async function escape() {
   browser.focus();
   browser.webContents.focus();
@@ -206,7 +219,9 @@ async function main() {
   }));
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('pidev:session-features', () => ({
-    commands: [],
+    commands: [
+      {name: 'commit', description: 'Commit and push', source: 'extension'},
+    ],
     tools: [],
     models,
     diagnostics: [],
@@ -433,17 +448,17 @@ async function main() {
     /Disabled by Agent models/,
   );
   await selectModel('alpha/small');
-  await change('commit-thinking', 'xhigh');
+  await change('commit-thinking', 'max');
   await save();
   assert.deepEqual(settings.commit, {
     model: 'alpha/small',
-    thinkingLevel: 'xhigh',
+    thinkingLevel: 'max',
   });
   assert.equal(writes.at(-1).id, 'project');
   await open('commit');
   assert.equal(
     await evaluate(() => document.getElementById('commit-thinking').value),
-    'xhigh',
+    'max',
   );
   assert.deepEqual(
     await evaluate(() =>
@@ -451,7 +466,7 @@ async function main() {
         option => option.value,
       ),
     ),
-    ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+    ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   );
   await click('commit-inherit-model');
   await change('commit-thinking', '');
@@ -591,7 +606,7 @@ async function main() {
     0,
     'normal prompts do not read commit preferences',
   );
-  await submit('/commit review changes');
+  await enterCommand('/commit');
   await waitFor(() => document.getElementById('commit-notice-dialog').open);
   assert.equal(prompts.length, 1, 'first commit waits before dispatch');
   assert.equal(commitAcknowledged, false);
@@ -600,7 +615,7 @@ async function main() {
   assert.equal(commitAcknowledged, false);
   assert.equal(
     await evaluate(() => document.getElementById('parent-prompt').value),
-    '/commit review changes',
+    '/commit',
   );
   await submit('/commit review changes');
   await waitFor(() => document.getElementById('commit-notice-dialog').open);
@@ -640,9 +655,15 @@ async function main() {
     thinkingLevel: 'high',
   });
   await reload();
-  await submit('/commit');
+  await enterCommand('/comm');
+  await waitFor(
+    () => document.getElementById('parent-prompt').value === '/commit ',
+  );
+  assert.equal(prompts.length, 2, 'partial command completion keeps the draft');
+  await enterCommand('/commit');
   await waitFor(() => document.getElementById('parent-prompt').value === '');
   assert.equal(prompts.length, 3);
+  assert.deepEqual(prompts.at(-1).input, {prompt: '/commit'});
   assert.equal(
     await evaluate(() => document.getElementById('commit-notice-dialog').open),
     false,
@@ -701,11 +722,26 @@ async function main() {
     'commit read retry and Continue dispatch; agent notice queues independently behind commit notice',
   );
 
-  // The backend supplies the active Pi scope; globally saved selections stay
-  // visible and removable when a session offers a narrower model list.
+  scopedModels = [models[0]];
+  settings.agents.allowedModels = ['alpha/small'];
+  settings.commit = {model: null, thinkingLevel: null};
+  for (const section of ['agents', 'commit']) {
+    await open(section);
+    assert.deepEqual(
+      await evaluate(() =>
+        [...document.querySelectorAll('#tool-settings-models input')].map(
+          input => input.value,
+        ),
+      ),
+      ['alpha/small'],
+      `${section} only offers models from the active Pi scope`,
+    );
+    await click('tool-settings-close');
+  }
+
+  // Saved selections outside the scope remain available for removal.
   settings.agents.allowedModels = ['alpha/small', 'beta/large'];
   settings.commit = {model: 'beta/large', thinkingLevel: null};
-  scopedModels = [models[0]];
   await open('agents');
   assert.deepEqual(settings.agents.allowedModels, [
     'alpha/small',

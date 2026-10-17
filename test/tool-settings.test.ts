@@ -96,7 +96,7 @@ void test('invalid shapes and IDs fail without changing saved settings', async t
     ['agents', {allowedModels: Array(513).fill('p/m')}],
     ['agents', {allowedModels: Array(1)}],
     ['commit', {model: null}],
-    ['commit', {model: null, thinkingLevel: 'max'}],
+    ['commit', {model: null, thinkingLevel: 'invalid'}],
     ['commit', {model: null, thinkingLevel: 1}],
     ['commit', {model: null, thinkingLevel: null, extra: true}],
     ...[

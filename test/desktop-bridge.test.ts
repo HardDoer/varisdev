@@ -326,6 +326,7 @@ function extensionFixture(
     mode,
     cwd: process.cwd(),
     model: models[0],
+    scopedModels: [],
     compact: (options: {customInstructions?: string; onComplete(): void}) => {
       compacted.push(options.customInstructions);
       options.onComplete();

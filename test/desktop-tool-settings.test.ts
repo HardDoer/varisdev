@@ -34,16 +34,22 @@ async function fixture(t: TestContext) {
   return {directory, models, scopedModels, service};
 }
 
-void test('app catalog reads Pi models and refreshes local custom models', async t => {
+void test('app catalog uses Pi available models and refreshes local custom models', async t => {
   const {directory} = await fixture(t);
   const writeModels = (id: string) =>
     writeFile(
       join(directory, 'models.json'),
       JSON.stringify({
         providers: {
+          'unconfigured-fixture': {
+            baseUrl: 'https://unconfigured-fixture.invalid/v1',
+            api: 'openai-completions',
+            models: [{id: 'unavailable', name: 'Unconfigured model'}],
+          },
           'desktop-fixture': {
             baseUrl: 'https://model-fixture.invalid/v1',
             api: 'openai-completions',
+            apiKey: 'fixture-key',
             models: [{id, name: 'Local model'}],
           },
         },
@@ -60,7 +66,22 @@ void test('app catalog reads Pi models and refreshes local custom models', async
     agents: {allowedModels: []},
     commit: {model: null, thinkingLevel: null},
   });
-  assert.ok(initial.models.some(model => model.provider === 'openai'));
+  assert.ok(
+    !initial.models.some(model => model.provider === 'unconfigured-fixture'),
+  );
+  await assert.rejects(
+    service.saveToolSettings('agents', {
+      allowedModels: ['unconfigured-fixture/unavailable'],
+    }),
+    /Unknown model/,
+  );
+  await assert.rejects(
+    service.saveToolSettings('commit', {
+      model: 'unconfigured-fixture/unavailable',
+      thinkingLevel: null,
+    }),
+    /Unknown model/,
+  );
   assert.ok(
     initial.models.some(
       model => model.provider === 'desktop-fixture' && model.id === 'local/one',
@@ -86,6 +107,10 @@ void test('healthy global extension models remain selectable with extension diag
   await copyFile(
     new URL('./fixtures/global-model-catalog.js', import.meta.url),
     join(directory, 'extensions', 'catalog.js'),
+  );
+  await writeFile(
+    join(directory, 'auth.json'),
+    JSON.stringify({'global-extension': {type: 'api_key', key: 'fixture-key'}}),
   );
   await writeFile(
     join(directory, 'extensions', 'broken.js'),
@@ -463,7 +488,11 @@ void test('no-session pickers resolve and refresh global Pi scope through regist
   for (const scope of [[], undefined, ['missing-provider/missing']]) {
     await writeScope(scope);
     const fallback = await service.getToolSettings();
-    assert.ok(fallback.models.some(model => model.provider === 'openai'));
+    assert.ok(
+      fallback.models.some(
+        model => `${model.provider}/${model.id}` === physical,
+      ),
+    );
     assert.ok(
       fallback.models.some(
         model => `${model.provider}/${model.id}` === virtual,

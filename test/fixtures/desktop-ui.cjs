@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
+const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 
 const [directory, reportPath] = process.argv.slice(2);
@@ -2431,7 +2432,7 @@ async function main() {
         document.getElementById('open-commands').click();
       });
       const {nativeCommands} = await import(
-        resolve('assets/dashboard/command-catalog.js')
+        pathToFileURL(resolve('assets/dashboard/command-catalog.js')).href
       );
       await until(
         () =>

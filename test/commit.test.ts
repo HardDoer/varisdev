@@ -28,7 +28,7 @@ async function setup(t: TestContext, selectModels = true) {
       provider: 'custom',
       id: 'organization/model',
       reasoning: true,
-      thinkingLevelMap: {xhigh: 'xhigh'},
+      thinkingLevelMap: {xhigh: 'xhigh', max: 'max'},
     },
     {provider: 'p', id: 'simple', reasoning: false},
   ];
@@ -119,6 +119,26 @@ void test('/commit reads saved model and effort on each invocation, including in
       .at(-1)!
       .text.includes(JSON.stringify({model: 'p/parent', thinkingLevel: 'off'})),
   );
+});
+
+void test('/commit preserves supported max reasoning from the parent and saved settings', async t => {
+  const fixture = await setup(t);
+  fixture.ctx.model = fixture.models[1] as typeof fixture.ctx.model;
+  fixture.effort('max');
+  await fixture.run();
+  const selection = JSON.stringify({
+    model: 'custom/organization/model',
+    thinkingLevel: 'max',
+  });
+  assert.ok(fixture.messages.at(-1)!.text.includes(selection));
+  fixture.ctx.model = fixture.models[0] as typeof fixture.ctx.model;
+  fixture.effort('low');
+  await saveToolSettings('commit', {
+    model: 'custom/organization/model',
+    thinkingLevel: 'max',
+  });
+  await fixture.run();
+  assert.ok(fixture.messages.at(-1)!.text.includes(selection));
 });
 
 void test('/commit rejects unavailable models, disallowed inheritance and stale explicit policy without dispatch', async t => {

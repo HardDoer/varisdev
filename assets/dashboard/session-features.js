@@ -674,6 +674,14 @@ export function initSessionFeatures(options) {
         !['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)
       )
         return;
+      if (
+        event.key === 'Enter' &&
+        $('parent-prompt').value ===
+          `/${suggestions[suggestionIndex].name.replace(/^\//, '')}`
+      ) {
+        $('command-suggestions').hidden = true;
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.key === 'Escape') $('command-suggestions').hidden = true;

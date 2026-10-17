@@ -27,6 +27,7 @@ const allowedEfforts = [
   'medium',
   'high',
   'xhigh',
+  'max',
 ] as const;
 
 const idSchema = Type.String({
@@ -386,7 +387,7 @@ export function registerAgentTools(
         const thinkingLevel = params.thinkingLevel ?? pi.getThinkingLevel();
         if (!allowedEfforts.some(effort => effort === thinkingLevel))
           throw new Error(
-            'Agent thinkingLevel must be off, minimal, low, medium, high, or xhigh.',
+            'Agent thinkingLevel must be off, minimal, low, medium, high, xhigh, or max.',
           );
         const workerOptions = {
           cwd,

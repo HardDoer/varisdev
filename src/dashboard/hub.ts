@@ -682,7 +682,8 @@ export class DashboardHub {
         dialog?.kind !== 'terminal' ||
         Object.keys(response).length !== 1 ||
         typeof response.action !== 'string' ||
-        !dialog.actions?.some(action => action.id === response.action)
+        (!dialog.actions?.some(action => action.id === response.action) &&
+          !dialog.tabs?.some(tab => `tab:${tab.id}` === response.action))
       )
         throw new DashboardInputError('Invalid extension dialog action.');
       parent.ui.respond(dialogId, {action: response.action});

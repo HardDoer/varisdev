@@ -22,6 +22,7 @@ import {DashboardHub} from '../src/dashboard/hub.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import type {FactoryControl} from '../src/desktop/launcher.ts';
+import {DesktopToolSettings} from '../src/desktop/tool-settings.ts';
 
 async function until(condition: () => boolean) {
   const end = Date.now() + 5000;
@@ -268,7 +269,7 @@ for (const scenario of ['owned', 'tree', 'fork']) {
 }
 
 void test(
-  'attached model and thinking controls preserve active work and native commands never reach the model',
+  'attached model, scope and thinking controls preserve active work and native commands never reach the model',
   {timeout: 15000},
   async t => {
     const env = await fixture(t);
@@ -325,8 +326,34 @@ void test(
     });
     await session.prompt('/factory');
     assert.ok(control);
+    const toolSettings = new DesktopToolSettings({
+      sessionFeatures: async () => control!.features(),
+    });
+    session.setScopedModels([
+      {model: runtime.getModel(env.provider, 'one')!, thinkingLevel: 'high'},
+    ]);
+    const scoped = await control.features();
+    assert.deepEqual(scoped.scopedModels, [
+      {
+        model: {provider: env.provider, id: 'one', name: 'one'},
+        thinkingLevel: 'high',
+      },
+    ]);
+    assert.deepEqual(
+      (await toolSettings.getToolSettings('attached')).models,
+      scoped.scopedModels!.map(scoped => scoped.model),
+    );
     const run = session.prompt('Perform the read task');
     await until(() => !!env.held);
+    session.setScopedModels([{model: runtime.getModel(env.provider, 'two')!}]);
+    assert.deepEqual((await toolSettings.getToolSettings('attached')).models, [
+      {provider: env.provider, id: 'two', name: 'two'},
+    ]);
+    session.setScopedModels([]);
+    assert.deepEqual(
+      (await toolSettings.getToolSettings('attached')).models,
+      (await control.features()).models,
+    );
     await control.prompt(`/model ${env.provider}/two`);
     await control.prompt('/thinking high');
     for (const command of ['/model', '/settings', '/share', '/bug', '/export'])

@@ -102,7 +102,7 @@ export function sessionFeatures(
     ],
     models: runner
       .getModelRegistry()
-      .getAll()
+      .getAvailable()
       .map(model => ({
         id: model.id,
         provider: model.provider,
