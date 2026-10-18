@@ -14,6 +14,22 @@ Default: `~/.local/varisdev` on macOS and Linux, or `%USERPROFILE%\.local\varisd
 
 The installer configures PATH for Bash, Zsh, Fish, and Nushell, respecting `ZDOTDIR` and `XDG_CONFIG_HOME`. Open a new terminal or use the activation command printed by the installer. Pass `--no-path` to the shell script or `-NoPath` to the PowerShell script to manage PATH yourself.
 
+### Permission denied opening a shell startup file
+
+An error such as `EACCES: permission denied, open '/Users/you/.zshrc'` during PATH setup means the app has been installed, but the installer cannot update that shell file. On macOS, open `~/Applications/VarisDev.app`, or launch a default installation from the terminal:
+
+```sh
+"$HOME/.local/varisdev/bin/varisdev"
+```
+
+To use `varisdev` in the current terminal:
+
+```sh
+export PATH="$HOME/.local/varisdev/bin:$PATH"
+```
+
+For a permanent PATH entry, add that export to a shell startup file you can edit. Use your custom install directory if you chose one.
+
 ## Updates
 
 Use **Updates → Check for updates** or `varisdev update`. Restart when prompted.

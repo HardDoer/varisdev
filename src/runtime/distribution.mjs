@@ -117,6 +117,7 @@ function run(args, cwd, env = process.env) {
 /**
  * @param {string} bin
  * @param {{home?: string, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform}} [options]
+ * @returns {Promise<{activation?: string, skippedProfiles: string[]}>}
  */
 export async function configurePath(
   bin,
@@ -142,7 +143,7 @@ export async function configurePath(
     if (result.error) throw result.error;
     if (result.status !== 0)
       throw new Error('Could not add VarisDev to your user PATH.');
-    return;
+    return {skippedProfiles: []};
   }
   const shell = env.SHELL || userInfo().shell || '';
   const config = env.XDG_CONFIG_HOME || join(home, '.config');
@@ -173,13 +174,21 @@ export async function configurePath(
   } else {
     profiles = [join(home, '.profile')];
   }
+  const skippedProfiles = [];
   for (const profile of profiles) {
-    await mkdir(dirname(profile), {recursive: true});
-    const current = existsSync(profile) ? await readFile(profile, 'utf8') : '';
-    if (!current.split('\n').includes(line))
-      await appendFile(profile, `\n# VarisDev\n${line}\n`);
+    try {
+      await mkdir(dirname(profile), {recursive: true});
+      const current = existsSync(profile)
+        ? await readFile(profile, 'utf8')
+        : '';
+      if (!current.split('\n').includes(line))
+        await appendFile(profile, `\n# VarisDev\n${line}\n`);
+    } catch (error) {
+      if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error;
+      skippedProfiles.push(profile);
+    }
   }
-  return line;
+  return {activation: line, skippedProfiles};
 }
 
 export async function install(args = process.argv.slice(2)) {
@@ -263,10 +272,21 @@ export async function install(args = process.argv.slice(2)) {
       });
     const bin = process.platform === 'win32' ? prefix : join(prefix, 'bin');
     if (addPath) {
-      const activation = await configurePath(bin);
-      console.log('Installed. Open a new terminal and run varisdev.');
-      if (activation)
-        console.log(`To use this terminal now, run:\n${activation}`);
+      const {activation, skippedProfiles} = await configurePath(bin);
+      if (skippedProfiles.length) {
+        console.log('Installed. Shell PATH setup is incomplete.');
+        for (const profile of skippedProfiles)
+          console.warn(
+            `VarisDev: Cannot update ${profile}: permission denied or read-only file.`,
+          );
+        console.log(
+          `To use this terminal now, run:\n${activation}\nTo set PATH permanently, add that line to a writable shell startup file.`,
+        );
+      } else {
+        console.log('Installed. Open a new terminal and run varisdev.');
+        if (activation)
+          console.log(`To use this terminal now, run:\n${activation}`);
+      }
     } else console.log(`Installed. Add ${bin} to PATH, then run varisdev.`);
   } finally {
     await rm(temporary, {recursive: true, force: true, maxRetries: 5});

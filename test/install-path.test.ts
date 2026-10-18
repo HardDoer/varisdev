@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFile, spawnSync} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import fs, {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
@@ -47,7 +48,8 @@ for (const shell of ['bash', 'zsh', 'fish', 'nu']) {
           'export EXISTING_SETTING=kept\n',
         );
       const options = {home, env, platform: 'linux' as const};
-      const activation = await configurePath(bin, options);
+      const {activation, skippedProfiles} = await configurePath(bin, options);
+      assert.deepEqual(skippedProfiles, []);
       const profile =
         shell === 'bash'
           ? join(home, '.bashrc')
@@ -101,3 +103,95 @@ for (const shell of ['bash', 'zsh', 'fish', 'nu']) {
     },
   );
 }
+
+for (const [operation, code] of [
+  ['readFile', 'EACCES'],
+  ['appendFile', 'EACCES'],
+  ['appendFile', 'EPERM'],
+  ['appendFile', 'EROFS'],
+] as const) {
+  void test(`zsh PATH setup continues after ${operation} fails with ${code}`, async t => {
+    const home = await mkdtemp(join(tmpdir(), 'varisdev-path-permissions-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const profile = join(home, '.zshrc');
+    const existing = 'export EXISTING_SETTING=kept\n';
+    await writeFile(profile, existing);
+    const original = fs[operation];
+    const failure = t.mock.method(
+      fs,
+      operation,
+      async (path: unknown, ...args: unknown[]) => {
+        if (path === profile)
+          throw Object.assign(new Error('Permission denied'), {code});
+        return Reflect.apply(original, fs, [path, ...args]);
+      },
+    );
+    syncBuiltinESMExports();
+    t.after(() => {
+      failure.mock.restore();
+      syncBuiltinESMExports();
+    });
+    const bin = join(home, 'install space', 'bin');
+    const options = {
+      home,
+      env: {SHELL: '/bin/zsh'},
+      platform: 'darwin' as const,
+    };
+    const result = await configurePath(bin, options);
+    assert.deepEqual(result.skippedProfiles, [profile]);
+    assert.equal(result.activation, `export PATH='${bin}':"$PATH"`);
+    const login = await readFile(join(home, '.zprofile'), 'utf8');
+    assert.ok(login.includes(result.activation));
+    assert.deepEqual(await configurePath(bin, options), result);
+    assert.equal(await readFile(join(home, '.zprofile'), 'utf8'), login);
+    failure.mock.restore();
+    syncBuiltinESMExports();
+    assert.equal(await readFile(profile, 'utf8'), existing);
+  });
+}
+
+void test('zsh PATH setup returns manual activation when all profiles are inaccessible', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'varisdev-path-denied-'));
+  t.after(() => rm(home, {recursive: true, force: true}));
+  const failure = t.mock.method(fs, 'mkdir', async () => {
+    throw Object.assign(new Error('Permission denied'), {code: 'EACCES'});
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    failure.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const bin = join(home, 'bin');
+  const result = await configurePath(bin, {
+    home,
+    env: {SHELL: '/bin/zsh'},
+    platform: 'darwin',
+  });
+  assert.deepEqual(result.skippedProfiles, [
+    join(home, '.zshrc'),
+    join(home, '.zprofile'),
+  ]);
+  assert.equal(result.activation, `export PATH='${bin}':"$PATH"`);
+});
+
+void test('PATH setup still reports unexpected filesystem failures', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'varisdev-path-error-'));
+  t.after(() => rm(home, {recursive: true, force: true}));
+  const error = Object.assign(new Error('Disk full'), {code: 'ENOSPC'});
+  const failure = t.mock.method(fs, 'appendFile', async () => {
+    throw error;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    failure.mock.restore();
+    syncBuiltinESMExports();
+  });
+  await assert.rejects(
+    configurePath(join(home, 'bin'), {
+      home,
+      env: {SHELL: '/bin/zsh'},
+      platform: 'darwin',
+    }),
+    error,
+  );
+});
