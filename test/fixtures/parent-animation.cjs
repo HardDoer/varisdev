@@ -203,6 +203,10 @@ async function main() {
       let bound;
       let dynamic = new Float32Array();
       let draws = 0;
+      let allocations = 0;
+      let storageChanges = 0;
+      let staticUploads = 0;
+      const uploadStorage = new Map();
       const createBuffer = gl.createBuffer.bind(gl);
       gl.createBuffer = () => {
         const buffer = createBuffer();
@@ -216,8 +220,16 @@ async function main() {
       };
       const bufferData = gl.bufferData.bind(gl);
       gl.bufferData = (target, data, usage) => {
-        if (bound === buffers[1]) dynamic = new Float32Array(data);
+        allocations++;
         return bufferData(target, data, usage);
+      };
+      const bufferSubData = gl.bufferSubData.bind(gl);
+      gl.bufferSubData = (target, offset, data) => {
+        if (bound === buffers[0]) staticUploads++;
+        if (uploadStorage.get(bound) !== data.buffer) storageChanges++;
+        uploadStorage.set(bound, data.buffer);
+        if (buffers.indexOf(bound) % 3 === 1) dynamic = new Float32Array(data);
+        return bufferSubData(target, offset, data);
       };
       const drawArrays = gl.drawArrays.bind(gl);
       gl.drawArrays = (...args) => {
@@ -578,14 +590,26 @@ async function main() {
           }
           const burstDraws = draws - beforeBurst;
           const beforeFrames = draws;
+          const beforeAllocations = allocations;
+          const beforeStorageChanges = storageChanges;
+          const beforeStaticUploads = staticUploads;
           canvasLayoutReads = 0;
-          for (let index = 0; index < 60; index++) {
-            clock += 16;
-            const queued = [...callbacks];
-            callbacks.clear();
-            for (const [, callback] of queued) callback(clock);
-          }
+          const advanceAt = (frames, hz) => {
+            for (let index = 0; index < frames; index++) {
+              clock += 1000 / hz;
+              const queued = [...callbacks];
+              callbacks.clear();
+              for (const [, callback] of queued) callback(clock);
+            }
+          };
+          advanceAt(60, 60);
           const animatedDraws = draws - beforeFrames;
+          const beforeFastFrames = draws;
+          advanceAt(120, 120);
+          const fastDraws = draws - beforeFastFrames;
+          const frameAllocations = allocations - beforeAllocations;
+          const frameStorageChanges = storageChanges - beforeStorageChanges;
+          const frameStaticUploads = staticUploads - beforeStaticUploads;
           const layoutReads = canvasLayoutReads;
           document.body.hidden = true;
           const beforeHidden = draws;
@@ -603,6 +627,10 @@ async function main() {
           return {
             burstDraws,
             animatedDraws,
+            fastDraws,
+            frameAllocations,
+            frameStorageChanges,
+            frameStaticUploads,
             layoutReads,
             hiddenDraws,
             hiddenPending,
@@ -931,7 +959,7 @@ async function main() {
   );
 
   await run(
-    'heavy scene updates coalesce, cap geometry paints, avoid frame layout reads, and stop while hidden',
+    'heavy scenes follow 60/120 Hz frames, reuse storage, coalesce updates, and pause while hidden',
     async () => {
       const result = await evaluate(() => window.fixture.performanceScenario());
       assert.equal(
@@ -939,9 +967,22 @@ async function main() {
         0,
         'snapshot bursts must wait for the already queued frame',
       );
-      assert.ok(
-        result.animatedDraws >= 45 && result.animatedDraws <= 75,
-        `30 fps rendering should issue 45–75 draws, got ${result.animatedDraws}`,
+      assert.equal(
+        result.animatedDraws,
+        60 * 3,
+        'Every 60 Hz frame must paint',
+      );
+      assert.equal(result.fastDraws, 120 * 3, 'Every 120 Hz frame must paint');
+      assert.equal(result.frameAllocations, 0, 'GPU capacity must be reused');
+      assert.equal(
+        result.frameStorageChanges,
+        0,
+        'CPU vertex storage must be reused',
+      );
+      assert.equal(
+        result.frameStaticUploads,
+        0,
+        'Static geometry must stay on the GPU',
       );
       assert.equal(
         result.layoutReads,

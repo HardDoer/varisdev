@@ -13,6 +13,7 @@ import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
 import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {drawCleanupBot} from './robot-cleanup.js';
+import {Geometry, CUBE, OCTAGON} from './factory-geometry.js';
 
 const TAU = Math.PI * 2;
 const STARTLE_DURATION = 1.1;
@@ -127,99 +128,6 @@ function cameraMatrix(eye, target, aspect) {
   return multiply(projection, view);
 }
 
-// Primitive meshes have position and normal pairs. Flat cylinder sides retain
-// the clean facets of miniature machined parts.
-function cubeMesh() {
-  const result = [];
-  const faces = [
-    [
-      [1, 0, 0],
-      [
-        [1, -1, -1],
-        [1, 1, -1],
-        [1, 1, 1],
-        [1, -1, 1],
-      ],
-    ],
-    [
-      [-1, 0, 0],
-      [
-        [-1, -1, 1],
-        [-1, 1, 1],
-        [-1, 1, -1],
-        [-1, -1, -1],
-      ],
-    ],
-    [
-      [0, 1, 0],
-      [
-        [-1, 1, -1],
-        [-1, 1, 1],
-        [1, 1, 1],
-        [1, 1, -1],
-      ],
-    ],
-    [
-      [0, -1, 0],
-      [
-        [-1, -1, 1],
-        [-1, -1, -1],
-        [1, -1, -1],
-        [1, -1, 1],
-      ],
-    ],
-    [
-      [0, 0, 1],
-      [
-        [1, -1, 1],
-        [1, 1, 1],
-        [-1, 1, 1],
-        [-1, -1, 1],
-      ],
-    ],
-    [
-      [0, 0, -1],
-      [
-        [-1, -1, -1],
-        [-1, 1, -1],
-        [1, 1, -1],
-        [1, -1, -1],
-      ],
-    ],
-  ];
-  for (const [n, p] of faces)
-    for (const i of [0, 1, 2, 0, 2, 3])
-      result.push(...p[i].map(v => v / 2), ...n);
-  return result;
-}
-function cylinderMesh(segments = 12) {
-  const result = [];
-  const v = (p, n) => result.push(...p, ...n);
-  for (let i = 0; i < segments; i++) {
-    const a = (i / segments) * TAU,
-      b = ((i + 1) / segments) * TAU;
-    const p = [Math.cos(a) * 0.5, Math.sin(a) * 0.5];
-    const q = [Math.cos(b) * 0.5, Math.sin(b) * 0.5];
-    const n = [Math.cos((a + b) / 2), 0, Math.sin((a + b) / 2)];
-    const side = [
-      [p[0], -0.5, p[1]],
-      [p[0], 0.5, p[1]],
-      [q[0], 0.5, q[1]],
-      [q[0], -0.5, q[1]],
-    ];
-    for (const j of [0, 1, 2, 0, 2, 3]) v(side[j], n);
-    for (const sign of [-1, 1]) {
-      v([0, sign * 0.5, 0], [0, sign, 0]);
-      v([p[0], sign * 0.5, p[1]], [0, sign, 0]);
-      v([q[0], sign * 0.5, q[1]], [0, sign, 0]);
-    }
-  }
-  return result;
-}
-const CUBE = cubeMesh();
-const CYLINDER = cylinderMesh();
-const OCTAGON = cylinderMesh(8);
-
 // Rotate body and fragment geometry around its local pivot.
 function tumble(v, angles) {
   const [rx, ry, rz] = angles;
@@ -233,22 +141,6 @@ function tumble(v, angles) {
     xx * Math.sin(rz) + y * Math.cos(rz),
     zz,
   ];
-}
-
-function clipPolygon(vertices, axis, boundary, above) {
-  const clipped = [];
-  for (let i = 0; i < vertices.length; i++) {
-    const a = vertices[i],
-      b = vertices[(i + 1) % vertices.length];
-    const insideA = above ? a[axis] >= boundary : a[axis] <= boundary;
-    const insideB = above ? b[axis] >= boundary : b[axis] <= boundary;
-    if (insideA) clipped.push(a);
-    if (insideA !== insideB) {
-      const t = (boundary - a[axis]) / (b[axis] - a[axis]);
-      clipped.push(a.map((n, k) => n + (b[k] - n) * t));
-    }
-  }
-  return clipped;
 }
 
 function cleanupFloor(x, z) {
@@ -270,13 +162,26 @@ function groundedDamagePose(geometry, pivot, pose, floor, hovering = false) {
   const rotation = corpse
     ? [0, 0, pose.collapse * Math.PI * 0.5]
     : pose.rotation;
+  // Only the rotated height is needed to ground the robot. Compute the
+  // rotation once rather than allocating vectors and doing trig per vertex.
+  const [rx, ry, rz] = rotation;
+  const cx = Math.cos(rx),
+    sx = Math.sin(rx);
+  const sy = Math.sin(ry),
+    cy = Math.cos(ry);
+  const sz = Math.sin(rz),
+    cz = Math.cos(rz);
+  const yx = cy * sz,
+    yy = sx * sy * sz + cx * cz,
+    yz = cx * sy * sz - sx * cz;
   let bottom = Infinity;
-  for (let i = 0; i < geometry.data.length; i += 10) {
-    const point = tumble(
-      geometry.data.slice(i, i + 3).map((n, axis) => n - pivot[axis]),
-      rotation,
-    );
-    bottom = Math.min(bottom, point[1] + pivot[1]);
+  const d = geometry.data;
+  for (let i = 0; i < geometry.length; i += 10) {
+    const y =
+      (d[i] - pivot[0]) * yx +
+      (d[i + 1] - pivot[1]) * yy +
+      (d[i + 2] - pivot[2]) * yz;
+    bottom = Math.min(bottom, y + pivot[1]);
   }
   const offset = [...pose.offset];
   // Keep the supporting foot on the floor while tipping. Flying drones first
@@ -286,177 +191,6 @@ function groundedDamagePose(geometry, pivot, pose, floor, hovering = false) {
     for (let axis = 0; axis < 3; axis++)
       offset[axis] += pose.corpseOffset[axis];
   return {...pose, rotation, offset};
-}
-
-class Geometry {
-  constructor() {
-    this.data = [];
-  }
-  append(geometry, position, yaw = 0, originX = 0) {
-    const c = Math.cos(yaw),
-      s = Math.sin(yaw);
-    for (let i = 0; i < geometry.data.length; i += 10) {
-      const d = geometry.data,
-        x = d[i] - originX,
-        z = d[i + 2];
-      this.data.push(
-        position[0] + x * c + z * s,
-        position[1] + d[i + 1],
-        position[2] + z * c - x * s,
-        d[i + 3] * c + d[i + 5] * s,
-        d[i + 4],
-        d[i + 5] * c - d[i + 3] * s,
-        d[i + 6],
-        d[i + 7],
-        d[i + 8],
-        d[i + 9],
-      );
-    }
-  }
-  appendBody(geometry, pivot, pose, floor = -Infinity, exit = Infinity) {
-    if (!pose.visible) return;
-    if (
-      !Number.isFinite(floor) &&
-      !Number.isFinite(exit) &&
-      pose.lift === 0 &&
-      pose.offset.every(n => n === 0) &&
-      pose.rotation.every(n => n === 0)
-    ) {
-      // Pristine/settled robots dominate the steady-state scene. Avoid all
-      // per-vertex arrays and trig in this path (and large argument spreads).
-      for (let i = 0; i < geometry.data.length; i++)
-        this.data.push(geometry.data[i]);
-      return;
-    }
-    // Clip replacement triangles against the hatch, so the robot actually
-    // emerges through the floor instead of showing through its foundation.
-    const d = geometry.data;
-    for (let i = 0; i < d.length; i += 30) {
-      let triangle = [];
-      for (let j = i; j < i + 30; j += 10) {
-        const p = tumble(
-          d.slice(j, j + 3).map((n, a) => n - pivot[a]),
-          pose.rotation,
-        );
-        const n = tumble(d.slice(j + 3, j + 6), pose.rotation);
-        triangle.push([
-          ...p.map(
-            (v, a) => v + pivot[a] + pose.offset[a] + (a === 1 ? pose.lift : 0),
-          ),
-          ...n,
-          ...d.slice(j + 6, j + 10),
-        ]);
-      }
-      if (Number.isFinite(floor))
-        triangle = clipPolygon(triangle, 1, floor, true);
-      // The cutaway ends at the service exit. Hide geometry beyond it so the
-      // departing cleaner and its cargo never float over the empty backdrop.
-      if (Number.isFinite(exit))
-        triangle = clipPolygon(triangle, 0, exit, false);
-      for (let j = 1; j < triangle.length - 1; j++)
-        this.data.push(...triangle[0], ...triangle[j], ...triangle[j + 1]);
-    }
-  }
-  shape(mesh, p, s, color, emission = 0, yaw = 0, basis = null) {
-    const c = Math.cos(yaw),
-      q = Math.sin(yaw);
-    for (let i = 0; i < mesh.length; i += 6) {
-      const x = mesh[i] * s[0],
-        y = mesh[i + 1] * s[1],
-        z = mesh[i + 2] * s[2];
-      const nx = mesh[i + 3],
-        ny = mesh[i + 4],
-        nz = mesh[i + 5];
-      if (basis) {
-        const [u, v, w] = basis;
-        this.data.push(
-          p[0] + x * u[0] + y * v[0] + z * w[0],
-          p[1] + x * u[1] + y * v[1] + z * w[1],
-          p[2] + x * u[2] + y * v[2] + z * w[2],
-          nx * u[0] + ny * v[0] + nz * w[0],
-          nx * u[1] + ny * v[1] + nz * w[1],
-          nx * u[2] + ny * v[2] + nz * w[2],
-          ...color,
-          emission,
-        );
-      } else {
-        this.data.push(
-          p[0] + x * c + z * q,
-          p[1] + y,
-          p[2] + z * c - x * q,
-          nx * c + nz * q,
-          ny,
-          nz * c - nx * q,
-          ...color,
-          emission,
-        );
-      }
-    }
-  }
-  box(p, s, color, emission = 0, yaw = 0) {
-    this.shape(CUBE, p, s, color, emission, yaw);
-  }
-  cylinder(p, s, color, emission = 0) {
-    this.shape(CYLINDER, p, s, color, emission);
-  }
-  octagon(p, s, color, emission = 0) {
-    this.shape(OCTAGON, p, s, color, emission);
-  }
-  rod(a, b, radius, color, emission = 0) {
-    const d = b.map((n, i) => n - a[i]);
-    const length = Math.hypot(...d);
-    if (length < 0.0001) return;
-    const v = d.map(n => n / length);
-    const u = normalize(
-      cross(Math.abs(v[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0], v),
-    );
-    const w = cross(u, v);
-    this.shape(
-      OCTAGON,
-      a.map((n, i) => (n + b[i]) / 2),
-      [radius * 2, length, radius * 2],
-      color,
-      emission,
-      0,
-      [u, v, w],
-    );
-  }
-  ring(
-    p,
-    radius,
-    width,
-    color,
-    emission = 0,
-    segments = 40,
-    fraction = 1,
-    phase = 0,
-  ) {
-    // Flat annular ribbons take six vertices per segment, keeping the live
-    // selection and holographic rings inexpensive on integrated GPUs.
-    for (let i = 0; i < segments * fraction; i++) {
-      const a = phase + (i / segments) * TAU,
-        b = phase + ((i + 0.82) / segments) * TAU;
-      const points = [
-        [a, radius - width],
-        [a, radius + width],
-        [b, radius + width],
-        [b, radius - width],
-      ];
-      for (const j of [0, 1, 2, 0, 2, 3]) {
-        const [angle, r] = points[j];
-        this.data.push(
-          p[0] + Math.cos(angle) * r,
-          p[1],
-          p[2] + Math.sin(angle) * r,
-          0,
-          1,
-          0,
-          ...color,
-          emission,
-        );
-      }
-    }
-  }
 }
 
 function buildFactory(C, identity = factoryIdentity('')) {
@@ -720,11 +454,10 @@ export function createFactoryScene(
   }
   function makeBuffer(geometry, usage) {
     const buffer = gl.createBuffer();
-    const storage = new Float32Array(geometry.data);
     resources.buffers.push(buffer);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, storage, usage);
-    return {buffer, count: geometry.data.length / 10, storage};
+    const target = {buffer, count: 0, capacity: 0};
+    upload(target, geometry, usage);
+    return target;
   }
   let C = Object.fromEntries(
     Object.entries(COLORS).map(([key, color]) => [key, [...color]]),
@@ -768,8 +501,7 @@ export function createFactoryScene(
       geometryPool.push(geometry);
     }
     geometryPoolIndex++;
-    geometry.data.length = 0;
-    return geometry;
+    return geometry.reset();
   }
 
   function syncWhip() {
@@ -794,7 +526,6 @@ export function createFactoryScene(
   }
   let cameraTarget = [-5.6, 1.6, 0];
   let lastFrame = 0,
-    lastPaint = 0,
     time = 0,
     width = 1,
     height = 1,
@@ -1804,16 +1535,15 @@ export function createFactoryScene(
     };
   }
   function upload(target, geometry, usage = gl.DYNAMIC_DRAW) {
-    const length = geometry.data.length;
-    if (target.storage.length < length) {
-      let capacity = Math.max(1024, target.storage.length || 1);
-      while (capacity < length) capacity *= 2;
-      target.storage = new Float32Array(capacity);
-    }
-    target.storage.set(geometry.data, 0);
     gl.bindBuffer(gl.ARRAY_BUFFER, target.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, target.storage.subarray(0, length), usage);
-    target.count = length / 10;
+    // Retain GPU capacity just like the CPU geometry pool. Only upload the
+    // live prefix, and never reallocate buffers in steady-state animation.
+    if (geometry.length > target.capacity) {
+      target.capacity = geometry.data.length;
+      gl.bufferData(gl.ARRAY_BUFFER, target.capacity * 4, usage);
+    }
+    if (geometry.length) gl.bufferSubData(gl.ARRAY_BUFFER, 0, geometry.view());
+    target.count = geometry.length / 10;
   }
   function draw(target) {
     gl.bindBuffer(gl.ARRAY_BUFFER, target.buffer);
@@ -2175,7 +1905,6 @@ export function createFactoryScene(
     frame = 0;
     if (!canAnimate()) {
       lastFrame = 0;
-      lastPaint = 0;
       return;
     }
     const elapsed = lastFrame ? (now - lastFrame) / 1000 : 0;
@@ -2232,18 +1961,11 @@ export function createFactoryScene(
       });
       flashes = flashes.filter(f => f.age < f.life);
     }
-    // Geometry generation and GPU uploads dominate scene cost. The SVG
-    // fallback already paints at this cadence, which remains smooth while
-    // bounding work when several agents animate at once.
-    if (!lastPaint || now - lastPaint >= 1000 / 30) {
-      lastPaint = now;
-      render();
-    }
+    // Follow the display cadence. A 30 Hz elapsed-time gate both halves the
+    // frame rate and drops to 20 Hz when RAF timestamps round below 33.33ms.
+    render();
     if (canAnimate()) schedule();
-    else {
-      lastFrame = 0;
-      lastPaint = 0;
-    }
+    else lastFrame = 0;
   }
   function schedule() {
     if (canAnimate() && !frame) frame = requestAnimationFrame(tick);
@@ -2252,7 +1974,6 @@ export function createFactoryScene(
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     lastFrame = 0;
-    lastPaint = 0;
   }
   function onResize(entries) {
     if (disposed) return;

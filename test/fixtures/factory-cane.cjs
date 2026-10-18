@@ -174,10 +174,10 @@ async function main() {
           bound = buffer;
           return bindBuffer(target, buffer);
         };
-        const bufferData = gl.bufferData.bind(gl);
-        gl.bufferData = (target, data, usage) => {
+        const bufferSubData = gl.bufferSubData.bind(gl);
+        gl.bufferSubData = (target, offset, data) => {
           if (bound === buffers[1]) dynamic = new Float32Array(data);
-          return bufferData(target, data, usage);
+          return bufferSubData(target, offset, data);
         };
         const selections = [];
         const scene = createFactoryScene(canvas, {

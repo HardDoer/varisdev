@@ -372,12 +372,12 @@
       const gpuBuffers = new Map();
       let boundArrayBuffer = null;
       const originalBindBuffer = gl.bindBuffer.bind(gl);
-      const originalBufferData = gl.bufferData.bind(gl);
+      const originalBufferSubData = gl.bufferSubData.bind(gl);
       gl.bindBuffer = (target, buffer) => {
         if (target === gl.ARRAY_BUFFER) boundArrayBuffer = buffer;
         return originalBindBuffer(target, buffer);
       };
-      gl.bufferData = (target, data, usage) => {
+      gl.bufferSubData = (target, offset, data) => {
         if (
           target === gl.ARRAY_BUFFER &&
           boundArrayBuffer &&
@@ -390,7 +390,7 @@
             ),
           );
         }
-        return originalBufferData(target, data, usage);
+        return originalBufferSubData(target, offset, data);
       };
 
       let latestLayout = [];

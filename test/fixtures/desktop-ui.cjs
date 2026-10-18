@@ -2459,15 +2459,17 @@ async function main() {
         const gl = document
           .getElementById('factory-canvas')
           .getContext('webgl');
-        const bufferData = gl.bufferData.bind(gl);
+        const bufferSubData = gl.bufferSubData.bind(gl);
         window.fixtureGeometry = new Map();
-        gl.bufferData = (target, data, usage) => {
-          if (usage === gl.DYNAMIC_DRAW)
+        gl.bufferSubData = (target, offset, data) => {
+          if (
+            gl.getBufferParameter(target, gl.BUFFER_USAGE) === gl.DYNAMIC_DRAW
+          )
             window.fixtureGeometry.set(
               gl.getParameter(gl.ARRAY_BUFFER_BINDING),
               new Float32Array(data),
             );
-          bufferData(target, data, usage);
+          bufferSubData(target, offset, data);
         };
       });
       await settle();
