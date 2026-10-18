@@ -497,6 +497,7 @@ main > .welcome {
 /* Reserve space for every section; only the lists scroll as they grow. */
 .factory-column {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) minmax(148px, 23%);
   gap: 10px;
   min-width: 0;
@@ -507,6 +508,7 @@ main > .welcome {
 .factory-panel {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 .factory-panel > :not(.scene) {
@@ -517,59 +519,6 @@ main > .welcome {
   border: 1px solid var(--line);
   border-radius: 14px;
   overflow: hidden;
-}
-.factory-heading {
-  padding: 10px 12px;
-  display: grid;
-  gap: 6px;
-}
-.factory-heading > div {
-  min-width: 0;
-}
-.factory-heading > div:first-child {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.factory-heading h2 {
-  max-width: 55%;
-  flex: 0 0 auto;
-  font-size: 1.125rem;
-}
-.factory-heading h2,
-.factory-heading .mono,
-#factory-model {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.factory-heading .mono {
-  font-size: 0.75rem;
-}
-.factory-file-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.factory-file-actions .quiet-button {
-  padding: 5px 8px;
-  font-size: 0.75rem;
-}
-.factory-state {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 9px;
-  min-width: 0;
-}
-.model-settings {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  max-width: 100%;
-  margin-left: auto;
 }
 .effort-badge {
   padding: 4px 8px;
@@ -583,20 +532,20 @@ main > .welcome {
 .factory-metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
-  padding: 5px 12px;
+  gap: 2px 10px;
+  padding: 4px 10px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 0.75rem;
 }
+.factory-metrics > span {
+  white-space: nowrap;
+}
 .factory-metrics strong {
   color: var(--text);
-  font-size: 1rem;
+  font-size: 0.875rem;
   margin-right: 3px;
-}
-.context-meter {
-  margin-left: auto;
 }
 .scene {
   flex: 1 1 0;
@@ -1923,9 +1872,6 @@ dialog::backdrop {
   #factory-canvas {
     top: -10%;
   }
-  .context-meter {
-    margin-left: 0;
-  }
 }
 @media (max-width: 950px) {
   .overview-counts {
@@ -2031,10 +1977,6 @@ dialog::backdrop {
   }
   .parent-card .project-path {
     display: none;
-  }
-  .factory-heading {
-    padding: 6px 10px;
-    gap: 4px;
   }
   .scene-labels {
     padding: 4px 10px;

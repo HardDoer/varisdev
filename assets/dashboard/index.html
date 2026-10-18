@@ -21,6 +21,7 @@
     <link rel="stylesheet" href="accounts.css" />
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="app-menu.css" />
+    <link rel="stylesheet" href="live-view.css" />
     <link rel="stylesheet" href="session-history.css" />
     <link rel="stylesheet" href="recent-projects.css" />
     <link
@@ -357,6 +358,23 @@
         </button>
       </div>
     </dialog>
+    <aside
+      id="factory-agents-drawer"
+      popover="auto"
+      aria-labelledby="factory-agents-title"
+    >
+      <div class="factory-drawer-heading">
+        <h2 id="factory-agents-title">Agents &amp; history</h2>
+        <button
+          class="quiet-button"
+          type="button"
+          popovertarget="factory-agents-drawer"
+          popovertargetaction="hide"
+        >
+          Close
+        </button>
+      </div>
+    </aside>
     <main>
       <section
         id="welcome"
@@ -589,27 +607,87 @@
             </div>
             <div id="parents" class="parent-grid"></div>
           </section>
-          <section class="factory-panel panel" aria-labelledby="factory-title">
+          <section
+            id="factory-panel"
+            class="factory-panel panel"
+            aria-labelledby="factory-title"
+          >
             <div class="factory-heading">
-              <div>
+              <div class="factory-title-group">
                 <h2 id="factory-title">Parent session</h2>
-                <p id="factory-path" class="mono muted"></p>
+                <span id="parent-status" class="status-badge"></span>
               </div>
-              <div class="factory-file-actions">
+              <div class="factory-view-actions">
                 <button
-                  id="close-parent-session"
+                  id="factory-info-button"
                   class="quiet-button"
                   type="button"
-                  title="Close this parent session and stop its agents"
+                  popovertarget="factory-info"
+                  aria-label="Session info"
+                  aria-expanded="false"
+                  aria-haspopup="dialog"
+                  title="Session info"
                 >
-                  Close session
+                  Info
+                </button>
+                <button
+                  id="expand-live-view"
+                  class="quiet-button"
+                  type="button"
+                  aria-label="Expand live view"
+                  aria-expanded="false"
+                  aria-haspopup="dialog"
+                  aria-controls="factory-panel"
+                  title="Expand live view"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <path
+                      class="live-view-expand-icon"
+                      d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"
+                    />
+                    <path
+                      class="live-view-restore-icon"
+                      d="M3 7h4V3m10 4h-4V3M7 17v-4H3m10 4v-4h4"
+                    />
+                  </svg>
                 </button>
               </div>
-              <div class="factory-state">
-                <span id="parent-status" class="status-badge"></span>
-                <div class="model-settings">
-                  <span id="factory-model" class="muted"></span>
-                  <span id="factory-effort" class="effort-badge" hidden></span>
+              <div
+                id="factory-info"
+                popover="auto"
+                role="dialog"
+                aria-labelledby="factory-info-title"
+              >
+                <h3 id="factory-info-title">Session info</h3>
+                <dl class="factory-info-details">
+                  <div>
+                    <dt>Session</dt>
+                    <dd id="factory-session-name"></dd>
+                  </div>
+                  <div>
+                    <dt>Folder</dt>
+                    <dd id="factory-path" class="mono"></dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd id="factory-model"></dd>
+                  </div>
+                  <div>
+                    <dt>Activity</dt>
+                    <dd id="factory-session-activity"></dd>
+                  </div>
+                </dl>
+                <span id="factory-effort" class="effort-badge" hidden></span>
+                <p id="context-meter" class="context-meter" hidden></p>
+                <div class="factory-file-actions">
+                  <button
+                    id="close-parent-session"
+                    class="quiet-button"
+                    type="button"
+                    title="Close this parent session and stop its agents"
+                  >
+                    Close session
+                  </button>
                 </div>
               </div>
             </div>
@@ -617,8 +695,7 @@
               <span><strong id="metric-running">0</strong> working</span
               ><span><strong id="metric-queued">0</strong> queued</span
               ><span><strong id="metric-completed">0</strong> completed</span
-              ><span><strong id="metric-attention">0</strong> failed</span
-              ><span id="context-meter" class="context-meter" hidden></span>
+              ><span><strong id="metric-attention">0</strong> failed</span>
             </div>
             <div id="scene" class="scene">
               <div
@@ -655,7 +732,7 @@
                 <p id="parent-activity"></p>
               </div>
               <button id="inspect-parent" class="quiet-button" type="button">
-                Inspect parent session ↗
+                Inspect parent ↗
               </button>
             </div>
           </section>
@@ -710,6 +787,16 @@
               </p>
             </section>
           </div>
+          <button
+            id="factory-agents-button"
+            class="quiet-button"
+            type="button"
+            popovertarget="factory-agents-drawer"
+            aria-expanded="false"
+            hidden
+          >
+            Agents &amp; history <span aria-hidden="true">↗</span>
+          </button>
         </div>
         <aside
           id="inspector"

@@ -1891,11 +1891,15 @@ export function createFactoryScene(
       onLayout(layout);
     }
   }
+  function isInView() {
+    // Top-layer views can escape an ancestor that clipped the observed canvas.
+    return inView || Boolean(canvas.closest(':popover-open, :modal'));
+  }
   function canAnimate() {
     return (
       (motion || reaction?.animated) &&
       !document.hidden &&
-      inView &&
+      isInView() &&
       !canvas.closest('[hidden]') &&
       !disposed &&
       !contextLost
@@ -1979,7 +1983,7 @@ export function createFactoryScene(
     if (disposed) return;
     const observed = entries?.[0]?.contentRect;
     resize(observed || canvas.getBoundingClientRect());
-    if (!document.hidden && inView && !canvas.closest('[hidden]')) render();
+    if (!document.hidden && !canvas.closest('[hidden]')) render();
     schedule();
   }
   function renderUpdate(immediate = false) {
@@ -1992,7 +1996,7 @@ export function createFactoryScene(
       return;
     // Structural changes must populate labels even when an offscreen canvas
     // is waiting for its intersection callback.
-    if (!inView && !immediate) return;
+    if (!isInView() && !immediate) return;
     if (immediate || !canAnimate() || !frame) render();
     schedule();
   }
@@ -2049,7 +2053,7 @@ export function createFactoryScene(
       disposed ||
       contextLost ||
       document.hidden ||
-      !inView ||
+      !isInView() ||
       canvas.closest('[hidden]')
     )
       return [];

@@ -18,6 +18,7 @@ import {
 import {initToolSettings} from './tool-settings.js';
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
+import {initLiveView} from './live-view.js';
 import {initSessionHistory} from './session-history.js';
 import {initRecentProjects} from './recent-projects.js';
 import {initAgentControls} from './agent-controls.js';
@@ -535,6 +536,7 @@ function selectSession(id) {
 function selectUnit(id) {
   if (id !== 'parent' && !snapshot()?.agents.some(item => item.id === id))
     return;
+  liveView.close();
   if (state.unitId !== id) {
     if (state.unitId === 'parent') rememberComposerHeight();
     saveConversationDisclosures();
@@ -618,6 +620,7 @@ function renderOverview() {
       ? `${parents.length} parent sessions (${workingParents} working) · ${workingAgents} working agents`
       : 'No parent sessions yet',
   );
+  $('hub-counts').title = $('hub-counts').textContent;
 }
 function createSceneLabel(id) {
   const element = node(
@@ -804,6 +807,7 @@ function renderFactory() {
   const tally = counts(data);
   text($('factory-title'), session.name);
   $('factory-title').title = session.name;
+  text($('factory-session-name'), session.name);
   text($('factory-path'), session.cwd);
   $('factory-path').title = session.cwd;
   text($('factory-model'), session.model);
@@ -827,6 +831,7 @@ function renderFactory() {
   $('context-meter').hidden = !context;
   text($('parent-activity'), session.activity || 'Waiting for a task');
   $('parent-activity').title = $('parent-activity').textContent;
+  text($('factory-session-activity'), $('parent-activity').textContent);
   renderProcessing(data);
   agentControls.render();
   processingEffects.update(data, {
@@ -1806,6 +1811,7 @@ function render() {
   if (state.disposed) return;
   renderScheduler.rendered();
   const hasSession = Boolean(snapshot());
+  liveView.setSession(hasSession ? state.sessionId : null);
   if (!hasSession && $('welcome').hidden) void recentProjects.refresh();
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
@@ -2472,6 +2478,7 @@ $('open-session-settings').addEventListener('click', async () => {
   }
 });
 const appMenu = initAppMenu();
+const liveView = initLiveView();
 const recentProjects = initRecentProjects({api, open: openFolder});
 const cleanupSessionHistory = initSessionHistory({
   api,
@@ -2548,6 +2555,7 @@ window.addEventListener('unload', () => {
   cleanupAccounts();
   toolSettings.dispose();
   appMenu.dispose();
+  liveView.dispose();
   recentProjects.dispose();
   cleanupSessionHistory();
   cleanupSessionSelection?.();

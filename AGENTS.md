@@ -1,3 +1,17 @@
+# Verification
+
+- Keep verification proportional to the change and use the existing test harness where available.
+- Every verification command must have an enforced process timeout. A timed-out check must terminate its child processes too; do not rely only on a tool-call timeout or launch an unbounded synchronous Electron process.
+- Report a timeout or stalled check immediately. Investigate the failure before retrying, and stop once the relevant checks pass.
+
+# Layout
+
+- All main elements must remain visible without page scrolling. Content inside an element may scroll.
+- When space is minimal, panels may move into drawers. Keep a clearly labeled, visible control for opening each drawer, and preserve access to its information and actions.
+- Apply this convention at smaller window sizes and supported zoom levels. Reflow and tighten spacing before allowing controls or panels to be clipped.
+- Give the live scene enough space to remain readable and clickable. Keep session information and actions accessible from its compact controls.
+- Review actual rendered screenshots for clipping, overlap, readable content, and usable scene size. Geometry checks alone do not establish that a layout works.
+
 # UI text
 
 - Avoid redundant UI notes that explain obvious behavior or internal implementation details, such as “Choices follow Pi’s Scoped models.” Include notes only when they help the user make a decision or understand a non-obvious constraint.
