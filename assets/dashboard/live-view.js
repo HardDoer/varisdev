@@ -9,11 +9,37 @@ export function initLiveView() {
   const drawer = document.getElementById('factory-agents-drawer');
   const drawerButton = document.getElementById('factory-agents-button');
   const workers = document.querySelector('.worker-panels');
-  const compact = window.matchMedia('(max-width: 950px), (max-height: 700px)');
   const home = panel.parentElement;
   let inertNodes = [];
   let expanded = false;
   let sessionId;
+
+  function placeInfo() {
+    const {width, height} = panel.getBoundingClientRect();
+    if (!width || !height) return;
+    // Reserve room for the scene after the header and its wrapping controls.
+    const collapsed = height < (width > 540 ? 440 : 420);
+    if (info.hasAttribute('popover') === collapsed) return;
+    const focused = document.activeElement;
+    closeInfo();
+    infoButton.hidden = !collapsed;
+    if (collapsed) {
+      info.setAttribute('popover', 'auto');
+      info.setAttribute('role', 'dialog');
+      if (info.contains(focused)) infoButton.focus({preventScroll: true});
+    } else {
+      info.removeAttribute('popover');
+      info.removeAttribute('role');
+      if (focused === infoButton) expand.focus({preventScroll: true});
+      else if (info.contains(focused)) focused.focus({preventScroll: true});
+    }
+  }
+  const resize = new window.ResizeObserver(() => {
+    placeWorkers();
+    placeInfo();
+  });
+  resize.observe(home);
+  resize.observe(panel);
 
   function syncInfo() {
     infoButton.setAttribute(
@@ -36,9 +62,14 @@ export function initLiveView() {
     syncDrawer();
   }
   function placeWorkers() {
+    const {width, height} = home.getBoundingClientRect();
+    if (!width || !height) return;
+    const collapsed = height < 600;
+    if (home.classList.contains('compact-workers') === collapsed) return;
     closeDrawer();
-    drawerButton.hidden = !compact.matches;
-    if (compact.matches) drawer.append(workers);
+    home.classList.toggle('compact-workers', collapsed);
+    drawerButton.hidden = !collapsed;
+    if (collapsed) drawer.append(workers);
     else home.insertBefore(workers, drawerButton);
   }
   function syncExpanded() {
@@ -114,8 +145,6 @@ export function initLiveView() {
   expand.addEventListener('click', toggle);
   info.addEventListener('toggle', syncInfo);
   drawer.addEventListener('toggle', syncDrawer);
-  compact.addEventListener('change', placeWorkers);
-  placeWorkers();
   actions.addEventListener('click', openAction, true);
   document.addEventListener('keydown', escapeInfo, true);
 
@@ -128,10 +157,10 @@ export function initLiveView() {
     },
     dispose() {
       close();
+      resize.disconnect();
       expand.removeEventListener('click', toggle);
       info.removeEventListener('toggle', syncInfo);
       drawer.removeEventListener('toggle', syncDrawer);
-      compact.removeEventListener('change', placeWorkers);
       actions.removeEventListener('click', openAction, true);
       document.removeEventListener('keydown', escapeInfo, true);
     },

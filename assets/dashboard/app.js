@@ -807,9 +807,6 @@ function renderFactory() {
   const tally = counts(data);
   text($('factory-title'), session.name);
   $('factory-title').title = session.name;
-  text($('factory-session-name'), session.name);
-  text($('factory-path'), session.cwd);
-  $('factory-path').title = session.cwd;
   text($('factory-model'), session.model);
   $('factory-model').title = session.model;
   text($('factory-effort'), `Effort: ${session.thinkingLevel ?? ''}`);
@@ -831,7 +828,6 @@ function renderFactory() {
   $('context-meter').hidden = !context;
   text($('parent-activity'), session.activity || 'Waiting for a task');
   $('parent-activity').title = $('parent-activity').textContent;
-  text($('factory-session-activity'), $('parent-activity').textContent);
   renderProcessing(data);
   agentControls.render();
   processingEffects.update(data, {

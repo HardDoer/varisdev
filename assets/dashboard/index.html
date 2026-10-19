@@ -627,6 +627,7 @@
                   aria-expanded="false"
                   aria-haspopup="dialog"
                   title="Session info"
+                  hidden
                 >
                   Info
                 </button>
@@ -652,32 +653,12 @@
                   </svg>
                 </button>
               </div>
-              <div
-                id="factory-info"
-                popover="auto"
-                role="dialog"
-                aria-labelledby="factory-info-title"
-              >
+              <div id="factory-info" aria-labelledby="factory-info-title">
                 <h3 id="factory-info-title">Session info</h3>
-                <dl class="factory-info-details">
-                  <div>
-                    <dt>Session</dt>
-                    <dd id="factory-session-name"></dd>
-                  </div>
-                  <div>
-                    <dt>Folder</dt>
-                    <dd id="factory-path" class="mono"></dd>
-                  </div>
-                  <div>
-                    <dt>Model</dt>
-                    <dd id="factory-model"></dd>
-                  </div>
-                  <div>
-                    <dt>Activity</dt>
-                    <dd id="factory-session-activity"></dd>
-                  </div>
-                </dl>
-                <span id="factory-effort" class="effort-badge" hidden></span>
+                <div class="factory-model-settings">
+                  <span id="factory-model" class="muted"></span>
+                  <span id="factory-effort" class="effort-badge" hidden></span>
+                </div>
                 <p id="context-meter" class="context-meter" hidden></p>
                 <div class="factory-file-actions">
                   <button

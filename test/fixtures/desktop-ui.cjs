@@ -560,7 +560,7 @@ async function main() {
   });
 
   await run(
-    'compact live view keeps details reachable and preserves the scene across expansion',
+    'live view shows details and actions when space allows and preserves the scene across expansion',
     async () => {
       const data = hub.sessions[0];
       Object.assign(data.session, {
@@ -696,6 +696,8 @@ async function main() {
           document.getElementById('factory-canvas').style.visibility = 'hidden';
         });
         await settle();
+        // Allow the compositor to submit the hidden-canvas frame before capture.
+        await new Promise(resolve => setTimeout(resolve, 60));
         const hidden = (await window.webContents.capturePage(clip)).toBitmap();
         await evaluate(() => {
           document.getElementById('factory-canvas').style.visibility = '';
@@ -714,11 +716,53 @@ async function main() {
           `Factory graphics missing at zoom ${zoom}: ${changed} painted pixels`,
         );
       };
-      for (const [width, height, zoom] of [
-        [1600, 1000, 1],
-        [1100, 760, 1],
-        [1100, 760, 1.25],
-        [1100, 760, 1.5],
+      const detailsVisible = collapsed =>
+        evaluate(collapsed => {
+          const $ = id => document.getElementById(id);
+          const info = $('factory-info');
+          if (
+            $('factory-info-button').checkVisibility() !== collapsed ||
+            info.hasAttribute('popover') !== collapsed ||
+            info.checkVisibility() === collapsed ||
+            $('close-parent-session').checkVisibility() === collapsed
+          )
+            throw new Error(
+              `Expected ${collapsed ? 'collapsed' : 'inline'} details at ${innerWidth}x${innerHeight}; panel ${JSON.stringify($('factory-panel').getBoundingClientRect().toJSON())}`,
+            );
+          if (!collapsed) {
+            for (const id of [
+              'factory-model',
+              'factory-effort',
+              'context-meter',
+              'markdown-launcher',
+              'close-parent-session',
+            ]) {
+              const element = $(id);
+              const r = element.getBoundingClientRect();
+              const panel = $('factory-panel').getBoundingClientRect();
+              if (
+                !element.checkVisibility() ||
+                r.width < 50 ||
+                r.left < panel.left ||
+                r.right > panel.right ||
+                r.bottom > $('scene').getBoundingClientRect().top
+              )
+                throw new Error(`Inline details clipped: ${id}`);
+            }
+          }
+          if (
+            info.textContent.includes($('factory-title').textContent) ||
+            info.textContent.includes('/fixture/long-project-folder')
+          )
+            throw new Error('Session name or folder repeated in details');
+        }, collapsed);
+      for (const [width, height, zoom, collapsed] of [
+        [1600, 1000, 1, false],
+        [1100, 760, 1, false],
+        [800, 1000, 1, false],
+        [1100, 760, 1.25, false],
+        [1600, 1000, 2, true],
+        [1100, 760, 1.5, true],
       ]) {
         window.setContentSize(width, height);
         await evaluate(zoom => {
@@ -729,11 +773,45 @@ async function main() {
         await settle();
         assert.equal(window.webContents.getZoomFactor(), zoom);
         const compact = await view(false);
+        await detailsVisible(collapsed);
+        assert.equal(
+          await evaluate(() =>
+            document.getElementById('factory-agents-button').checkVisibility(),
+          ),
+          zoom > 1,
+          'Agent lists stay inline when the column has room',
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`live-view-${width}x${height}-${zoom}`);
         assert.ok(
           compact.height >= 180,
           `Compact scene at ${width}/${zoom}: ${compact.height}`,
         );
         await scenePainted();
+        if (
+          process.env.DESKTOP_UI_SCREENSHOT_DIR &&
+          width === 1600 &&
+          zoom === 1
+        ) {
+          const themes = await evaluate(() =>
+            [...document.getElementById('factory-theme').options].map(
+              option => option.value,
+            ),
+          );
+          for (const theme of themes) {
+            await evaluate(theme => {
+              const select = document.getElementById('factory-theme');
+              select.value = theme;
+              select.dispatchEvent(new Event('change'));
+            }, theme);
+            await screenshot(`live-inline-${theme}`);
+          }
+          await evaluate(() => {
+            const select = document.getElementById('factory-theme');
+            select.value = 'factory';
+            select.dispatchEvent(new Event('change'));
+          });
+        }
         if (zoom > 1) {
           await click('#factory-agents-button');
           assert.equal(
@@ -794,67 +872,61 @@ async function main() {
           );
           await click('#back-to-parent');
         }
-        await click('#factory-info-button');
-        const details = await evaluate(() => {
+        if (collapsed) await click('#factory-info-button');
+        const details = await evaluate(collapsed => {
           const $ = id => document.getElementById(id);
           const info = $('factory-info');
           const bounds = info.getBoundingClientRect();
           if (
-            !info.matches(':popover-open') ||
+            info.matches(':popover-open') !== collapsed ||
             !window.compactLiveView.inside(bounds)
           )
             throw new Error(
               `Info outside ${innerWidth}x${innerHeight}: ${JSON.stringify(bounds.toJSON())}`,
             );
-          return [
-            'factory-session-name',
-            'factory-path',
-            'factory-model',
-            'factory-effort',
-            'context-meter',
-          ].map(id => {
-            const item = $(id);
-            item.scrollIntoView({block: 'nearest'});
-            const r = item.getBoundingClientRect();
-            const range = document.createRange();
-            range.selectNodeContents(item);
-            const lines = [...range.getClientRects()];
-            if (
-              r.top < bounds.top ||
-              r.bottom > bounds.bottom ||
-              item.scrollWidth > item.clientWidth + 1 ||
-              parseFloat(getComputedStyle(item).fontSize) < 12 ||
-              (['factory-path', 'factory-model'].includes(id) &&
-                lines.length < 2)
-            )
-              throw new Error(`Unreadable or clipped ${id}`);
-            return item.textContent.replace(/(\d)[\s,](?=\d)/g, '$1');
-          });
-        });
+          return ['factory-model', 'factory-effort', 'context-meter'].map(
+            id => {
+              const item = $(id);
+              item.scrollIntoView({block: 'nearest'});
+              const r = item.getBoundingClientRect();
+              const range = document.createRange();
+              range.selectNodeContents(item);
+              const lines = [...range.getClientRects()];
+              if (
+                r.top < bounds.top ||
+                r.bottom > bounds.bottom ||
+                (collapsed && item.scrollWidth > item.clientWidth + 1) ||
+                parseFloat(getComputedStyle(item).fontSize) < 12 ||
+                (collapsed && id === 'factory-model' && lines.length < 2)
+              )
+                throw new Error(`Unreadable or clipped ${id}`);
+              return item.textContent.replace(/(\d)[\s,](?=\d)/g, '$1');
+            },
+          );
+        }, collapsed);
         assert.deepEqual(details, [
-          data.session.name,
-          data.session.cwd,
           data.session.model,
           'Effort: medium',
           '25% · 32000 / 128000 tokens',
         ]);
-        await press('Escape');
-        await view(false, 'factory-info-button');
+        if (collapsed) {
+          if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+            await screenshot('live-view-info-small');
+          await press('Escape');
+          await view(false, 'factory-info-button');
+        }
         await click('#expand-live-view');
         const expanded = await view(true);
         await scenePainted();
         assert.ok(
-          expanded.area > compact.area * 2 &&
-            expanded.height > compact.height * 1.4,
+          expanded.area > compact.area * 2 && expanded.height > compact.height,
           'Expanded scene is significantly larger',
         );
-        await click('#factory-info-button');
-        await press('Escape');
-        await view(true, 'factory-info-button');
+        await detailsVisible(false);
         assert.deepEqual(
           calls,
           [],
-          'Info Escape must not abort the running session',
+          'Viewing details must not affect the running session',
         );
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR && zoom === 1.5)
           await screenshot('compact-live-view-expanded-150');
@@ -867,6 +939,18 @@ async function main() {
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR && zoom === 1.5)
           await screenshot('compact-live-view-small-150');
       }
+      await click('#factory-info-button');
+      window.setContentSize(1600, 1200);
+      await settle();
+      await detailsVisible(false);
+      await view(false, 'expand-live-view');
+      await evaluate(() =>
+        document.getElementById('close-parent-session').focus(),
+      );
+      window.setContentSize(1100, 760);
+      await settle();
+      await detailsVisible(true);
+      await view(false, 'factory-info-button');
       await click('#expand-live-view');
       data.agents[1].status = 'running';
       data.agents[0].name = 'Updated live worker';
@@ -907,7 +991,6 @@ async function main() {
       await view(false, 'expand-live-view');
       assert.deepEqual(calls, [], 'Expanded Escape must not abort the session');
       await click('#expand-live-view');
-      await click('#factory-info-button');
       await click('#markdown-launcher');
       await until(
         () => !document.getElementById('markdown-panel').hidden,
@@ -934,7 +1017,7 @@ async function main() {
       await publish();
       await view(false);
       await click('#expand-live-view');
-      await click('#factory-info-button');
+      await detailsVisible(false);
       await click('#close-parent-session');
       await until(
         () => !document.getElementById('welcome').hidden,
@@ -6347,15 +6430,12 @@ async function main() {
       ];
       hub.sessions[0].totalAgents = 1;
       await publish();
-      await evaluate(() =>
-        document.getElementById('factory-info-button').click(),
-      );
       assert.equal(
         await evaluate(() =>
           document.getElementById('close-parent-session').checkVisibility(),
         ),
         true,
-        'Close session must be accessible from the live panel Info control',
+        'Close session must be directly accessible in the live panel',
       );
       await evaluate(async () => {
         const editor = document.getElementById('parent-prompt');
@@ -6366,7 +6446,6 @@ async function main() {
         const {flushDrafts} = await import('./draft-storage.js');
         flushDrafts();
         document.querySelector('#active-workers button').click();
-        document.getElementById('factory-info-button').click();
         document.getElementById('close-parent-session').click();
       });
       await until(
