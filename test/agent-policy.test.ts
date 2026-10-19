@@ -1211,6 +1211,117 @@ void test('canonical paths catch symlink escapes and nonexistent write targets w
   assert.equal(await h.call('read', {path: '../shared.ts'}), undefined);
 });
 
+void test('agent spawn checks canonical external cwd while preserving worktree paths and template permissions', async t => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'varisdev-policy-spawn-cwd-')),
+  );
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const project = join(root, 'repo');
+  const cwd = join(project, 'feature');
+  const outside = join(root, 'outside');
+  await mkdir(join(project, '.git'), {recursive: true});
+  await Promise.all([
+    mkdir(cwd),
+    mkdir(join(project, 'shared')),
+    mkdir(outside),
+  ]);
+  await symlink(outside, join(cwd, 'escape'), 'junction');
+  const guard = harness(
+    createAgentPolicyExtension({
+      permissions: [
+        {action: 'external_directory', resource: '*', effect: 'deny'},
+        {action: 'agent_spawn', resource: '*', effect: 'allow'},
+        {action: 'subagent', resource: 'blocked', effect: 'deny'},
+      ],
+    }),
+  );
+  guard.ctx.cwd = cwd;
+  for (const requested of [undefined, '.', '../shared', '..']) {
+    const input = {template: 'global:reviewer', cwd: requested};
+    assert.deepEqual(agentToolPermissions('agent_spawn', input, cwd), [
+      {action: 'subagent', resource: 'reviewer'},
+    ]);
+    assert.equal(await guard.call('agent_spawn', input), undefined);
+    assert.equal(
+      input.cwd,
+      requested,
+      'Keep launch cwd relative to the parent',
+    );
+  }
+  for (const requested of [outside, '../../outside', 'escape', 'escape/new']) {
+    const input = {template: 'global:reviewer', cwd: requested};
+    const target = requested === 'escape/new' ? join(outside, 'new') : outside;
+    assert.deepEqual(agentToolPermissions('agent_spawn', input, cwd), [
+      {action: 'subagent', resource: 'reviewer'},
+      {action: 'external_directory', resource: permissionPath(target)},
+    ]);
+    const denied = await guard.call('agent_spawn', input);
+    assert.equal(denied.block, true);
+    assert.match(denied.reason!, /permission denied: external_directory/);
+  }
+  const deniedTemplate = await guard.call('agent_spawn', {
+    template: 'repository:blocked',
+    cwd: '../shared',
+  });
+  assert.match(deniedTemplate.reason!, /permission denied: subagent blocked/);
+});
+
+void test('agent spawn external cwd approvals allow once and cancel before launch', async t => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'varisdev-policy-spawn-approval-')),
+  );
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const cwd = join(root, 'project');
+  const outside = join(root, 'outside');
+  await mkdir(join(cwd, '.git'), {recursive: true});
+  await mkdir(outside);
+  const permissions: AgentPermissionRule[] = [
+    {action: 'external_directory', resource: '*', effect: 'ask'},
+  ];
+  const approved = harness(
+    createAgentPolicyExtension(
+      {permissions},
+      {
+        approval: async request => {
+          assert.equal(request.action, 'external_directory');
+          assert.equal(request.resource, permissionPath(outside));
+          return 'once';
+        },
+      },
+    ),
+  );
+  approved.ctx.cwd = cwd;
+  assert.equal(
+    await approved.call('agent_spawn', {
+      template: 'global:reviewer',
+      cwd: '../outside',
+    }),
+    undefined,
+  );
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const cancelled = harness(
+    createAgentPolicyExtension(
+      {permissions},
+      {
+        approval: async request => {
+          assert.equal(request.signal, controller.signal);
+          started.resolve();
+          return new Promise(() => {});
+        },
+      },
+    ),
+    controller.signal,
+  );
+  cancelled.ctx.cwd = cwd;
+  const pending = cancelled.call('agent_spawn', {cwd: '../outside'});
+  await started.promise;
+  controller.abort(new Error('Spawn cancelled'));
+  const denied = await pending;
+  assert.equal(denied.block, true);
+  assert.match(denied.reason!, /approval cancelled: Spawn cancelled/);
+});
+
 void test('skill input and known skill reads share deny, approval, notification and preflight cancellation', async t => {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'varisdev-policy-skills-')),

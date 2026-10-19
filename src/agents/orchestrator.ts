@@ -16,6 +16,7 @@ export interface AgentSpec {
   model: string;
   pinnedModel?: string;
   agentMode?: 'primary' | 'subagent' | 'all';
+  agentProfile?: SessionFeatures['agentProfile'];
   timeoutMs?: number;
   autoCleanup?: boolean;
   thinkingLevel?: string;
@@ -64,6 +65,7 @@ export interface AgentWorker {
   compact?(instructions?: string): Promise<void>;
   reload?(): Promise<void>;
   clearQueue?(): {steering: string[]; followUp: string[]};
+  abort?(): Promise<void>;
   dispose(): void | Promise<void>;
 }
 
@@ -84,6 +86,8 @@ interface Job {
   controller?: AbortController;
   operation?: Promise<void>;
   disposal?: Promise<void>;
+  cancellation?: Promise<void>;
+  closing?: Promise<void>;
   interaction?: Promise<unknown>;
   maintaining?: boolean;
   stopVersion?: number;
@@ -99,6 +103,7 @@ export function isAgentFinished(status: AgentStatus): boolean {
 function copyRecord(record: AgentRecord): AgentRecord {
   return {
     ...record,
+    agentProfile: record.agentProfile ? {...record.agentProfile} : undefined,
     usage: record.usage ? copyModelUsage(record.usage) : undefined,
     context: record.context ? {...record.context} : undefined,
   };
@@ -181,7 +186,7 @@ export class AgentOrchestrator {
       throw new Error('Agent timeout must be a positive integer.');
     }
     const retained = [...this.jobs.values()].filter(
-      job => !job.record.autoCleanup || !isAgentFinished(job.record.status),
+      job => !isAgentFinished(job.record.status) || job.record.resumable,
     );
     if (retained.length >= 64) {
       throw new Error('This session has reached its limit of 64 agents.');
@@ -199,6 +204,7 @@ export class AgentOrchestrator {
       conversation,
       record: {
         ...spec,
+        agentProfile: spec.agentProfile ? {...spec.agentProfile} : undefined,
         id,
         status: 'queued',
         resumable: true,
@@ -346,9 +352,15 @@ export class AgentOrchestrator {
   ): Promise<T> {
     this.ensureOpen();
     const job = this.job(id);
-    return this.interact(job, async () => {
+    const stopVersion = job.stopVersion;
+    const ensureMaintenance = () => {
       this.ensureOpen();
       this.ensureResumable(job);
+      if (job.stopVersion !== stopVersion)
+        throw new Error('Agent operation cancelled.');
+    };
+    return this.interact(job, async () => {
+      ensureMaintenance();
       job.maintaining = true;
       try {
         if (
@@ -356,9 +368,10 @@ export class AgentOrchestrator {
           isAgentFinished(job.record.status)
         )
           await job.operation;
-        this.ensureOpen();
-        this.ensureResumable(job);
-        return await action(await this.prepare(job));
+        ensureMaintenance();
+        const worker = await this.prepare(job);
+        ensureMaintenance();
+        return await action(worker);
       } finally {
         this.captureUsage(job);
         this.captureContext(job);
@@ -417,9 +430,13 @@ export class AgentOrchestrator {
     this.ensureOpen();
     const job = this.job(id);
     const queue = job.worker?.clearQueue?.() ?? {steering: [], followUp: []};
+    const interaction = job.interaction;
     this.cancel(id);
     await job.operation;
     await job.initializing?.catch(() => {});
+    await interaction;
+    await job.cancellation;
+    await job.closing;
     await job.disposal;
     return queue;
   }
@@ -427,13 +444,17 @@ export class AgentOrchestrator {
   async closeAgent(id: string): Promise<void> {
     this.ensureOpen();
     const job = this.job(id);
-    job.record.resumable = false;
-    this.cancel(id);
-    await job.operation;
-    await job.initializing?.catch(() => {});
-    await job.interaction;
-    await this.dispose(job);
-    this.changed();
+    job.closing ??= (async () => {
+      job.record.resumable = false;
+      this.cancel(id);
+      await job.operation;
+      await job.initializing?.catch(() => {});
+      await job.interaction;
+      await job.cancellation;
+      await this.dispose(job);
+      this.changed();
+    })();
+    return job.closing;
   }
 
   private ensureResumable(job: Job): void {
@@ -501,6 +522,16 @@ export class AgentOrchestrator {
     return job.disposal ?? Promise.resolve();
   }
 
+  private disposeWhenIdle(job: Job): void {
+    job.record.resumable = false;
+    job.closing ??= Promise.all([
+      job.operation,
+      job.initializing?.catch(() => {}),
+      job.interaction,
+      job.cancellation,
+    ]).then(() => this.dispose(job));
+  }
+
   private settleConversation(job: Job): void {
     job.conversation.settle(
       job.record.status === 'failed' ? 'failed' : 'cancelled',
@@ -523,8 +554,15 @@ export class AgentOrchestrator {
 
   cancel(id: string): AgentRecord {
     const job = this.job(id);
-    if (isAgentFinished(job.record.status)) return this.get(id);
     job.stopVersion = (job.stopVersion ?? 0) + 1;
+    job.worker?.clearQueue?.();
+    const cancellation = job.worker?.abort?.().catch(() => {});
+    if (cancellation) {
+      job.cancellation = Promise.all([job.cancellation, cancellation]).then(
+        () => {},
+      );
+    }
+    if (isAgentFinished(job.record.status)) return this.get(id);
     if (job.controller) {
       job.record.status = 'cancelling';
       job.record.activity = 'Cancelling';
@@ -533,9 +571,8 @@ export class AgentOrchestrator {
       job.record.status = 'cancelled';
       job.record.activity = 'Cancelled';
       job.record.finishedAt = new Date().toISOString();
-      job.worker?.clearQueue?.();
       this.settleConversation(job);
-      if (job.record.autoCleanup) void this.dispose(job);
+      if (job.record.autoCleanup) this.disposeWhenIdle(job);
     }
     this.changed();
     this.pump();
@@ -640,8 +677,13 @@ export class AgentOrchestrator {
       this.captureUsage(job);
       this.captureContext(job);
       this.captureConversation(job);
-      if (this.closed || job.record.autoCleanup || !job.record.resumable) {
-        await this.dispose(job);
+      if (!this.closed && !job.closing && job.record.autoCleanup) {
+        if (job.maintaining) {
+          this.cancel(job.record.id);
+          this.disposeWhenIdle(job);
+        } else {
+          await this.dispose(job);
+        }
       }
       this.settleConversation(job);
       job.record.finishedAt = new Date().toISOString();
@@ -765,6 +807,8 @@ export class AgentOrchestrator {
         job.operation,
         job.initializing?.catch(() => {}),
         job.interaction?.catch(() => {}),
+        job.cancellation,
+        job.closing,
       ]),
     ).then(async () => {
       await Promise.all([...this.jobs.values()].map(job => this.dispose(job)));

@@ -21,6 +21,7 @@ export interface DashboardSession {
   cwd: string;
   model?: string;
   thinkingLevel?: string;
+  agentProfile?: AgentRecord['agentProfile'];
   sessionFile?: string;
   status: 'idle' | 'running' | 'compacting' | 'closed';
   activity: string;
@@ -105,6 +106,7 @@ function projectAgent(
   return {
     ...agent,
     ...conversation,
+    agentProfile: agent.agentProfile ? {...agent.agentProfile} : undefined,
     context: agent.context ? {...agent.context} : undefined,
     usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
     task: preview(agent.task),
@@ -140,6 +142,9 @@ export class DashboardState {
   constructor(session: DashboardSession) {
     this.session = {
       ...session,
+      agentProfile: session.agentProfile
+        ? {...session.agentProfile}
+        : undefined,
       context: session.context ? {...session.context} : undefined,
     };
   }
@@ -242,6 +247,7 @@ export class DashboardState {
     const next = {
       ...this.session,
       ...patch,
+      ...(patch.agentProfile ? {agentProfile: {...patch.agentProfile}} : {}),
       ...(patch.context ? {context: {...patch.context}} : {}),
       ...(patch.error !== undefined ? {error: preview(patch.error, 4000)} : {}),
       ...(patch.prompt !== undefined ? {prompt: preview(patch.prompt)} : {}),
@@ -384,10 +390,14 @@ export class DashboardState {
     return (this.cachedSnapshot ??= {
       session: {
         ...this.session,
+        agentProfile: this.session.agentProfile
+          ? {...this.session.agentProfile}
+          : undefined,
         context: this.session.context ? {...this.session.context} : undefined,
       },
       agents: this.agents.map(agent => ({
         ...agent,
+        agentProfile: agent.agentProfile ? {...agent.agentProfile} : undefined,
         context: agent.context ? {...agent.context} : undefined,
         conversation: agent.conversation.map(message => ({...message})),
         usage: agent.usage ? copyModelUsage(agent.usage) : undefined,

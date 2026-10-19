@@ -8,7 +8,7 @@ import {
   type Skill,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionController} from '../agents/team.ts';
-import type {AgentToolsOptions} from '../tools/agents.ts';
+import {dispatchAgentMention, type AgentToolsOptions} from '../tools/agents.ts';
 import {
   createAgentApprovalRelay,
   showAgentApprovals,
@@ -465,6 +465,21 @@ export function registerFactory(
           const epoch = current.epoch;
           current.submissions++;
           try {
+            cancelBeforeStart = false;
+            if (approvalController.signal.aborted)
+              approvalController = new AbortController();
+            const mention = await dispatchAgentMention(
+              control,
+              {text: prompt.trim()},
+              ctx,
+              approvalController.signal,
+            );
+            ensureAttached(current);
+            if (current.epoch !== epoch || current.stopping) return;
+            if (mention.action === 'handled') {
+              state.record('message', prompt.trim());
+              return;
+            }
             const commandName = prompt.startsWith('/')
               ? prompt.split(/\s+/, 1)[0].slice(1)
               : undefined;

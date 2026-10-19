@@ -442,6 +442,8 @@ export function agentToolPermissions(
       paths.push(
         canonicalPath(resolveToCwd(text(input, 'path', '.'), cwd), cwd),
       );
+    if (toolName === 'agent_spawn')
+      paths.push(canonicalPath(text(input, 'cwd', '.'), cwd));
     for (const path of paths)
       if (!internalPath(path, cwd))
         requests.push(request('external_directory', path));

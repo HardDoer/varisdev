@@ -165,9 +165,13 @@ function features() {
 }
 function renderAgentProfile() {
   const resource = features();
+  const profile =
+    current?.session.agentProfile ||
+    resource?.agentProfile ||
+    (resource ? {id: 'default', name: 'Default'} : undefined);
   const label = $('agent-profile-label');
   const settings = $('session-maintenance-profile');
-  if (!current || !resource) {
+  if (!current || !profile) {
     label.hidden = true;
     label.textContent = '';
     label.style.removeProperty('--agent-profile-color');
@@ -175,13 +179,12 @@ function renderAgentProfile() {
     $('session-maintenance-agent').textContent = '';
     return;
   }
-  const profile = resource.agentProfile;
-  const name = profile?.name || profile?.id || 'Default';
+  const name = profile.name || profile.id;
   const color = /^#[0-9a-f]{6}$/i.test(profile?.color || '')
     ? profile.color
     : '';
   label.textContent = name;
-  label.title = `Agent: ${name}`;
+  label.title = `Configuration: ${name}${profile.id && profile.id !== name ? ` (${profile.id})` : ''}`;
   label.hidden = false;
   if (color) label.style.setProperty('--agent-profile-color', color);
   else label.style.removeProperty('--agent-profile-color');

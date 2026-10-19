@@ -29,6 +29,31 @@ export interface AgentSessionSnapshot {
   changes: UnitChange[];
 }
 
+/** Retain history after its worker has been released. */
+export function archiveAgentRecord<
+  T extends AgentRecord & Partial<ConversationSnapshot>,
+>(agent: T): T {
+  const finishedAt = agent.finishedAt ?? new Date().toISOString();
+  return {
+    ...agent,
+    resumable: false,
+    ...(!isAgentFinished(agent.status)
+      ? {status: 'cancelled', activity: 'Cancelled', finishedAt}
+      : {}),
+    ...(agent.conversation
+      ? {
+          conversation: agent.conversation.map(message => ({
+            ...message,
+            ...(message.streaming ? {streaming: false} : {}),
+            ...(message.role === 'tool' && message.status === 'running'
+              ? {status: 'cancelled', finishedAt}
+              : {}),
+          })),
+        }
+      : {}),
+  };
+}
+
 const maxParentMessages = 100;
 
 function copyMessage(message: ParentMessage): ParentMessage {
@@ -203,6 +228,12 @@ class AgentTeam {
   }
 
   close(): Promise<void> {
+    if (this.closed) return this.manager.close();
+    const snapshot = this.deliverySnapshot();
+    this.cachedSnapshot = {
+      ...snapshot,
+      agents: snapshot.agents.map(archiveAgentRecord),
+    };
     this.closed = true;
     this.unsubscribe();
     this.messages.length = 0;
@@ -232,8 +263,8 @@ export class AgentSessionController {
       this.shuttingDown = true;
       const team = this.team;
       this.team = undefined;
-      this.finalSnapshot = team?.deliverySnapshot();
       const closing = team?.close();
+      this.finalSnapshot = team?.deliverySnapshot();
       this.changed();
       await closing;
     });

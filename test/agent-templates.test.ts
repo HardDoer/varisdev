@@ -467,6 +467,126 @@ void test('selects default_agent only when it is visible and primary-capable', a
   );
 });
 
+void test('lists the exact scoped default below higher repository and workspace overrides', async t => {
+  const paths = await isolate(t);
+  await saveAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id: 'reviewer',
+    name: 'Global reviewer',
+    mode: 'all',
+    context: 'task',
+    model: 'fixture/global',
+    instructions: 'Review using global instructions.',
+    permissions: [{action: 'shell', resource: '*', effect: 'deny'}],
+  });
+  await saveAgentTemplate(paths.cwd, {
+    scope: 'repository',
+    id: 'reviewer',
+    name: 'Repository reviewer',
+    model: 'fixture/repository',
+    instructions: 'Review using repository instructions.',
+    permissions: [{action: 'edit', resource: '*', effect: 'deny'}],
+  });
+  await saveAgentTemplate(paths.cwd, {
+    scope: 'workspace',
+    id: 'reviewer',
+    name: 'Workspace reviewer',
+    model: 'fixture/workspace',
+    instructions: 'Review using workspace instructions.',
+    hidden: true,
+    disabled: true,
+  });
+  for (const scope of ['global', 'repository']) {
+    const selector = `${scope}:reviewer`;
+    await writeFile(
+      join(paths.agentDir, 'settings.json'),
+      JSON.stringify({
+        default_agent: selector,
+        permissions: [{action: 'read', resource: '*', effect: 'ask'}],
+      }),
+    );
+    const listing = await listAgentTemplates(paths.cwd);
+    assert.equal(listing.defaultAgentId, selector);
+    assert.equal(
+      listing.templates.some(template => template.id === 'reviewer'),
+      false,
+    );
+    const expected = await resolveAgentTemplate(paths.cwd, selector);
+    assert.deepEqual(listing.defaultAgent, expected);
+    assert.deepEqual(await resolveDefaultAgentTemplate(paths.cwd), expected);
+    assert.equal(listing.defaultAgent?.scope, scope);
+    assert.equal(listing.defaultAgent?.model, `fixture/${scope}`);
+    assert.equal(listing.defaultAgent?.hidden, false);
+    assert.equal(listing.defaultAgent?.disabled, false);
+    assert.deepEqual(listing.defaultAgent?.permissions, [
+      {action: 'read', resource: '*', effect: 'ask'},
+      {action: 'shell', resource: '*', effect: 'deny'},
+      ...(scope === 'repository'
+        ? [{action: 'edit', resource: '*', effect: 'deny'}]
+        : []),
+    ]);
+  }
+});
+
+void test('scoped defaults fall back when unavailable or invalid without adopting higher overrides', async t => {
+  const paths = await isolate(t);
+  await saveAgentTemplate(paths.cwd, {
+    scope: 'workspace',
+    id: 'reviewer',
+    mode: 'all',
+    hidden: false,
+    disabled: false,
+  });
+  const settingsPath = join(paths.agentDir, 'settings.json');
+  await mkdir(paths.agentDir, {recursive: true});
+  const assertFallback = async (selector: string) => {
+    await writeFile(settingsPath, JSON.stringify({default_agent: selector}));
+    const listing = await listAgentTemplates(paths.cwd);
+    assert.equal(listing.defaultAgentId, 'default', selector);
+    assert.deepEqual(
+      listing.defaultAgent,
+      await resolveAgentTemplate(paths.cwd, 'default'),
+      selector,
+    );
+    assert.deepEqual(
+      await resolveDefaultAgentTemplate(paths.cwd),
+      listing.defaultAgent,
+    );
+  };
+  for (const unavailable of [
+    {mode: 'all' as const, hidden: true},
+    {mode: 'all' as const, disabled: true},
+    {mode: 'subagent' as const},
+  ]) {
+    await saveAgentTemplate(paths.cwd, {
+      scope: 'global',
+      id: 'reviewer',
+      ...unavailable,
+    });
+    await assertFallback('global:reviewer');
+  }
+  for (const invalid of [
+    'global:missing',
+    'missing',
+    'invalid:reviewer',
+    'global:../reviewer',
+    'global:',
+  ])
+    await assertFallback(invalid);
+  await saveAgentTemplate(paths.cwd, {
+    scope: 'workspace',
+    id: 'default',
+    disabled: true,
+  });
+  const fallback = await listAgentTemplates(paths.cwd);
+  assert.equal(fallback.defaultAgentId, 'builtin:default');
+  assert.equal(fallback.defaultAgent?.key, 'builtin:default');
+  assert.deepEqual(
+    fallback.defaultAgent,
+    await resolveDefaultAgentTemplate(paths.cwd),
+  );
+});
+
 void test('prepends shared settings permissions through repository ancestors', async t => {
   const paths = await isolate(t);
   const packages = join(paths.repository, 'packages');

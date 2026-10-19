@@ -619,6 +619,61 @@ void test('shutdown flushes a pending team publication before detaching state', 
   );
 });
 
+void test('reload archives reused worker history before a replacement controller has a team', async () => {
+  for (const shutdown of [false, true]) {
+    const fixture = observer();
+    await fixture.emit('session_start');
+    fixture.state.updateTeam(
+      ['completed', 'running', 'queued'].map((status, index) => ({
+        id: `old-${status}`,
+        name: status,
+        task: 'Retain findings',
+        cwd: '/fixture',
+        model: 'test/model',
+        status: status as 'completed' | 'running' | 'queued',
+        activity: status,
+        resumable: true,
+        createdAt: at(index),
+        output: status === 'completed' ? 'Retained result' : undefined,
+        conversation: [
+          {
+            id: `tool-${status}`,
+            at: at(index),
+            role: 'tool' as const,
+            text: 'Retained tool output',
+            status:
+              status === 'completed'
+                ? ('completed' as const)
+                : ('running' as const),
+            streaming: status !== 'completed',
+          },
+        ],
+      })),
+      [],
+    );
+    if (shutdown) await fixture.emit('session_shutdown', {reason: 'reload'});
+    const reloaded = observer(fixture.state);
+    await reloaded.emit('session_start', {reason: 'reload'});
+    assert.strictEqual(reloaded.state, fixture.state);
+    const agents = reloaded.state.snapshot().agents;
+    assert.equal(agents.length, 3);
+    assert.ok(agents.every(agent => agent.resumable === false));
+    assert.ok(
+      agents.every(agent => ['completed', 'cancelled'].includes(agent.status)),
+    );
+    assert.equal(
+      agents.find(agent => agent.id === 'old-completed')!.output,
+      'Retained result',
+    );
+    for (const agent of agents) {
+      assert.equal(agent.conversation[0].streaming, false);
+      assert.equal(agent.conversation[0].status, agent.status);
+      assert.equal(agent.conversation[0].text, 'Retained tool output');
+    }
+    await reloaded.emit('session_shutdown');
+  }
+});
+
 void test('agent wait flushes a throttled terminal worker state with its result', async () => {
   const fixture = observer();
   const worker = {

@@ -1757,6 +1757,14 @@ function renderInspectorPanel(data, unit, parent) {
   if (state.tab !== 'details') return;
   facts($('unit-facts'), [
     [
+      'Configuration',
+      unit.agentProfile?.name &&
+      unit.agentProfile.id &&
+      unit.agentProfile.name !== unit.agentProfile.id
+        ? `${unit.agentProfile.name} (${unit.agentProfile.id})`
+        : unit.agentProfile?.name || unit.agentProfile?.id,
+    ],
+    [
       'Status',
       parent && parentHasError(unit) ? 'Error' : statusName(unit.status),
     ],
@@ -2246,7 +2254,11 @@ async function sendPrompt(event) {
       clearSubmittedDraft(id, submitted);
       return;
     }
-    if (agentId && native && !['compact', 'reload'].includes(command.name))
+    if (
+      agentId &&
+      native &&
+      !['compact', 'reload', 'approvals'].includes(command.name)
+    )
       throw new Error(`/${command.name} is unavailable for this agent.`);
     const routing = !agentId
       ? routeNativeCommand({
@@ -2275,8 +2287,13 @@ async function sendPrompt(event) {
       else if (command?.name === 'reload') {
         if (command.args) throw new Error('Usage: /reload');
         await api.agentSession(ownerId, {agentId, action: 'reload'});
-      } else
-        await api.agentSession(ownerId, {agentId, action: 'prompt', prompt});
+      } else if (command?.name === 'approvals')
+        await api.agentSession(ownerId, {
+          agentId,
+          action: 'command',
+          command: prompt,
+        });
+      else await api.agentSession(ownerId, {agentId, action: 'prompt', prompt});
     } else await api.promptSession(id, {prompt});
     if (!native) {
       pausedActivity.delete(id);

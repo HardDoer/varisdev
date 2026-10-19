@@ -206,6 +206,7 @@ void test(
       inherited,
     );
     parents.push(parent);
+    profile.name = 'MUTATED caller-owned name';
     profile.instructions = 'MUTATED caller-owned profile';
     profile.permissions![0].effect = 'allow';
     profile.steps = 99;
@@ -282,6 +283,10 @@ void test(
       thinkingLevel: 'off',
     });
     const saved = parent.state.snapshot().session;
+    assert.deepEqual(
+      saved.agentProfile,
+      (await parent.features()).agentProfile,
+    );
     const restart = parent.restartSnapshot();
     assert.ok(
       restart.tools.includes('write'),
@@ -298,6 +303,7 @@ void test(
     await saveAgentTemplate(cwd, {
       scope: 'repository',
       id: 'custom-primary',
+      name: 'Edited name on disk',
       instructions: 'Edited profile on disk.',
       mode: 'subagent',
       disabled: true,
@@ -323,6 +329,11 @@ void test(
     );
     assert.equal((await resumed.features()).thinkingLevel, 'off');
     assert.equal((await resumed.features()).agentProfile?.mode, 'primary');
+    assert.deepEqual(
+      resumed.state.snapshot().session.agentProfile,
+      saved.agentProfile,
+    );
+    assert.equal(saved.agentProfile?.name, 'Custom primary');
 
     await saveAgentTemplate(cwd, {
       scope: 'repository',
@@ -447,6 +458,7 @@ void test(
       mode: 'all',
     });
     assert.equal(plain.state.snapshot().session.name, 'project');
+    assert.equal(plain.state.snapshot().session.agentProfile?.id, 'default');
     const plainEntries = plain.restartSnapshot().entries;
     assert.ok(
       plainEntries.some(

@@ -74,9 +74,13 @@ type AutocompleteFactory = Parameters<
 type AutocompleteProvider = Parameters<AutocompleteFactory>[0];
 
 const sdkEntry = piModuleURL('index.js');
-const tui = (await import(
-  pathToFileURL(createRequire(sdkEntry).resolve('@earendil-works/pi-tui')).href
-)) as {
+const tuiEntry = pathToFileURL(
+  createRequire(sdkEntry).resolve('@earendil-works/pi-tui'),
+);
+const {getLayoutNode} = (await import(
+  new URL('./layout-node.js', tuiEntry).href
+)) as {getLayoutNode(component: TerminalComponent): unknown};
+const tui = (await import(tuiEntry.href)) as {
   TuiAltScreen: new (
     terminal: VirtualTerminal,
     hardwareCursor?: boolean,
@@ -538,10 +542,13 @@ export class DesktopExtensionUI {
   }
 
   /** Scope command interactions to Stop/close without changing extension-owned UI. */
-  forCommand(signal: AbortSignal): DesktopExtensionUI {
+  forCommand(source: AbortSignal | (() => AbortSignal)): DesktopExtensionUI {
+    const signal = () => (typeof source === 'function' ? source() : source);
     const options = (opts?: ExtensionUIDialogOptions) => ({
       ...opts,
-      signal: opts?.signal ? AbortSignal.any([signal, opts.signal]) : signal,
+      signal: opts?.signal
+        ? AbortSignal.any([signal(), opts.signal])
+        : signal(),
     });
     const context = {
       ...this.context,
@@ -565,11 +572,13 @@ export class DesktopExtensionUI {
         prefill?: string,
         opts?: ExtensionUIDialogOptions,
       ) => this.context.editor(title, prefill, options(opts)),
+      custom: <T>(factory: CustomFactory<T>, opts?: CustomOptions) =>
+        this.openCustom(factory, opts, 'Extension', {signal: signal()}),
       notify: (...args: Parameters<ExtensionUIContext['notify']>) => {
-        if (!signal.aborted) this.context.notify(...args);
+        if (!signal().aborted) this.context.notify(...args);
       },
       setEditorText: (text: string) => {
-        if (!signal.aborted) this.context.setEditorText(text);
+        if (!signal().aborted) this.context.setEditorText(text);
       },
     };
     return new Proxy(this, {
@@ -585,34 +594,34 @@ export class DesktopExtensionUI {
           return (
             config: SettingsConfig,
             callbacks: Omit<SettingsCallbacks, 'onCancel'>,
-          ) => this.openSettings(config, callbacks, signal);
+          ) => this.openSettings(config, callbacks, signal());
         if (key === 'selectSessionSettings')
           return (options: DesktopSessionSettingsOptions) =>
-            this.openSessionSettings(options, signal);
+            this.openSessionSettings(options, signal());
         if (key === 'selectModel')
           return (options: DesktopModelSelectorOptions) =>
-            this.openModelSelector(options, signal);
+            this.openModelSelector(options, signal());
         if (key === 'selectThinking')
           return (options: DesktopThinkingSelectorOptions) =>
-            this.openThinkingSelector(options, signal);
+            this.openThinkingSelector(options, signal());
         if (key === 'select')
           return (title: string, choices: string[], presentation = {}) =>
             this.openNativeDialog(
               {kind: 'select', title, options: [...choices], ...presentation},
-              {signal},
+              {signal: signal()},
               true,
             );
         if (key === 'show')
           return async (title: string, message: string) => {
             await this.openNativeDialog(
               {kind: 'info', title, message: bounded(message, MAX_EDITOR_TEXT)},
-              {signal},
+              {signal: signal()},
               true,
             );
           };
         if (key === 'navigate')
           return (...args: Parameters<DesktopExtensionUI['navigate']>) => {
-            if (!signal.aborted) this.navigate(...args);
+            if (!signal().aborted) this.navigate(...args);
           };
         const value = Reflect.get(target, key, target);
         return typeof value === 'function' ? value.bind(target) : value;
@@ -1399,7 +1408,11 @@ export class DesktopExtensionUI {
                 const handle = renderer!.showOverlay(component, overlayOptions);
                 options.onHandle?.(handle);
               } else {
-                renderer!.addChild(component);
+                // Structured Pi layouts need the viewport to size their scroll
+                // regions and keep fixed actions outside the scrolling content.
+                if (getLayoutNode(component))
+                  nativeRenderer.setLayoutRoot(component);
+                else renderer!.addChild(component);
                 renderer!.setFocus(component);
               }
               renderer!.requestRender(true);

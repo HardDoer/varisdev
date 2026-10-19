@@ -226,6 +226,21 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
           ['primary', 'all'].includes(template.mode || 'primary'),
       );
       createState.defaultAgentId = result.defaultAgentId;
+      const scopedDefault = result.defaultAgent;
+      if (
+        result.defaultAgentId?.includes(':') &&
+        scopedDefault &&
+        !scopedDefault.hidden &&
+        !scopedDefault.disabled &&
+        ['primary', 'all'].includes(scopedDefault.mode || 'primary') &&
+        !createState.templates.some(
+          template => template.id === result.defaultAgentId,
+        )
+      )
+        createState.templates.unshift({
+          ...scopedDefault,
+          id: result.defaultAgentId,
+        });
       if (
         result.defaultAgentId === 'builtin:default' &&
         !createState.templates.some(

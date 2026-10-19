@@ -1,3 +1,5 @@
+import {getSelectListTheme} from '@earendil-works/pi-coding-agent';
+import {ScrollView, SelectList, Text, VStack} from '@earendil-works/pi-tui';
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -72,6 +74,61 @@ export interface AgentApprovalManagementOptions {
   signal?: AbortSignal;
 }
 
+/** Keep the saved input scrollable while the native actions remain visible. */
+async function reviewGrant(
+  ctx: Pick<ExtensionContext, 'ui'>,
+  grant: AgentApprovalGrant,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  if (signal?.aborted) return undefined;
+  return ctx.ui.custom<string | undefined>((_screen, theme, _keys, done) => {
+    const operation = grant.operation;
+    const details = new ScrollView(
+      new Text(
+        [
+          `${grant.agentId}: ${operation.toolName}`,
+          `${operation.action} ${operation.resource}`,
+          `Workspace: ${grant.workspace}`,
+          ...(grant.conversationId
+            ? [`Conversation: ${grant.conversationId}`]
+            : []),
+          `Granted: ${grant.createdAt}`,
+          `Input: ${JSON.stringify(operation.input, null, 2)}`,
+        ].join('\n'),
+      ),
+      {primary: true, scrollbar: 'always'},
+    );
+    const actions = new SelectList(
+      ['Revoke approval', 'Back'].map(value => ({value, label: value})),
+      2,
+      getSelectListTheme(),
+    );
+    actions.onSelect = item => done(item.value);
+    actions.onCancel = () => done(undefined);
+    const component = new VStack([
+      {component: details, grow: 1, minSize: 1},
+      {component: actions, shrink: 0},
+      {
+        component: new Text(
+          theme.fg(
+            'dim',
+            'PgUp/PgDn scroll · ↑↓ choose · Enter select · Esc back',
+          ),
+        ),
+        shrink: 0,
+      },
+    ]);
+    const abort = () => done(undefined);
+    signal?.addEventListener('abort', abort, {once: true});
+    const result = Object.assign(component, {
+      handleInput: (data: string) => actions.handleInput(data),
+      dispose: () => signal?.removeEventListener('abort', abort),
+    });
+    if (signal?.aborted) abort();
+    return result;
+  });
+}
+
 /** Review the exact saved operation before revoking its grant. */
 export async function showAgentApprovals(
   ctx: Pick<
@@ -115,21 +172,7 @@ export async function showAgentApprovals(
       if (!selected || signal?.aborted) break;
       const grant = grants[labels.indexOf(selected)];
       if (!grant) continue;
-      const operation = grant.operation;
-      const action = await ctx.ui.select(
-        [
-          `${grant.agentId}: ${operation.toolName}`,
-          `${operation.action} ${operation.resource}`,
-          `Workspace: ${grant.workspace}`,
-          ...(grant.conversationId
-            ? [`Conversation: ${grant.conversationId}`]
-            : []),
-          `Granted: ${grant.createdAt}`,
-          `Input: ${JSON.stringify(operation.input)}`,
-        ].join('\n'),
-        ['Revoke approval', 'Back'],
-        {signal},
-      );
+      const action = await reviewGrant(ctx, grant, signal);
       if (signal?.aborted) return;
       if (action === 'Revoke approval') {
         try {

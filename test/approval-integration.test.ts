@@ -25,6 +25,17 @@ async function dialog(ui: DesktopExtensionUI) {
 }
 async function select(ui: DesktopExtensionUI, value?: string) {
   const current = await dialog(ui);
+  if (current.kind === 'terminal' && value) {
+    const deadline = Date.now() + 3000;
+    while (
+      !ui.snapshot().dialogs[0]?.terminal?.output.includes('Revoke approval') &&
+      Date.now() < deadline
+    )
+      await delay(5);
+    assert.match(ui.snapshot().dialogs[0].terminal!.output, /Revoke approval/);
+    ui.respond(current.id, {input: value === 'Back' ? '\x1b[B\r' : '\r'});
+    return;
+  }
   assert.equal(current.kind, 'select');
   if (value) assert.ok(current.options?.includes(value), `Missing ${value}`);
   ui.respond(current.id, value);
@@ -42,7 +53,19 @@ void test(
     const previous = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
     await mkdir(cwd, {recursive: true});
-    await mkdir(agentDir, {recursive: true});
+    await mkdir(join(agentDir, 'extensions'), {recursive: true});
+    await writeFile(
+      join(agentDir, 'extensions', 'approval-cancellation.ts'),
+      `export default function(pi) {
+        pi.registerCommand('approval-cancellation-fixture', {
+          description: 'Exercise parent dialog cancellation',
+          handler: async (_args, ctx) => {
+            await ctx.ui.select('First parent dialog', ['Continue']);
+            await ctx.ui.select('Follow-up parent dialog', ['Continue']);
+          },
+        });
+      }`,
+    );
     await writeFile(
       join(agentDir, 'settings.json'),
       JSON.stringify({retry: {enabled: false}}),
@@ -89,7 +112,7 @@ void test(
         thinkingLevel: 'off',
       },
     );
-    const workerUi = new DesktopExtensionUI(() => {});
+    const workerUi = parent.ui;
     let workerContext: ExtensionContext | undefined;
     const worker = await createSessionWorker({
       id: 'execution-id',
@@ -116,6 +139,37 @@ void test(
       else process.env.PI_CODING_AGENT_DIR = previous;
       await rm(root, {recursive: true, force: true});
     });
+    const lateDialogCommand = parent.prompt('/approval-cancellation-fixture');
+    assert.equal((await dialog(parent.ui)).title, 'First parent dialog');
+    const stoppingParent = parent.abort();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const drained = await Promise.race([
+      stoppingParent.then(() => true),
+      new Promise<boolean>(resolve => {
+        deadline = setTimeout(() => resolve(false), 1000);
+      }),
+    ]);
+    clearTimeout(deadline);
+    if (!drained) {
+      // Release the fixture's second dialog so a regression can fail cleanly.
+      parent.ui.cancelDialogs();
+      await stoppingParent;
+    }
+    assert.equal(
+      drained,
+      true,
+      'Parent Stop must drain follow-up dialog requests',
+    );
+    await lateDialogCommand;
+    assert.equal(parent.ui.snapshot().dialogs.length, 0);
+    const nextDialogCommand = parent.prompt('/approval-cancellation-fixture');
+    assert.equal((await dialog(parent.ui)).title, 'First parent dialog');
+    await select(parent.ui, 'Continue');
+    assert.equal((await dialog(parent.ui)).title, 'Follow-up parent dialog');
+    await select(parent.ui, 'Continue');
+    await nextDialogCommand;
+    assert.equal(parent.ui.snapshot().dialogs.length, 0);
+
     assert.ok(workerContext);
     const scope = sessionAgentApprovalScope(workerContext);
     assert.equal(scope.agentId, 'reviewer');
@@ -123,10 +177,10 @@ void test(
     assert.notEqual(scope.conversationId, parent.state.snapshot().session.id);
     const store = defaultAgentApprovalStore();
     const operation = {
-      toolName: '/commit',
-      action: 'skill',
-      resource: 'commit',
-      input: {name: 'commit'},
+      toolName: 'write',
+      action: 'write',
+      resource: 'large-file.txt',
+      input: {path: 'large-file.txt', content: 'saved line\n'.repeat(2200)},
     };
     const own = await store.remember(scope, operation, 'conversation');
     const parentGrant = await store.remember(
@@ -135,6 +189,15 @@ void test(
       'conversation',
     );
     const agentGrant = await store.remember(scope, operation, 'agent');
+    const cancelledReview = worker.command!('/approvals');
+    await select(workerUi, 'This conversation');
+    const cancelledChoices = await dialog(workerUi);
+    await select(workerUi, cancelledChoices.options![0]);
+    assert.equal((await dialog(workerUi)).kind, 'terminal');
+    worker.clearQueue!();
+    await cancelledReview;
+    assert.equal(workerUi.snapshot().dialogs.length, 0);
+    assert.ok((await store.list()).some(grant => grant.id === own.id));
     const managing = worker.command!('/approvals');
     await select(workerUi, 'This conversation');
     const choices = await dialog(workerUi);
@@ -144,7 +207,8 @@ void test(
       'Worker lists only its conversation grants',
     );
     await select(workerUi, choices.options![0]);
-    assert.equal((await dialog(workerUi)).title, 'reviewer: /commit');
+    assert.equal((await dialog(workerUi)).kind, 'terminal');
+    assert.ok((await dialog(workerUi)).title.length < 100);
     await select(workerUi, 'Revoke approval');
     await select(workerUi);
     await managing;
@@ -166,10 +230,25 @@ void test(
     worker.clearQueue!();
     await workerCancellation;
     assert.equal(workerUi.snapshot().dialogs.length, 0);
+    const sharedWorkerManagement = worker.command!('/approvals');
+    const workerDialog = await dialog(workerUi);
     const mainCancellation = parent.prompt('/approvals');
-    await dialog(parent.ui);
+    const queuedDeadline = Date.now() + 3000;
+    while (
+      parent.ui.snapshot().dialogs.length < 2 &&
+      Date.now() < queuedDeadline
+    )
+      await delay(5);
+    assert.equal(parent.ui.snapshot().dialogs.length, 2);
     await parent.abort();
     await mainCancellation;
+    assert.deepEqual(
+      parent.ui.snapshot().dialogs.map(item => item.id),
+      [workerDialog.id],
+      'Stopping the parent preserves a worker approval command',
+    );
+    worker.clearQueue!();
+    await sharedWorkerManagement;
     assert.equal(parent.ui.snapshot().dialogs.length, 0);
 
     const skill = worker.run(
@@ -177,7 +256,14 @@ void test(
       new AbortController().signal,
       () => {},
     );
-    assert.match((await dialog(workerUi)).title, /Permission: reviewer/);
+    const workerPermission = await dialog(workerUi);
+    assert.match(workerPermission.title, /Permission: reviewer/);
+    await parent.abort();
+    assert.equal(
+      (await dialog(workerUi)).id,
+      workerPermission.id,
+      'Stopping the parent preserves a running worker permission request',
+    );
     await select(workerUi, 'Deny');
     await assert.rejects(skill, /approval declined/);
     const workerController = new AbortController();
@@ -241,6 +327,16 @@ void test(
       );
       await select(workerUi, 'Deny');
       await assert.rejects(terminalSkill, /approval declined/);
+      assert.equal(workerUi.snapshot().dialogs.length, 0);
+      const closingSkill = terminalWorker.run(
+        '/skill:commit',
+        new AbortController().signal,
+        () => {},
+      );
+      const declinedOnClose = assert.rejects(closingSkill, /approval declined/);
+      await dialog(workerUi);
+      await parent.close();
+      await declinedOnClose;
       assert.equal(workerUi.snapshot().dialogs.length, 0);
     } finally {
       await terminalWorker.dispose();

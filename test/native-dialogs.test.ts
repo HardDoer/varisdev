@@ -107,3 +107,49 @@ void test('prepared session navigation is isolated, acknowledged once and cancel
     ui.dispose();
   }
 });
+
+void test('parent dialog cancellation scopes native custom views separately from workers', async () => {
+  const ui = new DesktopExtensionUI(() => {});
+  try {
+    let controller = new AbortController();
+    const parent = ui.forCommand(() => controller.signal);
+    const worker = ui.context.select('Worker permission', [
+      'Allow once',
+      'Deny',
+    ]);
+    const workerId = ui.snapshot().dialogs[0].id;
+    let constructed = false;
+    const queuedParent = parent.context.custom(() => {
+      constructed = true;
+      return {render: () => ['Parent custom view'], invalidate() {}};
+    });
+    assert.equal(ui.snapshot().dialogs.length, 2);
+    controller.abort();
+    await queuedParent;
+    assert.equal(constructed, false);
+    assert.deepEqual(
+      ui.snapshot().dialogs.map(dialog => dialog.id),
+      [workerId],
+    );
+    controller = new AbortController();
+    const nextParent = parent.context.confirm(
+      'Next parent action',
+      'Continue?',
+    );
+    ui.respond(workerId, 'Allow once');
+    assert.equal(await worker, 'Allow once');
+    ui.respond(ui.snapshot().dialogs[0].id, true);
+    assert.equal(await nextParent, true);
+    const workerCommand = ui.context.custom(() => ({
+      render: () => ['Worker command'],
+      invalidate() {},
+    }));
+    const parentCommand = parent.context.input('Parent input');
+    ui.cancelDialogs();
+    assert.equal(await workerCommand, undefined);
+    assert.equal(await parentCommand, undefined);
+    assert.deepEqual(ui.snapshot().dialogs, []);
+  } finally {
+    ui.dispose();
+  }
+});

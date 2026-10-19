@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 
-const execFile = promisify(execFileCallback);
 const require = createRequire(import.meta.url);
 
 void test(
@@ -30,14 +28,18 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError: unknown;
     try {
-      await execFile(
+      await runRuntimeCommand(
         require('electron') as string,
         [
           fileURLToPath(new URL('./fixtures/desktop-ui.cjs', import.meta.url)),
           directory,
           reportPath,
         ],
-        {env, timeout: 100_000, maxBuffer: 2 * 1024 * 1024},
+        {
+          cwd: fileURLToPath(new URL('../', import.meta.url)),
+          env,
+          timeoutMs: 100_000,
+        },
       );
     } catch (error) {
       launchError = error;
@@ -53,7 +55,7 @@ void test(
       process.env.DESKTOP_UI_CASE_PATTERN
         ? report.cases.length > 0
         : report.cases.length,
-      process.env.DESKTOP_UI_CASE_PATTERN ? true : 45,
+      process.env.DESKTOP_UI_CASE_PATTERN ? true : 46,
       'All renderer scenarios must execute',
     );
     for (const result of report.cases) {

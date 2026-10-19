@@ -8,7 +8,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {homedir, tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {
@@ -20,6 +20,7 @@ import {
   createWorkspaceConfiguration,
   workspaceConfigPaths,
 } from '../src/dashboard/workspace-config.ts';
+import {agentToolPermissions} from '../src/agents/policy.ts';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'varisdev-workspace-config-'));
@@ -66,6 +67,135 @@ void test('workspace identity shares the canonical repository root and separates
   assert.notEqual(
     workspaceConfigPaths(worktree, f.agentDir).workspaceDir,
     f.paths.workspaceDir,
+  );
+});
+
+void test('home settings markers do not merge unrelated folders or make home paths internal', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'varisdev-workspace-home-'));
+  const home = join(root, 'home');
+  const variable = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const previous = process.env[variable];
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  // Retain the real global marker when the simulated home is inside the real home.
+  const agentDir = join(homedir(), CONFIG_DIR_NAME, 'agent');
+  process.env[variable] = home;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(async () => {
+    if (previous === undefined) delete process.env[variable];
+    else process.env[variable] = previous;
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(root, {recursive: true, force: true});
+  });
+  const first = join(home, 'first');
+  const second = join(home, 'second');
+  await Promise.all([
+    mkdir(first, {recursive: true}),
+    mkdir(second, {recursive: true}),
+    mkdir(join(home, CONFIG_DIR_NAME, 'agent'), {recursive: true}),
+  ]);
+  assert.equal(await realpath(homedir()), await realpath(home));
+  const a = workspaceConfigPaths(first, agentDir);
+  const b = workspaceConfigPaths(second, agentDir);
+  assert.equal(a.projectDir, await realpath(first));
+  assert.equal(b.projectDir, await realpath(second));
+  assert.notEqual(a.workspaceDir, b.workspaceDir);
+  const target = await realpath(second);
+  assert.deepEqual(
+    agentToolPermissions('agent_spawn', {cwd: '../second'}, first),
+    [
+      {action: 'subagent', resource: 'default'},
+      {action: 'external_directory', resource: target.replaceAll('\\', '/')},
+    ],
+  );
+  const alias = join(root, 'home-alias');
+  await symlink(home, alias, 'junction');
+  assert.deepEqual(
+    workspaceConfigPaths(join(alias, 'first'), agentDir),
+    workspaceConfigPaths(first, agentDir),
+  );
+});
+
+void test('configured global markers cannot identify unrelated projects, including settings aliases', async t => {
+  const root = await mkdtemp(
+    join(tmpdir(), 'varisdev-workspace-global-marker-'),
+  );
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const tools = join(root, 'tools');
+  const marker = join(tools, CONFIG_DIR_NAME);
+  const first = join(tools, 'first');
+  const second = join(tools, 'second');
+  await mkdir(join(marker, 'agent'), {recursive: true});
+  await mkdir(first);
+  await mkdir(second);
+  const alias = join(root, 'settings-alias');
+  await symlink(marker, alias, 'junction');
+  for (const agentDir of [
+    marker,
+    join(marker, 'agent'),
+    join(alias, 'agent'),
+  ]) {
+    const a = workspaceConfigPaths(first, agentDir);
+    const b = workspaceConfigPaths(second, agentDir);
+    assert.equal(a.projectDir, await realpath(first));
+    assert.equal(b.projectDir, await realpath(second));
+    assert.notEqual(a.workspaceDir, b.workspaceDir);
+    await mkdir(a.workspaceDir, {recursive: true});
+    await writeFile(
+      join(a.workspaceDir, 'settings.json'),
+      JSON.stringify({defaultModel: 'first-only'}),
+    );
+    assert.equal(
+      createWorkspaceConfiguration(
+        first,
+        agentDir,
+      ).settingsManager.getDefaultModel(),
+      'first-only',
+    );
+    assert.equal(
+      createWorkspaceConfiguration(
+        second,
+        agentDir,
+      ).settingsManager.getDefaultModel(),
+      undefined,
+    );
+  }
+  const explicit = join(first, CONFIG_DIR_NAME);
+  await mkdir(explicit);
+  await mkdir(join(first, 'nested'));
+  assert.equal(
+    workspaceConfigPaths(join(first, 'nested'), join(alias, 'agent'))
+      .projectDir,
+    await realpath(first),
+  );
+  await mkdir(join(tools, '.git'));
+  assert.equal(
+    workspaceConfigPaths(first, join(alias, 'agent')).projectDir,
+    await realpath(tools),
+  );
+});
+
+void test('explicit project markers retain no-Git root discovery with alternate settings directories', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'varisdev-workspace-marker-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const project = join(root, 'project');
+  const nested = join(project, 'src', 'nested');
+  const agentDir = join(root, 'custom-settings');
+  await mkdir(join(project, CONFIG_DIR_NAME), {recursive: true});
+  await mkdir(nested, {recursive: true});
+  const expected = workspaceConfigPaths(project, agentDir);
+  assert.equal(expected.projectDir, await realpath(project));
+  assert.deepEqual(workspaceConfigPaths(nested, agentDir), expected);
+  const alias = join(root, 'project-alias');
+  await symlink(project, alias, 'junction');
+  assert.deepEqual(
+    workspaceConfigPaths(join(alias, 'src'), agentDir),
+    expected,
+  );
+  await mkdir(join(root, '.git'));
+  assert.equal(
+    workspaceConfigPaths(nested, agentDir).projectDir,
+    await realpath(root),
   );
 });
 

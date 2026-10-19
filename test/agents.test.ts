@@ -487,6 +487,11 @@ function fakeSession() {
     emit(event: AgentSessionEvent) {
       for (const listener of listeners) listener(event);
     },
+    respond(message: AgentSession['messages'][number]) {
+      messages.push(message);
+      for (const listener of listeners)
+        listener({type: 'message_end', message});
+    },
     listeners,
     customEntries,
     get disposed() {
@@ -504,6 +509,7 @@ function assistant(text: string, stopReason = 'stop', errorMessage?: string) {
     content: [{type: 'text', text}],
     stopReason,
     errorMessage,
+    timestamp: Date.now(),
   } as AgentSession['messages'][number];
 }
 
@@ -538,15 +544,16 @@ void test('session workers save the final answer, track tools, and detect API fa
   const activities: string[] = [];
   fake.session.prompt = async (message, options) => {
     assert.equal(message, 'Do the work');
-    assert.deepEqual(options, {expandPromptTemplates: true});
+    assert.equal(options?.expandPromptTemplates, true);
+    assert.equal(typeof options?.preflightResult, 'function');
     fake.emit({
       type: 'tool_execution_start',
       toolName: 'read',
       toolCallId: 'call',
       args: {path: 'file'},
     });
-    fake.session.messages.push(assistant('intermediate'));
-    fake.session.messages.push(assistant('complete answer'));
+    fake.respond(assistant('intermediate'));
+    fake.respond(assistant('complete answer'));
   };
   assert.equal(
     await worker.run('Do the work', new AbortController().signal, activity =>
@@ -559,7 +566,7 @@ void test('session workers save the final answer, track tools, and detect API fa
   // Only the lifetime usage listener remains between runs.
   assert.equal(fake.listeners.size, 1);
   fake.session.prompt = async () => {
-    fake.session.messages.push(assistant('', 'error', 'Provider failed'));
+    fake.respond(assistant('', 'error', 'Provider failed'));
   };
   await assert.rejects(
     worker.run('retry', new AbortController().signal, () => {}),
@@ -571,7 +578,7 @@ void test('session workers save the final answer, track tools, and detect API fa
     'Provider failed',
   );
   fake.session.prompt = async () => {
-    fake.session.messages.push(assistant('Incomplete response', 'length'));
+    fake.respond(assistant('Incomplete response', 'length'));
   };
   await assert.rejects(
     worker.run('summarize', new AbortController().signal, () => {}),
@@ -579,9 +586,109 @@ void test('session workers save the final answer, track tools, and detect API fa
   );
   assert.equal(await readFile(resultFile, 'utf8'), 'complete answer');
   assert.equal(fake.listeners.size, 1);
-  await worker.dispose();
+  const cleanup: string[] = [];
+  fake.session.abort = async () => {
+    cleanup.push('abort');
+    throw new Error('SDK abort failed');
+  };
+  fake.session.extensionRunner.emit = async () => {
+    cleanup.push('shutdown');
+  };
+  const dispose = fake.session.dispose;
+  fake.session.dispose = () => {
+    cleanup.push('dispose');
+    dispose();
+  };
+  await assert.rejects(async () => worker.dispose(), /SDK abort failed/);
+  await assert.rejects(async () => worker.dispose(), /SDK abort failed/);
+  assert.deepEqual(cleanup, ['abort', 'shutdown', 'dispose']);
   assert.equal(fake.listeners.size, 0);
   assert.equal(fake.disposed, 1);
+});
+
+void test('session workers never reuse an older answer for handled commands or empty turns', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-agent-command-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const fake = fakeSession();
+  const resultFile = join(directory, 'result.txt');
+  const worker = sessionWorker(
+    fake.session as unknown as AgentSession,
+    resultFile,
+  );
+  t.after(() => worker.dispose());
+  fake.session.prompt = async () => {
+    fake.respond(assistant('Previous answer'));
+  };
+  assert.equal(
+    await worker.run('Initial task', new AbortController().signal, () => {}),
+    'Previous answer',
+  );
+  fake.session.prompt = async (_message, options) => {
+    options?.preflightResult?.('handled');
+  };
+  assert.equal(
+    await worker.run('/agents history', new AbortController().signal, () => {}),
+    '',
+  );
+  assert.equal(await readFile(resultFile, 'utf8'), '');
+  fake.session.prompt = async () => {};
+  await assert.rejects(
+    worker.run('Missing response', new AbortController().signal, () => {}),
+    /without an assistant response/,
+  );
+  fake.session.prompt = async (_message, options) => {
+    fake.respond(assistant('Current command answer'));
+    options?.preflightResult?.('handled');
+  };
+  assert.equal(
+    await worker.run('/commit', new AbortController().signal, () => {}),
+    'Current command answer',
+  );
+});
+
+void test('session workers cancel manual compaction during SDK preflight and await its settlement', async t => {
+  const fake = fakeSession();
+  const preflight = deferred<void>();
+  const settling = deferred<void>();
+  const cancelled = deferred<void>();
+  let compactAborted = false;
+  const session = {
+    ...fake.session,
+    async compact() {
+      await preflight.promise;
+      fake.emit({type: 'compaction_start', reason: 'manual'});
+      await cancelled.promise;
+      await settling.promise;
+      throw new Error('Compaction cancelled');
+    },
+    abortCompaction() {
+      // Match SDK preflight: there is no compaction controller until the start event.
+      if (!started) return;
+      compactAborted = true;
+      cancelled.resolve();
+    },
+  };
+  let started = false;
+  fake.session.subscribe(event => {
+    if (event.type === 'compaction_start') started = true;
+  });
+  const worker = sessionWorker(
+    session as unknown as AgentSession,
+    '/unused-result.txt',
+  );
+  t.after(() => worker.dispose());
+  const compacting = assert.rejects(worker.compact!(), /Compaction cancelled/);
+  let stopped = false;
+  const stopping = worker.abort!().then(() => {
+    stopped = true;
+  });
+  assert.equal(started, false);
+  preflight.resolve();
+  await until(() => compactAborted);
+  assert.equal(stopped, false);
+  settling.resolve();
+  await Promise.all([compacting, stopping]);
+  assert.equal(stopped, true);
 });
 
 void test('session workers cancel again if a prompt starts after cancellation during preflight', async () => {
@@ -595,7 +702,7 @@ void test('session workers cancel again if a prompt starts after cancellation du
   fake.session.prompt = async () => {
     await preflight.promise;
     fake.emit({type: 'agent_start'});
-    fake.session.messages.push(assistant('', 'aborted'));
+    fake.respond(assistant('', 'aborted'));
   };
   const running = worker.run('task', controller.signal, () => {});
   controller.abort(new Error('Cancelled during setup'));
@@ -1405,6 +1512,36 @@ void test('cleaned agents release the session capacity for later commands', asyn
   assert.equal(manager.list().length, 65);
 });
 
+void test('64 closed default agents release capacity while retained conversations consume it', async t => {
+  const manager = new AgentOrchestrator();
+  t.after(() => manager.close());
+  let disposed = 0;
+  const createWorker = async (): Promise<AgentWorker> => ({
+    async steer() {
+      return true;
+    },
+    async run() {
+      return 'Retained result';
+    },
+    dispose() {
+      disposed++;
+    },
+  });
+  for (let index = 0; index < 64; index++) {
+    const {id} = manager.spawn(spec, createWorker);
+    await manager.wait([id]);
+  }
+  assert.throws(() => manager.spawn(spec, createWorker), /limit of 64/);
+  await Promise.all(
+    manager.list().map(record => manager.closeAgent(record.id)),
+  );
+  assert.equal(disposed, 64);
+  const {id} = manager.spawn(spec, createWorker);
+  assert.equal((await manager.wait([id]))[0].output, 'Retained result');
+  assert.equal(manager.list().length, 65);
+  assert.equal(manager.list().filter(record => record.resumable).length, 1);
+});
+
 void test('controller observes activity and inbox with copied state and resets without stale workers', async t => {
   await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
   const workers = teamWorkers();
@@ -2075,6 +2212,7 @@ void test('agent acknowledgements stay compact while status metadata remains ava
     'resultFile',
     'createdAt',
     'startedAt',
+    'agentProfile',
   ])
     assert.equal(Object.hasOwn(status, field), false, field);
   const detail = visibleAgentResult(
@@ -2082,6 +2220,11 @@ void test('agent acknowledgements stay compact while status metadata remains ava
   ).agents[0];
   assert.equal(detail.cwd, parent.ctx.cwd);
   assert.equal(detail.model, 'openai-codex/gpt-5.6-sol');
+  assert.deepEqual(detail.agentProfile, {
+    id: 'default',
+    name: 'Default',
+    mode: 'all',
+  });
   assert.equal(detail.sessionFile, '/worker/0/transcript.jsonl');
   assert.equal(detail.resultFile, '/worker/0/result.txt');
   const sent = await parent.execute('agent_send', {
@@ -2327,6 +2470,119 @@ void test('abort recovers and clears queued messages while preserving a worker f
   assert.equal(controlled.runs[0].message, 'Fresh scope');
   controlled.runs[0].finish('Fresh result');
   await manager.wait([id]);
+});
+
+void test('close cancels finished worker interactions before disposal and rejects queued maintenance', async t => {
+  for (const scope of ['agent', 'session'] as const) {
+    await t.test(scope, async t => {
+      const manager = new AgentOrchestrator();
+      const controlled = controlledWorker();
+      const cancelled = deferred<void>();
+      const settling = deferred<void>();
+      const actions: string[] = [];
+      controlled.worker.command = async () => {
+        actions.push('command');
+        await cancelled.promise;
+        actions.push('cancelled');
+        await settling.promise;
+        throw new Error('Dialog cancelled');
+      };
+      controlled.worker.abort = async () => {
+        cancelled.resolve();
+      };
+      controlled.worker.reload = async () => {
+        actions.push('reload');
+      };
+      t.after(() => {
+        settling.resolve();
+        return manager.close();
+      });
+      const {id} = manager.spawn(spec, async () => controlled.worker);
+      await until(() => controlled.runs.length === 1);
+      controlled.runs[0].finish('Retained result');
+      await manager.wait([id]);
+      const command = assert.rejects(
+        manager.command(id, '/model'),
+        /Dialog cancelled/,
+      );
+      await until(() => actions.includes('command'));
+      const queued = assert.rejects(
+        manager.reload(id),
+        /closed|cleaned up|cancelled/,
+      );
+      let closed = false;
+      const closing = (
+        scope === 'agent' ? manager.closeAgent(id) : manager.close()
+      ).then(() => {
+        closed = true;
+      });
+      await until(() => actions.includes('cancelled'));
+      assert.equal(controlled.disposed, 0);
+      assert.equal(closed, false);
+      settling.resolve();
+      await Promise.all([command, queued, closing]);
+      assert.deepEqual(actions, ['command', 'cancelled']);
+      assert.equal(controlled.disposed, 1);
+      assert.equal(manager.get(id).output, 'Retained result');
+      assert.equal(manager.get(id).resumable, false);
+      await manager.close();
+      assert.equal(controlled.disposed, 1);
+    });
+  }
+});
+
+void test('abort cancels idle maintenance, waits for it, and invalidates queued operations', async t => {
+  const manager = new AgentOrchestrator();
+  const controlled = controlledWorker();
+  const cancelled = deferred<void>();
+  const settling = deferred<void>();
+  const actions: string[] = [];
+  controlled.worker.compact = async () => {
+    actions.push('compact');
+    await cancelled.promise;
+    actions.push('cancelled');
+    await settling.promise;
+    throw new Error('Compaction cancelled');
+  };
+  controlled.worker.abort = async () => {
+    cancelled.resolve();
+  };
+  controlled.worker.reload = async () => {
+    actions.push('reload');
+  };
+  t.after(() => {
+    settling.resolve();
+    return manager.close();
+  });
+  const {id} = manager.spawn(spec, async () => controlled.worker);
+  await until(() => controlled.runs.length === 1);
+  controlled.runs[0].finish('Retained result');
+  await manager.wait([id]);
+  const compacting = assert.rejects(
+    manager.compact(id),
+    /Compaction cancelled/,
+  );
+  await until(() => actions.includes('compact'));
+  const queued = assert.rejects(manager.reload(id), /operation cancelled/);
+  const pendingMessage = assert.rejects(
+    manager.send(id, 'Discard this message'),
+    /message cancelled/,
+  );
+  let stopped = false;
+  const stopping = manager.abort(id).then(() => {
+    stopped = true;
+  });
+  await until(() => actions.includes('cancelled'));
+  assert.equal(stopped, false);
+  assert.equal(controlled.disposed, 0);
+  settling.resolve();
+  await Promise.all([compacting, queued, pendingMessage, stopping]);
+  assert.deepEqual(actions, ['compact', 'cancelled']);
+  assert.equal(manager.get(id).resumable, true);
+  await manager.send(id, 'Resume after compaction cancellation');
+  await until(() => controlled.runs.length === 2);
+  controlled.runs[1].finish('Recovered result');
+  assert.equal((await manager.wait([id]))[0].output, 'Recovered result');
 });
 
 void test('worker context updates through run callbacks, clears unavailable data, and retains isolated snapshots after disposal', async t => {

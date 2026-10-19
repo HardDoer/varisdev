@@ -118,6 +118,8 @@ export interface AgentTemplateList {
   diagnostics: AgentTemplateDiagnostic[];
   /** Selected default: configured primary agent, Default, or builtin:default. */
   defaultAgentId?: string;
+  /** Exact default profile, including a scoped selection below higher overrides. */
+  defaultAgent?: AgentTemplate;
 }
 
 export interface SaveAgentTemplateInput {
@@ -966,8 +968,10 @@ function definitionsFor(
 function resolveFromLayers(
   loaded: LoadedTemplateLayers,
   value: string,
+  allowInvalidPermissions = false,
 ): AgentTemplate | undefined {
-  if (loaded.sharedPermissionsError) throw loaded.sharedPermissionsError;
+  if (loaded.sharedPermissionsError && !allowInvalidPermissions)
+    throw loaded.sharedPermissionsError;
   const separator = value.indexOf(':');
   if (separator !== -1) {
     const scope = validateScope(value.slice(0, separator));
@@ -981,13 +985,44 @@ function resolveFromLayers(
     )
       return undefined;
     const definitions = definitionsFor(loaded.sources, id, scope);
-    return mergeDefinitions(id, definitions, loaded.sharedPermissions);
+    return mergeDefinitions(
+      id,
+      definitions,
+      loaded.sharedPermissions,
+      !loaded.sharedPermissionsError,
+    );
   }
   const id = validateId(value);
   const definitions = definitionsFor(loaded.sources, id);
   return definitions.length
-    ? mergeDefinitions(id, definitions, loaded.sharedPermissions)
+    ? mergeDefinitions(
+        id,
+        definitions,
+        loaded.sharedPermissions,
+        !loaded.sharedPermissionsError,
+      )
     : undefined;
+}
+
+function configuredPrimaryTemplate(
+  loaded: LoadedTemplateLayers,
+  configured: string | undefined,
+  allowInvalidPermissions = false,
+): AgentTemplate | undefined {
+  if (loaded.sharedPermissionsError && !allowInvalidPermissions)
+    throw loaded.sharedPermissionsError;
+  if (!configured) return undefined;
+  try {
+    const candidate = resolveFromLayers(
+      loaded,
+      configured,
+      allowInvalidPermissions,
+    );
+    return candidate && primaryVisible(candidate) ? candidate : undefined;
+  } catch {
+    // Invalid selectors in settings use the normal default fallback.
+    return undefined;
+  }
 }
 
 export async function listAgentTemplates(
@@ -1013,23 +1048,36 @@ export async function listAgentTemplates(
     .sort(compareTemplates);
   const templates = effective.filter(template => !template.disabled);
   const configured = configuredDefaultAgent(cwd);
-  const defaultAgentId =
-    configured &&
-    effective.some(
-      template => template.id === configured && primaryVisible(template),
-    )
-      ? configured
-      : effective.some(
-            template => template.id === 'default' && primaryVisible(template),
-          )
-        ? 'default'
-        : 'builtin:default';
+  const configuredCandidate = configuredPrimaryTemplate(
+    loaded,
+    configured,
+    true,
+  );
+  const defaultCandidate =
+    configuredCandidate ??
+    effective.find(
+      template => template.id === 'default' && primaryVisible(template),
+    );
+  const defaultAgentId = configuredCandidate
+    ? configured!
+    : defaultCandidate
+      ? 'default'
+      : 'builtin:default';
+  const defaultAgent =
+    defaultCandidate ??
+    mergeDefinitions(
+      'default',
+      [createDefaultAgentProfile()],
+      loaded.sharedPermissions,
+      !loaded.sharedPermissionsError,
+    );
   return {
     templates,
     allTemplates: loaded.sources.flatMap(source => source.templates),
     sources: loaded.sources,
     diagnostics: loaded.diagnostics,
     defaultAgentId,
+    defaultAgent,
   };
 }
 
@@ -1040,9 +1088,7 @@ export async function resolveDefaultAgentTemplate(
   const loaded = await loadTemplateLayers(cwd);
   const configured =
     role === 'primary' ? configuredDefaultAgent(cwd) : undefined;
-  const configuredCandidate = configured
-    ? resolveFromLayers(loaded, configured)
-    : undefined;
+  const configuredCandidate = configuredPrimaryTemplate(loaded, configured);
   const selector =
     configuredCandidate && primaryVisible(configuredCandidate)
       ? configured!

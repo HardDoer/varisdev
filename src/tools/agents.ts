@@ -1,6 +1,8 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  InputEvent,
+  InputEventResult,
 } from '@earendil-works/pi-coding-agent';
 import {stat} from 'node:fs/promises';
 import {resolve} from 'node:path';
@@ -35,6 +37,7 @@ import {
 } from '../agents/mentions.ts';
 import {assertAgentModelAllowed, readToolSettings} from './settings.ts';
 import {observeFileChanges} from '../dashboard/changes.ts';
+import {agentProfileSummary} from '../dashboard/features.ts';
 import type {DesktopExtensionUI} from '../dashboard/extension-ui.ts';
 import {
   AgentSessionController,
@@ -242,6 +245,7 @@ function toolResult(
         ? {
             cwd: record.cwd,
             model: record.model,
+            agentProfile: record.agentProfile,
             autoCleanup: record.autoCleanup,
             createdAt: record.createdAt,
             startedAt: record.startedAt,
@@ -533,6 +537,32 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
   });
 }
 
+type MentionInput = Pick<InputEvent, 'text' | 'images'>;
+type MentionDispatch = (
+  input: MentionInput,
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+) => Promise<InputEventResult>;
+
+const mentionDispatchers = new WeakMap<
+  AgentSessionController,
+  MentionDispatch
+>();
+
+/** Dispatch explicit user input before a desktop host forwards ordinary prompts. */
+export async function dispatchAgentMention(
+  control: AgentSessionController,
+  input: MentionInput,
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+): Promise<InputEventResult> {
+  return (
+    (await mentionDispatchers.get(control)?.(input, ctx, signal)) ?? {
+      action: 'continue',
+    }
+  );
+}
+
 export interface AgentToolsOptions {
   agentProfile?: AgentTemplate;
   ui?: DesktopExtensionUI;
@@ -645,6 +675,7 @@ export function registerAgentTools(
         model: `${model.provider}/${model.id}`,
         pinnedModel,
         agentMode: agentProfile.mode,
+        agentProfile: agentProfileSummary(agentProfile),
         thinkingLevel,
         timeoutMs: params.timeoutMs,
         autoCleanup: params.autoCleanup,
@@ -706,20 +737,18 @@ export function registerAgentTools(
   // Only main user input invokes configurations. Retained workers continue to
   // receive tasks through the parent's agent tools.
   if (!shared?.id) {
-    pi.on('input', async (event, ctx) => {
-      if (
-        event.source === 'extension' ||
-        shared?.agentProfile?.mode === 'subagent'
-      )
+    const dispatch: MentionDispatch = async (event, ctx, hostSignal) => {
+      if (shared?.agentProfile?.mode === 'subagent')
         return {action: 'continue' as const};
       const mention = parseAgentMention(event.text);
       if (!mention) return {action: 'continue' as const};
       try {
         const parentSignal = shared?.signal?.();
+        const signals = [hostSignal, parentSignal, ctx.signal].filter(
+          (signal): signal is AbortSignal => signal !== undefined,
+        );
         const signal =
-          parentSignal && ctx.signal
-            ? AbortSignal.any([parentSignal, ctx.signal])
-            : (parentSignal ?? ctx.signal);
+          signals.length > 1 ? AbortSignal.any(signals) : signals[0];
         const template = await resolveAgentTemplate(ctx.cwd, mention.id);
         if (!template) return {action: 'continue' as const};
         if (mention.task.length > 64000)
@@ -759,7 +788,13 @@ export function registerAgentTools(
         });
       }
       return {action: 'handled' as const};
-    });
+    };
+    mentionDispatchers.set(control, dispatch);
+    pi.on('input', (event, ctx) =>
+      event.source === 'extension'
+        ? {action: 'continue' as const}
+        : dispatch(event, ctx),
+    );
   }
 
   const registerSpawn = (

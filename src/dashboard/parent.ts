@@ -172,6 +172,8 @@ export async function createDashboardParent(
     args ? desktopResourceOptions(args) : {};
   let state: DashboardState | undefined;
   const ui = new DesktopExtensionUI(() => state?.touch());
+  let parentDialogs = new AbortController();
+  const parentUI = ui.forCommand(() => parentDialogs.signal);
   const approval = createAgentApprovalRelay({hasUI: true, ui: ui.context});
   const approvalSignal = () => {
     const signals = [...activePrompts]
@@ -388,7 +390,7 @@ export async function createDashboardParent(
     refreshAutocomplete();
     await session.bindExtensions({
       mode: 'rpc',
-      uiContext: ui.context,
+      uiContext: parentUI.context,
       onError: error => {
         report(error.error, error.extensionPath);
         ui.context.notify(error.error, 'error');
@@ -474,7 +476,7 @@ export async function createDashboardParent(
   };
   const stop = () => {
     llama.cancel();
-    ui.cancelDialogs();
+    parentDialogs.abort();
     preserveQueue();
     session.abortRetry();
     session.abortCompaction();
@@ -503,6 +505,9 @@ export async function createDashboardParent(
         return recovered;
       })
       .finally(() => {
+        // Extensions may request another dialog while unwinding cancellation.
+        // Keep those requests cancelled until all stopped work has settled.
+        if (!closed) parentDialogs = new AbortController();
         stopping = undefined;
         stoppedMessages = undefined;
       });
@@ -836,6 +841,7 @@ export async function createDashboardParent(
     close() {
       if (closing) return closing;
       closed = true;
+      ui.cancelDialogs();
       closing = (async () => {
         try {
           await abort();

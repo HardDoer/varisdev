@@ -26,7 +26,7 @@ async function until(
 }
 
 void test(
-  'managed parent invokes a pinned child without a root model or provider turn and cancels pending mention approval',
+  'managed parent invokes a pinned child without a root model, cancels approval and retires workers on reload',
   {timeout: 15000},
   async t => {
     const root = await mkdtemp(join(tmpdir(), 'varisdev-parent-mentions-'));
@@ -96,6 +96,9 @@ export default function (pi) {
       instructions: 'PINNED CHILD INSTRUCTIONS',
     });
     const profile = createDefaultAgentProfile();
+    profile.id = 'main-reviewer';
+    profile.key = 'workspace:main-reviewer';
+    profile.name = 'Main reviewer';
     profile.permissions = [
       {action: 'subagent', resource: 'review', effect: 'ask'},
     ];
@@ -146,5 +149,49 @@ export default function (pi) {
       1,
       'Only the approved child made a provider request',
     );
+
+    const identity = (await current.features()).agentProfile;
+    const savedProfile = current
+      .restartSnapshot()
+      .entries.findLast(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+    await current.reload();
+    const reloaded = current.state.snapshot();
+    assert.equal(reloaded.session.status, 'idle');
+    assert.equal(reloaded.agents.length, 1);
+    assert.equal(reloaded.agents[0].id, child.id);
+    assert.equal(reloaded.agents[0].status, 'completed');
+    assert.equal(reloaded.agents[0].resumable, false);
+    assert.equal(reloaded.agents[0].output, child.output);
+    assert.deepEqual(reloaded.session.agentProfile, identity);
+    assert.deepEqual((await current.features()).agentProfile, identity);
+    assert.deepEqual(
+      current
+        .restartSnapshot()
+        .entries.findLast(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.agent-profile',
+        ),
+      savedProfile,
+      'Reload retains the saved root profile identity',
+    );
+    assert.equal(requests.length, 1, 'Reload requires no main turn');
+    const next = current.prompt('@review A fresh team after reload');
+    await until(() => current.ui.snapshot().dialogs.length > 0);
+    current.ui.respond(current.ui.snapshot().dialogs[0].id, 'Allow once');
+    await next;
+    await until(() => {
+      const agent = current.state.snapshot().agents[0];
+      return agent?.id !== child.id && agent?.status === 'completed';
+    });
+    const fresh = current.state.snapshot().agents;
+    assert.equal(fresh.length, 1);
+    assert.notEqual(fresh[0].id, child.id);
+    assert.equal(fresh[0].resumable, true);
+    assert.equal(requests.length, 2);
   },
 );

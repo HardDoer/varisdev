@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {existsSync, realpathSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
+import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {
@@ -50,17 +51,27 @@ export interface WorkspaceConfigPaths {
   workspaceDir: string;
 }
 
+function canonicalDirectory(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 /** A worktree has its own configuration; symlink aliases share that configuration. */
 export function workspaceConfigPaths(
   cwd: string,
   agentDir = getAgentDir(),
 ): WorkspaceConfigPaths {
-  let canonical: string;
-  try {
-    canonical = realpathSync(cwd);
-  } catch {
-    canonical = resolve(cwd);
-  }
+  const canonical = canonicalDirectory(cwd);
+  const settings = canonicalDirectory(agentDir);
+  const globalMarkers = new Set([
+    canonicalDirectory(join(homedir(), CONFIG_DIR_NAME)),
+    settings,
+    dirname(settings),
+    canonicalDirectory(dirname(resolve(agentDir))),
+  ]);
   let projectDir = canonical;
   let configRoot: string | undefined;
   for (let current = canonical; ; current = dirname(current)) {
@@ -68,7 +79,13 @@ export function workspaceConfigPaths(
       projectDir = current;
       break;
     }
-    if (!configRoot && existsSync(join(current, CONFIG_DIR_NAME)))
+    const marker = join(current, CONFIG_DIR_NAME);
+    // Global settings belong to every project, so they cannot identify one.
+    if (
+      !configRoot &&
+      existsSync(marker) &&
+      !globalMarkers.has(canonicalDirectory(marker))
+    )
       configRoot = current;
     if (dirname(current) === current) {
       projectDir = configRoot ?? canonical;

@@ -1042,6 +1042,25 @@ async function main() {
     'worker approval choices enforce once, conversation, agent, deny and cancellation scopes',
   );
 
+  const conversationGrant = (await approvalStore.list()).find(
+    grant => grant.scope === 'conversation',
+  );
+  await approvalStore.revoke(conversationGrant.id);
+  await approvalStore.remember(
+    approvalScope(),
+    {
+      toolName: 'write',
+      action: 'write',
+      resource: 'approval-conversation.txt',
+      input: {
+        path: 'approval-conversation.txt',
+        content:
+          'Saved write content for review.\n'.repeat(800) +
+          'END OF SAVED INPUT',
+      },
+    },
+    'conversation',
+  );
   assert.equal(ui.context.setTheme('light').success, true);
   await waitFor(
     () => evaluate(() => !document.getElementById('open-approvals').disabled),
@@ -1066,8 +1085,33 @@ async function main() {
   await waitForTerminal('approval-conversation');
   await press('Return');
   await waitForTerminal('Revoke approval');
+  assert.ok(ui.snapshot().dialogs[0].title.length < 100);
+  await waitForTerminal('approval-conversation.txt');
   await screenshot('approval-management-conversation-light');
+  const approvalStart = (await terminalState()).visible.join('\n');
+  await press('PageDown');
+  await waitFor(async () => {
+    const visible = (await terminalState()).visible.join('\n');
+    return visible !== approvalStart && !visible.includes('Workspace:');
+  }, 'Approval details PageDown did not scroll the input');
+  await waitForTerminal('Revoke approval');
+  await press('PageUp');
+  await waitForTerminal('Workspace:');
+  await press('End', ['control']);
+  await waitForTerminal('END OF SAVED INPUT');
+  await waitForTerminal('Revoke approval');
+  await screenshot('approval-management-input-end-light');
   await assertCompact('approval-management-light', 'Revoke approval');
+  browser.setContentSize(900, 760);
+  browser.webContents.setZoomFactor(2);
+  await waitForTerminal('Revoke approval');
+  await press('End', ['control']);
+  await waitForTerminal('END OF SAVED INPUT');
+  await waitForTerminal('Back');
+  await screenshot('approval-management-input-end-light-900-2');
+  browser.setContentSize(1600, 1000);
+  browser.webContents.setZoomFactor(1);
+  await waitForTerminal('Revoke approval');
   await press('Return');
   await waitFor(
     async () => (await approvalStore.list()).length === 1,

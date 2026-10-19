@@ -1557,7 +1557,7 @@ void test(
 );
 
 void test(
-  'retained SDK workers await /commit responses with the active workspace skill and agent configuration',
+  'retained SDK workers isolate command results, await /commit, and cancel idle maintenance',
   {timeout: 15000},
   async t => {
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-commit-'));
@@ -1569,7 +1569,10 @@ void test(
     await mkdir(agentDir, {recursive: true});
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}, compaction: {enabled: false}}),
+      JSON.stringify({
+        retry: {enabled: false},
+        compaction: {enabled: false, keepRecentTokens: 32},
+      }),
     );
     const providerId = 'worker-commit-test';
     const registry = new ModelRegistry(
@@ -1583,6 +1586,13 @@ void test(
     const requests: ProviderRequest[] = [];
     const commitStarted = Promise.withResolvers<void>();
     const finishCommit = Promise.withResolvers<void>();
+    const compactionStarted = Promise.withResolvers<AbortSignal>();
+    const finishCompaction = Promise.withResolvers<void>();
+    const dialogStarted = Promise.withResolvers<void>();
+    const ui = new DesktopExtensionUI(() => {
+      if (ui.snapshot().dialogs.length) dialogStarted.resolve();
+    });
+    let shutdowns = 0;
     const toolExecutions: string[] = [];
     const server = createServer(async (request, response) => {
       let body = '';
@@ -1598,7 +1608,9 @@ void test(
     });
     t.after(async () => {
       finishCommit.resolve();
+      finishCompaction.resolve();
       await manager.close();
+      ui.dispose();
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));
       registry.unregisterProvider(providerId);
@@ -1670,9 +1682,20 @@ void test(
           model: registry.find(providerId, 'worker-model')!,
           modelRegistry: registry,
           thinkingLevel: 'high',
+          ui,
           agentToolsExtension: pi => {
+            registerAgentTools(pi);
             pi.on('tool_execution_start', event => {
               toolExecutions.push(event.toolName);
+            });
+            pi.on('session_before_compact', async event => {
+              compactionStarted.resolve(event.signal);
+              await finishCompaction.promise;
+              return {cancel: true};
+            });
+            pi.on('session_shutdown', () => {
+              assert.equal(ui.snapshot().dialogs.length, 0);
+              shutdowns++;
             });
           },
         }),
@@ -1686,6 +1709,26 @@ void test(
       ),
     );
 
+    await manager.send(id, '/thinking high');
+    const [native] = await manager.wait([id], {timeoutMs: 5000});
+    assert.equal(native.status, 'completed');
+    assert.equal(native.output, '');
+    assert.equal(await readFile(native.resultFile!, 'utf8'), '');
+
+    await manager.send(id, '/agents history');
+    const [history] = await manager.wait([id], {timeoutMs: 5000});
+    assert.equal(history.status, 'completed');
+    assert.equal(history.output, '');
+    assert.equal(await readFile(history.resultFile!, 'utf8'), '');
+    assert.equal(requests.length, 1);
+    assert.equal(history.usage!.calls.length, initial.usage!.calls.length);
+    assert.deepEqual(history.context, initial.context);
+    assert.ok(
+      ui
+        .snapshot()
+        .notifications.some(item => /No finished agents/.test(item.message)),
+    );
+
     await manager.send(id, '/commit Use the requested commit message.');
     await commitStarted.promise;
     await delay(20);
@@ -1695,10 +1738,7 @@ void test(
       'The command remains active until its model turn finishes',
     );
     assert.equal(manager.get(id).output, undefined);
-    assert.equal(
-      await readFile(initial.resultFile!, 'utf8'),
-      'Initial context retained.',
-    );
+    assert.equal(await readFile(initial.resultFile!, 'utf8'), '');
     const text = requests[1].messages.at(-1)!.content;
     const content =
       typeof text === 'string'
@@ -1740,6 +1780,56 @@ void test(
     assert.deepEqual(toolExecutions, []);
     assert.equal(requests.length, 2);
     assert.equal(completed.usage!.calls.length, 2);
+
+    const compacting = assert.rejects(
+      manager.compact(id),
+      /Compaction cancelled/,
+    );
+    const compactionSignal = await compactionStarted.promise;
+    let aborted = false;
+    const aborting = manager.abort(id).then(() => {
+      aborted = true;
+    });
+    assert.equal(compactionSignal.aborted, true);
+    await delay(20);
+    assert.equal(
+      aborted,
+      false,
+      'Abort awaits the SDK compaction hook settling',
+    );
+    finishCompaction.resolve();
+    await Promise.all([compacting, aborting]);
+    assert.equal(manager.get(id).resumable, true);
+    assert.equal(manager.get(id).status, 'completed');
+    assert.deepEqual(manager.get(id).usage, completed.usage);
+    assert.deepEqual(manager.get(id).context, completed.context);
+    assert.equal(
+      SessionManager.open(completed.sessionFile!)
+        .getBranch()
+        .filter(entry => entry.type === 'compaction').length,
+      0,
+    );
+    assert.deepEqual((await manager.features(id)).agentProfile, {
+      id: 'default',
+      name: 'Default',
+      mode: 'all',
+    });
+    await manager.send(id, 'Resume after cancelled compaction.');
+    const [resumed] = await manager.wait([id], {timeoutMs: 5000});
+    assert.equal(resumed.status, 'completed');
+    assert.equal(resumed.usage!.calls.length, 3);
+
+    const selecting = manager.command(id, '/model');
+    await dialogStarted.promise;
+    assert.equal(ui.snapshot().dialogs.length, 1);
+    await manager.closeAgent(id);
+    await selecting;
+    assert.equal(ui.snapshot().dialogs.length, 0);
+    assert.equal(shutdowns, 1);
+    assert.equal(manager.get(id).resumable, false);
+    assert.equal(manager.get(id).output, resumed.output);
+    await manager.close();
+    assert.equal(shutdowns, 1);
   },
 );
 

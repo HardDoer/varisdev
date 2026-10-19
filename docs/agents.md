@@ -14,6 +14,8 @@ Every new agent has its own message history. Starting one does not copy the call
 
 ## Other agents
 
+Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The main agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`.
+
 Build and Plan are optional primary agents. General and Explore are optional subagents. Plan and Explore provide restricted tools for investigation; General can work broadly but cannot delegate further. Their instructions apply only when selected.
 
 [Example configurations](../examples/agents/README.md) can be copied and customized. They are outside the configuration discovery paths and add nothing to the default prompt.

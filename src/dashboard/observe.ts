@@ -3,9 +3,13 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import {basename} from 'node:path';
-import type {AgentSessionController} from '../agents/team.ts';
+import {
+  archiveAgentRecord,
+  type AgentSessionController,
+} from '../agents/team.ts';
 import {DashboardState, type ConversationMessage} from './state.ts';
 import {observeFileChanges} from './changes.ts';
+import {sessionAgentProfile} from './features.ts';
 import {modelUsage, compactionUsage, sessionUsageCalls} from '../usage.ts';
 import {
   messageText,
@@ -194,7 +198,8 @@ export function observeDashboardSession(
     clearTimeout(teamTimer);
     teamTimer = undefined;
     const team = control.deliverySnapshot?.() ?? control.snapshot();
-    if (state && team && team.sessionId === sessionId) {
+    if (!state) return;
+    if (team && team.sessionId === sessionId) {
       state.batch(() => {
         state!.updateTeam(team.agents, team.messages, true);
         for (const change of team.changes) {
@@ -202,7 +207,16 @@ export function observeDashboardSession(
         }
         seenChanges = new Set(team.changes.map(change => change.id));
       });
+    } else {
+      archiveTeam();
     }
+  }
+
+  function archiveTeam(): void {
+    if (!state) return;
+    const agents = state.deliverySnapshot().agents;
+    if (agents.length)
+      state.updateTeam(agents.map(archiveAgentRecord), [], true);
   }
 
   function scheduleTeamSync(): void {
@@ -410,6 +424,7 @@ export function observeDashboardSession(
     const now = new Date().toISOString();
     const session = {
       ...metadata(ctx),
+      agentProfile: sessionAgentProfile(ctx.sessionManager),
       id: ctx.sessionManager.getSessionId(),
       status: ctx.isIdle() ? ('idle' as const) : ('running' as const),
       activity: ctx.isIdle() ? 'Ready for a task' : 'Working',
@@ -733,6 +748,7 @@ export function observeDashboardSession(
     unsubscribe = undefined;
     tools.clear();
     state?.batch(() => {
+      archiveTeam();
       state!.settleConversation();
       state!.updateSession({status: 'closed', activity: 'Session closed'});
       state!.record('session', 'Session closed');

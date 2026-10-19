@@ -238,6 +238,10 @@ void test(
     assert.equal(seen[0].name, 'Reviewer');
     assert.equal(record.pinnedModel, 'fixture/review');
     assert.equal(record.model, 'fixture/review');
+    const configuration = {id: 'reviewer', name: 'Reviewer', mode: 'all'};
+    assert.deepEqual(record.agentProfile, configuration);
+    record.agentProfile!.name = 'Mutated public record';
+    assert.deepEqual(manager.get(record.id).agentProfile, configuration);
     assert.equal(seen[0].model, models[1]);
     assert.equal(seen[0].thinkingLevel, 'high');
     assert.equal(seen[0].instructions, 'Focus on errors.');
@@ -265,6 +269,7 @@ void test(
     const nestedRecord = (nested.details as {agents: AgentRecord[]}).agents[0];
     await manager.wait([nestedRecord.id], {timeoutMs: 2000});
     assert.equal(seen[1].name, 'Second reviewer');
+    assert.deepEqual(nestedRecord.agentProfile, configuration);
     assert.equal(nestedRecord.pinnedModel, 'fixture/review');
     assert.equal(seen[1].model, models[1]);
     assert.equal(seen[1].thinkingLevel, 'low');
@@ -315,6 +320,15 @@ void test(
       id: 'reviewer',
     });
     assert.equal((fallback.details as {scope: string}).scope, 'global');
+    await execute('agent_templates', {
+      action: 'save',
+      id: 'reviewer',
+      scope: 'global',
+      name: 'Edited reviewer',
+      mode: 'all',
+    });
+    assert.deepEqual(manager.get(record.id).agentProfile, configuration);
+    assert.deepEqual(manager.get(nestedRecord.id).agentProfile, configuration);
     await assert.rejects(
       execute('agent_spawn', {template: 'missing', task: 'Work'}),
       /Unknown agent configuration: missing/,
@@ -325,6 +339,11 @@ void test(
       .agents[0];
     await manager.wait([defaultRecord.id], {timeoutMs: 2000});
     assert.equal(seen.at(-1)?.name, 'Default');
+    assert.deepEqual(defaultRecord.agentProfile, {
+      id: 'default',
+      name: 'Default',
+      mode: 'all',
+    });
     assert.equal(seen.at(-1)?.agentProfile?.id, 'default');
     assert.equal(seen.at(-1)?.agentProfile?.instructions, '');
     assert.deepEqual(seen.at(-1)?.agentProfile?.permissions, []);

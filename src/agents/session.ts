@@ -103,6 +103,8 @@ export function sessionWorker(
     session.sessionManager.getCwd?.(),
   );
   let commandController: AbortController | undefined;
+  let compaction: Promise<void> | undefined;
+  let compactionController: AbortController | undefined;
   let finishing = false;
   let closing: Promise<void> | undefined;
   let publishUsage: ((usage: ModelUsage) => void) | undefined;
@@ -247,9 +249,25 @@ export function sessionWorker(
       }
     },
     async compact(instructions) {
-      await session.compact(instructions);
-      restoreUsage();
-      publishUsage?.(usage.snapshot());
+      const controller = new AbortController();
+      compactionController = controller;
+      // SDK compaction first awaits abort(), then creates its cancellation signal.
+      const unsubscribe = session.subscribe(event => {
+        if (event.type === 'compaction_start' && controller.signal.aborted)
+          session.abortCompaction();
+      });
+      compaction = (async () => {
+        await session.compact(instructions);
+        restoreUsage();
+        publishUsage?.(usage.snapshot());
+      })();
+      try {
+        await compaction;
+      } finally {
+        unsubscribe();
+        compaction = undefined;
+        compactionController = undefined;
+      }
     },
     async reload() {
       await session.reload();
@@ -257,6 +275,14 @@ export function sessionWorker(
     clearQueue() {
       commandController?.abort();
       return session.clearQueue();
+    },
+    async abort() {
+      commandController?.abort();
+      compactionController?.abort();
+      session.clearQueue();
+      session.abortCompaction();
+      session.abortBash();
+      await Promise.all([session.abort(), compaction?.catch(() => {})]);
     },
     async steer(message, starting) {
       if (finishing && !starting) return false;
@@ -272,6 +298,7 @@ export function sessionWorker(
         try {
           await worker.command!(message);
           signal.throwIfAborted();
+          await writeFile(resultFile, '', 'utf8');
           return '';
         } finally {
           signal.removeEventListener('abort', stopCommand);
@@ -294,13 +321,12 @@ export function sessionWorker(
       finishing = false;
       conversation.begin();
       let aborting: Promise<void> | undefined;
+      let lastAssistant:
+        | Extract<AgentSession['messages'][number], {role: 'assistant'}>
+        | undefined;
       const abort = () => {
         finishing = true;
-        commandController?.abort();
-        session.clearQueue();
-        session.abortCompaction();
-        session.abortBash();
-        aborting = session.abort().catch(() => {});
+        aborting = worker.abort!().catch(() => {});
       };
       const unsubscribe = session.subscribe(event => {
         if (conversation.record(event))
@@ -309,6 +335,7 @@ export function sessionWorker(
           event.type === 'message_end' &&
           event.message.role === 'assistant'
         ) {
+          lastAssistant = event.message;
           let sequence = 0;
           let found = false;
           for (const entry of session.sessionManager.getBranch?.() ?? []) {
@@ -359,15 +386,22 @@ export function sessionWorker(
       });
       signal.addEventListener('abort', abort, {once: true});
       let failure: unknown;
+      let handled = false;
       try {
-        await session.prompt(message, {expandPromptTemplates: true});
+        await session.prompt(message, {
+          expandPromptTemplates: true,
+          preflightResult: disposition => {
+            handled = disposition === 'handled';
+          },
+        });
         finishing = true;
         signal.throwIfAborted();
         if (promptState.blocked) throw new Error(promptState.blocked);
-        const lastAssistant = session.messages.findLast(
-          item => item.role === 'assistant',
-        );
-        if (!lastAssistant || lastAssistant.role !== 'assistant') {
+        if (!lastAssistant) {
+          if (handled) {
+            await writeFile(resultFile, '', 'utf8');
+            return '';
+          }
           throw new Error('Agent finished without an assistant response.');
         }
         if (
@@ -417,10 +451,14 @@ export function sessionWorker(
       unsubscribeUsage();
       closing = (async () => {
         try {
-          await session.extensionRunner.emit({
-            type: 'session_shutdown',
-            reason: 'quit',
-          });
+          try {
+            await worker.abort!();
+          } finally {
+            await session.extensionRunner.emit({
+              type: 'session_shutdown',
+              reason: 'quit',
+            });
+          }
         } finally {
           session.dispose();
         }

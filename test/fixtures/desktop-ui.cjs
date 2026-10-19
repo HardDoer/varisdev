@@ -36,6 +36,7 @@ let dialogDelays;
 let dialogErrors;
 let agentTemplates;
 let defaultAgentId;
+let defaultAgent;
 let templateError;
 let toolSettings;
 let toolSettingsError;
@@ -383,6 +384,7 @@ function listFixtureAgentTemplates(cwd) {
     }),
     diagnostics: [],
     ...(defaultAgentId ? {defaultAgentId} : {}),
+    ...(defaultAgent ? {defaultAgent} : {}),
   };
 }
 
@@ -414,6 +416,7 @@ function reset() {
   dialogErrors = new Map();
   agentTemplates = initialAgentTemplates();
   defaultAgentId = 'default';
+  defaultAgent = undefined;
   templateError = undefined;
   toolSettings = fixtureToolSettings();
   toolSettingsError = undefined;
@@ -566,25 +569,41 @@ ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
     return structuredClone(resources.get(key) || features());
   }
   if (request.action === 'command') {
-    assert.equal(request.command, '/model');
+    assert.ok(['/model', '/approvals'].includes(request.command));
     owner.ui ||= {dialogs: [], notifications: [], statuses: []};
     owner.ui.dialogs = [
-      {
-        id: `worker-model:${agent.id}`,
-        kind: 'terminal',
-        title: 'Model & thinking',
-        actions: [
-          {id: 'default', label: 'Make as default'},
-          {id: 'session', label: 'Apply to session'},
-        ],
-        terminal: {
-          columns: 100,
-          rows: 28,
-          output:
-            '\u001bcModel picker\r\n> fixture/small\r\n  fixture-other/large',
-          revision: 1,
-        },
-      },
+      request.command === '/approvals'
+        ? {
+            id: `worker-approvals:${agent.id}`,
+            kind: 'select',
+            title: 'Remembered approvals',
+            options: ['This conversation', 'This agent in this workspace'],
+            terminal: {
+              columns: 100,
+              rows: 28,
+              output: terminalMenuOutput('Remembered approvals', [
+                'This conversation',
+                'This agent in this workspace',
+              ]),
+              revision: 1,
+            },
+          }
+        : {
+            id: `worker-model:${agent.id}`,
+            kind: 'terminal',
+            title: 'Model & thinking',
+            actions: [
+              {id: 'default', label: 'Make as default'},
+              {id: 'session', label: 'Apply to session'},
+            ],
+            terminal: {
+              columns: 100,
+              rows: 28,
+              output:
+                '\u001bcModel picker\r\n> fixture/small\r\n  fixture-other/large',
+              revision: 1,
+            },
+          },
     ];
   }
   if (request.action === 'prompt') {
@@ -720,12 +739,17 @@ ipcMain.handle('fixture:create-session', async (_event, input) => {
   parent.session.activity = 'Ready';
   if (!input.sessionId) parent.conversation = [];
   hub.sessions.push(parent);
-  const selectedProfile = input.templateId
-    ? listFixtureAgentTemplates(input.cwd).templates.find(
-        profile =>
-          profile.id === input.templateId || profile.key === input.templateId,
-      )
-    : undefined;
+  const listing = listFixtureAgentTemplates(input.cwd);
+  const selectedProfile =
+    input.templateId === listing.defaultAgentId && listing.defaultAgent
+      ? listing.defaultAgent
+      : input.templateId
+        ? listing.templates.find(
+            profile =>
+              profile.id === input.templateId ||
+              profile.key === input.templateId,
+          )
+        : undefined;
   resources.set(
     parent.session.id,
     features(
@@ -3227,10 +3251,21 @@ async function main() {
     'selected agent controls configure context commands stop and close without touching its owner',
     async () => {
       const owner = hub.sessions[0];
+      owner.session.agentProfile = {
+        id: 'coordinator',
+        name: 'Project coordinator',
+        mode: 'primary',
+      };
       owner.agents = [
         {
           id: 'controlled',
           name: 'Controlled agent',
+          agentProfile: {
+            id: 'reviewer',
+            name: 'Review specialist',
+            mode: 'all',
+            color: '#FF6B6B',
+          },
           cwd: directory,
           task: 'Continue the investigation',
           status: 'running',
@@ -3249,6 +3284,13 @@ async function main() {
         {
           id: 'other',
           name: 'Other agent',
+          agentMode: 'subagent',
+          agentProfile: {
+            id: 'explore',
+            name: 'Discovery specialist',
+            mode: 'subagent',
+          },
+          model: 'fixture/small',
           cwd: directory,
           task: 'Keep working',
           status: 'running',
@@ -3261,8 +3303,8 @@ async function main() {
       resources.set('alpha:controlled', {
         ...features({
           id: 'reviewer',
-          name: 'Review specialist',
-          mode: 'subagent',
+          name: 'Edited configuration name',
+          mode: 'all',
           color: '#FF6B6B',
         }),
         contextFiles: [
@@ -3277,6 +3319,71 @@ async function main() {
         ],
       });
       await publish();
+      const configurationDetails = async (name, expected) => {
+        await evaluate(() => document.getElementById('tab-details').click());
+        assert.equal(
+          await evaluate(() => {
+            const label = [...document.querySelectorAll('#unit-facts dt')].find(
+              item => item.textContent === 'Configuration',
+            );
+            return label?.nextElementSibling.textContent;
+          }),
+          expected,
+        );
+        for (const [width, height, zoom] of [
+          [1600, 1000, 1],
+          [1100, 760, 1.5],
+        ]) {
+          window.setContentSize(width, height);
+          window.webContents.setZoomFactor(zoom);
+          await settle();
+          assert.equal(
+            await evaluate(() => {
+              const label = [
+                ...document.querySelectorAll('#unit-facts dt'),
+              ].find(item => item.textContent === 'Configuration');
+              const value = label.nextElementSibling;
+              const bounds = value.getBoundingClientRect();
+              const panel = document
+                .getElementById('panel-details')
+                .getBoundingClientRect();
+              return (
+                bounds.width > 0 &&
+                bounds.height > 0 &&
+                bounds.top >= panel.top &&
+                bounds.bottom <= panel.bottom &&
+                bounds.right <= innerWidth &&
+                bounds.bottom <= innerHeight &&
+                document.documentElement.scrollHeight <= innerHeight
+              );
+            }),
+            true,
+            `Configuration must be visible at ${width}x${height}, zoom ${zoom}`,
+          );
+          if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+            await screenshot(`configuration-details-${name}-${width}-${zoom}`);
+        }
+        window.webContents.setZoomFactor(1);
+        window.setContentSize(1600, 1000);
+        await settle();
+        await evaluate(() =>
+          document.getElementById('tab-conversation').click(),
+        );
+      };
+      await configurationDetails('parent', 'Project coordinator (coordinator)');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('agent-profile-label').textContent,
+        ),
+        'Project coordinator',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#active-workers button')]
+          .find(item => item.textContent.includes('Other agent'))
+          .click(),
+      );
+      await configurationDetails('subagent', 'Discovery specialist (explore)');
+      await evaluate(() => document.getElementById('back-to-parent').click());
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Root draft during worker stop';
@@ -3303,6 +3410,7 @@ async function main() {
           stop: false,
         },
       );
+      await configurationDetails('worker', 'Review specialist (reviewer)');
       await evaluate(() => {
         document.getElementById('tab-context').click();
         document.getElementById('refresh-context').click();
@@ -3393,6 +3501,48 @@ async function main() {
       );
       assert.equal(owner.agents[0].thinkingLevel, 'low');
       assert.equal(owner.session.thinkingLevel, 'medium');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/approv';
+        editor.focus();
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await until(
+        () => !document.getElementById('command-suggestions').hidden,
+        'Worker approvals suggestion did not appear',
+      );
+      await press('Return');
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '/approvals ',
+      );
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      await until(
+        () =>
+          document.getElementById('extension-dialog').open &&
+          document.getElementById('extension-dialog-title').textContent ===
+            'Remembered approvals',
+        'Worker approvals command did not open its native dialog',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'agentSession').at(-1),
+        {
+          method: 'agentSession',
+          sessionId: 'alpha',
+          request: {
+            agentId: 'controlled',
+            action: 'command',
+            command: '/approvals',
+          },
+        },
+      );
+      await press('Escape');
+      await until(
+        () => !document.getElementById('extension-dialog').open,
+        'Worker approvals cancellation did not close its dialog',
+      );
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Keep an unsent agent draft';
@@ -9426,6 +9576,97 @@ async function main() {
         'Opening and changing folders reloads settings for the selected session',
       );
       await click('agent-templates-close');
+    },
+  );
+
+  await run(
+    'scoped default configurations remain selected below workspace overrides',
+    async () => {
+      const global = agentDefinition('global', 'reviewer', {
+        name: 'Shared reviewer',
+        mode: 'all',
+        instructions: 'Use the shared review instructions.',
+      });
+      agentTemplates.push(
+        global,
+        agentDefinition('workspace', 'reviewer', {
+          name: 'Personal reviewer',
+          mode: 'all',
+          instructions: 'Use the personal review instructions.',
+        }),
+      );
+      defaultAgentId = 'global:reviewer';
+      defaultAgent = mergeAgentDefinitions('reviewer', [global]);
+      creationIds = ['scoped-review-session'];
+      await evaluate(() => document.getElementById('open-new-agent').click());
+      await until(
+        () => !document.getElementById('new-agent-template').disabled,
+        'Scoped default configuration did not load',
+      );
+      assert.deepEqual(
+        await evaluate(() => {
+          const select = document.getElementById('new-agent-template');
+          return {
+            selected: select.value,
+            label: select.selectedOptions[0].textContent,
+            personalAvailable: [...select.options].some(
+              option =>
+                option.value === 'reviewer' &&
+                option.textContent.includes('Personal reviewer'),
+            ),
+          };
+        }),
+        {
+          selected: 'global:reviewer',
+          label: 'Shared reviewer · Global',
+          personalAvailable: true,
+        },
+      );
+      for (const [width, height, zoom] of [
+        [1600, 1000, 1],
+        [1100, 760, 1.5],
+      ]) {
+        window.setContentSize(width, height);
+        window.webContents.setZoomFactor(zoom);
+        await settle();
+        assert.equal(
+          await evaluate(() => {
+            const select = document
+              .getElementById('new-agent-template')
+              .getBoundingClientRect();
+            const create = document
+              .getElementById('new-agent-create')
+              .getBoundingClientRect();
+            return (
+              select.width > 0 &&
+              select.top >= 0 &&
+              select.right <= innerWidth &&
+              create.bottom <= innerHeight &&
+              document.documentElement.scrollHeight <= innerHeight
+            );
+          }),
+          true,
+          'Scoped configuration and create control must remain accessible',
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`scoped-default-${width}-${zoom}`);
+      }
+      await evaluate(() => document.getElementById('new-agent-create').click());
+      await until(
+        () => !document.getElementById('new-agent-dialog').open,
+        'Scoped default conversation did not open',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession').at(-1),
+        {
+          method: 'createSession',
+          input: {cwd: directory, templateId: 'global:reviewer'},
+        },
+      );
+      assert.equal(
+        resources.get('scoped-review-session').agentProfile.name,
+        'Shared reviewer',
+      );
     },
   );
 
