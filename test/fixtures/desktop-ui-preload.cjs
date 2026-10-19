@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('pidev', {
   promptSession: (sessionId, request) =>
     ipcRenderer.invoke('fixture:prompt', sessionId, request),
   abortSession: sessionId => ipcRenderer.invoke('fixture:abort', sessionId),
+  agentSession: (sessionId, request) =>
+    ipcRenderer.invoke('fixture:agent-session', sessionId, request),
   cancelAgent: (sessionId, agentId) =>
     ipcRenderer.invoke('fixture:cancelAgent', sessionId, agentId),
   workspace: sessionId => ipcRenderer.invoke('fixture:workspace', sessionId),
@@ -30,7 +32,15 @@ contextBridge.exposeInMainWorld('pidev', {
   recentProjects: () => ipcRenderer.invoke('fixture:recent-projects'),
   chooseFolder: () => ipcRenderer.invoke('fixture:choose-folder'),
   listSessions: cwd => ipcRenderer.invoke('fixture:list-sessions', cwd),
+  openWorkspaceConfiguration: cwd =>
+    ipcRenderer.invoke('fixture:open-workspace-configuration', cwd),
   createSession: input => ipcRenderer.invoke('fixture:create-session', input),
+  listAgentTemplates: cwd =>
+    ipcRenderer.invoke('fixture:list-agent-templates', cwd),
+  saveAgentTemplate: (cwd, input) =>
+    ipcRenderer.invoke('fixture:save-agent-template', cwd, input),
+  deleteAgentTemplate: (cwd, input) =>
+    ipcRenderer.invoke('fixture:delete-agent-template', cwd, input),
   closeSession: sessionId =>
     ipcRenderer.invoke('fixture:close-session', sessionId),
 });

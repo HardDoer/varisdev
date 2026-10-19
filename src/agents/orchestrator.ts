@@ -1,6 +1,10 @@
 import {randomUUID} from 'node:crypto';
 import {ConversationState, type ConversationSnapshot} from '../conversation.ts';
 import {copyModelUsage, type ModelUsage} from '../usage.ts';
+import type {
+  SessionConfiguration,
+  SessionFeatures,
+} from '../dashboard/features.ts';
 
 export type AgentStatus =
   'queued' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
@@ -12,11 +16,13 @@ export interface AgentSpec {
   model: string;
   timeoutMs?: number;
   autoCleanup?: boolean;
+  thinkingLevel?: string;
 }
 
 export interface AgentRecord extends AgentSpec {
   id: string;
   status: AgentStatus;
+  resumable?: boolean;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -42,6 +48,12 @@ export interface AgentWorker {
     onConversation?: (conversation: ConversationSnapshot) => void,
   ): Promise<string>;
   steer(message: string, starting: boolean): Promise<boolean>;
+  features?(): Promise<SessionFeatures>;
+  configure?(input: SessionConfiguration): Promise<SessionFeatures>;
+  command?(command: string): Promise<SessionFeatures>;
+  compact?(instructions?: string): Promise<void>;
+  reload?(): Promise<void>;
+  clearQueue?(): {steering: string[]; followUp: string[]};
   dispose(): void | Promise<void>;
 }
 
@@ -62,6 +74,12 @@ interface Job {
   controller?: AbortController;
   operation?: Promise<void>;
   disposal?: Promise<void>;
+  interaction?: Promise<unknown>;
+  maintaining?: boolean;
+  stopVersion?: number;
+  ownsSlot?: boolean;
+  waiters?: number;
+  resumeSlot?: {promise: Promise<void>; resolve: () => void};
 }
 
 export function isAgentFinished(status: AgentStatus): boolean {
@@ -172,6 +190,7 @@ export class AgentOrchestrator {
         ...spec,
         id,
         status: 'queued',
+        resumable: true,
         activity: 'Waiting for a worker slot',
         createdAt,
       },
@@ -185,23 +204,37 @@ export class AgentOrchestrator {
 
   private prepare(job: Job): Promise<AgentWorker> {
     if (job.worker) return Promise.resolve(job.worker);
-    job.initializing ??= job.createWorker!(job.record.id).then(async worker => {
-      if (
-        this.closed ||
-        ['cancelled', 'cancelling', 'failed'].includes(job.record.status)
-      ) {
+    if (!job.createWorker)
+      throw new Error('Agent session has been cleaned up.');
+    job.initializing ??= job
+      .createWorker(job.record.id)
+      .then(async worker => {
         job.worker = worker;
-        await this.dispose(job);
-        throw new Error('Agent stopped before its session was ready.');
-      }
-      job.worker = worker;
-      job.record.sessionFile = worker.sessionFile;
-      job.record.resultFile = worker.resultFile;
-      this.captureUsage(job);
-      this.captureConversation(job);
-      return worker;
-    });
+        if (this.closed || !job.record.resumable) {
+          await this.dispose(job);
+          throw new Error('Agent stopped before its session was ready.');
+        }
+        if (
+          job.record.status === 'cancelled' ||
+          job.record.status === 'cancelling'
+        )
+          worker.clearQueue?.();
+        job.record.sessionFile = worker.sessionFile;
+        job.record.resultFile = worker.resultFile;
+        this.captureUsage(job);
+        this.captureConversation(job);
+        return worker;
+      })
+      .finally(() => {
+        job.initializing = undefined;
+      });
     return job.initializing;
+  }
+
+  private interact<T>(job: Job, action: () => Promise<T>): Promise<T> {
+    const operation = (job.interaction ?? Promise.resolve()).then(action);
+    job.interaction = operation.catch(() => {});
+    return operation;
   }
 
   async send(
@@ -214,48 +247,184 @@ export class AgentOrchestrator {
     if (message.length > 64000)
       throw new Error('Agent message cannot exceed 64000 characters.');
     const job = this.job(id);
-    const ensureRecipient = () => {
+    const stopVersion = job.stopVersion;
+    const ensureDelivery = () => {
       this.ensureOpen();
-      if (['failed', 'cancelled', 'cancelling'].includes(job.record.status))
-        throw new Error(
-          'Cannot message a ' +
-            job.record.status +
-            ' agent. Spawn a new agent.',
-        );
       this.ensureResumable(job);
+      if (job.stopVersion !== stopVersion)
+        throw new Error('Agent message cancelled.');
     };
-    ensureRecipient();
-    const worker = await this.prepare(job);
-    ensureRecipient();
-    const text =
-      sender?.kind === 'agent'
-        ? 'Message from agent ' +
-          JSON.stringify(sender.name) +
-          ' (' +
-          sender.id +
-          '):\n' +
-          message
-        : message;
-    if (job.record.status === 'completed') {
-      job.input = text;
-      job.promptStarted = false;
-      job.record.status = 'queued';
-      job.record.activity = 'Waiting for a worker slot';
-      job.record.finishedAt = undefined;
-      job.record.output = undefined;
-      job.record.outputTruncated = undefined;
-      this.pump();
-    } else if (!(await worker.steer(text, !job.promptStarted))) {
-      // The model has finished; let result persistence settle before resuming it.
-      await job.operation;
-      return this.send(id, message, sender);
-    }
+    return this.interact(job, async () => {
+      const text =
+        sender?.kind === 'agent'
+          ? 'Message from agent ' +
+            JSON.stringify(sender.name) +
+            ' (' +
+            sender.id +
+            '):\n' +
+            message
+          : message;
+      for (;;) {
+        ensureDelivery();
+        if (
+          job.operation &&
+          (isAgentFinished(job.record.status) ||
+            job.record.status === 'cancelling' ||
+            job.controller?.signal.aborted)
+        ) {
+          await job.operation;
+          continue;
+        }
+        const worker = await this.prepare(job);
+        ensureDelivery();
+        if (
+          job.operation &&
+          (isAgentFinished(job.record.status) ||
+            job.record.status === 'cancelling' ||
+            job.controller?.signal.aborted)
+        ) {
+          await job.operation;
+          continue;
+        }
+        if (isAgentFinished(job.record.status)) {
+          job.input = text;
+          job.promptStarted = false;
+          job.record.status = 'queued';
+          job.record.activity = 'Waiting for a worker slot';
+          job.record.finishedAt = undefined;
+          job.record.error = undefined;
+          job.record.output = undefined;
+          job.record.outputTruncated = undefined;
+          this.pump();
+        } else if (!(await worker.steer(text, !job.promptStarted))) {
+          await job.operation;
+          continue;
+        }
+        if (job.stopVersion !== stopVersion) job.worker?.clearQueue?.();
+        ensureDelivery();
+        if (
+          job.record.status === 'cancelling' ||
+          job.controller?.signal.aborted
+        ) {
+          await job.operation;
+          continue;
+        }
+        this.changed();
+        return this.get(id);
+      }
+    });
+  }
+
+  async features(id: string): Promise<SessionFeatures> {
+    this.ensureOpen();
+    const job = this.job(id);
+    return this.interact(job, async () => {
+      this.ensureOpen();
+      this.ensureResumable(job);
+      const worker = await this.prepare(job);
+      if (!worker.features)
+        throw new Error('Agent session features are unavailable.');
+      return worker.features();
+    });
+  }
+
+  private async maintain<T>(
+    id: string,
+    action: (worker: AgentWorker) => Promise<T>,
+  ): Promise<T> {
+    this.ensureOpen();
+    const job = this.job(id);
+    return this.interact(job, async () => {
+      this.ensureOpen();
+      this.ensureResumable(job);
+      job.maintaining = true;
+      try {
+        if (
+          job.record.status === 'cancelling' ||
+          isAgentFinished(job.record.status)
+        )
+          await job.operation;
+        this.ensureOpen();
+        this.ensureResumable(job);
+        return await action(await this.prepare(job));
+      } finally {
+        this.captureUsage(job);
+        this.captureConversation(job);
+        job.maintaining = false;
+        this.pump();
+        this.changed();
+      }
+    });
+  }
+
+  configure(id: string, input: SessionConfiguration): Promise<AgentRecord> {
+    return this.maintain(id, async worker => {
+      if (!worker.configure)
+        throw new Error('Agent configuration is unavailable.');
+      const features = await worker.configure(input);
+      const record = this.job(id).record;
+      if (features.model)
+        record.model = `${features.model.provider}/${features.model.id}`;
+      record.thinkingLevel = features.thinkingLevel;
+      return this.get(id);
+    });
+  }
+
+  command(id: string, command: string): Promise<AgentRecord> {
+    return this.maintain(id, async worker => {
+      if (!worker.command)
+        throw new Error('Agent native commands are unavailable.');
+      const features = await worker.command(command);
+      const record = this.job(id).record;
+      if (features.model)
+        record.model = `${features.model.provider}/${features.model.id}`;
+      record.thinkingLevel = features.thinkingLevel;
+      return this.get(id);
+    });
+  }
+
+  compact(id: string, instructions?: string): Promise<void> {
+    return this.maintain(id, async worker => {
+      if (!worker.compact) throw new Error('Agent compaction is unavailable.');
+      await worker.compact(instructions);
+    });
+  }
+
+  reload(id: string): Promise<void> {
+    return this.maintain(id, async worker => {
+      if (!worker.reload) throw new Error('Agent reload is unavailable.');
+      await worker.reload();
+    });
+  }
+
+  async abort(id: string): Promise<{steering: string[]; followUp: string[]}> {
+    this.ensureOpen();
+    const job = this.job(id);
+    const queue = job.worker?.clearQueue?.() ?? {steering: [], followUp: []};
+    this.cancel(id);
+    await job.operation;
+    await job.initializing?.catch(() => {});
+    await job.disposal;
+    return queue;
+  }
+
+  async closeAgent(id: string): Promise<void> {
+    this.ensureOpen();
+    const job = this.job(id);
+    job.record.resumable = false;
+    this.cancel(id);
+    await job.operation;
+    await job.initializing?.catch(() => {});
+    await job.interaction;
+    await this.dispose(job);
     this.changed();
-    return this.get(id);
   }
 
   private ensureResumable(job: Job): void {
-    if (job.record.autoCleanup && isAgentFinished(job.record.status)) {
+    if (
+      !job.record.resumable ||
+      (job.record.autoCleanup && isAgentFinished(job.record.status))
+    ) {
       throw new Error('Agent session has been cleaned up. Spawn a new agent.');
     }
   }
@@ -286,6 +455,7 @@ export class AgentOrchestrator {
     const worker = job.worker;
     job.worker = undefined;
     job.createWorker = undefined;
+    job.record.resumable = false;
     if (worker) {
       const disposal = (async () => {
         try {
@@ -325,6 +495,7 @@ export class AgentOrchestrator {
   cancel(id: string): AgentRecord {
     const job = this.job(id);
     if (isAgentFinished(job.record.status)) return this.get(id);
+    job.stopVersion = (job.stopVersion ?? 0) + 1;
     if (job.controller) {
       job.record.status = 'cancelling';
       job.record.activity = 'Cancelling';
@@ -333,18 +504,39 @@ export class AgentOrchestrator {
       job.record.status = 'cancelled';
       job.record.activity = 'Cancelled';
       job.record.finishedAt = new Date().toISOString();
-      void this.dispose(job);
+      job.worker?.clearQueue?.();
+      this.settleConversation(job);
+      if (job.record.autoCleanup) void this.dispose(job);
     }
     this.changed();
+    this.pump();
     return this.get(id);
   }
 
   private pump(): void {
+    for (const job of this.jobs.values()) {
+      const resume = job.resumeSlot;
+      if (!resume) continue;
+      if (
+        this.closed ||
+        job.record.status !== 'running' ||
+        job.controller?.signal.aborted
+      ) {
+        job.resumeSlot = undefined;
+        resume.resolve();
+      } else if (!job.waiters && this.active < this.concurrency) {
+        job.ownsSlot = true;
+        this.active++;
+        job.resumeSlot = undefined;
+        resume.resolve();
+      }
+    }
     if (this.closed) return;
     for (const job of this.jobs.values()) {
       if (this.active >= this.concurrency) break;
-      if (job.record.status !== 'queued') continue;
+      if (job.record.status !== 'queued' || job.maintaining) continue;
       this.active++;
+      job.ownsSlot = true;
       job.record.status = 'running';
       job.controller = new AbortController();
       // Defer execution so the operation is assigned before any callbacks fire.
@@ -360,9 +552,11 @@ export class AgentOrchestrator {
       timeoutMs === undefined
         ? undefined
         : setTimeout(() => {
+            job.stopVersion = (job.stopVersion ?? 0) + 1;
             controller.abort(
               new Error(`Timed out after ${formatDuration(timeoutMs)}.`),
             );
+            this.pump();
           }, timeoutMs);
     try {
       signal.throwIfAborted();
@@ -412,16 +606,19 @@ export class AgentOrchestrator {
       clearTimeout(timer);
       this.captureUsage(job);
       this.captureConversation(job);
-      if (job.record.autoCleanup || job.record.status !== 'completed') {
+      if (this.closed || job.record.autoCleanup || !job.record.resumable) {
         await this.dispose(job);
       }
       this.settleConversation(job);
       job.record.finishedAt = new Date().toISOString();
       job.controller = undefined;
       job.operation = undefined;
-      this.active--;
-      this.pump();
+      if (job.ownsSlot) {
+        job.ownsSlot = false;
+        this.active--;
+      }
       this.changed();
+      this.pump();
     }
   }
 
@@ -431,11 +628,21 @@ export class AgentOrchestrator {
       mode?: 'any' | 'all';
       timeoutMs?: number;
       signal?: AbortSignal;
+      /** Release this running agent's slot until the wait finishes. */
+      callerId?: string;
     } = {},
   ): Promise<AgentRecord[]> {
     const uniqueIds = [...new Set(ids)];
     uniqueIds.forEach(id => this.job(id));
-    const {signal, mode = 'all', timeoutMs = 60000} = options;
+    const caller = options.callerId ? this.job(options.callerId) : undefined;
+    if (options.callerId && uniqueIds.includes(options.callerId))
+      throw new Error('An agent cannot wait for itself.');
+    const {mode = 'all', timeoutMs = 60000} = options;
+    const callerSignal = caller?.controller?.signal;
+    const signal =
+      options.signal && callerSignal
+        ? AbortSignal.any([options.signal, callerSignal])
+        : (options.signal ?? callerSignal);
     if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
       throw new Error('Wait timeout must be a non-negative integer.');
     }
@@ -450,23 +657,67 @@ export class AgentOrchestrator {
       );
     };
     if (!ready() && timeoutMs > 0) {
-      await new Promise<void>((resolve, reject) => {
-        const finish = (aborted = false) => {
-          clearTimeout(timer);
-          unsubscribe();
-          signal?.removeEventListener('abort', abort);
-          if (aborted) reject(signal?.reason ?? new Error('Wait cancelled.'));
-          else resolve();
-        };
-        const abort = () => finish(true);
-        const unsubscribe = this.subscribe(() => {
-          if (ready()) finish();
+      const yielded =
+        caller?.record.status === 'running' &&
+        !caller.controller?.signal.aborted;
+      if (yielded) {
+        caller.waiters = (caller.waiters ?? 0) + 1;
+        if (caller.ownsSlot) {
+          caller.ownsSlot = false;
+          this.active--;
+        }
+      }
+      let restored = false;
+      let resuming: Promise<void> | undefined;
+      const restore = () => {
+        if (!yielded || restored) return;
+        restored = true;
+        caller.waiters!--;
+        if (
+          !caller.waiters &&
+          caller.record.status === 'running' &&
+          !caller.controller?.signal.aborted &&
+          !this.closed
+        ) {
+          if (!caller.resumeSlot) {
+            let resolve!: () => void;
+            const promise = new Promise<void>(done => {
+              resolve = done;
+            });
+            caller.resumeSlot = {promise, resolve};
+          }
+          resuming = caller.resumeSlot.promise;
+        }
+      };
+      try {
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          const finish = (aborted = false) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            unsubscribe();
+            signal?.removeEventListener('abort', abort);
+            restore();
+            this.pump();
+            if (aborted) reject(signal?.reason ?? new Error('Wait cancelled.'));
+            else resolve();
+          };
+          const abort = () => finish(true);
+          const unsubscribe = this.subscribe(() => {
+            if (ready()) finish();
+          });
+          const timer = setTimeout(() => finish(), timeoutMs);
+          signal?.addEventListener('abort', abort, {once: true});
+          if (signal?.aborted) abort();
+          else if (ready()) finish();
+          this.pump();
         });
-        const timer = setTimeout(() => finish(), timeoutMs);
-        signal?.addEventListener('abort', abort, {once: true});
-        if (signal?.aborted) abort();
-        else if (ready()) finish();
-      });
+      } finally {
+        restore();
+        this.pump();
+        await resuming;
+      }
     }
     return uniqueIds.map(id => this.get(id));
   }
@@ -479,6 +730,7 @@ export class AgentOrchestrator {
       [...this.jobs.values()].flatMap(job => [
         job.operation,
         job.initializing?.catch(() => {}),
+        job.interaction?.catch(() => {}),
       ]),
     ).then(async () => {
       await Promise.all([...this.jobs.values()].map(job => this.dispose(job)));

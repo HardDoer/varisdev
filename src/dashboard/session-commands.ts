@@ -2,13 +2,21 @@ import {mkdir, open, readFile, realpath, rm, stat} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {extname, isAbsolute, resolve} from 'node:path';
 import {
+  BorderedLoader,
+  copyToClipboard,
   CURRENT_SESSION_VERSION,
   parseSessionEntries,
   SessionManager,
+  SessionSelectorComponent,
+  TreeSelectorComponent,
+  UserMessageSelectorComponent,
   type AgentSession,
-  type ExtensionUIContext,
-  type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
+import type {DesktopExtensionUI} from './extension-ui.ts';
+import {
+  exportSessionToHtmlForTheme,
+  showSessionView,
+} from './native-session-views.ts';
 
 export type SessionCommandResult =
   | {kind: 'done'; message?: string}
@@ -26,11 +34,19 @@ export interface SessionCommandUI {
     options: string[],
     optionsConfig?: {selected?: string; message?: string; searchable?: boolean},
   ): Promise<string | undefined>;
-  context: Pick<ExtensionUIContext, 'input' | 'confirm' | 'setEditorText'>;
+  native: DesktopExtensionUI['native'];
+  context: Pick<
+    DesktopExtensionUI['context'],
+    | 'input'
+    | 'confirm'
+    | 'editor'
+    | 'getEditorText'
+    | 'setEditorText'
+    | 'notify'
+  > & {readonly theme?: {name?: string}};
 }
 
 const cancelled = {kind: 'cancelled'} as const;
-const PAGE_SIZE = 1000;
 const MAX_IMPORT_BYTES = 128 * 1024 * 1024;
 const ABORTED = Symbol('session command aborted');
 
@@ -53,74 +69,6 @@ function fileArgument(argument: string, cwd: string): string | undefined {
   if (value.startsWith('~/') || value.startsWith('~\\'))
     return resolve(homedir(), value.slice(2));
   return resolve(cwd, value);
-}
-
-function preview(value: unknown): string {
-  if (typeof value === 'string')
-    return value.replace(/\s+/g, ' ').slice(0, 140);
-  if (!Array.isArray(value)) return '';
-  return preview(
-    value
-      .filter(block => block?.type === 'text' && typeof block.text === 'string')
-      .map(block => block.text)
-      .join(''),
-  );
-}
-
-function describe(entry: SessionEntry): string {
-  if (entry.type === 'message') {
-    const message = entry.message;
-    return `${message.role}: ${preview('content' in message ? message.content : '')}`;
-  }
-  if (entry.type === 'custom_message')
-    return `${entry.customType}: ${preview(entry.content)}`;
-  if (entry.type === 'compaction' || entry.type === 'branch_summary')
-    return `${entry.type}: ${preview(entry.summary)}`;
-  if (entry.type === 'session_info') return `name: ${preview(entry.name)}`;
-  return entry.type;
-}
-
-/** Keep the entire history accessible without exceeding native dialog limits. */
-async function selectEntry(
-  ui: SessionCommandUI,
-  title: string,
-  choices: Array<{id: string; label: string}>,
-  selectedId?: string | null,
-  message?: string,
-  signal?: AbortSignal,
-): Promise<string | undefined> {
-  const index = choices.findIndex(choice => choice.id === selectedId);
-  let page = Math.floor(Math.max(0, index) / PAGE_SIZE);
-  for (;;) {
-    checkCancelled(signal);
-    const start = page * PAGE_SIZE;
-    const slice = choices.slice(start, start + PAGE_SIZE);
-    const previous = '← Previous page';
-    const next = 'Next page →';
-    const options = [
-      ...(page ? [previous] : []),
-      ...slice.map(choice => choice.label),
-      ...(start + PAGE_SIZE < choices.length ? [next] : []),
-    ];
-    const selected = slice.find(choice => choice.id === selectedId)?.label;
-    const answer = await ui.select(title, options, {
-      ...(selected ? {selected} : {}),
-      searchable: true,
-      message: [
-        message,
-        choices.length > PAGE_SIZE
-          ? `Page ${page + 1} of ${Math.ceil(choices.length / PAGE_SIZE)}`
-          : undefined,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    });
-    checkCancelled(signal);
-    if (answer === undefined) return undefined;
-    if (answer === previous && page) page--;
-    else if (answer === next && start + PAGE_SIZE < choices.length) page++;
-    else return slice.find(choice => choice.label === answer)?.id;
-  }
 }
 
 /**
@@ -432,11 +380,223 @@ async function exportSession(
   const output =
     extension === '.jsonl'
       ? session.exportToJsonl(destination)
-      : await session.exportToHtml(destination);
+      : await exportSessionToHtmlForTheme(
+          session,
+          destination,
+          ui.context.theme?.name,
+        );
   return {
     kind: 'done',
     message: `Session exported to ${output}. Review it before sharing.`,
   };
+}
+
+async function resumeSession(
+  session: AgentSession,
+  ui: SessionCommandUI,
+  signal?: AbortSignal,
+): Promise<SessionCommandResult> {
+  const manager = session.sessionManager;
+  const loadingSignal = (loaderSignal?: AbortSignal) =>
+    signal && loaderSignal
+      ? AbortSignal.any([signal, loaderSignal])
+      : (signal ?? loaderSignal);
+  const selected = await ui.native<string | undefined>(
+    'Resume session',
+    (screen, _theme, keybindings, done) =>
+      new SessionSelectorComponent(
+        (progress, signal) =>
+          SessionManager.list(
+            manager.getCwd(),
+            manager.getSessionDir(),
+            progress,
+            loadingSignal(signal),
+          ),
+        (progress, signal) =>
+          manager.usesDefaultSessionDir()
+            ? SessionManager.listAll(progress, loadingSignal(signal))
+            : SessionManager.listAll(
+                manager.getSessionDir(),
+                progress,
+                loadingSignal(signal),
+              ),
+        done,
+        () => done(undefined),
+        () => done(undefined),
+        () => screen.requestRender(),
+        {
+          renameSession: async (path, name) => {
+            checkCancelled(signal);
+            const next = name?.trim();
+            if (!next) return;
+            if (path === session.sessionFile) session.setSessionName(next);
+            else SessionManager.open(path).appendSessionInfo(next);
+          },
+          showRenameHint: true,
+          keybindings,
+        },
+        session.sessionFile,
+      ),
+    {signal},
+  );
+  checkCancelled(signal);
+  if (!selected) return cancelled;
+  if (selected === session.sessionFile)
+    return {kind: 'done', message: 'Already in this session.'};
+  const target = SessionManager.open(selected);
+  let cwd = target.getCwd();
+  if (!(await stat(cwd).catch(() => undefined))?.isDirectory()) {
+    const useCurrent = await ui.context.confirm(
+      'Session directory is missing',
+      `Resume in ${session.sessionManager.getCwd()}?`,
+      {signal},
+    );
+    checkCancelled(signal);
+    if (!useCurrent) return cancelled;
+    cwd = session.sessionManager.getCwd();
+  }
+  const before = await session.extensionRunner.emit({
+    type: 'session_before_switch',
+    reason: 'resume',
+    targetSessionFile: selected,
+  });
+  checkCancelled(signal);
+  if (before?.cancel) return cancelled;
+  await session.abort();
+  checkCancelled(signal);
+  return {
+    kind: 'replace',
+    replacement: {sessionFile: selected, cwd, editorText: ''},
+  };
+}
+
+async function navigateTree(
+  session: AgentSession,
+  ui: SessionCommandUI,
+  signal?: AbortSignal,
+): Promise<SessionCommandResult> {
+  const manager = session.sessionManager;
+  if (!manager.getTree().length)
+    return {kind: 'done', message: 'No entries in this session.'};
+  let initialSelectedId: string | undefined;
+  while (true) {
+    const selected = await ui.native<string | undefined>(
+      'Session tree',
+      (screen, _theme, _keys, done) => {
+        const selector = new TreeSelectorComponent(
+          manager.getTree(),
+          manager.getLeafId(),
+          screen.terminal.rows,
+          done,
+          () => done(undefined),
+          (id, label) => manager.appendLabelChange(id, label),
+          initialSelectedId,
+          session.settingsManager.getTreeFilterMode(),
+        );
+        selector.onCopy = async text => {
+          if (!text) {
+            ui.context.notify('Selected entry has no text to copy', 'error');
+            return;
+          }
+          try {
+            await copyToClipboard(text);
+            ui.context.notify('Copied selected message to clipboard');
+          } catch (error) {
+            ui.context.notify(
+              error instanceof Error ? error.message : String(error),
+              'error',
+            );
+          }
+        };
+        return selector;
+      },
+      {signal},
+    );
+    checkCancelled(signal);
+    if (!selected) return cancelled;
+    if (selected === manager.getLeafId())
+      return {kind: 'done', message: 'Already at this point.'};
+    initialSelectedId = selected;
+    let summarize = false;
+    let customInstructions: string | undefined;
+    if (!session.settingsManager.getBranchSummarySkipPrompt()) {
+      let choice: string | undefined;
+      while (true) {
+        choice = await ui.select('Summarize branch?', [
+          'No summary',
+          'Summarize',
+          'Summarize with custom prompt',
+        ]);
+        checkCancelled(signal);
+        if (choice === undefined) break;
+        summarize = choice !== 'No summary';
+        if (choice === 'Summarize with custom prompt') {
+          customInstructions = await ui.context.editor(
+            'Custom summarization instructions',
+            undefined,
+            {signal},
+          );
+          checkCancelled(signal);
+          if (customInstructions === undefined) continue;
+        }
+        break;
+      }
+      if (choice === undefined) continue;
+    }
+    if (session.isStreaming) {
+      const queued = session.clearQueue();
+      const text = [
+        ...queued.steering,
+        ...queued.followUp,
+        ui.context.getEditorText(),
+      ]
+        .filter(text => text.trim())
+        .join('\n\n');
+      if (text) ui.context.setEditorText(text);
+      await session.abort();
+    }
+    checkCancelled(signal);
+    if (session.isCompacting)
+      throw new Error(
+        'Wait for the current compaction or tree navigation to finish before navigating the session tree.',
+      );
+    const abortSummary = () => session.abortBranchSummary();
+    signal?.addEventListener('abort', abortSummary, {once: true});
+    try {
+      const navigating = session.navigateTree(selected, {
+        summarize,
+        customInstructions,
+      });
+      if (summarize) {
+        await ui.native<void>(
+          'Branch summary',
+          (screen, theme, _keys, done) => {
+            const loader = new BorderedLoader(
+              screen,
+              theme,
+              'Summarizing branch',
+            );
+            loader.onAbort = abortSummary;
+            void navigating.then(
+              () => done(),
+              () => done(),
+            );
+            return loader;
+          },
+          {signal},
+        );
+      }
+      const result = await navigating;
+      checkCancelled(signal);
+      if (result.aborted) continue;
+      if (result.cancelled) return cancelled;
+      if (!ui.context.getEditorText().trim())
+        ui.context.setEditorText(result.editorText ?? '');
+      return {kind: 'done', message: 'Session tree position updated.'};
+    } finally {
+      signal?.removeEventListener('abort', abortSummary);
+    }
+  }
 }
 
 /** Native session interactions. Replacement/refresh and lifecycle belong to the host. */
@@ -450,60 +610,37 @@ async function executeSessionCommand(
   }: {session: AgentSession; ui: SessionCommandUI; signal?: AbortSignal},
 ): Promise<SessionCommandResult | undefined> {
   checkCancelled(signal);
-  if (['tree', 'fork', 'clone', 'session'].includes(name) && args.trim())
+  if (
+    ['resume', 'tree', 'fork', 'clone', 'session'].includes(name) &&
+    args.trim()
+  )
     throw new Error(`Usage: /${name} (this command takes no arguments).`);
   switch (name) {
-    case 'tree': {
-      const manager = session.sessionManager;
-      const choices: Array<{id: string; label: string}> = [];
-      const stack = manager
-        .getTree()
-        .map(node => ({node, depth: 0}))
-        .reverse();
-      while (stack.length) {
-        const {node, depth} = stack.pop()!;
-        choices.push({
-          id: node.entry.id,
-          label: `${node.entry.id === manager.getLeafId() ? '→ ' : ''}[${node.entry.id}] ${'  '.repeat(Math.min(depth, 12))}${describe(node.entry)}${node.label ? ` (${preview(node.label)})` : ''}`,
-        });
-        for (let i = node.children.length - 1; i >= 0; i--)
-          stack.push({node: node.children[i], depth: depth + 1});
-      }
-      if (!choices.length)
-        return {kind: 'done', message: 'No entries in this session.'};
-      const selected = await selectEntry(
-        ui,
-        'Session tree',
-        choices,
-        manager.getLeafId(),
-        'Select a user message to edit it, or another entry to continue after it. No branch summary or model request is made.',
-        signal,
-      );
-      if (!selected) return cancelled;
-      if (selected === manager.getLeafId())
-        return {kind: 'done', message: 'Already at this point.'};
-      if (session.isStreaming) await session.abort();
-      checkCancelled(signal);
-      const result = await session.navigateTree(selected, {summarize: false});
-      if (result.cancelled || result.aborted) return cancelled;
-      ui.context.setEditorText(result.editorText ?? '');
-      return {kind: 'done', message: 'Session tree position updated.'};
-    }
+    case 'resume':
+      return resumeSession(session, ui, signal);
+    case 'tree':
+      return navigateTree(session, ui, signal);
     case 'fork': {
       const messages = session.getUserMessagesForForking();
       if (!messages.length)
         return {kind: 'done', message: 'No user messages to fork from.'};
-      const selected = await selectEntry(
-        ui,
+      const selected = await ui.native<string | undefined>(
         'Fork session',
-        messages.map(message => ({
-          id: message.entryId,
-          label: `[${message.entryId}] ${preview(message.text)}`,
-        })),
-        messages.at(-1)?.entryId,
-        'Create a separate saved session before the selected user message, with its text restored to the editor.',
-        signal,
+        (_screen, _theme, _keys, done) => {
+          const selector = new UserMessageSelectorComponent(
+            messages.map(message => ({
+              id: message.entryId,
+              text: message.text,
+            })),
+            done,
+            () => done(undefined),
+            messages.at(-1)?.entryId,
+          );
+          return {component: selector, focus: selector.getMessageList()};
+        },
+        {signal},
       );
+      checkCancelled(signal);
       return selected ? fork(session, selected, 'before', signal) : cancelled;
     }
     case 'clone': {
@@ -516,23 +653,9 @@ async function executeSessionCommand(
       return importSession(session, ui, args, signal);
     case 'export':
       return exportSession(session, ui, args, signal);
-    case 'session': {
-      const stats = session.getSessionStats();
-      await ui.show(
-        'Session information',
-        [
-          `Name: ${session.sessionManager.getSessionName() ?? '(unnamed)'}`,
-          `ID: ${stats.sessionId}`,
-          `File: ${stats.sessionFile ?? '(in memory)'}`,
-          `Working directory: ${session.sessionManager.getCwd()}`,
-          `Messages: ${stats.totalMessages} (${stats.userMessages} user, ${stats.assistantMessages} assistant, ${stats.toolResults} tool results)`,
-          `Tool calls: ${stats.toolCalls}`,
-          `Tokens: ${stats.tokens.total} (input ${stats.tokens.input}, output ${stats.tokens.output}, cache read ${stats.tokens.cacheRead}, cache write ${stats.tokens.cacheWrite})`,
-          `Cost: $${stats.cost.toFixed(6)}`,
-        ].join('\n'),
-      );
+    case 'session':
+      await showSessionView({session, ui, signal});
       return {kind: 'done'};
-    }
     case 'name': {
       const value =
         args.trim() ||
@@ -557,9 +680,16 @@ export async function runSessionCommand(
   context: {session: AgentSession; ui: SessionCommandUI; signal?: AbortSignal},
 ): Promise<SessionCommandResult | undefined> {
   if (
-    !['tree', 'fork', 'clone', 'import', 'export', 'session', 'name'].includes(
-      name,
-    )
+    ![
+      'resume',
+      'tree',
+      'fork',
+      'clone',
+      'import',
+      'export',
+      'session',
+      'name',
+    ].includes(name)
   )
     return undefined;
   try {

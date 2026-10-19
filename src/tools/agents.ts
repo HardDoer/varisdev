@@ -12,8 +12,19 @@ import {
   type AgentMessageSender,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
+import {
+  listAgentTemplates,
+  prepareAgentTemplateGet,
+  resolveAgentTemplate,
+  resolveDefaultAgentTemplate,
+  saveAgentTemplate,
+  deleteAgentTemplate,
+  type AgentTemplate,
+} from '../agents/templates.ts';
+import {agentCatalogAllows} from '../agents/policy.ts';
 import {assertAgentModelAllowed, readToolSettings} from './settings.ts';
 import {observeFileChanges} from '../dashboard/changes.ts';
+import type {DesktopExtensionUI} from '../dashboard/extension-ui.ts';
 import {
   AgentSessionController,
   type AgentMessage,
@@ -34,20 +45,38 @@ const idSchema = Type.String({
   description: 'Agent ID.',
 });
 const spawnSchema = Type.Object({
-  name: Type.String({
-    minLength: 1,
-    maxLength: 120,
-    description: 'Short name for the assigned work.',
-  }),
+  name: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 120,
+      description: 'Conversation name; defaults to the selected agent name.',
+    }),
+  ),
+  template: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 256,
+      description:
+        'Agent ID from agent_templates; defaults to Default. Workspace settings override repository, global, and built-in settings.',
+    }),
+  ),
+  context: Type.Optional(
+    Type.Union([Type.Literal('workspace'), Type.Literal('task')], {
+      description:
+        'Context scope. Workspace loads applicable instructions and skill listings; task omits automatic instruction files and skill listings. Neither copies the caller conversation. Defaults to the configuration or workspace.',
+    }),
+  ),
   task: Type.String({
     minLength: 1,
     maxLength: 64000,
-    description: 'Complete task, relevant context, and expected result.',
+    description:
+      'Concise task, expected result, and only the context needed. Reference files instead of copying large contents.',
   }),
   instructions: Type.Optional(
     Type.String({
       maxLength: 16000,
-      description: 'Additional system instructions for this agent.',
+      description:
+        'Task-specific instructions that add to the selected profile.',
     }),
   ),
   cwd: Type.Optional(
@@ -59,14 +88,16 @@ const spawnSchema = Type.Object({
   model: Type.Optional(
     Type.String({
       pattern: '^[^/]+/.+$',
-      description: 'Provider/model; defaults to the parent model.',
+      description:
+        'Provider/model; defaults to the template model or current agent model.',
     }),
   ),
   thinkingLevel: Type.Optional(
     Type.Union(
       allowedEfforts.map(effort => Type.Literal(effort)),
       {
-        description: 'Defaults to the parent thinking level.',
+        description:
+          'Defaults to the template reasoning level or current agent reasoning level.',
       },
     ),
   ),
@@ -189,9 +220,7 @@ function toolResult(
         ? {activity: record.activity}
         : {}),
       ...(record.error ? {error: record.error.slice(0, 2000)} : {}),
-      ...(record.autoCleanup && record.status === 'completed'
-        ? {resumable: false}
-        : {}),
+      ...(record.resumable === false ? {resumable: false} : {}),
       ...(includeOutput && record.output !== undefined
         ? {output: record.output.slice(0, budget)}
         : {}),
@@ -272,8 +301,8 @@ function registerAgentSendTool(
     name: 'agent_send',
     label: 'Send to agent',
     description: sender
-      ? 'Message a peer or id="parent". Parent messages enter its inbox without waking it; sender identity is attached. Peer messages steer active work or resume completed work. Failed, cancelled, or cleaned-up agents cannot resume.'
-      : 'Steer active work at the next turn boundary or resume a completed conversation. Failed, cancelled, or cleaned-up agents require agent_spawn.',
+      ? 'Message another agent, or use id="parent" for the initiating agent’s inbox. Inbox messages do not start a turn. Other messages steer active work or continue a retained conversation, including stopped or failed work.'
+      : 'Steer active work at the next turn boundary or continue a retained conversation, including stopped or failed work. Closed or cleaned-up agents require agent_spawn.',
     executionMode: 'sequential',
     parameters: Type.Object({
       id: sender
@@ -316,7 +345,7 @@ function registerAgentSendTool(
         }
       }
       const recipient = current.get(params.id);
-      if (recipient.status === 'completed')
+      if (isAgentFinished(recipient.status))
         await assertAgentModelAllowed(recipient.model);
       return toolResult(
         [await current.send(params.id, message, identity)],
@@ -326,52 +355,279 @@ function registerAgentSendTool(
   });
 }
 
+function registerAgentTemplateTool(pi: ExtensionAPI): void {
+  pi.registerTool({
+    name: 'agent_templates',
+    label: 'Agent configurations',
+    exposure: 'deferred',
+    description:
+      'List, read, save, or delete optional agent configurations in global, repository, or workspace scopes. Matching fields merge in that order. Spawning requires subagent or all mode.',
+    parameters: Type.Object({
+      action: Type.Optional(
+        Type.Union(
+          ['list', 'get', 'save', 'delete'].map(value => Type.Literal(value)),
+        ),
+      ),
+      id: Type.Optional(Type.String({minLength: 1, maxLength: 256})),
+      offset: Type.Optional(
+        Type.Integer({minimum: 0, description: 'List offset; defaults to 0.'}),
+      ),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 100,
+          description: 'List size; defaults to 20.',
+        }),
+      ),
+      context: Type.Optional(
+        Type.Union([Type.Literal('workspace'), Type.Literal('task')]),
+      ),
+      scope: Type.Optional(
+        Type.Union([
+          Type.Literal('global'),
+          Type.Literal('repository'),
+          Type.Literal('workspace'),
+          Type.Literal('builtin'),
+        ]),
+      ),
+      sourcePath: Type.Optional(
+        Type.String({
+          description:
+            'Exact existing definition path for get, save, or delete.',
+        }),
+      ),
+      request: Type.Optional(
+        Type.Object(
+          {
+            headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+            body: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+          },
+          {
+            description:
+              'Stored request metadata; not sent to model providers.',
+          },
+        ),
+      ),
+      name: Type.Optional(Type.String({maxLength: 120})),
+      description: Type.Optional(Type.String({maxLength: 500})),
+      mode: Type.Optional(
+        Type.Union(
+          ['primary', 'subagent', 'all'].map(value => Type.Literal(value)),
+        ),
+      ),
+      hidden: Type.Optional(Type.Boolean()),
+      disabled: Type.Optional(Type.Boolean()),
+      color: Type.Optional(Type.String({pattern: '^#[0-9a-fA-F]{6}$'})),
+      steps: Type.Optional(Type.Integer({minimum: 1})),
+      permissions: Type.Optional(
+        Type.Array(
+          Type.Object({
+            action: Type.String({minLength: 1, maxLength: 256}),
+            resource: Type.String({minLength: 1, maxLength: 4096}),
+            effect: Type.Union(
+              ['allow', 'ask', 'deny'].map(value => Type.Literal(value)),
+            ),
+          }),
+        ),
+      ),
+      instructions: Type.Optional(Type.String({maxLength: 64000})),
+      model: Type.Optional(Type.String({maxLength: 512})),
+      thinkingLevel: Type.Optional(
+        Type.Union(allowedEfforts.map(value => Type.Literal(value))),
+      ),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      signal?.throwIfAborted();
+      let result: unknown;
+      const action = params.action ?? 'list';
+      if (action === 'list') {
+        const listing = await listAgentTemplates(ctx.cwd);
+        const visible = listing.templates.filter(template => !template.hidden);
+        const offset = params.offset ?? 0;
+        const selected = visible.slice(offset, offset + (params.limit ?? 20));
+        const nextOffset = offset + selected.length;
+        result = {
+          templates: selected.map(
+            ({
+              id,
+              name,
+              description,
+              model,
+              thinkingLevel,
+              scope,
+              mode,
+              context,
+              color,
+              steps,
+            }) => ({
+              id,
+              name,
+              description: description?.slice(0, 180),
+              model,
+              thinkingLevel,
+              scope,
+              mode,
+              context,
+              color,
+              steps,
+            }),
+          ),
+          total: visible.length,
+          ...(nextOffset < visible.length ? {nextOffset} : {}),
+          defaultAgentId: listing.defaultAgentId,
+          sources: listing.sources.map(({scope, directory}) => ({
+            scope,
+            directory,
+          })),
+          diagnostics: listing.diagnostics,
+        };
+      } else if (action === 'get') {
+        result = (await prepareAgentTemplateGet(ctx.cwd, params)).value;
+      } else if (action === 'save') {
+        const saved = await saveAgentTemplate(ctx.cwd, {
+          id: params.id,
+          scope: params.scope,
+          sourcePath: params.sourcePath,
+          request: params.request,
+          name: params.name,
+          description: params.description,
+          instructions: params.instructions,
+          model: params.model,
+          thinkingLevel: params.thinkingLevel,
+          mode: params.mode,
+          hidden: params.hidden,
+          disabled: params.disabled,
+          color: params.color,
+          steps: params.steps,
+          permissions: params.permissions,
+          context: params.context,
+        });
+        result = {
+          id: saved.id,
+          key: saved.key,
+          scope: saved.scope,
+          sourcePath: saved.sourcePath,
+          saved: true,
+        };
+      } else {
+        await deleteAgentTemplate(ctx.cwd, {
+          id: params.id,
+          scope: params.scope,
+          sourcePath: params.sourcePath,
+        });
+        result = {id: params.id, scope: params.scope, deleted: true};
+      }
+      return {
+        content: [{type: 'text', text: JSON.stringify(result)}],
+        details: result,
+      };
+    },
+  });
+}
+
+export interface AgentToolsOptions {
+  agentProfile?: AgentTemplate;
+  ui?: DesktopExtensionUI;
+  approval?: {hasUI: boolean; confirm: ExtensionContext['ui']['confirm']};
+  control?: AgentSessionController;
+  team?: ReturnType<AgentSessionController['getTeam']>;
+  id?: string;
+}
+
 export function registerAgentTools(
   pi: ExtensionAPI,
   createWorker = createSessionWorker,
+  shared?: AgentToolsOptions,
 ): AgentSessionController {
-  const control = new AgentSessionController(pi);
-  const getManager = (ctx: ExtensionContext) =>
-    control.getTeam(ctx).getManager();
+  const control = shared?.control ?? new AgentSessionController(pi);
+  const getTeam = (ctx: ExtensionContext) =>
+    shared?.team ?? control.getTeam(ctx);
+  const getManager = (ctx: ExtensionContext) => getTeam(ctx).getManager();
+  registerAgentTemplateTool(pi);
 
-  const registerSpawn = (allowedModels: string[] | null) =>
+  const registerSpawn = (
+    allowedModels: string[] | null,
+    catalog: Array<Pick<AgentTemplate, 'id' | 'name' | 'description'>> = [],
+  ) =>
     pi.registerTool({
       name: 'agent_spawn',
       label: 'Spawn agent',
       description:
-        'Start a background agent with its own conversation; returns an ID immediately. Six run concurrently, others queue. ' +
+        'Start an agent with its own promptable conversation, using Default or a specified configuration; returns an ID immediately. Six run concurrently, others queue. ' +
         (allowedModels === null
-          ? 'Accepts any model from the parent model registry. '
+          ? 'Accepts any model from the current model registry. '
           : allowedModels.length === 0
             ? 'No models enabled; configure Menu → Tool models first. '
             : 'Model choices are restricted by Menu → Tool models. ') +
-        'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not wake the parent.',
+        'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not start another turn.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',
       parameters: {
         ...spawnSchema,
         properties: {
           ...spawnSchema.properties,
+          template: {
+            ...spawnSchema.properties.template,
+            description:
+              'Configuration ID with subagent or all mode. ' +
+              (catalog.length
+                ? 'Available: ' +
+                  catalog
+                    .slice(0, 16)
+                    .map(
+                      profile =>
+                        `${profile.id}: ${(profile.description || profile.name).slice(0, 120)}`,
+                    )
+                    .join('; ') +
+                  '. '
+                : '') +
+              'Find agent_templates with tool_search for configuration details.',
+          },
           model: {
             ...spawnSchema.properties.model,
             ...(allowedModels?.length ? {enum: allowedModels} : {}),
             description:
-              'Provider/model; defaults to the parent model, which must also be allowed.',
+              'Provider/model; defaults to the template model or current agent model. The chosen model must be allowed.',
           },
         },
       },
       async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         signal?.throwIfAborted();
-        const team = control.getTeam(ctx);
+        const team = getTeam(ctx);
         const cwd = resolve(ctx.cwd, params.cwd ?? '.');
         if (!(await stat(cwd)).isDirectory())
           throw new Error(`Agent cwd is not a directory: ${cwd}`);
+        const template = params.template
+          ? await resolveAgentTemplate(cwd, params.template)
+          : await resolveDefaultAgentTemplate(cwd, 'subagent');
+        if (!template)
+          throw new Error(`Unknown agent configuration: ${params.template}`);
+        if (template.disabled)
+          throw new Error(`Agent configuration is disabled: ${template.id}`);
+        if (template.mode === 'primary')
+          throw new Error(
+            `Agent configuration ${template.id} only supports primary conversations.`,
+          );
+        if (!agentCatalogAllows(shared?.agentProfile ?? {}, template.id))
+          throw new Error(
+            'This agent configuration does not allow launching the requested agent.',
+          );
+        const name = params.name ?? template.name;
+        if (!name?.trim())
+          throw new Error('Choose an agent name or a saved configuration.');
+        const agentProfile = structuredClone(template);
+        const approval =
+          shared?.approval ??
+          (ctx.hasUI && ctx.ui?.confirm
+            ? {hasUI: true, confirm: ctx.ui.confirm.bind(ctx.ui)}
+            : undefined);
+        const instructions = params.instructions || undefined;
         const inheritedModel =
           ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
-        const selectedModel = params.model ?? inheritedModel;
+        const selectedModel = params.model ?? template?.model ?? inheritedModel;
         if (selectedModel === undefined)
           throw new Error(
-            'Choose a parent model or specify the agent model as provider/model.',
+            'Choose a model or specify the agent model as provider/model.',
           );
         await assertAgentModelAllowed(selectedModel);
         const separator = selectedModel.indexOf('/');
@@ -384,7 +640,10 @@ export function registerAgentTools(
               );
         if (!model || `${model.provider}/${model.id}` !== selectedModel)
           throw new Error(`Agent model is unavailable: ${selectedModel}.`);
-        const thinkingLevel = params.thinkingLevel ?? pi.getThinkingLevel();
+        const thinkingLevel =
+          params.thinkingLevel ??
+          template?.thinkingLevel ??
+          pi.getThinkingLevel();
         if (!allowedEfforts.some(effort => effort === thinkingLevel))
           throw new Error(
             'Agent thinkingLevel must be off, minimal, low, medium, high, xhigh, or max.',
@@ -393,8 +652,12 @@ export function registerAgentTools(
           cwd,
           projectTrustOverride:
             cwd === resolve(ctx.cwd) ? ctx.isProjectTrusted() : undefined,
-          name: params.name,
-          instructions: params.instructions,
+          name,
+          instructions,
+          agentProfile,
+          approval,
+          ui: shared?.ui,
+          context: params.context ?? agentProfile?.context ?? 'workspace',
           model,
           modelRegistry: ctx.modelRegistry,
           thinkingLevel,
@@ -403,10 +666,11 @@ export function registerAgentTools(
         const current = getManager(ctx);
         const record = current.spawn(
           {
-            name: params.name,
+            name,
             task: params.task,
             cwd,
             model: `${model.provider}/${model.id}`,
+            thinkingLevel,
             timeoutMs: params.timeoutMs,
             autoCleanup: params.autoCleanup,
           },
@@ -421,14 +685,16 @@ export function registerAgentTools(
                   team.storeChange({
                     ...change,
                     unitId: id,
-                    unitName: params.name,
+                    unitName: name,
                   }),
                 );
-                const getWorkerManager = () => team.getManager();
-                registerAgentListTool(workerPi, getWorkerManager, id);
-                registerAgentSendTool(workerPi, getWorkerManager, {
+                registerAgentTools(workerPi, createWorker, {
+                  control,
+                  team,
                   id,
-                  sendToParent: message => team.storeMessage(message),
+                  agentProfile,
+                  approval,
+                  ui: shared?.ui,
                 });
               },
             });
@@ -443,7 +709,7 @@ export function registerAgentTools(
               steer: (message, starting) => worker.steer(message, starting),
               dispose: () => worker.dispose(),
               async run(...args) {
-                await assertAgentModelAllowed(selectedModel);
+                await assertAgentModelAllowed(current.get(id).model);
                 args[1].throwIfAborted();
                 return worker.run(...args);
               },
@@ -455,12 +721,25 @@ export function registerAgentTools(
     });
 
   registerSpawn([]);
-  let spawnPolicy = JSON.stringify([]);
-  const refreshSpawnPolicy = async () => {
-    const {allowedModels} = (await readToolSettings()).agents;
-    const policy = JSON.stringify(allowedModels);
+  let spawnPolicy = '';
+  const refreshSpawnPolicy = async (_event: unknown, ctx: ExtensionContext) => {
+    const [
+      {
+        agents: {allowedModels},
+      },
+      listing,
+    ] = await Promise.all([readToolSettings(), listAgentTemplates(ctx.cwd)]);
+    const catalog = listing.templates
+      .filter(
+        profile =>
+          !profile.hidden &&
+          profile.mode !== 'primary' &&
+          agentCatalogAllows(shared?.agentProfile ?? {}, profile.id),
+      )
+      .map(({id, name, description}) => ({id, name, description}));
+    const policy = JSON.stringify({allowedModels, catalog});
     if (policy === spawnPolicy) return;
-    registerSpawn(allowedModels);
+    registerSpawn(allowedModels, catalog);
     spawnPolicy = policy;
   };
   pi.on('before_agent_start', refreshSpawnPolicy);
@@ -470,12 +749,12 @@ export function registerAgentTools(
   // turn_start is too late for those declarations in the current SDK.
   pi.on('turn_end', refreshSpawnPolicy);
 
-  registerAgentListTool(pi, getManager);
+  registerAgentListTool(pi, getManager, shared?.id);
   pi.registerTool({
     name: 'agent_inbox',
-    label: 'Read worker messages to parent',
+    label: 'Read agent messages',
     description:
-      'Read worker messages without consuming them. For new messages only, start with after=0 and reuse nextAfter. Without after, lists newest-first history. Retains 100 messages; previews are 500 characters.',
+      'Read agent messages without consuming them. For new messages only, start with after=0 and reuse nextAfter. Without after, lists newest-first history. Retains 100 messages; previews are 500 characters.',
     parameters: Type.Object({
       messageId: Type.Optional(
         Type.String({
@@ -504,7 +783,7 @@ export function registerAgentTools(
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const team = control.getTeam(ctx);
+      const team = getTeam(ctx);
       const listing = params.messageId ? undefined : team.listMessages(params);
       const data = listing
         ? {...listing, messages: listing.messages.map(messagePreview)}
@@ -536,7 +815,16 @@ export function registerAgentTools(
       );
     },
   });
-  registerAgentSendTool(pi, getManager);
+  registerAgentSendTool(
+    pi,
+    getManager,
+    shared?.id && shared.team
+      ? {
+          id: shared.id,
+          sendToParent: message => shared.team!.storeMessage(message),
+        }
+      : undefined,
+  );
   pi.registerTool({
     name: 'agent_wait',
     label: 'Wait for agents',
@@ -545,14 +833,23 @@ export function registerAgentTools(
     parameters: waitSchema,
     async execute(_id, params, signal, onUpdate, ctx) {
       const current = getManager(ctx);
-      const ids = params.ids ?? current.list().map(record => record.id);
+      const ids =
+        params.ids ??
+        current
+          .list()
+          .filter(record => record.id !== shared?.id)
+          .map(record => record.id);
+      if (shared?.id && ids.includes(shared.id))
+        throw new Error('An agent cannot wait for itself.');
       onUpdate?.(
         toolResult(
           ids.map(id => current.get(id)),
           'progress',
         ),
       );
-      return toolResult(await current.wait(ids, {...params, signal}));
+      return toolResult(
+        await current.wait(ids, {...params, signal, callerId: shared?.id}),
+      );
     },
   });
   pi.registerTool({

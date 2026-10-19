@@ -22,6 +22,7 @@
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link rel="stylesheet" href="live-view.css" />
+    <link rel="stylesheet" href="agent-templates.css" />
     <link rel="stylesheet" href="session-history.css" />
     <link rel="stylesheet" href="recent-projects.css" />
     <link
@@ -33,7 +34,7 @@
     <script type="module" src="app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#factory-title">Skip to parent session</a>
+    <a class="skip-link" href="#factory-title">Skip to agent</a>
     <dialog id="session-history-dialog" aria-labelledby="session-history-title">
       <div class="dialog-heading">
         <h2 id="session-history-title">Resume session</h2>
@@ -49,6 +50,310 @@
       <p id="session-history-error" class="form-error" role="alert" hidden></p>
       <ul id="session-history-list" aria-label="Saved sessions"></ul>
     </dialog>
+    <dialog id="new-agent-dialog" aria-labelledby="new-agent-title">
+      <form id="new-agent-form" class="agent-template-dialog-frame">
+        <div class="dialog-heading">
+          <h2 id="new-agent-title">New conversation</h2>
+          <button id="new-agent-close" class="quiet-button" type="button">
+            Close
+          </button>
+        </div>
+        <div class="agent-template-dialog-body">
+          <div class="agent-template-folder-row">
+            <div>
+              <span class="agent-template-field-label">Folder</span>
+              <p id="new-agent-folder" class="agent-template-path mono"></p>
+            </div>
+            <button
+              id="new-agent-choose-folder"
+              class="quiet-button"
+              type="button"
+            >
+              Choose folder
+            </button>
+          </div>
+          <label for="new-agent-template">Agent</label>
+          <select id="new-agent-template" required></select>
+          <label for="new-agent-name"
+            >Conversation name <span class="muted">(optional)</span></label
+          >
+          <input id="new-agent-name" type="text" maxlength="120" />
+          <label for="new-agent-task"
+            >First message <span class="muted">(optional)</span></label
+          >
+          <textarea id="new-agent-task" rows="5" maxlength="64000"></textarea>
+          <p id="new-agent-status" class="muted" role="status"></p>
+          <p id="new-agent-error" class="form-error" role="alert" hidden></p>
+        </div>
+        <div class="dialog-footer agent-template-dialog-footer">
+          <button id="new-agent-cancel" class="quiet-button" type="button">
+            Cancel
+          </button>
+          <button id="new-agent-create" class="primary-button" type="submit">
+            Start conversation
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="agent-templates-dialog" aria-labelledby="agent-templates-title">
+      <div class="agent-template-dialog-frame">
+        <div class="dialog-heading">
+          <h2 id="agent-templates-title">Agent configurations</h2>
+          <button id="agent-templates-close" class="quiet-button" type="button">
+            Close
+          </button>
+        </div>
+        <div class="agent-template-folder-row">
+          <div>
+            <span class="agent-template-field-label">Folder</span>
+            <p id="agent-templates-folder" class="agent-template-path mono"></p>
+          </div>
+          <button
+            id="agent-templates-choose-folder"
+            class="quiet-button"
+            type="button"
+          >
+            Choose folder
+          </button>
+        </div>
+        <p id="agent-templates-status" class="muted" role="status"></p>
+        <p
+          id="agent-templates-error"
+          class="form-error"
+          role="alert"
+          hidden
+        ></p>
+        <div
+          id="agent-templates-diagnostics"
+          class="agent-template-diagnostics"
+          role="alert"
+          hidden
+        ></div>
+        <div class="agent-template-workspace">
+          <section
+            class="agent-template-list-panel"
+            aria-labelledby="agent-template-list-title"
+          >
+            <div class="agent-template-list-heading">
+              <h3 id="agent-template-list-title">Agents</h3>
+              <button
+                id="agent-template-new"
+                class="quiet-button"
+                type="button"
+              >
+                New
+              </button>
+            </div>
+            <select
+              id="agent-template-picker"
+              aria-label="Saved agent configuration"
+            ></select>
+            <div id="agent-template-list" class="agent-template-list"></div>
+            <p id="agent-template-list-empty" class="muted">
+              No agent configurations.
+            </p>
+          </section>
+          <p
+            id="agent-template-editor-empty"
+            class="agent-template-editor-empty muted"
+          >
+            Select an agent or create one.
+          </p>
+          <form
+            id="agent-template-form"
+            class="agent-template-editor"
+            novalidate
+            hidden
+          >
+            <div class="agent-template-editor-body">
+              <div class="agent-template-field-grid">
+                <label for="agent-template-scope">Scope</label>
+                <select id="agent-template-scope">
+                  <option value="workspace">Workspace (this machine)</option>
+                  <option value="repository">Repository</option>
+                  <option value="global">Global</option>
+                </select>
+                <label for="agent-template-id">ID</label>
+                <input
+                  id="agent-template-id"
+                  type="text"
+                  maxlength="160"
+                  placeholder="team/reviewer"
+                  required
+                  spellcheck="false"
+                />
+                <label for="agent-template-name"
+                  >Name <span class="muted">(optional)</span></label
+                >
+                <input id="agent-template-name" type="text" maxlength="120" />
+                <label for="agent-template-description"
+                  >Description <span class="muted">(optional)</span></label
+                >
+                <input
+                  id="agent-template-description"
+                  type="text"
+                  maxlength="500"
+                />
+                <label for="agent-template-mode">Mode</label>
+                <select id="agent-template-mode">
+                  <option value="">Inherit</option>
+                  <option value="primary">Primary</option>
+                  <option value="subagent">Subagent</option>
+                  <option value="all">Primary and subagent</option>
+                </select>
+                <label for="agent-template-context">Context</label>
+                <span class="agent-template-field-control">
+                  <select
+                    id="agent-template-context"
+                    aria-describedby="agent-template-context-note"
+                  >
+                    <option value="">Inherit</option>
+                    <option value="workspace">Workspace</option>
+                    <option value="task">Task only</option>
+                  </select>
+                  <small
+                    id="agent-template-context-note"
+                    class="agent-template-field-note"
+                    hidden
+                    >Task only omits automatic instruction files and skill
+                    listings.</small
+                  >
+                </span>
+                <label for="agent-template-model"
+                  >Model <span class="muted">(optional)</span></label
+                >
+                <input
+                  id="agent-template-model"
+                  type="text"
+                  maxlength="512"
+                  placeholder="provider/model#variant"
+                  list="agent-template-model-options"
+                  spellcheck="false"
+                />
+                <datalist id="agent-template-model-options"></datalist>
+                <label for="agent-template-thinking"
+                  >Thinking level <span class="muted">(optional)</span></label
+                >
+                <select id="agent-template-thinking">
+                  <option value="">Inherit</option>
+                  <option value="off">Off</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Extra high</option>
+                  <option value="max">Max</option>
+                </select>
+                <label for="agent-template-hidden">Visibility</label>
+                <select id="agent-template-hidden">
+                  <option value="">Inherit</option>
+                  <option value="false">Visible</option>
+                  <option value="true">Hidden</option>
+                </select>
+                <label for="agent-template-disabled">Availability</label>
+                <select id="agent-template-disabled">
+                  <option value="">Inherit</option>
+                  <option value="false">Enabled</option>
+                  <option value="true">Disabled</option>
+                </select>
+                <label for="agent-template-color"
+                  >Color <span class="muted">(optional)</span></label
+                >
+                <span class="agent-template-color-field">
+                  <span
+                    id="agent-template-color-indicator"
+                    class="agent-template-color-indicator"
+                    aria-hidden="true"
+                  ></span>
+                  <input
+                    id="agent-template-color"
+                    type="text"
+                    maxlength="7"
+                    pattern="#[0-9a-fA-F]{6}"
+                    placeholder="#ff6b6b"
+                    spellcheck="false"
+                  />
+                </span>
+                <label for="agent-template-steps"
+                  >Steps <span class="muted">(optional)</span></label
+                >
+                <input
+                  id="agent-template-steps"
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputmode="numeric"
+                />
+                <label for="agent-template-instructions"
+                  >Instructions <span class="muted">(optional)</span></label
+                >
+                <textarea
+                  id="agent-template-instructions"
+                  rows="7"
+                  maxlength="64000"
+                ></textarea>
+                <label for="agent-template-permissions"
+                  >Permissions (JSON)
+                  <span class="muted">(optional)</span></label
+                >
+                <textarea
+                  id="agent-template-permissions"
+                  rows="7"
+                  spellcheck="false"
+                  placeholder='[{"action":"read","resource":"*","effect":"allow"}]'
+                ></textarea>
+              </div>
+              <div class="agent-template-source">
+                <span class="agent-template-field-label">Source</span>
+                <output
+                  id="agent-template-source"
+                  class="agent-template-path mono"
+                ></output>
+              </div>
+            </div>
+            <div class="dialog-footer agent-template-editor-footer">
+              <div
+                id="agent-template-delete-confirmation"
+                class="agent-template-delete-confirmation"
+                hidden
+              >
+                <span>Delete this agent configuration?</span>
+                <button
+                  id="agent-template-delete-cancel"
+                  class="quiet-button"
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="agent-template-delete-confirm"
+                  class="danger-button"
+                  type="button"
+                >
+                  Delete
+                </button>
+              </div>
+              <button
+                id="agent-template-delete"
+                class="danger-button"
+                type="button"
+              >
+                Delete
+              </button>
+              <button
+                id="agent-template-save"
+                class="primary-button"
+                type="submit"
+              >
+                Save agent
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </dialog>
+
     <dialog
       id="about-dialog"
       aria-labelledby="about-title"
@@ -68,7 +373,6 @@
         height="80"
       />
       <p id="about-credit">VarisDev by Joonas Nousiainen 2026</p>
-      <p>Open source under the MIT License.</p>
     </dialog>
     <dialog id="updates-dialog" aria-labelledby="updates-title">
       <div class="updates-heading">
@@ -229,20 +533,19 @@
           >
             <h3 id="commit-model-settings-title">Commit</h3>
             <p id="commit-model-settings-note" class="tool-settings-card-note">
-              Commit can only use models selected under Agent models, including
-              an inherited parent model.
+              Custom commit configurations take precedence over these defaults.
             </p>
             <div class="commit-settings-fields">
               <div>
                 <label for="commit-model">Model</label>
                 <select id="commit-model">
-                  <option value="">Inherit parent model</option>
+                  <option value="">Inherit current model</option>
                 </select>
               </div>
               <div>
                 <label for="commit-thinking">Thinking level</label>
                 <select id="commit-thinking">
-                  <option value="">Inherit parent thinking level</option>
+                  <option value="">Inherit current thinking level</option>
                   <option value="off">Off</option>
                   <option value="minimal">Minimal</option>
                   <option value="low">Low</option>
@@ -283,7 +586,7 @@
     >
       <h2 id="commit-notice-title">Your commit agent’s model and reasoning</h2>
       <p id="commit-notice-description">
-        The commit agent inherits the parent session’s model and reasoning level
+        The commit agent inherits the current agent’s model and reasoning level
         by default. Choices saved in Menu → Tool models → Commit override these
         values.
       </p>
@@ -327,9 +630,9 @@
     >
       <h2 id="agent-notice-title">Your agents’ model and reasoning</h2>
       <p id="agent-notice-description">
-        Background agents inherit the parent session’s model and reasoning level
-        by default. An agent request can explicitly choose another allowed model
-        or reasoning level.
+        New agents inherit the current agent’s model and reasoning level by
+        default. An agent request can explicitly choose another allowed model or
+        reasoning level.
       </p>
       <p>
         Choose allowed models in Menu → Tool models. This also limits which
@@ -418,8 +721,33 @@
                 class="app-menu-group app-menu-project"
                 aria-labelledby="app-menu-project-heading"
               >
-                <h2 id="app-menu-project-heading">Project &amp; session</h2>
+                <h2 id="app-menu-project-heading">Workspaces</h2>
                 <div class="app-menu-actions">
+                  <button
+                    id="menu-new-agent"
+                    class="quiet-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-controls="new-agent-dialog"
+                  >
+                    New conversation
+                  </button>
+                  <button
+                    id="open-workspace-config"
+                    class="quiet-button"
+                    type="button"
+                  >
+                    Open workspace configuration
+                  </button>
+                  <button
+                    id="open-agent-templates"
+                    class="quiet-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-controls="agent-templates-dialog"
+                  >
+                    Agent configurations
+                  </button>
                   <button id="new-session" class="primary-button" type="button">
                     Open folder
                   </button>
@@ -599,11 +927,18 @@
           <section class="overview" aria-labelledby="overview-title">
             <div class="section-heading">
               <div>
-                <h1 id="overview-title">Parent sessions<span>.</span></h1>
+                <h1 id="overview-title">Workspaces<span>.</span></h1>
               </div>
-              <p id="hub-counts" class="overview-counts">
-                No parent sessions yet
-              </p>
+              <p id="hub-counts" class="overview-counts">No workspaces yet</p>
+              <button
+                id="open-new-agent"
+                class="quiet-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-controls="new-agent-dialog"
+              >
+                New conversation
+              </button>
             </div>
             <div id="parents" class="parent-grid"></div>
           </section>
@@ -614,7 +949,7 @@
           >
             <div class="factory-heading">
               <div class="factory-title-group">
-                <h2 id="factory-title">Parent session</h2>
+                <h2 id="factory-title">Agent</h2>
                 <span id="parent-status" class="status-badge"></span>
               </div>
               <div class="factory-view-actions">
@@ -665,7 +1000,7 @@
                     id="close-parent-session"
                     class="quiet-button"
                     type="button"
-                    title="Close this parent session and stop its agents"
+                    title="Close this agent"
                   >
                     Close session
                   </button>
@@ -690,7 +1025,7 @@
               </div>
               <canvas
                 id="factory-canvas"
-                aria-label="Factory view with a parent session and agents"
+                aria-label="Live agent workspace"
               ></canvas>
               <div id="fallback" class="fallback" hidden>
                 <div class="fallback-grid"></div>
@@ -705,7 +1040,7 @@
             <div
               id="scene-labels"
               class="scene-labels"
-              aria-label="Parent session and agents"
+              aria-label="Agents"
             ></div>
             <div class="parent-summary">
               <span class="robot-glyph" aria-hidden="true"><i></i></span>
@@ -713,7 +1048,7 @@
                 <p id="parent-activity"></p>
               </div>
               <button id="inspect-parent" class="quiet-button" type="button">
-                Inspect parent ↗
+                Open conversation ↗
               </button>
             </div>
           </section>
@@ -808,7 +1143,7 @@
                     <path d="M3 2v7a3 3 0 0 0 3 3h7M10 8l4 4-4 4" />
                   </g>
                 </svg>
-                <span id="conversation-kind-label">Parent session</span>
+                <span id="conversation-kind-label">Agent</span>
               </span>
               <p id="inspector-activity"></p>
               <span
@@ -821,8 +1156,8 @@
               <div class="inspector-session-actions">
                 <button
                   id="back-to-parent"
-                  aria-label="Back to parent session"
-                  title="Back to parent session"
+                  aria-label="Back to starting agent"
+                  title="Back to starting agent"
                   class="quiet-button"
                   type="button"
                   hidden
@@ -1004,8 +1339,8 @@
             hidden
           >
             <p class="changes-note">
-              Exact edit and write diffs recorded for the selected parent
-              session or agent, including files outside Git.
+              Exact edit and write diffs recorded for the selected agent session
+              or agent, including files outside Git.
             </p>
             <div id="unit-changes" class="unit-changes"></div>
             <p id="changes-empty" class="empty-state">
@@ -1167,9 +1502,7 @@
               </p>
             </section>
           </div>
-          <p id="attached-note" class="attached-note" hidden>
-            Connected parent session
-          </p>
+          <p id="attached-note" class="attached-note" hidden>Connected agent</p>
           <div id="composer-slot">
             <section
               id="agent-task-dock"
@@ -1232,7 +1565,12 @@
                 <div class="composer-heading">
                   <label id="parent-editor-label" for="parent-prompt"
                     ><span id="prompt-action">Message</span>
-                    <strong id="prompt-recipient"></strong
+                    <strong id="prompt-recipient"></strong>
+                    <span
+                      id="agent-profile-label"
+                      class="agent-profile-label"
+                      hidden
+                    ></span
                   ></label>
                   <button id="open-commands" class="quiet-button" type="button">
                     Skills &amp; commands
@@ -1369,8 +1707,8 @@
         <dd>Insert a newline in the composer.</dd>
         <dt><kbd>Esc</kbd></dt>
         <dd>
-          Stop the selected parent's running work. When a dialog is open,
-          dismiss it instead.
+          Stop the selected agent’s running work. When a dialog is open, dismiss
+          it instead.
         </dd>
         <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt>
         <dd>Choose a slash-command suggestion.</dd>
@@ -1420,6 +1758,9 @@
       <section id="session-maintenance" class="session-maintenance" hidden>
         <h3>Current session</h3>
         <p id="session-maintenance-name" class="muted"></p>
+        <p id="session-maintenance-profile" class="muted" hidden>
+          Agent <strong id="session-maintenance-agent"></strong>
+        </p>
         <label for="compact-instructions"
           >Compaction instructions <span class="muted">optional</span></label
         >

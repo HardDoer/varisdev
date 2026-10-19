@@ -9,6 +9,7 @@ export interface FactoryRequest {
     | 'prompt'
     | 'abort'
     | 'cancelAgent'
+    | 'agentSession'
     | 'features'
     | 'configure'
     | 'compact'
@@ -74,9 +75,7 @@ export class ExternalSessionRequests {
     input?: unknown,
   ): Promise<T> {
     if (!this.connected())
-      return Promise.reject(
-        new Error('The attached parent session disconnected.'),
-      );
+      return Promise.reject(new Error('The attached workspace disconnected.'));
     if (action === 'conversationImage' && this.pending.size >= 16)
       return Promise.reject(
         new Error(
@@ -85,7 +84,7 @@ export class ExternalSessionRequests {
       );
     if (this.pending.size >= 32)
       return Promise.reject(
-        new Error('The parent session already has 32 pending requests.'),
+        new Error('The workspace already has 32 pending requests.'),
       );
     const id = randomUUID();
     return new Promise<T>((resolve, reject) => {
@@ -94,7 +93,7 @@ export class ExternalSessionRequests {
           this.pending.delete(id);
           reject(
             new Error(
-              'The attached parent session did not answer. Reopen the app from the terminal.',
+              'The attached workspace did not answer. Reopen the app from the terminal.',
             ),
           );
         },
@@ -121,7 +120,7 @@ export class ExternalSessionRequests {
         reject(
           error instanceof Error
             ? error
-            : new Error('The attached parent session disconnected.'),
+            : new Error('The attached workspace disconnected.'),
         );
       });
     });
@@ -152,13 +151,13 @@ export class ExternalSessionRequests {
         new Error(
           typeof reply.error === 'string'
             ? reply.error.slice(0, 2000)
-            : 'The parent session request failed.',
+            : 'The workspace request failed.',
         ),
       );
     return true;
   }
 
-  disconnect(reason = 'The attached parent session disconnected.'): void {
+  disconnect(reason = 'The attached workspace disconnected.'): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));

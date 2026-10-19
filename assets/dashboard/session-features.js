@@ -1,4 +1,4 @@
-/* global document, window, setTimeout, clearTimeout */
+/* global document, window, setTimeout, clearTimeout, ResizeObserver */
 import {openMarkdownFile} from './markdown-files.js';
 import {nativeCommands} from './command-catalog.js';
 const $ = id => document.getElementById(id);
@@ -6,7 +6,7 @@ const cache = new Map();
 const loading = new Map();
 const contextErrors = new Map();
 const contextDisclosures = new Map();
-let parentView = true;
+let conversationView = true;
 let contextSignature;
 let contextConversation;
 let contextRefreshTimer;
@@ -31,14 +31,60 @@ let previousModel;
 let previousThinkingLevel;
 let activeDialog;
 let dialogBusy = false;
-let settingsBusy = false;
+const settingsBusy = new Set();
 let suggestionIndex = 0;
 let suggestions = [];
 let terminalView;
+let terminalFit;
+let terminalObserver;
+let terminalResizeFrame;
+let terminalSize = '';
 let terminalOutput = '';
 
+function terminalTheme(appearance) {
+  return appearance === 'light'
+    ? {background: '#fafafa', foreground: '#202124'}
+    : {background: '#10171d', foreground: '#e2edf3'};
+}
+function requestTerminalFit() {
+  if (terminalResizeFrame !== undefined)
+    window.cancelAnimationFrame(terminalResizeFrame);
+  terminalResizeFrame = window.requestAnimationFrame(() => {
+    terminalResizeFrame = undefined;
+    const request = activeDialog;
+    const panel = $('extension-dialog-terminal');
+    if (
+      !request?.terminal ||
+      !terminalView ||
+      panel.hidden ||
+      !panel.isConnected
+    )
+      return;
+    const proposed = terminalFit?.proposeDimensions();
+    if (proposed) {
+      panel.dataset.proposedColumns = String(proposed.cols);
+      panel.dataset.proposedRows = String(proposed.rows);
+    }
+    terminalFit?.fit();
+    panel.dataset.terminalColumns = String(terminalView.cols);
+    panel.dataset.terminalRows = String(terminalView.rows);
+    const columns = Math.max(20, Math.min(240, terminalView.cols));
+    const rows = Math.max(6, Math.min(100, terminalView.rows));
+    const size = `${columns}:${rows}`;
+    if (
+      size === terminalSize ||
+      (columns === request.terminal.columns && rows === request.terminal.rows)
+    )
+      return;
+    terminalSize = size;
+    void api
+      .respondToDialog(request.sessionId, request.id, {columns, rows})
+      .catch(cause => {
+        if (isActiveDialog(request)) error($('extension-dialog-error'), cause);
+      });
+  });
+}
 function renderTerminal(request) {
-  if (request.kind !== 'terminal') return;
   const frame = request.terminal;
   if (!frame) return;
   if (!terminalView) {
@@ -48,21 +94,35 @@ function renderTerminal(request) {
       fontSize: 13,
       fontFamily: 'Menlo, Consolas, monospace',
       cursorBlink: true,
+      minimumContrastRatio: 4.5,
       scrollback: 1000,
       // Extension components use Pi's terminal theme and its ANSI colors.
-      theme: {background: '#101c27', foreground: '#edf4f6'},
+      theme: terminalTheme(frame.appearance),
     });
+    terminalFit = new window.FitAddon.FitAddon();
+    terminalView.loadAddon(terminalFit);
     terminalView.open($('extension-dialog-terminal'));
+    terminalObserver = new ResizeObserver(requestTerminalFit);
+    terminalObserver.observe($('extension-dialog-terminal'));
     terminalView.onData(value => {
-      if (!activeDialog || activeDialog.kind !== 'terminal' || dialogBusy)
-        return;
+      const request = activeDialog;
+      if (!request?.terminal || dialogBusy) return;
       void api
-        .respondToDialog(activeDialog.sessionId, activeDialog.id, value)
-        .catch(cause => error($('extension-dialog-error'), cause));
+        .respondToDialog(request.sessionId, request.id, {input: value})
+        .catch(cause => {
+          if (isActiveDialog(request))
+            error($('extension-dialog-error'), cause);
+        });
     });
     terminalOutput = '';
     terminalView.focus();
+    requestTerminalFit();
   }
+  const theme = terminalTheme(frame.appearance);
+  terminalView.options.theme = theme;
+  const panel = $('extension-dialog-terminal');
+  panel.dataset.appearance = frame.appearance === 'light' ? 'light' : 'dark';
+  panel.style.background = theme.background;
   if (terminalView.cols !== frame.columns || terminalView.rows !== frame.rows)
     terminalView.resize(frame.columns, frame.rows);
   if (frame.output !== terminalOutput) {
@@ -74,10 +134,18 @@ function renderTerminal(request) {
     }
     terminalOutput = frame.output;
   }
+  requestTerminalFit();
 }
 function disposeTerminal() {
+  terminalObserver?.disconnect();
+  terminalObserver = undefined;
+  if (terminalResizeFrame !== undefined)
+    window.cancelAnimationFrame(terminalResizeFrame);
+  terminalResizeFrame = undefined;
+  terminalFit = undefined;
   terminalView?.dispose();
   terminalView = undefined;
+  terminalSize = '';
   terminalOutput = '';
 }
 
@@ -94,6 +162,31 @@ function error(target, value) {
 function features() {
   return cache.get(current?.session.id);
 }
+function renderAgentProfile() {
+  const resource = features();
+  const label = $('agent-profile-label');
+  const settings = $('session-maintenance-profile');
+  if (!current || !resource) {
+    label.hidden = true;
+    label.textContent = '';
+    label.style.removeProperty('--agent-profile-color');
+    settings.hidden = true;
+    $('session-maintenance-agent').textContent = '';
+    return;
+  }
+  const profile = resource.agentProfile;
+  const name = profile?.name || profile?.id || 'Default';
+  const color = /^#[0-9a-f]{6}$/i.test(profile?.color || '')
+    ? profile.color
+    : '';
+  label.textContent = name;
+  label.title = `Agent: ${name}`;
+  label.hidden = false;
+  if (color) label.style.setProperty('--agent-profile-color', color);
+  else label.style.removeProperty('--agent-profile-color');
+  $('session-maintenance-agent').textContent = name;
+  settings.hidden = false;
+}
 async function load(force = false, id = current?.session.id) {
   if (!id || !api?.sessionFeatures) return;
   if (!force && cache.has(id)) return cache.get(id);
@@ -107,6 +200,7 @@ async function load(force = false, id = current?.session.id) {
       if (selected()?.session.id === id) {
         renderCatalog();
         renderSuggestions();
+        renderAgentProfile();
       }
       return result;
     })
@@ -136,8 +230,7 @@ function renderContext() {
   const resource = features();
   const files = resource?.contextFiles || [];
   const cause = contextErrors.get(id);
-  $('context-recipient').textContent =
-    `${current.session.name} · parent session`;
+  $('context-recipient').textContent = current.session.name;
   $('refresh-context').disabled = !api?.sessionFeatures || loading.has(id);
   $('context-status').textContent = loading.has(id)
     ? 'Refreshing context files…'
@@ -145,7 +238,7 @@ function renderContext() {
       ? ''
       : cause
         ? ''
-        : 'No context files reported for this parent session.';
+        : 'No context files reported for this agent.';
   $('context-error').hidden = !cause;
   if (cause) error($('context-error'), cause);
   const signature = JSON.stringify([id, files]);
@@ -216,7 +309,11 @@ function renderContext() {
 function commands(query = '') {
   const needle = query.toLocaleLowerCase().replace(/^\//, '');
   return [
-    ...builtinCommands,
+    ...builtinCommands.filter(
+      command =>
+        !current?.agentId ||
+        ['model', 'thinking', 'compact', 'reload'].includes(command.name),
+    ),
     ...(features()?.commands || []).filter(
       command => !builtinCommands.some(local => local.name === command.name),
     ),
@@ -323,7 +420,7 @@ function renderSuggestions() {
 }
 function canRunCommand(name) {
   return (
-    parentView &&
+    conversationView &&
     current?.session.controllable &&
     (current.session.status === 'idle' ||
       (['running', 'compacting'].includes(current.session.status) &&
@@ -331,29 +428,62 @@ function canRunCommand(name) {
   );
 }
 function renderSettingsControls() {
-  $('session-maintenance').hidden = !parentView;
+  $('session-maintenance').hidden = !conversationView;
   $('session-maintenance-name').textContent = current?.session.name || '';
-  $('compact-session').disabled = settingsBusy || !canRunCommand('compact');
-  $('reload-session').disabled = settingsBusy || !canRunCommand('reload');
+  $('compact-session').disabled =
+    settingsBusy.has(current?.session.id) || !canRunCommand('compact');
+  $('reload-session').disabled =
+    settingsBusy.has(current?.session.id) || !canRunCommand('reload');
 }
 async function runSessionCommand(name, args = '') {
-  if (settingsBusy || !canRunCommand(name)) return;
+  if (settingsBusy.has(current?.session.id) || !canRunCommand(name)) return;
   const id = current.session.id;
-  settingsBusy = true;
+  settingsBusy.add(id);
   $('session-settings-error').hidden = true;
   renderSettingsControls();
   try {
-    await api.promptSession(id, {prompt: `/${name}${args ? ` ${args}` : ''}`});
+    if (current.agentId && name === 'compact')
+      await api.compactSession(id, args);
+    else if (current.agentId && name === 'reload') await api.reloadSession(id);
+    else
+      await api.promptSession(id, {
+        prompt: `/${name}${args ? ` ${args}` : ''}`,
+      });
     await load(true, id);
   } catch (cause) {
     if (current?.session.id === id) error($('session-settings-error'), cause);
   } finally {
-    settingsBusy = false;
+    settingsBusy.delete(id);
     renderSettingsControls();
   }
 }
+function isActiveDialog(request) {
+  return (
+    activeDialog?.sessionId === request.sessionId &&
+    activeDialog?.id === request.id
+  );
+}
+function closeExtensionDialog() {
+  const dialog = $('extension-dialog');
+  if (!dialog.open) return;
+  const editor = $('parent-prompt');
+  const position = {
+    start: editor.selectionStart,
+    end: editor.selectionEnd,
+    direction: editor.selectionDirection,
+    top: editor.scrollTop,
+    left: editor.scrollLeft,
+  };
+  // The browser can restore a selection saved before another draft was loaded.
+  dialog.close();
+  editor.setSelectionRange(position.start, position.end, position.direction);
+  editor.scrollTop = position.top;
+  editor.scrollLeft = position.left;
+  draftChanged();
+}
 function renderExtensionUI(data) {
   const ui = data.ui;
+  const ownerId = data.uiOwnerId || data.session.id;
   const notices = (ui?.notifications || []).filter(
     item => !dismissed.has(item.id),
   );
@@ -399,10 +529,7 @@ function renderExtensionUI(data) {
     editorChanged = true;
   }
   const request = ui?.dialogs?.[0];
-  if (
-    activeDialog?.sessionId === data.session.id &&
-    activeDialog.id === request?.id
-  ) {
+  if (activeDialog?.sessionId === ownerId && activeDialog.id === request?.id) {
     activeDialog = {...activeDialog, ...request};
     renderDialogTabs();
     renderTerminal(request);
@@ -410,7 +537,7 @@ function renderExtensionUI(data) {
     return;
   }
   const dialog = $('extension-dialog');
-  if (dialog.open) dialog.close();
+  closeExtensionDialog();
   disposeTerminal();
   activeDialog = undefined;
   if (!request) {
@@ -421,41 +548,43 @@ function renderExtensionUI(data) {
     }
     return;
   }
-  activeDialog = {...request, sessionId: data.session.id};
+  activeDialog = {...request, sessionId: ownerId};
   dialogBusy = false;
   renderDialogTabs();
   $('extension-dialog-title').textContent = request.title;
-  $('extension-dialog-session').textContent = data.session.name;
+  $('extension-dialog-session').textContent =
+    data.uiOwnerName || data.session.name;
+  const terminal = Boolean(request.terminal);
   $('extension-dialog-message').textContent = request.message || '';
-  $('extension-dialog-message').hidden = !request.message;
+  $('extension-dialog-message').hidden = terminal || !request.message;
   $('extension-dialog-error').hidden = true;
   $('submit-extension-dialog').disabled = false;
-  $('submit-extension-dialog').hidden = request.kind === 'terminal';
-  $('extension-dialog-terminal').hidden = request.kind !== 'terminal';
+  $('submit-extension-dialog').hidden = terminal;
+  $('extension-dialog-terminal').hidden = !terminal;
   renderDialogActions();
-  dialog.classList.toggle('terminal-dialog', request.kind === 'terminal');
+  dialog.classList.toggle('terminal-dialog', terminal);
   $('cancel-extension-dialog').disabled = false;
   $('cancel-extension-dialog').textContent =
     request.kind === 'info' ? 'Close' : 'Cancel';
   $('submit-extension-dialog').textContent =
     request.kind === 'info' ? 'OK' : 'Continue';
   $('extension-dialog-search').hidden =
-    request.kind !== 'select' || !request.searchable;
+    terminal || request.kind !== 'select' || !request.searchable;
   $('extension-dialog-search').value = '';
   $('extension-dialog-current').hidden =
-    request.kind !== 'select' || !request.selected;
+    terminal || request.kind !== 'select' || !request.selected;
   $('extension-dialog-current').textContent = request.selected
     ? `Current: ${request.selected}`
     : '';
-  $('extension-dialog-input').hidden = request.kind !== 'input';
-  $('extension-dialog-editor').hidden = request.kind !== 'editor';
-  $('extension-dialog-select').hidden = request.kind !== 'select';
+  $('extension-dialog-input').hidden = terminal || request.kind !== 'input';
+  $('extension-dialog-editor').hidden = terminal || request.kind !== 'editor';
+  $('extension-dialog-select').hidden = terminal || request.kind !== 'select';
   $('extension-dialog-input').value = request.prefill || '';
   $('extension-dialog-input').placeholder = request.placeholder || '';
   $('extension-dialog-editor').value = request.prefill || '';
   renderDialogOptions();
   dialog.showModal();
-  if (request.kind === 'terminal') {
+  if (terminal) {
     renderTerminal(request);
     return;
   }
@@ -496,8 +625,7 @@ function renderDialogTabs() {
   }
 }
 function renderDialogActions() {
-  const actions =
-    activeDialog?.kind === 'terminal' ? activeDialog.actions || [] : [];
+  const actions = activeDialog?.terminal ? activeDialog.actions || [] : [];
   $('extension-dialog-actions').hidden = !actions.length;
   for (const button of $('extension-dialog-actions').querySelectorAll(
     'button',
@@ -512,7 +640,7 @@ async function respondAction(action, focusTab) {
   const request = activeDialog;
   if (
     dialogBusy ||
-    request?.kind !== 'terminal' ||
+    !request?.terminal ||
     !(
       request.actions?.some(item => item.id === action) ||
       request.tabs?.some(item => `tab:${item.id}` === action)
@@ -526,13 +654,13 @@ async function respondAction(action, focusTab) {
   try {
     await api.respondToDialog(request.sessionId, request.id, {action});
   } catch (cause) {
-    error($('extension-dialog-error'), cause);
+    if (isActiveDialog(request)) error($('extension-dialog-error'), cause);
   } finally {
-    dialogBusy = false;
-    renderDialogTabs();
-    renderDialogActions();
-    $('cancel-extension-dialog').disabled = false;
-    if (activeDialog?.id === request.id) {
+    if (isActiveDialog(request)) {
+      dialogBusy = false;
+      renderDialogTabs();
+      renderDialogActions();
+      $('cancel-extension-dialog').disabled = false;
       if (focusTab) $(focusTab).focus();
       else terminalView?.focus();
     }
@@ -540,7 +668,7 @@ async function respondAction(action, focusTab) {
 }
 function renderDialogOptions() {
   const request = activeDialog;
-  if (!request || request.kind !== 'select') {
+  if (!request || request.kind !== 'select' || request.terminal) {
     $('extension-dialog-select').replaceChildren();
     $('extension-dialog-empty').hidden = true;
     return;
@@ -571,7 +699,7 @@ function renderDialogOptions() {
 async function respond(cancelled) {
   if (!activeDialog || dialogBusy) return;
   const request = activeDialog;
-  if (request.kind === 'terminal' && !cancelled) return;
+  if (request.terminal && !cancelled) return;
   if (
     request.kind === 'select' &&
     !cancelled &&
@@ -592,17 +720,19 @@ async function respond(cancelled) {
   $('cancel-extension-dialog').disabled = true;
   try {
     await api.respondToDialog(request.sessionId, request.id, value);
-    if (activeDialog?.id === request.id) {
-      $('extension-dialog').close();
+    if (isActiveDialog(request)) {
+      closeExtensionDialog();
       activeDialog = undefined;
       disposeTerminal();
     }
   } catch (cause) {
-    error($('extension-dialog-error'), cause);
+    if (isActiveDialog(request)) error($('extension-dialog-error'), cause);
   } finally {
-    dialogBusy = false;
-    $('submit-extension-dialog').disabled = false;
-    $('cancel-extension-dialog').disabled = false;
+    if (isActiveDialog(request)) {
+      dialogBusy = false;
+      $('submit-extension-dialog').disabled = false;
+      $('cancel-extension-dialog').disabled = false;
+    }
   }
 }
 export function initSessionFeatures(options) {
@@ -622,7 +752,7 @@ export function initSessionFeatures(options) {
       .catch(cause => error($('prompt-error'), cause));
   });
   $('open-commands').addEventListener('click', () => {
-    if (!parentView) return;
+    if (!conversationView) return;
     const dialog = $('commands-dialog');
     if (!dialog.open) {
       if ($('parent-controls').matches(':popover-open')) {
@@ -748,12 +878,17 @@ export function initSessionFeatures(options) {
   window.addEventListener('unload', disposeTerminal);
 }
 export function renderSessionFeatures(data, options = {parent: true}) {
-  parentView = !!data && options.parent;
-  if (!parentView) {
-    for (const id of ['commands-dialog', 'extension-dialog'])
-      if ($(id).open) $(id).close();
+  conversationView = !!data && (options.available ?? options.parent);
+  if (
+    (!data || current?.session.id !== data.session.id) &&
+    $('commands-dialog').open
+  )
+    $('commands-dialog').close();
+  if (!data) {
+    closeExtensionDialog();
     disposeTerminal();
     activeDialog = undefined;
+    dialogBusy = false;
   }
   if (!data) {
     current = undefined;
@@ -762,12 +897,14 @@ export function renderSessionFeatures(data, options = {parent: true}) {
     clearTimeout(contextRefreshTimer);
     $('command-suggestions').hidden = true;
     $('open-commands').disabled = true;
+    renderAgentProfile();
     renderSettingsControls();
     return;
   }
   const changedSession = current?.session.id !== data.session.id;
   if (changedSession) $('session-settings-error').hidden = true;
   current = data;
+  renderAgentProfile();
   const conversation = JSON.stringify([
     data.session.id,
     (data.conversation || [])
@@ -799,7 +936,8 @@ export function renderSessionFeatures(data, options = {parent: true}) {
   }
   const available = !!api?.sessionFeatures && data.session.status !== 'closed';
   $('open-commands').disabled = !available;
+  renderAgentProfile();
   renderSettingsControls();
   renderContext();
-  if (parentView) renderExtensionUI(data);
+  renderExtensionUI(data);
 }

@@ -1,11 +1,20 @@
 import type {ImageContent} from '@earendil-works/pi-ai';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
 import type {DesktopStartup} from '../desktop/startup.ts';
+import {
+  listAgentTemplates,
+  saveAgentTemplate,
+  deleteAgentTemplate,
+  resolveAgentTemplate,
+  resolveDefaultAgentTemplate,
+  type AgentTemplate,
+} from '../agents/templates.ts';
 import {realpath, stat} from 'node:fs/promises';
 import {isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
 import {DashboardState} from './state.ts';
 import {DashboardInputError} from './errors.ts';
+import {workspaceConfigurationDirectory} from './workspace-config.ts';
 import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
 import type {SessionFeatures, SessionConfiguration} from './features.ts';
@@ -19,6 +28,10 @@ import {
 export interface ParentRequest {
   cwd: string;
   name?: string;
+  instructions?: string;
+  model?: string;
+  thinkingLevel?: string;
+  agentProfile?: AgentTemplate;
   resume?: {id: string; path: string};
 }
 
@@ -36,6 +49,16 @@ export interface StartedSession {
 
 export type StoppedMessages = NonNullable<DashboardSnapshot['queue']>;
 
+export type AgentSessionRequest = {agentId: string} & (
+  | {action: 'prompt'; prompt: string}
+  | {action: 'configure'; configuration: SessionConfiguration}
+  | {action: 'command'; command: string}
+  | {action: 'compact'; instructions?: string}
+  | {action: 'abort' | 'features' | 'reload' | 'close'}
+);
+
+export type AgentSessionResult = void | SessionFeatures | StoppedMessages;
+
 export interface DashboardParent {
   state: DashboardState;
   ui?: DesktopExtensionUI;
@@ -43,6 +66,7 @@ export interface DashboardParent {
   abort(): Promise<StoppedMessages>;
   restartSnapshot(): DesktopStartup;
   cancelAgent(agentId: string): Promise<void>;
+  agentSession?(request: AgentSessionRequest): Promise<AgentSessionResult>;
   close(): Promise<void>;
   features(): Promise<SessionFeatures>;
   configure(input: SessionConfiguration): Promise<void>;
@@ -59,6 +83,10 @@ export interface ExternalSessionControl {
   prompt(id: string, prompt: string): Promise<void>;
   abort(id: string): Promise<StoppedMessages>;
   cancelAgent(id: string, agentId: string): Promise<void>;
+  agentSession?(
+    id: string,
+    request: AgentSessionRequest,
+  ): Promise<AgentSessionResult>;
   features(id: string): Promise<SessionFeatures>;
   configure(id: string, input: SessionConfiguration): Promise<void>;
   compact(id: string, instructions?: string): Promise<void>;
@@ -138,6 +166,60 @@ export function sessionConfiguration(input: unknown): SessionConfiguration {
 export function compactionInstructions(input: unknown): string | undefined {
   if (input === undefined || input === '') return;
   return text(input, 'Compaction instructions', 64000);
+}
+
+export function agentSessionRequest(input: unknown): AgentSessionRequest {
+  const values = fields(input);
+  const agentId = agentCancellationId(values.agentId);
+  if (agentId === 'all')
+    throw new DashboardInputError('Choose one agent conversation.');
+  const action = values.action;
+  const allowed =
+    action === 'prompt'
+      ? ['prompt']
+      : action === 'configure'
+        ? ['configuration']
+        : action === 'command'
+          ? ['command']
+          : action === 'compact'
+            ? ['instructions']
+            : [];
+  if (
+    ![
+      'prompt',
+      'abort',
+      'features',
+      'configure',
+      'command',
+      'compact',
+      'reload',
+      'close',
+    ].includes(action as string)
+  )
+    throw new DashboardInputError('Unknown agent conversation action.');
+  if (
+    Object.keys(values).some(
+      key => !['agentId', 'action', ...allowed].includes(key),
+    )
+  )
+    throw new DashboardInputError('Unknown agent conversation field.');
+  if (action === 'prompt')
+    return {agentId, action, prompt: text(values.prompt, 'Prompt', 64000)};
+  if (action === 'configure')
+    return {
+      agentId,
+      action,
+      configuration: sessionConfiguration(values.configuration),
+    };
+  if (action === 'command')
+    return {agentId, action, command: text(values.command, 'Command', 64000)};
+  if (action === 'compact')
+    return {
+      agentId,
+      action,
+      instructions: compactionInstructions(values.instructions),
+    };
+  return {agentId, action: action as 'abort' | 'features' | 'reload' | 'close'};
 }
 
 async function sessionFolder(input: unknown): Promise<string> {
@@ -359,17 +441,17 @@ export class DashboardHub {
     if (this.external?.session.id === id)
       return readWorkspaceDiff(this.external.session.cwd);
     const entry = this.sessions.get(id);
-    if (!entry) throw new DashboardInputError('Unknown parent session.');
+    if (!entry) throw new DashboardInputError('Unknown workspace.');
     return readWorkspaceDiff(entry.state.deliverySnapshot().session.cwd);
   }
 
   private markdownCwd(id: string): string {
     this.ensureOpen();
     if (typeof id !== 'string' || !id || id.length > 256)
-      throw new DashboardInputError('Choose a valid parent session.');
+      throw new DashboardInputError('Choose a valid workspace.');
     if (this.external?.session.id === id) return this.external.session.cwd;
     const entry = this.sessions.get(id);
-    if (!entry) throw new DashboardInputError('Unknown parent session.');
+    if (!entry) throw new DashboardInputError('Unknown workspace.');
     return entry.state.deliverySnapshot().session.cwd;
   }
 
@@ -403,10 +485,39 @@ export class DashboardHub {
     }));
   }
 
+  async workspaceConfigurationFolder(input: unknown): Promise<string> {
+    this.ensureOpen();
+    return workspaceConfigurationDirectory(await sessionFolder(input));
+  }
+
+  async listAgentTemplates(input: unknown) {
+    this.ensureOpen();
+    const cwd = await sessionFolder(input);
+    return listAgentTemplates(cwd);
+  }
+
+  async saveAgentTemplate(folder: unknown, input: unknown) {
+    this.ensureOpen();
+    const cwd = await sessionFolder(folder);
+    const values = fields(input);
+    return saveAgentTemplate(cwd, values);
+  }
+
+  async deleteAgentTemplate(folder: unknown, input: unknown): Promise<void> {
+    this.ensureOpen();
+    const cwd = await sessionFolder(folder);
+    const values = fields(input);
+    if (Object.keys(values).some(key => !['scope', 'id'].includes(key)))
+      throw new DashboardInputError('Unknown agent template field.');
+    await deleteAgentTemplate(cwd, values);
+  }
+
   async createSession(input: unknown): Promise<StartedSession> {
     this.ensureOpen();
     const values = fields(input);
     const cwd = await sessionFolder(values.cwd);
+    if (values.sessionId !== undefined && values.templateId !== undefined)
+      throw new DashboardInputError('Templates apply to new conversations.');
     if (values.sessionId !== undefined) {
       const id = text(values.sessionId, 'Session ID', 128);
       const saved = (await SessionManager.list(cwd)).find(
@@ -460,7 +571,26 @@ export class DashboardHub {
       values.name === undefined || values.name === ''
         ? undefined
         : text(values.name, 'Name', 120);
-    return this.startSession({cwd, name});
+    const explicit = values.templateId !== undefined;
+    const template = explicit
+      ? await resolveAgentTemplate(
+          cwd,
+          text(values.templateId, 'Template ID', 256),
+        )
+      : await resolveDefaultAgentTemplate(cwd, 'primary');
+    if (!template || template.disabled)
+      throw new DashboardInputError('This agent profile is unavailable.');
+    if (template.mode === 'subagent')
+      throw new DashboardInputError(
+        'Choose an agent that supports primary use.',
+      );
+    return this.startSession({
+      cwd,
+      name:
+        name ??
+        (!explicit && template.id === 'default' ? undefined : template.name),
+      agentProfile: structuredClone(template),
+    });
   }
 
   private async inResumeFolder<T>(
@@ -559,9 +689,7 @@ export class DashboardHub {
       ? 1
       : 0;
     if (owned + this.creating.size - reservedCredits - replacementCredit >= 8) {
-      throw new DashboardInputError(
-        'The factory can hold eight parent sessions.',
-      );
+      throw new DashboardInputError('The factory can hold eight workspaces.');
     }
     const creation = Promise.resolve().then(async () => {
       const parent = await this.factory(request);
@@ -612,9 +740,7 @@ export class DashboardHub {
       ).length;
       if (remainingOwned >= 8) {
         await parent.close();
-        throw new DashboardInputError(
-          'The factory can hold eight parent sessions.',
-        );
+        throw new DashboardInputError('The factory can hold eight workspaces.');
       }
       if (this.external?.session.id === id) this.external = undefined;
       this.dismissedExternalSessions.delete(id);
@@ -634,7 +760,7 @@ export class DashboardHub {
     if (this.external?.session.id === id)
       throw new DashboardInputError('Continue this session in its terminal.');
     const entry = this.sessions.get(id);
-    if (!entry) throw new DashboardInputError('Unknown parent session.');
+    if (!entry) throw new DashboardInputError('Unknown workspace.');
     if (!entry.parent)
       throw new DashboardInputError('Continue this session in its terminal.');
     if (entry.closing)
@@ -651,7 +777,7 @@ export class DashboardHub {
     if (this.external?.session.id !== id) return;
     if (!this.externalControl || this.external.session.status === 'closed')
       throw new DashboardInputError(
-        'This parent session is no longer connected. Reopen the app from the terminal.',
+        'This workspace is no longer connected. Reopen the app from the terminal.',
       );
     return this.externalControl;
   }
@@ -691,6 +817,35 @@ export class DashboardHub {
       );
     if (value !== null && typeof value === 'object') {
       const response = fields(value);
+      const keys = Object.keys(response);
+      if (!editor && dialog?.terminal) {
+        if (
+          keys.length === 1 &&
+          keys[0] === 'input' &&
+          typeof response.input === 'string' &&
+          response.input.length <= 262144
+        ) {
+          parent.ui.respond(dialogId, {input: response.input});
+          return;
+        }
+        if (
+          keys.length === 2 &&
+          keys.includes('columns') &&
+          keys.includes('rows') &&
+          Number.isInteger(response.columns) &&
+          Number.isInteger(response.rows) &&
+          Number(response.columns) >= 20 &&
+          Number(response.columns) <= 240 &&
+          Number(response.rows) >= 6 &&
+          Number(response.rows) <= 100
+        ) {
+          parent.ui.respond(dialogId, {
+            columns: Number(response.columns),
+            rows: Number(response.rows),
+          });
+          return;
+        }
+      }
       if (
         editor ||
         dialog?.kind !== 'terminal' ||
@@ -841,7 +996,7 @@ export class DashboardHub {
   restartSnapshots(): DesktopStartup[] {
     this.ensureOpen();
     if (this.creating.size)
-      throw new DashboardInputError('A parent session is still starting.');
+      throw new DashboardInputError('A workspace is still starting.');
     const parents: DesktopStartup[] = [];
     for (const entry of this.sessions.values()) {
       if (!entry.parent) continue;
@@ -858,11 +1013,34 @@ export class DashboardHub {
         )
       )
         throw new DashboardInputError(
-          'Parent sessions and agents must be idle before restarting.',
+          'Workspaces and agents must be idle before restarting.',
         );
       parents.push(entry.parent.restartSnapshot());
     }
     return parents;
+  }
+
+  async agentSession(id: string, input: unknown): Promise<AgentSessionResult> {
+    const request = agentSessionRequest(input);
+    const attached = this.attached(id);
+    if (attached) {
+      if (!attached.agentSession)
+        throw new DashboardInputError('Agent conversations are unavailable.');
+      return structuredClone(await attached.agentSession(id, request));
+    }
+    const entry = this.owned(id);
+    if (!entry.parent.agentSession)
+      throw new DashboardInputError('Agent conversations are unavailable.');
+    const operation = Promise.resolve().then(() =>
+      entry.parent!.agentSession!(request),
+    );
+    entry.pending.add(operation);
+    try {
+      return structuredClone(await operation);
+    } finally {
+      entry.pending.delete(operation);
+      if (this.has(entry) && !entry.closing) this.refresh(entry);
+    }
   }
 
   async cancelAgent(id: string, input: unknown): Promise<void> {
@@ -889,7 +1067,7 @@ export class DashboardHub {
       await Promise.allSettled(entry.running);
       if (!entry.closing) {
         entry.state.updateSession({status: 'idle', activity: 'Stopped'});
-        entry.state.record('session', 'Parent stopped');
+        entry.state.record('session', 'Main agent stopped');
       }
       return queued;
     })().finally(() => {
@@ -914,7 +1092,7 @@ export class DashboardHub {
     }
     if (this.dismissedExternalSessions.has(id)) return Promise.resolve();
     const entry = this.sessions.get(id);
-    if (!entry) throw new DashboardInputError('Unknown parent session.');
+    if (!entry) throw new DashboardInputError('Unknown workspace.');
     if (!entry.parent) {
       entry.unsubscribe();
       this.sessions.delete(id);

@@ -12,6 +12,8 @@ import {
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {basename, dirname, join} from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
+import {stripVTControlCharacters} from 'node:util';
 import {test, type TestContext} from 'node:test';
 import {
   createAgentSessionFromServices,
@@ -26,6 +28,9 @@ import {
   type SessionCommandResult,
   type SessionCommandUI,
 } from '../src/dashboard/session-commands.ts';
+import {saveToolSettings} from '../src/tools/settings.ts';
+import {sessionWorker} from '../src/agents/session.ts';
+import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
 function nativeUI() {
@@ -34,11 +39,17 @@ function nativeUI() {
   const shows: Array<{title: string; message: string}> = [];
   const selects: Array<{title: string; options: string[]; selected?: string}> =
     [];
+  const nativeDialogs: string[] = [];
+  let nativeSelected: string | undefined;
   const prompts: string[] = [];
   const confirms: Array<{title: string; message: string}> = [];
   let editorText = 'existing draft';
   let choose: (options: string[]) => string | undefined = () => undefined;
   const ui: SessionCommandUI = {
+    native: async <T>(title: string) => {
+      nativeDialogs.push(title);
+      return nativeSelected as T;
+    },
     show: async (title, message) => {
       shows.push({title, message});
     },
@@ -47,6 +58,10 @@ function nativeUI() {
       return choose(options);
     },
     context: {
+      theme: {name: 'dark'},
+      editor: async () => inputs.shift(),
+      notify: () => {},
+      getEditorText: () => editorText,
       input: async title => {
         prompts.push(title);
         return inputs.shift();
@@ -66,6 +81,10 @@ function nativeUI() {
     confirmations,
     shows,
     selects,
+    nativeDialogs,
+    chooseNative: (id: string | undefined) => {
+      nativeSelected = id;
+    },
     prompts,
     confirms,
     choose: (callback: typeof choose) => {
@@ -107,7 +126,10 @@ async function fixture(t: TestContext, memory = false) {
     cwd,
     agentDir: config,
     modelRuntime,
-    settingsManager: SettingsManager.inMemory({compaction: {enabled: false}}),
+    settingsManager: SettingsManager.inMemory({
+      compaction: {enabled: false},
+      branchSummary: {skipPrompt: true},
+    }),
     resourceLoaderOptions: {
       noExtensions: true,
       noThemes: true,
@@ -199,24 +221,40 @@ function replacement(result: SessionCommandResult | undefined) {
   return result.replacement;
 }
 
-void test('unhandled names remain unhandled; /session is a read-only native modal', async t => {
-  const {run, native, session, manager} = await fixture(t);
-  const entries = structuredClone(manager.getEntries());
-  assert.equal(await run('not-a-native-command'), undefined);
-  assert.deepEqual(await run('session'), {kind: 'done'});
-  assert.equal(native.shows.length, 1);
-  assert.equal(native.shows[0].title, 'Session information');
-  for (const value of [
-    session.sessionId,
-    session.sessionFile!,
-    'Tokens:',
-    'Cost:',
-    'Working directory:',
-  ])
-    assert.ok(native.shows[0].message.includes(value));
-  assert.deepEqual(manager.getEntries(), entries);
-  assert.equal(native.prompts.length, 0);
-});
+void test(
+  'unhandled names remain unhandled; /session renders the shipped Pi view',
+  {timeout: 6000},
+  async t => {
+    const {session, manager} = await fixture(t);
+    const ui = new DesktopExtensionUI(() => {});
+    t.after(() => ui.dispose());
+    const entries = structuredClone(manager.getEntries());
+    assert.equal(
+      await runSessionCommand('not-a-native-command', '', {session, ui}),
+      undefined,
+    );
+    const viewing = runSessionCommand('session', '', {session, ui});
+    const dialog = await terminalDialog(ui, 'Session');
+    assert.match(dialog.terminal!.output, /Session Info/);
+    const rendered = stripVTControlCharacters(dialog.terminal!.output).replace(
+      /\s/g,
+      '',
+    );
+    for (const value of [
+      session.sessionId,
+      session.sessionFile!,
+      'Tokens',
+      'Cost',
+    ])
+      assert.ok(
+        rendered.includes(value),
+        `Expected Pi view to include ${value}`,
+      );
+    ui.respond(dialog.id, {input: '\x1b'});
+    assert.deepEqual(await viewing, {kind: 'done'});
+    assert.deepEqual(manager.getEntries(), entries);
+  },
+);
 
 void test('/name supports native input, explicit args, and cancellation without blank renames', async t => {
   const {run, native, manager} = await fixture(t);
@@ -239,9 +277,8 @@ void test('/tree uses native navigation without a model or summary and restores 
   const id = session.sessionId;
   const file = session.sessionFile;
   const entries = structuredClone(manager.getEntries());
-  native.choose(options =>
-    options.find(option => option.includes(`[${first}]`)),
-  );
+  native.ui.context.setEditorText('');
+  native.chooseNative(first);
   assert.equal((await run('tree'))?.kind, 'done');
   assert.equal(manager.getLeafId(), null);
   assert.equal(native.editor(), 'First user request\nwith detail');
@@ -253,9 +290,8 @@ void test('/tree uses native navigation without a model or summary and restores 
     false,
   );
   assert.ok(events.some(event => event.type === 'session_before_tree'));
-  native.choose(options =>
-    options.find(option => option.includes(`[${second}]`)),
-  );
+  native.ui.context.setEditorText('');
+  native.chooseNative(second);
   await run('tree');
   assert.equal(native.editor(), 'Second request\nwith image');
   assert.equal(session.model, undefined);
@@ -263,19 +299,16 @@ void test('/tree uses native navigation without a model or summary and restores 
 
 void test('/tree clears editor on assistant selection and respects native extension cancellation', async t => {
   const {run, native, manager, answer, first, control} = await fixture(t);
-  native.choose(options =>
-    options.find(option => option.includes(`[${answer}]`)),
-  );
+  native.ui.context.setEditorText('');
+  native.chooseNative(answer);
   await run('tree');
   assert.equal(manager.getLeafId(), answer);
   assert.equal(native.editor(), '');
   control.cancelTree = true;
-  native.choose(options =>
-    options.find(option => option.includes(`[${first}]`)),
-  );
+  native.chooseNative(first);
   assert.deepEqual(await run('tree'), {kind: 'cancelled'});
   assert.equal(manager.getLeafId(), answer);
-  native.choose(() => undefined);
+  native.chooseNative(undefined);
   assert.deepEqual(await run('tree'), {kind: 'cancelled'});
 });
 
@@ -287,9 +320,7 @@ for (const memory of [false, true]) {
     const file = session.sessionFile;
     const entries = structuredClone(manager.getEntries());
     const source = file ? await readFile(file, 'utf8') : undefined;
-    native.choose(options =>
-      options.find(option => option.includes(`[${second}]`)),
-    );
+    native.chooseNative(second);
     const prepared = replacement(await run('fork'));
     assert.equal(prepared.cwd, cwd);
     assert.equal(prepared.editorText, 'Second request\nwith image');
@@ -318,9 +349,7 @@ for (const memory of [false, true]) {
 
 void test('/fork before the first user persists a header-only session ready for hub resume', async t => {
   const {run, native, first, cwd} = await fixture(t);
-  native.choose(options =>
-    options.find(option => option.includes(`[${first}]`)),
-  );
+  native.chooseNative(first);
   const prepared = replacement(await run('fork'));
   assert.equal(prepared.editorText, 'First user request\nwith detail');
   assert.equal(
@@ -374,9 +403,7 @@ void test('/clone copies only the selected active path and retains canonical lab
 void test('/fork and /clone honor native fork veto without preparing files', async t => {
   const {run, native, first, control, cwd} = await fixture(t);
   control.cancelFork = true;
-  native.choose(options =>
-    options.find(option => option.includes(`[${first}]`)),
-  );
+  native.chooseNative(first);
   assert.deepEqual(await run('fork'), {kind: 'cancelled'});
   assert.deepEqual(await run('clone'), {kind: 'cancelled'});
   assert.deepEqual(await SessionManager.list(cwd), []);
@@ -491,15 +518,19 @@ void test('/export HTML delegates to SDK and never overwrites the live transcrip
   const output = join(root, 'session.html');
   // The SDK renderer depends on its bundled theme/assets. Verify delegation
   // without making a terminal renderer part of this native-command unit test.
-  const calls: string[] = [];
-  t.mock.method(session, 'exportToHtml', async (path?: string) => {
-    calls.push(path!);
-    await writeFile(path!, '<!doctype html>');
-    return path!;
-  });
+  const calls: Array<{path: string; themeName?: string}> = [];
+  t.mock.method(
+    session,
+    'exportToHtml',
+    async (path?: string, options?: {themeName?: string}) => {
+      calls.push({path: path!, themeName: options?.themeName});
+      await writeFile(path!, '<!doctype html>');
+      return path!;
+    },
+  );
   native.confirmations.push(true);
   assert.equal((await run('export', output))?.kind, 'done');
-  assert.deepEqual(calls, [output]);
+  assert.deepEqual(calls, [{path: output, themeName: 'dark'}]);
   await assert.rejects(run('export', session.sessionFile!), /live session/);
   await assert.rejects(
     run('export', join(root, 'unsafe.txt')),
@@ -507,34 +538,16 @@ void test('/export HTML delegates to SDK and never overwrites the live transcrip
   );
   native.confirmations.push(false);
   assert.deepEqual(await run('export', output), {kind: 'cancelled'});
-  assert.deepEqual(calls, [output]);
-});
-
-void test('session selectors paginate large histories instead of silently dropping entries', async t => {
-  const {run, native, session, first} = await fixture(t);
-  const messages = Array.from({length: 1002}, (_, index) => ({
-    entryId: `entry-${index}`,
-    text: 'Duplicate message',
-  }));
-  messages[0].entryId = first;
-  t.mock.method(session, 'getUserMessagesForForking', () => messages);
-  let turn = 0;
-  native.choose(options => {
-    turn++;
-    if (turn === 1) return options.find(option => option === '← Previous page');
-    return options.find(option => option.includes(`[${first}]`));
-  });
-  assert.equal((await run('fork'))?.kind, 'replace');
-  assert.equal(native.selects.length, 2);
-  assert.ok(native.selects.every(select => select.options.length <= 1002));
+  assert.deepEqual(calls, [{path: output, themeName: 'dark'}]);
 });
 
 void test('argument-free commands reject unsupported arguments instead of opening dialogs', async t => {
   const {run, native} = await fixture(t);
-  for (const name of ['session', 'tree', 'fork', 'clone'])
+  for (const name of ['resume', 'session', 'tree', 'fork', 'clone'])
     await assert.rejects(run(name, 'unsupported'), /Usage:|arguments/);
   assert.deepEqual(native.shows, []);
   assert.deepEqual(native.selects, []);
+  assert.deepEqual(native.nativeDialogs, []);
 });
 
 void test('/name remains safe while the session is running and abort signals prevent stale renames', async t => {
@@ -713,3 +726,316 @@ void test('/export HTML produces a real Pi SDK document without any network acce
     /First user request/,
   );
 });
+async function terminalDialog(ui: DesktopExtensionUI, title: string) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const dialog = ui.snapshot().dialogs.find(dialog => dialog.title === title);
+    if (
+      dialog?.terminal?.output &&
+      /[A-Za-z]{4}/.test(stripVTControlCharacters(dialog.terminal.output))
+    )
+      return dialog;
+    await delay(5);
+  }
+  throw new Error(`Expected rendered terminal dialog: ${title}`);
+}
+
+void test(
+  'native tree component persists labels, preserves drafts, and cancels browsing without aborting',
+  {timeout: 6000},
+  async t => {
+    const {session, manager, second, answer} = await fixture(t);
+    const ui = new DesktopExtensionUI(() => {});
+    t.after(() => ui.dispose());
+    ui.context.setEditorText('Keep this draft');
+    const abort = t.mock.method(session, 'abort', async () => {});
+    const browsing = runSessionCommand('tree', '', {session, ui});
+    const firstDialog = await terminalDialog(ui, 'Session tree');
+    assert.match(firstDialog.terminal!.output, /Second request/);
+    ui.respond(firstDialog.id, {input: 'LCheckpoint\r'});
+    const deadline = Date.now() + 2000;
+    while (manager.getLabel(second) !== 'Checkpoint' && Date.now() < deadline)
+      await delay(5);
+    assert.equal(manager.getLabel(second), 'Checkpoint');
+    ui.respond(firstDialog.id, {input: '\x1b'});
+    assert.deepEqual(await browsing, {kind: 'cancelled'});
+    assert.equal(abort.mock.callCount(), 0);
+    const moving = runSessionCommand('tree', '', {session, ui});
+    const nextDialog = await terminalDialog(ui, 'Session tree');
+    ui.respond(nextDialog.id, {input: 'First answer\r'});
+    assert.equal((await moving)?.kind, 'done');
+    assert.equal(manager.getLeafId(), answer);
+    assert.equal(ui.context.getEditorText(), 'Keep this draft');
+  },
+);
+
+void test(
+  'native fork component keeps the entire history selectable',
+  {timeout: 6000},
+  async t => {
+    const {session, first} = await fixture(t);
+    const ui = new DesktopExtensionUI(() => {});
+    t.after(() => ui.dispose());
+    const messages = Array.from({length: 1002}, (_, index) => ({
+      entryId: index === 0 ? first : `entry-${index}`,
+      text: `Message ${index}`,
+    }));
+    t.mock.method(session, 'getUserMessagesForForking', () => messages);
+    const selecting = runSessionCommand('fork', '', {session, ui});
+    const dialog = await terminalDialog(ui, 'Fork session');
+    ui.respond(dialog.id, {input: '\x1b[A'.repeat(1001) + '\r'});
+    assert.equal(
+      replacement(await selecting).editorText,
+      'First user request\nwith detail',
+    );
+    assert.equal(ui.snapshot().dialogs.length, 0);
+  },
+);
+
+void test('tree summary dialogs return to the selected tree and pass custom instructions without model calls', async t => {
+  const {session, native, first} = await fixture(t);
+  t.mock.method(
+    session.settingsManager,
+    'getBranchSummarySkipPrompt',
+    () => false,
+  );
+  native.chooseNative(first);
+  const choices = [
+    undefined,
+    'Summarize with custom prompt',
+    'Summarize with custom prompt',
+  ];
+  native.choose(() => choices.shift());
+  native.inputs.push(undefined, 'Keep decisions');
+  const navigate = t.mock.method(session, 'navigateTree', async () => ({
+    cancelled: false,
+    editorText: 'Restored',
+  }));
+  assert.equal(
+    (await runSessionCommand('tree', '', {session, ui: native.ui}))?.kind,
+    'done',
+  );
+  assert.deepEqual(native.nativeDialogs, [
+    'Session tree',
+    'Session tree',
+    'Branch summary',
+  ]);
+  assert.deepEqual(navigate.mock.calls[0].arguments, [
+    first,
+    {summarize: true, customInstructions: 'Keep decisions'},
+  ]);
+});
+
+void test(
+  'native branch summary Escape returns to tree, while Stop cancels navigation',
+  {timeout: 6000},
+  async t => {
+    const {session, first} = await fixture(t);
+    const ui = new DesktopExtensionUI(() => {});
+    t.after(() => ui.dispose());
+    t.mock.method(
+      session.settingsManager,
+      'getBranchSummarySkipPrompt',
+      () => false,
+    );
+    let finish:
+      ((value: {aborted: true; cancelled: false}) => void) | undefined;
+    t.mock.method(
+      session,
+      'navigateTree',
+      () =>
+        new Promise(resolve => {
+          finish = resolve;
+        }),
+    );
+    const abort = t.mock.method(session, 'abortBranchSummary', () =>
+      finish?.({aborted: true, cancelled: false}),
+    );
+    const controller = new AbortController();
+    const browsing = runSessionCommand('tree', '', {
+      session,
+      ui: ui.forCommand(controller.signal),
+      signal: controller.signal,
+    });
+    const tree = await terminalDialog(ui, 'Session tree');
+    ui.respond(tree.id, {input: 'First user\r'});
+    const choice = await terminalDialog(ui, 'Summarize branch?');
+    ui.respond(choice.id, 'Summarize');
+    const summary = await terminalDialog(ui, 'Branch summary');
+    ui.respond(summary.id, {input: '\x1b'});
+    const reopened = await terminalDialog(ui, 'Session tree');
+    assert.notEqual(reopened.id, tree.id);
+    assert.equal(abort.mock.callCount(), 1);
+    ui.respond(reopened.id, {input: '\r'});
+    const secondChoice = await terminalDialog(ui, 'Summarize branch?');
+    ui.respond(secondChoice.id, 'Summarize');
+    await terminalDialog(ui, 'Branch summary');
+    controller.abort();
+    assert.deepEqual(await browsing, {kind: 'cancelled'});
+    assert.equal(abort.mock.callCount(), 2);
+    assert.equal(session.sessionManager.getEntry(first)?.type, 'message');
+    assert.equal(ui.snapshot().dialogs.length, 0);
+  },
+);
+
+void test('resume prepares the selected native session after switch veto and missing-directory decisions', async t => {
+  const {session, native, cwd, root, manager} = await fixture(t);
+  const target = SessionManager.create(
+    join(root, 'removed-workspace'),
+    join(root, 'history'),
+  );
+  target.appendMessage({role: 'user', content: 'Saved session', timestamp: 1});
+  target.appendMessage({
+    role: 'assistant',
+    content: [],
+    api: 'openai-completions',
+    provider: 'fixture',
+    model: 'fixture',
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+    },
+    stopReason: 'stop',
+    timestamp: 2,
+  });
+  const path = target.getSessionFile()!;
+  native.chooseNative(path);
+  native.confirmations.push(false);
+  assert.deepEqual(
+    await runSessionCommand('resume', '', {session, ui: native.ui}),
+    {kind: 'cancelled'},
+  );
+  native.confirmations.push(true);
+  const veto = t.mock.method(session.extensionRunner, 'emit', async () => ({
+    cancel: true,
+  }));
+  assert.deepEqual(
+    await runSessionCommand('resume', '', {session, ui: native.ui}),
+    {kind: 'cancelled'},
+  );
+  veto.mock.restore();
+  native.confirmations.push(true);
+  assert.deepEqual(
+    replacement(
+      await runSessionCommand('resume', '', {session, ui: native.ui}),
+    ),
+    {sessionFile: path, cwd, editorText: ''},
+  );
+  assert.notEqual(manager.getSessionFile(), path);
+});
+
+void test(
+  'native resume selector renames saved sessions and selects through the owning command',
+  {timeout: 6000},
+  async t => {
+    const {session, manager} = await fixture(t);
+    const ui = new DesktopExtensionUI(() => {});
+    t.after(() => ui.dispose());
+    const controller = new AbortController();
+    const selecting = runSessionCommand('resume', '', {
+      session,
+      ui,
+      signal: controller.signal,
+    });
+    const dialog = await terminalDialog(ui, 'Resume session');
+    const deadline = Date.now() + 2000;
+    while (
+      !ui
+        .snapshot()
+        .dialogs[0].terminal!.output.includes('First user request') &&
+      Date.now() < deadline
+    )
+      await delay(5);
+    ui.respond(dialog.id, {input: '\x12'});
+    const renameDeadline = Date.now() + 2000;
+    while (
+      !ui.snapshot().dialogs[0].terminal!.output.includes('Rename Session') &&
+      Date.now() < renameDeadline
+    )
+      await delay(5);
+    ui.respond(dialog.id, {input: 'Renamed native session\r'});
+    const renamedDeadline = Date.now() + 2000;
+    while (
+      manager.getSessionName() !== 'Renamed native session' &&
+      Date.now() < renamedDeadline
+    )
+      await delay(5);
+    assert.equal(manager.getSessionName(), 'Renamed native session');
+    const listDeadline = Date.now() + 2000;
+    while (Date.now() < listDeadline) {
+      const output = ui.snapshot().dialogs[0].terminal!.output;
+      if (
+        output.lastIndexOf('Resume Session') >
+        output.lastIndexOf('Rename Session')
+      )
+        break;
+      await delay(5);
+    }
+    ui.respond(dialog.id, {input: '\r'});
+    assert.equal((await selecting)?.kind, 'done');
+  },
+);
+
+void test(
+  'worker native commands use the selected SDK session and owning terminal UI without prompting a model',
+  {timeout: 6000},
+  async t => {
+    const {session, root} = await fixture(t);
+    const ui = new DesktopExtensionUI(() => {});
+    t.after(() => ui.dispose());
+    session.modelRuntime.registerProvider('worker-native', {
+      api: 'openai-completions',
+      baseUrl: 'http://127.0.0.1:1',
+      apiKey: 'local-fixture',
+      models: [
+        {
+          id: 'one',
+          name: 'Worker native model',
+          reasoning: true,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 8192,
+          maxTokens: 1024,
+        },
+      ],
+    });
+    const prompt = t.mock.method(session, 'prompt', async () => {
+      throw new Error('Native commands must not call session.prompt');
+    });
+    await saveToolSettings('agents', {allowedModels: ['worker-native/one']});
+    const worker = sessionWorker(
+      session,
+      join(root, 'worker-result.txt'),
+      undefined,
+      {},
+      ui,
+    );
+    await worker.configure!({provider: 'worker-native', modelId: 'one'});
+    const selecting = worker.command!('/model');
+    const dialog = await terminalDialog(ui, 'Model & thinking');
+    assert.match(dialog.terminal!.output, /Worker native model/);
+    ui.respond(dialog.id, {input: '\x1b'});
+    await selecting;
+    await worker.run('/thinking high', AbortSignal.timeout(2000), () => {});
+    assert.equal(session.thinkingLevel, 'high');
+    assert.equal((await worker.features!()).thinkingLevel, 'high');
+    const settings = worker.command!('/settings');
+    const settingsDialog = await terminalDialog(ui, 'Settings');
+    worker.clearQueue!();
+    await settings;
+    assert.equal(
+      ui.snapshot().dialogs.some(item => item.id === settingsDialog.id),
+      false,
+    );
+    for (const command of ['/resume', '/tree', '/fork'])
+      await assert.rejects(
+        worker.run(command, AbortSignal.timeout(2000), () => {}),
+        /unavailable in worker/,
+      );
+    assert.equal(prompt.mock.callCount(), 0);
+  },
+);

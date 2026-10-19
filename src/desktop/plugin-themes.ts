@@ -5,6 +5,7 @@ import {
   getAgentDir,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
+import {workspaceConfigPaths} from '../dashboard/workspace-config.ts';
 
 export interface PluginTheme {
   id: string;
@@ -195,24 +196,51 @@ export async function loadPluginThemes(options: {
       );
   };
   const agentDir = options.agentDir ?? getAgentDir();
-  const settings = SettingsManager.create(options.cwd, agentDir);
-  const manager = new DefaultPackageManager({
-    cwd: options.cwd,
-    agentDir,
-    settingsManager: settings,
-  });
-  let packages;
+  const paths = workspaceConfigPaths(options.cwd, agentDir);
+  const settingsErrors = new Set<string>();
+  const packageRegistrations = (
+    cwd: string,
+    directory: string,
+    projectTrusted = true,
+  ) => {
+    const settings = SettingsManager.create(cwd, directory, {projectTrusted});
+    const manager = new DefaultPackageManager({
+      cwd,
+      agentDir: directory,
+      settingsManager: settings,
+    });
+    const packages = manager.listConfiguredPackages();
+    for (const entry of settings.drainErrors()) {
+      const message = `${entry.path ?? entry.scope}: ${entry.error.message}`;
+      if (!settingsErrors.has(message)) {
+        settingsErrors.add(message);
+        error('Theme settings', message);
+      }
+    }
+    return packages;
+  };
+  let packages: ReturnType<DefaultPackageManager['listConfiguredPackages']>;
   try {
-    // Project registrations win when both scopes expose the same theme ID.
-    packages = manager
-      .listConfiguredPackages()
-      .sort(
-        (first, second) =>
-          Number(second.scope === 'project') -
-          Number(first.scope === 'project'),
-      );
-    for (const entry of settings.drainErrors())
-      error('Theme settings', entry.error.message);
+    const current = packageRegistrations(options.cwd, agentDir);
+    const repository =
+      resolve(options.cwd) === paths.projectDir
+        ? []
+        : packageRegistrations(paths.projectDir, agentDir).filter(
+            pkg => pkg.scope === 'project',
+          );
+    const workspace = packageRegistrations(
+      paths.projectDir,
+      paths.workspaceDir,
+      false,
+    ).filter(pkg => pkg.scope === 'user');
+    // Keep each scope's installation: duplicate IDs are resolved below, so
+    // unrelated themes in a lower-priority installation remain available.
+    packages = [
+      ...workspace,
+      ...current.filter(pkg => pkg.scope === 'project'),
+      ...repository,
+      ...current.filter(pkg => pkg.scope === 'user'),
+    ];
   } catch (cause) {
     error('Theme packages', cause instanceof Error ? cause.message : cause);
     return result;

@@ -4,8 +4,19 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  type Skill,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionController} from '../agents/team.ts';
+import type {AgentToolsOptions} from '../tools/agents.ts';
+import {
+  createAgentPolicyExtension,
+  decideAgentPermission,
+} from '../agents/policy.ts';
+import {
+  createDefaultAgentProfile,
+  ensureAgentProfilePermissions,
+  type AgentTemplate,
+} from '../agents/templates.ts';
 import {
   launchFactory,
   detachFactory,
@@ -16,9 +27,14 @@ import {
 import {observeDashboardSession} from './observe.ts';
 import type {DashboardState} from './state.ts';
 import {sessionConfiguration, compactionInstructions} from './hub.ts';
-import {supportedThinkingLevels, type SessionFeatures} from './features.ts';
+import {
+  supportedThinkingLevels,
+  sessionAgentProfile,
+  type SessionFeatures,
+} from './features.ts';
 import {attachedContextFiles} from './context-files.ts';
 import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
+import {runAgentSessionRequest} from './agent-session.ts';
 
 interface FactoryConnection {
   isOpen(): boolean;
@@ -51,13 +67,47 @@ export function registerFactory(
     isOpen: factoryIsOpen,
     detach: detachFactory,
   },
+  shared: AgentToolsOptions = {},
 ): void {
   let binding: FactoryBinding | undefined;
   let generation = 0;
   let cancelBeforeStart = false;
+  const managedProfiles = new Map<string, AgentTemplate>();
+  let nativeSkills: {sessionId: string; skills: readonly Skill[]} | undefined;
+  const applyNativePrompt = (
+    options: BuildSystemPromptOptions,
+    profile: AgentTemplate,
+    cwd: string,
+  ) => {
+    if (profile.instructions.trim())
+      options.customPrompt = profile.instructions;
+    const skills = options.skills ?? [];
+    const visible = skills.filter(
+      skill =>
+        decideAgentPermission(profile, 'skill', skill.name, undefined, cwd) !==
+          'deny' &&
+        (profile.context !== 'task' ||
+          !skill.sourceInfo ||
+          skill.sourceInfo.scope === 'temporary'),
+    );
+    if (visible.length !== skills.length) options.skills = visible;
+  };
+  const nativePolicyCleanup: Array<() => void> = [];
+  const releaseManaged = pi.events.on(
+    'varisdev:agent-profile-managed',
+    value => {
+      if (!value || typeof value !== 'object') return;
+      const managed = value as {sessionId?: string; profile?: AgentTemplate};
+      if (managed.sessionId && managed.profile)
+        managedProfiles.set(
+          managed.sessionId,
+          structuredClone(managed.profile),
+        );
+    },
+  );
   const ensureAttached = (current: FactoryBinding) => {
     if (binding !== current)
-      throw new Error('This parent session is no longer attached to the app.');
+      throw new Error('This workspace is no longer attached to the app.');
   };
   const maintain = async (
     current: FactoryBinding,
@@ -101,6 +151,79 @@ export function registerFactory(
     }
     if (show) window.show();
   };
+  pi.on('session_start', async (_event, ctx) => {
+    const version = generation;
+    const saved = ctx.sessionManager
+      .getEntries()
+      .findLast(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+    const snapshot =
+      saved?.type === 'custom'
+        ? (saved.data as AgentTemplate | undefined)
+        : undefined;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const profile = await ensureAgentProfilePermissions(
+      ctx.cwd,
+      snapshot ?? managedProfiles.get(sessionId) ?? createDefaultAgentProfile(),
+    );
+    if (version !== generation) return;
+    if (!snapshot || JSON.stringify(snapshot) !== JSON.stringify(profile))
+      pi.appendEntry('varisdev.agent-profile', structuredClone(profile));
+    shared.agentProfile = structuredClone(profile);
+    for (const release of nativePolicyCleanup.splice(0)) release();
+    if (managedProfiles.has(sessionId)) return;
+    shared.approval = {hasUI: ctx.hasUI, confirm: ctx.ui.confirm};
+    if (!profile.permissions.length && profile.steps === undefined) return;
+    type Handler = (event: unknown, context: ExtensionContext) => unknown;
+    const register = pi.on as unknown as (
+      name: string,
+      handler: Handler,
+    ) => () => void;
+    const nativePi: ExtensionAPI = {
+      ...pi,
+      on: ((name: string, handler: Handler) => {
+        const release = register(name, (event, context) => {
+          if (
+            context.sessionManager.getSessionId() !== sessionId ||
+            managedProfiles.has(sessionId)
+          )
+            return;
+          return handler(event, context);
+        });
+        nativePolicyCleanup.push(release);
+        return release;
+      }) as ExtensionAPI['on'],
+    };
+    await createAgentPolicyExtension(profile, {
+      label: profile.name,
+      skills: () => {
+        const retained =
+          nativeSkills?.sessionId === sessionId ? nativeSkills.skills : [];
+        const paths = new Set(retained.map(skill => skill.filePath));
+        return [
+          ...retained,
+          ...pi.getCommands().flatMap(command => {
+            if (
+              command.source !== 'skill' ||
+              !command.name.startsWith('skill:') ||
+              !command.sourceInfo.path
+            )
+              return [];
+            if (paths.has(command.sourceInfo.path)) return [];
+            return [
+              {
+                name: command.name.slice('skill:'.length),
+                filePath: command.sourceInfo.path,
+              },
+            ];
+          }),
+        ];
+      },
+    })(nativePi);
+  });
   observeDashboardSession(pi, control, (state, ctx) => {
     const current: FactoryBinding = {
       state,
@@ -119,14 +242,39 @@ export function registerFactory(
         async features(): Promise<SessionFeatures> {
           ensureAttached(current);
           const registryError = ctx.modelRegistry.getError();
-          const commands = pi.getCommands().map(command => ({
-            name: command.name,
-            description: command.description ?? '',
-            source: command.source,
-            path: command.sourceInfo.path,
-          }));
+          const profile = shared.agentProfile;
+          const managed = managedProfiles.has(
+            ctx.sessionManager.getSessionId(),
+          );
+          const commands = pi
+            .getCommands()
+            .filter(
+              command =>
+                managed ||
+                !profile ||
+                command.source !== 'skill' ||
+                decideAgentPermission(
+                  profile,
+                  'skill',
+                  command.name.replace(/^skill:/, ''),
+                  undefined,
+                  ctx.cwd,
+                ) !== 'deny',
+            )
+            .map(command => ({
+              name: command.name,
+              description: command.description ?? '',
+              source: command.source,
+              path: command.sourceInfo.path,
+            }));
+          let promptOptions =
+            current.getSystemPromptOptions?.() ?? current.systemPromptOptions;
+          if (!managed && profile && promptOptions) {
+            promptOptions = {...promptOptions};
+            applyNativePrompt(promptOptions, profile, ctx.cwd);
+          }
           const contextFiles = attachedContextFiles(
-            current.getSystemPromptOptions?.() ?? current.systemPromptOptions,
+            promptOptions,
             commands,
             ctx.sessionManager
               .buildContextEntries?.()
@@ -134,6 +282,7 @@ export function registerFactory(
             ctx.cwd,
           );
           return {
+            agentProfile: sessionAgentProfile(ctx.sessionManager),
             ...(contextFiles ? {contextFiles} : {}),
             commands,
             models: ctx.modelRegistry.getAvailable().map(model => ({
@@ -323,11 +472,22 @@ export function registerFactory(
             current.submissions--;
           }
         },
+        async agentSession(request) {
+          ensureAttached(current);
+          if (!control.snapshot())
+            throw new Error('This session has no agent conversations.');
+          const result = await runAgentSessionRequest(
+            control.getTeam(ctx).getManager(),
+            request,
+          );
+          ensureAttached(current);
+          return result;
+        },
         async cancelAgent(agentId) {
           ensureAttached(current);
           if (!control.snapshot()) {
             if (agentId === 'all') return;
-            throw new Error('This parent session has no agents.');
+            throw new Error('This workspace has no additional agents.');
           }
           const manager = control.getTeam(ctx).getManager();
           if (agentId === 'all') {
@@ -336,9 +496,7 @@ export function registerFactory(
         },
         async abort() {
           if (binding !== current)
-            throw new Error(
-              'This parent session is no longer attached to the app.',
-            );
+            throw new Error('This workspace is no longer attached to the app.');
           current.epoch++;
           current.stopping = true;
           cancelBeforeStart = true;
@@ -371,6 +529,13 @@ export function registerFactory(
     }
   });
   pi.on('before_agent_start', (event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    const profile = shared.agentProfile;
+    if (!managedProfiles.has(sessionId) && profile) {
+      const skills = event.systemPromptOptions.skills;
+      nativeSkills = {sessionId, skills: [...skills]};
+      applyNativePrompt(event.systemPromptOptions, profile, ctx.cwd);
+    }
     if (
       binding?.ctx.sessionManager.getSessionId() ===
       ctx.sessionManager.getSessionId()
@@ -401,6 +566,7 @@ export function registerFactory(
     }
     cancelBeforeStart = false;
     if (current) connection.detach(current.state, event.reason === 'quit');
+    releaseManaged();
   });
   pi.registerCommand('factory', {
     description: 'Show or reopen the VarisDev desktop factory.',

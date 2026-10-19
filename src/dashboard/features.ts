@@ -1,9 +1,14 @@
 import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
+import {
+  createDefaultAgentProfile,
+  type AgentTemplate,
+} from '../agents/templates.ts';
 import type {
   AgentSession,
   CreateAgentSessionOptions,
   ResourceLoader,
   SettingsManager,
+  SessionManager,
 } from '@earendil-works/pi-coding-agent';
 import {loaderContextFiles} from './context-files.ts';
 import {nativeCommands} from './command-catalog.mjs';
@@ -16,6 +21,7 @@ export function supportedThinkingLevels(
 }
 
 export interface SessionFeatures {
+  agentProfile?: Pick<AgentTemplate, 'id' | 'name' | 'mode' | 'color'>;
   contextFiles?: Array<{
     path: string;
     name: string;
@@ -43,6 +49,30 @@ export interface SessionFeatures {
   diagnostics: Array<{message: string; path?: string}>;
 }
 
+export function agentProfileSummary(
+  profile: AgentTemplate,
+): NonNullable<SessionFeatures['agentProfile']> {
+  const {id, name, mode, color} = profile;
+  return {id, name, mode, ...(color !== undefined ? {color} : {})};
+}
+
+export function sessionAgentProfile(
+  manager: Pick<SessionManager, 'getEntries'>,
+): NonNullable<SessionFeatures['agentProfile']> {
+  const saved = manager
+    .getEntries?.()
+    .findLast(
+      entry =>
+        entry.type === 'custom' &&
+        entry.customType === 'varisdev.agent-profile',
+    );
+  const profile =
+    saved?.type === 'custom'
+      ? (saved.data as AgentTemplate | undefined)
+      : undefined;
+  return agentProfileSummary(profile ?? createDefaultAgentProfile());
+}
+
 export interface SessionConfiguration {
   persist?: boolean;
   provider?: string;
@@ -65,6 +95,7 @@ export function sessionFeatures(
   const extensions = loader.getExtensions();
   const runner = session.extensionRunner;
   return {
+    agentProfile: sessionAgentProfile(session.sessionManager),
     contextFiles: loaderContextFiles(
       loader,
       session.getActiveToolNames(),

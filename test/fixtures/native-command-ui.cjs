@@ -213,8 +213,19 @@ async function main() {
   handle('pidev:respond-to-dialog', (id, dialogId, value) => {
     responses.push([id, dialogId, value]);
     const data = hub.sessions.find(item => item.session.id === id);
-    if (dialogId === 'model-thinking' && value?.action?.startsWith('tab:')) {
-      const dialog = data.ui.dialogs[0];
+    const dialog = data.ui.dialogs.find(item => item.id === dialogId);
+    if (
+      dialog?.terminal &&
+      Number.isInteger(value?.columns) &&
+      Number.isInteger(value?.rows)
+    ) {
+      dialog.terminal.columns = value.columns;
+      dialog.terminal.rows = value.rows;
+      dialog.terminal.revision++;
+    } else if (
+      dialogId === 'model-thinking' &&
+      value?.action?.startsWith('tab:')
+    ) {
       dialog.activeTab = value.action.slice(4);
       dialog.terminal.output += String.fromCharCode(13, 10) + dialog.activeTab;
       dialog.terminal.revision++;
@@ -267,17 +278,19 @@ async function main() {
     ),
   );
 
-  await submit('/login anthropic');
-  assert.equal(
-    await evaluate(() => document.getElementById('accounts-dialog').open),
-    true,
+  await evaluate(() => {
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-accounts').click();
+  });
+  await waitFor(() =>
+    evaluate(() => document.getElementById('accounts-dialog').open),
   );
-  assert.equal(
-    await evaluate(() => document.getElementById('accounts-provider').value),
-    'anthropic',
-  );
-  await evaluate(() => document.getElementById('accounts-close').click());
-  await submit('/logout openai');
+  await evaluate(() => {
+    const provider = document.getElementById('accounts-provider');
+    provider.value = 'openai';
+    provider.dispatchEvent(new Event('change', {bubbles: true}));
+    document.getElementById('accounts-logout').click();
+  });
   assert.equal(
     await evaluate(
       () => document.getElementById('accounts-logout-confirmation').hidden,
@@ -295,18 +308,8 @@ async function main() {
   );
   await waitFor(() => accountStarts === 1);
   await evaluate(() => document.getElementById('accounts-close').click());
-  await submit('/login unknown-provider');
-  assert.match(
-    await evaluate(() => document.getElementById('accounts-error').textContent),
-    /Unknown account provider/,
-  );
-  assert.equal(
-    await evaluate(() => document.getElementById('parent-prompt').value),
-    '/login unknown-provider',
-  );
-  await evaluate(() => document.getElementById('accounts-close').click());
   report.cases.push(
-    'account slash commands choose real providers and require explicit sign-out confirmation',
+    'the dedicated Accounts dialog chooses providers and requires explicit sign-out confirmation',
   );
 
   for (const command of [
@@ -314,6 +317,9 @@ async function main() {
     '/model openai/test',
     '/thinking low',
     '/extension-fixture',
+    '/login anthropic',
+    '/logout openai',
+    '/resume',
   ])
     await submit(command);
   await submit('/thinking');
@@ -377,12 +383,17 @@ async function main() {
     document.getElementById('extension-dialog-form').requestSubmit(),
   );
   await waitFor(() => responses.some(item => item[1] === 'info'));
-  assert.equal(prompts.length, 6);
+  assert.equal(prompts.length, 9);
+  for (const command of ['/login anthropic', '/logout openai', '/resume'])
+    assert.ok(
+      prompts.some(([, prompt]) => prompt === command),
+      `${command} must route to the owning session`,
+    );
   report.cases.push(
-    'SDK commands reach promptSession and selected searchable/read-only dialogs render natively',
+    'session commands reach promptSession and selected searchable/read-only dialogs render natively',
   );
 
-  for (const command of ['new', 'resume', 'copy', 'hotkeys', 'quit']) {
+  for (const command of ['new', 'copy', 'hotkeys', 'quit']) {
     await submit(`/${command} unexpected`);
     assert.equal(
       await evaluate(() => document.getElementById('prompt-error').textContent),
@@ -395,8 +406,8 @@ async function main() {
   }
   assert.equal(
     prompts.length,
-    6,
-    'invalid native arguments never become a model prompt',
+    9,
+    'invalid desktop-command arguments never reach the session',
   );
   assert.equal(desktop.length, 0);
   await submit('/hotkeys');
@@ -431,7 +442,10 @@ async function main() {
     'hotkeys are readable, copy uses the real parent source and cancelled quit preserves its draft',
   );
 
-  await submit('/resume');
+  await evaluate(() => {
+    document.getElementById('app-menu-button').click();
+    document.getElementById('resume-session').click();
+  });
   await waitFor(() =>
     evaluate(
       () => document.querySelector('#session-history-list button') !== null,
@@ -448,7 +462,7 @@ async function main() {
   );
   assert.deepEqual(created[0], {cwd: directory, sessionId: 'saved-session'});
   report.cases.push(
-    'resume uses the existing saved-session picker and native open action',
+    'the dedicated Resume session action uses the saved-session picker',
   );
 
   await select('origin');
@@ -507,7 +521,11 @@ async function main() {
     await evaluate(() => document.getElementById('parent-prompt').value),
     'Selected draft before unselected navigation',
   );
-  assert.equal(prompts.length, 6, 'desktop commands never reach promptSession');
+  assert.equal(
+    prompts.length,
+    9,
+    'desktop navigation actions do not add session prompts',
+  );
   await evaluate(() => {
     document.getElementById('app-menu-button').click();
     document.getElementById('open-session-settings').click();
@@ -584,7 +602,10 @@ async function main() {
     'extension-dialog-tab-model',
   );
   assert.deepEqual(
-    responses.filter(item => item[1] === 'model-thinking'),
+    responses.filter(
+      item =>
+        item[1] === 'model-thinking' && item[2]?.action?.startsWith('tab:'),
+    ),
     [
       ['fresh', 'model-thinking', {action: 'tab:thinking'}],
       ['fresh', 'model-thinking', {action: 'tab:model'}],
@@ -596,11 +617,10 @@ async function main() {
   await waitFor(() =>
     evaluate(() => !document.getElementById('extension-dialog').open),
   );
-  assert.deepEqual(responses.at(-1), [
-    'fresh',
-    'model-thinking',
-    {action: 'default'},
-  ]);
+  assert.deepEqual(
+    responses.filter(item => item[2]?.action === 'default').at(-1),
+    ['fresh', 'model-thinking', {action: 'default'}],
+  );
   hub.sessions.find(item => item.session.id === 'fresh').ui.dialogs = [
     sessionSettingsDialog(),
   ];
@@ -617,7 +637,12 @@ async function main() {
   await waitFor(() =>
     evaluate(() => !document.getElementById('extension-dialog').open),
   );
-  assert.deepEqual(responses.at(-1), ['fresh', 'model-thinking', undefined]);
+  assert.deepEqual(
+    responses
+      .filter(item => item[1] === 'model-thinking' && item[2] === undefined)
+      .at(-1),
+    ['fresh', 'model-thinking', undefined],
+  );
   report.cases.push(
     'model and thinking tabs preserve one dialog, keyboard focus, actions and cancellation',
   );

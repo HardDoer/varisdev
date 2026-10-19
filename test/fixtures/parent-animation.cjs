@@ -1025,7 +1025,7 @@ async function main() {
         return window.fixture.inspect();
       });
       assert.equal(offsite.mode, 'away', 'the local workstation must be empty');
-      assert.match(offsite.canvasLabel, /Parent: Visiting Target factory/);
+      assert.match(offsite.canvasLabel, /Main agent: Visiting Target factory/);
       await evaluate(() => window.fixture.scene().prompt('visit-source'));
       const startled = await inspect();
       assert.equal(startled.mode, 'away');

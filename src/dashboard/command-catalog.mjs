@@ -27,13 +27,13 @@ export const nativeCommands = [
   {
     name: 'login',
     description: 'Connect a provider account.',
-    target: 'desktop',
+    target: 'session',
     live: true,
   },
   {
     name: 'logout',
     description: 'Disconnect a provider account.',
-    target: 'desktop',
+    target: 'session',
     live: true,
   },
   {
@@ -45,7 +45,7 @@ export const nativeCommands = [
   {
     name: 'resume',
     description: 'Choose a saved conversation to resume.',
-    target: 'desktop',
+    target: 'session',
     live: true,
   },
   {

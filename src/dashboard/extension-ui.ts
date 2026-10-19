@@ -1,8 +1,15 @@
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
+import type {TuiAltScreen} from '@earendil-works/pi-tui';
 import {
+  ExtensionEditorComponent,
+  ExtensionInputComponent,
+  ExtensionSelectorComponent,
   ModelSelectorComponent,
+  SettingsSelectorComponent,
+  type SettingsConfig,
+  type SettingsCallbacks,
   ThinkingSelectorComponent,
   initTheme,
   type ExtensionUIContext,
@@ -21,6 +28,12 @@ const themes = (await import(
   ).href
 )) as {
   getThemeByName(name: string): Theme | undefined;
+  resolveThemeSetting(
+    setting: string,
+    appearance: 'dark' | 'light',
+  ): string | undefined;
+  setThemeInstance(theme: Theme): void;
+  theme: Theme;
   getAvailableThemesWithPaths(): Array<{
     name: string;
     path: string | undefined;
@@ -37,6 +50,19 @@ type CustomFactory<T> = (
   keybindings: KeybindingsManager,
   done: (result: T) => void,
 ) => TerminalComponent | Promise<TerminalComponent>;
+export type DesktopNativeFactory<T> = (
+  tui: TerminalTUI,
+  theme: Theme,
+  keybindings: KeybindingsManager,
+  done: (result: T) => void,
+) =>
+  | TerminalComponent
+  | {component: TerminalComponent; focus: TerminalComponent}
+  | Promise<
+      | TerminalComponent
+      | {component: TerminalComponent; focus: TerminalComponent}
+    >;
+
 type CustomOptions = Parameters<ExtensionUIContext['custom']>[1];
 type EditorFactory = NonNullable<
   Parameters<ExtensionUIContext['setEditorComponent']>[0]
@@ -55,7 +81,7 @@ const tui = (await import(
   TuiAltScreen: new (
     terminal: VirtualTerminal,
     hardwareCursor?: boolean,
-  ) => TerminalTUI;
+  ) => TuiAltScreen;
   StdinBuffer: new () => {
     on(event: 'data' | 'paste', callback: (data: string) => void): void;
     process(data: string): void;
@@ -78,6 +104,7 @@ const keybindingsModule = (await import(
 };
 
 export interface DesktopTerminalState {
+  appearance?: 'dark' | 'light';
   columns: number;
   rows: number;
   output: string;
@@ -123,6 +150,15 @@ type SessionSettingsSelection =
       persist: boolean;
     }
   | undefined;
+
+export interface DesktopUIDialogResize {
+  columns: number;
+  rows: number;
+}
+
+export interface DesktopUIDialogInput {
+  input: string;
+}
 
 export interface DesktopUIDialogAction {
   action: string;
@@ -172,6 +208,7 @@ interface PendingDialog {
   finish(value: unknown): void;
   activate?(): void;
   input?(data: string): void;
+  resize?(columns: number, rows: number): void;
   onAction?(action: string): void;
 }
 
@@ -182,7 +219,11 @@ interface CustomDialogControls {
   onTab?(tab: string): void;
   onAction?(action: string): void;
   signal?: AbortSignal;
+  timeout?: number;
+  dialog?: Omit<DesktopUIDialog, 'id' | 'terminal'>;
 }
+
+let renderingTheme: Theme | undefined;
 
 const MAX_DIALOGS = 32;
 const MAX_NOTIFICATIONS = 100;
@@ -194,8 +235,13 @@ const MAX_TERMINAL_OUTPUT = 262144;
 
 /** Real Pi renderer transport with buffered keys and a bounded ANSI history. */
 class VirtualTerminal {
-  readonly columns = 100;
-  readonly rows = 28;
+  get columns() {
+    return this.state.columns;
+  }
+  get rows() {
+    return this.state.rows;
+  }
+  private onResize?: () => void;
   readonly kittyProtocolActive = false;
   readonly state: DesktopTerminalState = {
     columns: 100,
@@ -231,7 +277,8 @@ class VirtualTerminal {
   attach(render: TerminalTUI): void {
     this.render = render;
   }
-  start(onInput: (data: string) => void): void {
+  start(onInput: (data: string) => void, onResize?: () => void): void {
+    this.onResize = onResize;
     this.stopped = false;
     this.inputBuffer = new tui.StdinBuffer();
     const receive = (data: string) => {
@@ -251,7 +298,16 @@ class VirtualTerminal {
   input(data: string): void {
     this.inputBuffer?.process(data);
   }
+  resize(columns: number, rows: number): void {
+    if (columns === this.columns && rows === this.rows) return;
+    this.state.columns = columns;
+    this.state.rows = rows;
+    this.onResize?.();
+    this.render?.requestRender(true);
+    this.scheduleChange();
+  }
   stop(): void {
+    this.onResize = undefined;
     this.stopped = true;
     this.inputBuffer?.destroy();
     this.inputBuffer = undefined;
@@ -338,6 +394,13 @@ export class DesktopExtensionUI {
   private editorText = '';
   private toolsExpanded = false;
   private currentTheme: Theme;
+  private nativeDisplay?: Pick<
+    SettingsConfig,
+    | 'showHardwareCursor'
+    | 'clearOnShrink'
+    | 'fullscreenCopyOnSelect'
+    | 'fullscreenWheelScrollLines'
+  >;
   private disposed = false;
   private readonly onChange: () => void;
   private readonly keybindings = keybindingsModule.KeybindingsManager.create();
@@ -373,20 +436,24 @@ export class DesktopExtensionUI {
     const getCurrentTheme = () => this.currentTheme;
     this.context = {
       select: (title, options, opts) =>
-        this.open(
+        this.openNativeDialog(
           {kind: 'select', title, options: [...options]},
           opts,
         ) as Promise<string | undefined>,
       confirm: (title, message, opts) =>
-        this.open({kind: 'confirm', title, message}, opts) as Promise<boolean>,
+        this.openNativeDialog({kind: 'confirm', title, message}, opts).then(
+          Boolean,
+        ),
       input: (title, placeholder, opts) =>
-        this.open({kind: 'input', title, placeholder}, opts) as Promise<
-          string | undefined
-        >,
+        this.openNativeDialog(
+          {kind: 'input', title, placeholder},
+          opts,
+        ) as Promise<string | undefined>,
       editor: (title, prefill, opts) =>
-        this.open({kind: 'editor', title, prefill}, opts) as Promise<
-          string | undefined
-        >,
+        this.openNativeDialog(
+          {kind: 'editor', title, prefill},
+          opts,
+        ) as Promise<string | undefined>,
       notify: (message, type = 'info') => this.notify(message, type),
       setStatus: (key, text) => this.setStatus(key, text),
       setWidget: (key, content) => {
@@ -509,6 +576,17 @@ export class DesktopExtensionUI {
     return new Proxy(this, {
       get: (target, key) => {
         if (key === 'context') return context;
+        if (key === 'native')
+          return <T>(
+            title: string,
+            factory: DesktopNativeFactory<T>,
+            opts?: {signal?: AbortSignal},
+          ) => this.native(title, factory, options(opts));
+        if (key === 'selectSettings')
+          return (
+            config: SettingsConfig,
+            callbacks: Omit<SettingsCallbacks, 'onCancel'>,
+          ) => this.openSettings(config, callbacks, signal);
         if (key === 'selectSessionSettings')
           return (options: DesktopSessionSettingsOptions) =>
             this.openSessionSettings(options, signal);
@@ -520,14 +598,14 @@ export class DesktopExtensionUI {
             this.openThinkingSelector(options, signal);
         if (key === 'select')
           return (title: string, choices: string[], presentation = {}) =>
-            this.open(
+            this.openNativeDialog(
               {kind: 'select', title, options: [...choices], ...presentation},
               {signal},
               true,
             );
         if (key === 'show')
           return async (title: string, message: string) => {
-            await this.open(
+            await this.openNativeDialog(
               {kind: 'info', title, message: bounded(message, MAX_EDITOR_TEXT)},
               {signal},
               true,
@@ -543,7 +621,98 @@ export class DesktopExtensionUI {
     });
   }
 
-  /** Native command dialogs share the extension transport, not terminal components. */
+  previewTheme(setting: string): void {
+    const name = themes.resolveThemeSetting(setting, 'dark');
+    const next = name ? this.getTheme(name) : undefined;
+    if (next) this.currentTheme = next;
+  }
+
+  /** Run a stock Pi component through the desktop terminal transport. */
+  native<T>(
+    title: string,
+    factory: DesktopNativeFactory<T>,
+    options?: {signal?: AbortSignal},
+  ): Promise<T> {
+    return this.openCustom<T>(
+      async (screen, theme, keys, done) => {
+        const created = await factory(screen, theme, keys, done);
+        if (!('component' in created)) return created;
+        const {component, focus} = created;
+        return {
+          get focused() {
+            return (
+              (focus as TerminalComponent & {focused?: boolean}).focused ??
+              false
+            );
+          },
+          set focused(value: boolean) {
+            (focus as TerminalComponent & {focused?: boolean}).focused = value;
+          },
+          render: width => component.render(width),
+          invalidate: () => component.invalidate(),
+          handleInput: data => focus.handleInput?.(data),
+          handleMouse: event => component.handleMouse?.(event),
+          dispose: () => this.disposeComponent(component),
+        };
+      },
+      undefined,
+      title,
+      options,
+    );
+  }
+
+  selectSettings(
+    config: SettingsConfig,
+    callbacks: Omit<SettingsCallbacks, 'onCancel'>,
+  ): Promise<void> {
+    return this.openSettings(config, callbacks);
+  }
+
+  private openSettings(
+    config: SettingsConfig,
+    callbacks: Omit<SettingsCallbacks, 'onCancel'>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    this.nativeDisplay = {...config};
+    return this.native(
+      'Settings',
+      (screen, _theme, _keys, done) => {
+        screen.setShowHardwareCursor(config.showHardwareCursor);
+        screen.setClearOnShrink(config.clearOnShrink);
+        const fullscreen = screen as TuiAltScreen;
+        fullscreen.setCopyOnSelect(config.fullscreenCopyOnSelect);
+        fullscreen.setWheelScrollLines(config.fullscreenWheelScrollLines);
+        const component = new SettingsSelectorComponent(config, {
+          ...callbacks,
+          onShowHardwareCursorChange: value => {
+            callbacks.onShowHardwareCursorChange(value);
+            screen.setShowHardwareCursor(value);
+            this.nativeDisplay!.showHardwareCursor = value;
+          },
+          onClearOnShrinkChange: value => {
+            callbacks.onClearOnShrinkChange(value);
+            screen.setClearOnShrink(value);
+            this.nativeDisplay!.clearOnShrink = value;
+          },
+          onFullscreenCopyOnSelectChange: value => {
+            callbacks.onFullscreenCopyOnSelectChange(value);
+            fullscreen.setCopyOnSelect(value);
+            this.nativeDisplay!.fullscreenCopyOnSelect = value;
+          },
+          onFullscreenWheelScrollLinesChange: value => {
+            callbacks.onFullscreenWheelScrollLinesChange(value);
+            fullscreen.setWheelScrollLines(value);
+            this.nativeDisplay!.fullscreenWheelScrollLines = value;
+          },
+          onCancel: () => done(),
+        });
+        return {component, focus: component.getSettingsList()};
+      },
+      {signal},
+    );
+  }
+
+  /** Native command dialogs use the same stock component as extension dialogs. */
   select(
     title: string,
     options: string[],
@@ -553,7 +722,7 @@ export class DesktopExtensionUI {
       searchable?: boolean;
     } = {},
   ): Promise<string | undefined> {
-    return this.open(
+    return this.openNativeDialog(
       {kind: 'select', title, options: [...options], ...presentation},
       undefined,
       true,
@@ -642,6 +811,7 @@ export class DesktopExtensionUI {
             selectors.thinking?.invalidate();
           },
           handleInput: data => current().handleInput(data),
+          handleMouse: event => current().handleMouse?.(event),
           dispose: () => selectors.model?.dispose(),
         };
       },
@@ -759,7 +929,7 @@ export class DesktopExtensionUI {
   }
 
   async show(title: string, message: string): Promise<void> {
-    await this.open(
+    await this.openNativeDialog(
       {kind: 'info', title, message: bounded(message, MAX_EDITOR_TEXT)},
       undefined,
       true,
@@ -803,7 +973,15 @@ export class DesktopExtensionUI {
   }
 
   /** Only the first dialog accepts input. Unknown or stale responses are ignored. */
-  respond(id: string, value?: string | boolean | DesktopUIDialogAction): void {
+  respond(
+    id: string,
+    value?:
+      | string
+      | boolean
+      | DesktopUIDialogAction
+      | DesktopUIDialogInput
+      | DesktopUIDialogResize,
+  ): void {
     if (this.disposed) return;
     if (id === this.navigation?.id) {
       this.navigation = undefined;
@@ -825,7 +1003,37 @@ export class DesktopExtensionUI {
     }
     const item = this.pending[0];
     if (!item || item.dialog.id !== id) return;
+    if (
+      item.dialog.terminal &&
+      value &&
+      typeof value === 'object' &&
+      Object.keys(value).length === 2 &&
+      'columns' in value &&
+      'rows' in value &&
+      Number.isInteger(value.columns) &&
+      Number.isInteger(value.rows) &&
+      value.columns >= 20 &&
+      value.columns <= 240 &&
+      value.rows >= 6 &&
+      value.rows <= 100
+    ) {
+      item.resize?.(value.columns, value.rows);
+      return;
+    }
+    if (
+      item.dialog.terminal &&
+      value &&
+      typeof value === 'object' &&
+      Object.keys(value).length === 1 &&
+      'input' in value &&
+      typeof value.input === 'string' &&
+      value.input.length <= MAX_EDITOR_TEXT
+    ) {
+      item.input?.(value.input);
+      return;
+    }
     if (item.dialog.kind === 'info') {
+      if (value && typeof value === 'object') return;
       item.finish(undefined);
       return;
     }
@@ -837,6 +1045,7 @@ export class DesktopExtensionUI {
         value &&
         typeof value === 'object' &&
         Object.keys(value).length === 1 &&
+        'action' in value &&
         (item.dialog.actions?.some(action => action.id === value.action) ||
           item.dialog.tabs?.some(tab => `tab:${tab.id}` === value.action))
       )
@@ -924,14 +1133,79 @@ export class DesktopExtensionUI {
     this.widgets.clear();
   }
 
-  private open(
+  private openNativeDialog(
     data: Omit<DesktopUIDialog, 'id'>,
     opts?: ExtensionUIDialogOptions,
     native = false,
   ): Promise<DialogValue> {
     const cancelled = data.kind === 'confirm' ? false : undefined;
-    if (this.disposed || opts?.signal?.aborted)
+    if (
+      this.disposed ||
+      opts?.signal?.aborted ||
+      (opts?.timeout !== undefined && opts.timeout <= 0)
+    )
       return Promise.resolve(cancelled);
+    const invalid = this.dialogError(data, native);
+    if (invalid) return Promise.reject(invalid);
+    return this.openCustom<DialogValue>(
+      (screen, _theme, keys, done) => {
+        const cancel = () => done(cancelled);
+        if (data.kind === 'info')
+          return new ExtensionSelectorComponent(
+            data.title,
+            ['Close'],
+            () => done(undefined),
+            cancel,
+            {description: data.message},
+          );
+        if (data.kind === 'select' || data.kind === 'confirm') {
+          const choices =
+            data.kind === 'confirm' ? ['Yes', 'No'] : (data.options ?? []);
+          const component = new ExtensionSelectorComponent(
+            data.title,
+            choices,
+            value => done(data.kind === 'confirm' ? value === 'Yes' : value),
+            cancel,
+            {
+              ...opts,
+              tui: screen,
+              description: data.message,
+              onToggleToolsExpanded: () =>
+                this.context.setToolsExpanded(!this.toolsExpanded),
+            },
+          );
+          const selected = choices.indexOf(data.selected ?? '');
+          for (let index = 0; index < selected; index++)
+            component.handleInput('j');
+          return component;
+        }
+        if (data.kind === 'input')
+          return new ExtensionInputComponent(
+            data.title,
+            data.placeholder,
+            done,
+            cancel,
+            {...opts, tui: screen},
+          );
+        return new ExtensionEditorComponent(
+          screen,
+          keys,
+          data.title,
+          data.prefill,
+          done,
+          cancel,
+        );
+      },
+      undefined,
+      data.title,
+      {signal: opts?.signal, timeout: opts?.timeout, dialog: data},
+    );
+  }
+
+  private dialogError(
+    data: Omit<DesktopUIDialog, 'id'>,
+    native: boolean,
+  ): Error | undefined {
     if (
       this.pending.length >= MAX_DIALOGS ||
       data.title.length > MAX_TEXT ||
@@ -945,42 +1219,9 @@ export class DesktopExtensionUI {
       const message =
         'Extension dialog exceeds the desktop UI size or queue limit.';
       this.notify(message, 'error');
-      return Promise.reject(new Error(message));
+      return new Error(message);
     }
-    if (opts?.timeout !== undefined && opts.timeout <= 0)
-      return Promise.resolve(cancelled);
-    return new Promise(resolve => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const signal = opts?.signal;
-      const abort = () => item.finish(cancelled);
-      const item: PendingDialog = {
-        dialog: {
-          id: randomUUID(),
-          ...data,
-          ...(data.kind === 'select'
-            ? {searchable: data.searchable ?? true}
-            : {}),
-        },
-        finish: value => {
-          if (settled) return;
-          settled = true;
-          if (timer) clearTimeout(timer);
-          signal?.removeEventListener('abort', abort);
-          this.pending = this.pending.filter(pending => pending !== item);
-          resolve(value as DialogValue);
-          if (!this.disposed) {
-            if (!this.cancelling) this.pending[0]?.activate?.();
-            this.onChange();
-          }
-        },
-      };
-      this.pending.push(item);
-      signal?.addEventListener('abort', abort, {once: true});
-      if (opts?.timeout !== undefined && Number.isFinite(opts.timeout))
-        timer = setTimeout(abort, Math.min(opts.timeout, 2147483647));
-      this.onChange();
-    });
+    return undefined;
   }
 
   private openCustom<T>(
@@ -1002,9 +1243,11 @@ export class DesktopExtensionUI {
       let terminal: VirtualTerminal | undefined;
       let started = false;
       let closed = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const signal = controls?.signal;
       const abort = () => item.finish(undefined);
       const cleanup = () => {
+        if (timer) clearTimeout(timer);
         signal?.removeEventListener('abort', abort);
         terminal?.stop();
         renderer?.stop();
@@ -1033,6 +1276,7 @@ export class DesktopExtensionUI {
           id: randomUUID(),
           kind: 'terminal',
           title,
+          ...controls?.dialog,
           ...(controls?.tabs
             ? {
                 tabs: controls.tabs.map(tab => ({...tab})),
@@ -1065,6 +1309,7 @@ export class DesktopExtensionUI {
           cleanup();
           resolve(result as T);
         },
+        resize: (columns, rows) => terminal?.resize(columns, rows),
         input: data => {
           try {
             terminal?.input(data);
@@ -1084,8 +1329,22 @@ export class DesktopExtensionUI {
             true,
             operation => this.withKeybindings(operation),
           );
+          terminal.state.appearance = this.currentTheme.appearance;
           item.dialog.terminal = terminal.state;
-          renderer = new tui.TuiAltScreen(terminal, true);
+          const nativeRenderer = new tui.TuiAltScreen(
+            terminal,
+            this.nativeDisplay?.showHardwareCursor ?? true,
+          );
+          if (this.nativeDisplay) {
+            nativeRenderer.setClearOnShrink(this.nativeDisplay.clearOnShrink);
+            nativeRenderer.setCopyOnSelect(
+              this.nativeDisplay.fullscreenCopyOnSelect,
+            );
+            nativeRenderer.setWheelScrollLines(
+              this.nativeDisplay.fullscreenWheelScrollLines,
+            );
+          }
+          renderer = nativeRenderer;
           terminal.attach(renderer);
           // Starting before factory construction also supports components which
           // show their own overlays or query the virtual terminal in the factory.
@@ -1120,6 +1379,7 @@ export class DesktopExtensionUI {
               component = created;
               const render = component.render.bind(component);
               component.render = width => {
+                terminal!.state.appearance = this.currentTheme.appearance;
                 try {
                   return this.withKeybindings(() => render(width));
                 } catch (error) {
@@ -1145,6 +1405,8 @@ export class DesktopExtensionUI {
       };
       this.pending.push(item);
       signal?.addEventListener('abort', abort, {once: true});
+      if (controls?.timeout !== undefined && Number.isFinite(controls.timeout))
+        timer = setTimeout(abort, Math.min(controls.timeout, 2147483647));
       if (this.pending[0] === item) item.activate!();
       this.onChange();
     });
@@ -1227,11 +1489,23 @@ export class DesktopExtensionUI {
 
   private withKeybindings<T>(operation: () => T): T {
     const previous = tui.getKeybindings();
+    const previousTheme = renderingTheme;
+    const previousThemeName = previousTheme ? undefined : themes.theme.name;
+    themes.setThemeInstance(this.currentTheme);
+    renderingTheme = this.currentTheme;
     tui.setKeybindings(this.keybindings);
     try {
       return operation();
     } finally {
       tui.setKeybindings(previous);
+      if (previousTheme) {
+        themes.setThemeInstance(previousTheme);
+      } else {
+        // setThemeInstance marks Pi's global selection as <in-memory>. Restore
+        // the named selection too, so later SDK HTML exports can resolve it.
+        initTheme(previousThemeName ?? 'dark');
+      }
+      renderingTheme = previousTheme;
     }
   }
 

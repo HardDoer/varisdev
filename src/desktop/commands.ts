@@ -51,7 +51,7 @@ export class DesktopCommands {
           !value.sessionId ||
           value.sessionId.length > 256
         )
-          throw new Error('Copy requires a valid parent session ID.');
+          throw new Error('Copy requires a valid workspace ID.');
         // Resolve the authoritative native transcript, never the dashboard preview.
         // Only renderer-supplied text is bounded; native text is copied in full.
         text = this.dependencies.lastAssistantText(value.sessionId);

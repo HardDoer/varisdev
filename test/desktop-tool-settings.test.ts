@@ -462,19 +462,16 @@ void test('stale session errors propagate without using the app catalog or savin
   await fixture(t);
   const service = new DesktopToolSettings({
     sessionFeatures: async () => {
-      throw new Error('Unknown parent session.');
+      throw new Error('Unknown workspace.');
     },
     createRuntime: async () => {
       throw new Error('Unexpected app catalog fallback.');
     },
   });
-  await assert.rejects(
-    service.getToolSettings('closed'),
-    /Unknown parent session/,
-  );
+  await assert.rejects(service.getToolSettings('closed'), /Unknown workspace/);
   await assert.rejects(
     service.saveToolSettings('agents', {allowedModels: [firstId]}, 'closed'),
-    /Unknown parent session/,
+    /Unknown workspace/,
   );
   assert.deepEqual((await readToolSettings()).agents.allowedModels, []);
 });

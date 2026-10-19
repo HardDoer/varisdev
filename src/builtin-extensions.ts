@@ -3,11 +3,16 @@ import {
   createMcpExtension,
   createToolSearchExtension,
   type InlineExtension,
+  type McpExtensionOptions,
 } from '@earendil-works/pi-coding-agent';
 import {LLAMA_PROVIDER, officialLlamaExtension} from './llama.ts';
 
 /** Match Pi's built-in identities so settings and replacements still apply. */
-export function createBuiltinExtensions(): InlineExtension[] {
+export function createBuiltinExtensions(
+  options: {
+    mcp?: McpExtensionOptions;
+  } = {},
+): InlineExtension[] {
   return [
     {
       name: LLAMA_PROVIDER,
@@ -28,7 +33,7 @@ export function createBuiltinExtensions(): InlineExtension[] {
     },
     {
       name: 'mcp',
-      factory: createMcpExtension(),
+      factory: createMcpExtension(options.mcp),
       builtin: true,
       replaceable: true,
     },

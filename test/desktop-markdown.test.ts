@@ -223,18 +223,12 @@ void test('the hub resolves Markdown relative to the chosen known session and pe
     global.version,
   );
   assert.equal(await readFile(outside, 'utf8'), saved.content);
-  await assert.rejects(
-    hub.readMarkdown('missing', path),
-    /Unknown parent session/,
-  );
+  await assert.rejects(hub.readMarkdown('missing', path), /Unknown workspace/);
   await assert.rejects(
     hub.saveMarkdown('missing', path, '', initial.version),
-    /Unknown parent session/,
+    /Unknown workspace/,
   );
-  await assert.rejects(
-    hub.readMarkdown('' as string, path),
-    /valid parent session/,
-  );
+  await assert.rejects(hub.readMarkdown('' as string, path), /valid workspace/);
   hub.updateExternal({
     ...state.snapshot(),
     session: {...state.snapshot().session, id: 'attached'},

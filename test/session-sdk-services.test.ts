@@ -246,7 +246,7 @@ void test('desktop and worker adapters use SDK trust, provider registration, sco
         agentToolsExtension() {},
       });
       try {
-        assert.equal(await readFile(bridgePath, 'utf8'), 'Parent session');
+        assert.equal(await readFile(bridgePath, 'utf8'), 'Current agent');
         assert.deepEqual(await capture(), {
           trusted: true,
           model: `${provider}/physical`,

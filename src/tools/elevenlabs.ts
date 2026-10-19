@@ -378,6 +378,13 @@ async function listVoices(
   };
 }
 
+export function resolveAudioOutputDir(cwd: string, outputDir?: string): string {
+  const rawDir = outputDir?.trim() ?? 'generated-audio';
+  const directory = rawDir.startsWith('@') ? rawDir.slice(1) : rawDir;
+  if (!directory) throw new Error('outputDir cannot be empty.');
+  return resolve(cwd, directory);
+}
+
 async function generateAudio(
   params: Params,
   cwd: string,
@@ -385,10 +392,7 @@ async function generateAudio(
   signal: AbortSignal,
 ): Promise<ToolDetails> {
   const request = makeGenerationRequest(params);
-  const rawDir = params.outputDir?.trim() ?? 'generated-audio';
-  const directory = rawDir.startsWith('@') ? rawDir.slice(1) : rawDir;
-  if (!directory) throw new Error('outputDir cannot be empty.');
-  const outputDir = resolve(cwd, directory);
+  const outputDir = resolveAudioOutputDir(cwd, params.outputDir);
   const prefix =
     params.filenamePrefix
       ?.trim()

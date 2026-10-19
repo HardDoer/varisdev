@@ -88,10 +88,19 @@ contextBridge.exposeInMainWorld('pidev', {
   },
   recentProjects: () => invoke('pidev:recent-projects'),
   listSessions: cwd => invoke('pidev:list-sessions', cwd),
+  openWorkspaceConfiguration: cwd =>
+    invoke('pidev:open-workspace-configuration', cwd),
   createSession: input => invoke('pidev:create-session', input),
   closeSession: id => invoke('pidev:close-session', id),
   promptSession: (id, input) => invoke('pidev:prompt-session', id, input),
   abortSession: id => invoke('pidev:abort-session', id),
+  listAgentTemplates: cwd => invoke('pidev:list-agent-templates', cwd),
+  saveAgentTemplate: (cwd, input) =>
+    invoke('pidev:save-agent-template', cwd, input),
+  deleteAgentTemplate: (cwd, input) =>
+    invoke('pidev:delete-agent-template', cwd, input),
+  agentSession: (sessionId, request) =>
+    invoke('pidev:agent-session', sessionId, request),
   cancelAgent: (sessionId, agentId) =>
     invoke('pidev:cancel-agent', sessionId, agentId),
   respondToDialog: (sessionId, dialogId, value) =>

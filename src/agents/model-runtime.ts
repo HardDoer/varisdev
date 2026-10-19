@@ -50,7 +50,7 @@ function bridgeProvider(
     auth: {
       ...provider.auth,
       apiKey: {
-        name: 'Parent session',
+        name: 'Current agent',
         async check() {
           return {type: credentialType};
         },
@@ -58,7 +58,7 @@ function bridgeProvider(
           const result = await modelRegistry.getProviderAuth(provider.id);
           if (!result) {
             throw new Error(
-              `Parent model provider is unavailable: ${provider.id}`,
+              `Current agent model provider is unavailable: ${provider.id}`,
             );
           }
           return result;

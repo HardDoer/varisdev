@@ -109,7 +109,7 @@ export function initToolSettings({api, selectedSessionId}) {
   function renderCommitModels() {
     const inherit = document.createElement('option');
     inherit.value = '';
-    inherit.textContent = 'Inherit parent model';
+    inherit.textContent = 'Inherit current agent model';
     $('commit-model').replaceChildren(
       inherit,
       ...models()
@@ -154,7 +154,7 @@ export function initToolSettings({api, selectedSessionId}) {
     $('commit-thinking').value = draft.commit.thinkingLevel ?? '';
     const invalid = !commitValid();
     $('tool-settings-validation').textContent = invalid
-      ? 'Choose an available allowed Commit model, or inherit the parent model.'
+      ? 'Choose an available allowed Commit model, or inherit the current agent model.'
       : '';
     $('tool-settings-save').disabled = busy || invalid;
     const count = draft.agents.allowedModels.length;

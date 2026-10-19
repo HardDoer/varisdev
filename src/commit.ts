@@ -1,23 +1,76 @@
-import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
+import {
+  parseFrontmatter,
+  type ExtensionAPI,
+} from '@earendil-works/pi-coding-agent';
 import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
+import {readFile} from 'node:fs/promises';
+import {dirname} from 'node:path';
+import {
+  createDefaultAgentProfile,
+  ensureAgentProfilePermissions,
+  resolveAgentTemplate,
+  type AgentTemplate,
+} from './agents/templates.ts';
+import {
+  checkAgentPermissions,
+  type AgentPolicyOptions,
+} from './agents/policy.ts';
+import {builtinCommitSkillPath} from './builtin-assets.ts';
 import {assertAgentModelAllowed, readToolSettings} from './tools/settings.ts';
 
-export function registerCommitCommand(pi: ExtensionAPI): void {
+export function registerCommitCommand(
+  pi: ExtensionAPI,
+  sendUserMessage: (
+    ...args: Parameters<ExtensionAPI['sendUserMessage']>
+  ) => void | Promise<void> = (...args) => pi.sendUserMessage(...args),
+  policyOptions: AgentPolicyOptions = {},
+): void {
   pi.registerCommand('commit', {
     description:
-      'Commit and push through a background agent. /commit [instructions]',
+      'Commit and push through the configured commit agent. /commit [instructions]',
     handler: async (args, ctx) => {
+      const saved = ctx.sessionManager
+        ?.getBranch?.()
+        .findLast(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.agent-profile',
+        );
+      const profile = await ensureAgentProfilePermissions(
+        ctx.cwd,
+        saved?.type === 'custom'
+          ? (saved.data as AgentTemplate)
+          : createDefaultAgentProfile(),
+      );
+      const blocked = await checkAgentPermissions(
+        profile,
+        '/commit',
+        {name: 'commit'},
+        [{action: 'skill', resource: 'commit'}],
+        ctx,
+        policyOptions,
+      );
+      if (blocked) throw new Error(blocked.reason);
+      const template = await resolveAgentTemplate(ctx.cwd, 'commit');
+      if (!template || template.disabled)
+        throw new Error('The commit agent configuration is unavailable.');
+      if (template.mode === 'primary')
+        throw new Error(
+          'The commit agent configuration must support subagent or all mode.',
+        );
       const settings = await readToolSettings();
-      const selectedModel =
-        settings.commit.model ??
-        (ctx.model && `${ctx.model.provider}/${ctx.model.id}`);
+      // Existing Commit settings apply until a user supplies a standard config.
+      const legacy = template.scope === 'builtin' ? settings.commit : undefined;
+      const inheritedModel =
+        ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
+      const selectedModel = template.model ?? legacy?.model ?? inheritedModel;
       if (!selectedModel)
         throw new Error(
-          'Choose a parent model or select a model in Menu → Tool models → Commit.',
+          'Choose a current agent model or set model in the commit agent configuration.',
         );
       const separator = selectedModel.indexOf('/');
       const model =
-        settings.commit.model === null
+        selectedModel === inheritedModel
           ? ctx.model
           : ctx.modelRegistry.find(
               selectedModel.slice(0, separator),
@@ -25,25 +78,38 @@ export function registerCommitCommand(pi: ExtensionAPI): void {
             );
       if (!model)
         throw new Error(
-          `Commit model is unavailable: ${selectedModel}. Choose a model in Menu → Tool models → Commit.`,
+          `Commit model is unavailable: ${selectedModel}. Update the commit agent configuration or Menu → Tool models → Commit.`,
         );
       await assertAgentModelAllowed(selectedModel, settings);
       const thinkingLevel =
-        settings.commit.thinkingLevel ?? pi.getThinkingLevel();
+        template.thinkingLevel ??
+        legacy?.thinkingLevel ??
+        pi.getThinkingLevel();
       const supported = getSupportedThinkingLevels(model);
       if (!supported.some(level => level === thinkingLevel))
         throw new Error(
-          `Commit thinking level ${thinkingLevel} is unsupported for ${selectedModel}. Supported levels: ${supported.join(', ')}. Change Menu → Tool models → Commit or the parent thinking level.`,
+          `Commit thinking level ${thinkingLevel} is unsupported for ${selectedModel}. Supported levels: ${supported.join(', ')}. Update the commit agent configuration, Menu → Tool models → Commit, or the current agent thinking level.`,
         );
+      const skillPath =
+        pi
+          .getCommands()
+          .find(
+            command =>
+              command.name === 'skill:commit' && command.source === 'skill',
+          )?.sourceInfo.path ?? builtinCommitSkillPath;
+      const {body} = parseFrontmatter(await readFile(skillPath, 'utf8'));
       const instructions = args.trim();
-      pi.sendUserMessage(
+      await sendUserMessage(
         [
+          `<skill name="commit" location="${skillPath}">\nReferences are relative to ${dirname(skillPath)}.\n\n${body.trim()}\n</skill>`,
           'Commit and push.',
-          'Delegate this task using agent_spawn with name="Commit and push" and autoCleanup=true. Use these exact agent_spawn arguments: ' +
-            JSON.stringify({model: selectedModel, thinkingLevel}) +
-            '. Use the current conversation to supply the intended changes, relevant user instructions, completed checks, and any requested commit message or push destination in the task. Coordinate with active workers before delegating so the commit agent receives a stable set of changes.',
-          'Ask the worker to read applicable repository instructions, inspect the changes and Git state, run required checks, fix relevant failures, stage the intended changes, commit according to repository conventions, and push to the requested destination or configured upstream. It should preserve unrelated changes and existing history, keep commit hooks enabled, and report commit hashes, checks, push outcome, and any remaining changes or blockers. If the changes are already committed, it should check whether they need pushing.',
-          'Collect the result with agent_status or agent_wait before reporting completion. The worker session is automatically disposed when the task finishes; its saved result and transcript paths are available through agent_status.',
+          'Use these exact agent_spawn configuration arguments: ' +
+            JSON.stringify({
+              template: template.key,
+              model: selectedModel,
+              thinkingLevel,
+              autoCleanup: true,
+            }),
           ...(instructions
             ? [
                 `Additional user instructions (apply these to the task above):\n${instructions}`,

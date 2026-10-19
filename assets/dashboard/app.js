@@ -22,6 +22,7 @@ import {initLiveView} from './live-view.js';
 import {initSessionHistory} from './session-history.js';
 import {initRecentProjects} from './recent-projects.js';
 import {initAgentControls} from './agent-controls.js';
+import {initAgentTemplates} from './agent-templates.js';
 import {createConversationVisualizations} from './visualizations.js';
 import {initUsage, renderUsage} from './usage.js';
 import {
@@ -42,7 +43,7 @@ import {
 
 const $ = id => document.getElementById(id);
 const processingEffects = createProcessingEffects($('scene'), {
-  getOrigin: () => (state.unitId === 'parent' ? $('parent-prompt') : null),
+  getOrigin: () => $('parent-prompt'),
 });
 const LIVE = new Set(['queued', 'running', 'cancelling']);
 const WORKING = new Set(['running', 'cancelling']);
@@ -150,6 +151,7 @@ const promptDrafts = new Map(
 );
 const workspaceCache = new Map();
 const workspacePending = new Set();
+const promptErrors = new Map();
 const sending = new Set();
 const stopping = new Set();
 const closingSessions = new Set();
@@ -254,6 +256,94 @@ function selectedUnit() {
     ? data?.session
     : data?.agents.find(item => item.id === state.unitId);
 }
+// Root keys retain the existing stored drafts; spawned conversations include their owner.
+function conversationId(ownerId = state.sessionId, unitId = state.unitId) {
+  return unitId === 'parent'
+    ? ownerId
+    : `agent:${JSON.stringify([ownerId, unitId])}`;
+}
+const conversationTargets = new Map();
+function agentResumable(agent) {
+  return agent.resumable ?? !(agent.autoCleanup && !LIVE.has(agent.status));
+}
+function conversationSnapshot() {
+  const data = snapshot();
+  if (!data || state.unitId === 'parent') return data;
+  const agent = selectedUnit();
+  if (!agent) return;
+  const id = conversationId();
+  conversationTargets.set(id, {ownerId: data.session.id, agentId: agent.id});
+  return {
+    ...data,
+    session: {
+      ...agent,
+      id,
+      owned: data.session.owned,
+      controllable: canControl(data.session) && agentResumable(agent),
+      status: !agentResumable(agent)
+        ? 'closed'
+        : LIVE.has(agent.status)
+          ? 'running'
+          : 'idle',
+    },
+    conversation: agent.conversation || [],
+    queue: agent.queue || {steering: [], followUp: []},
+    ui: data.ui && {dialogs: data.ui.dialogs},
+    uiOwnerId: data.session.id,
+    uiOwnerName: data.session.name,
+    agentId: agent.id,
+  };
+}
+function conversationControllable(data = snapshot(), unit = selectedUnit()) {
+  return (
+    !!data &&
+    !!unit &&
+    canControl(data.session) &&
+    (state.unitId === 'parent'
+      ? unit.status !== 'closed'
+      : agentResumable(unit) && !!api?.agentSession)
+  );
+}
+function conversationHasWork(data = snapshot(), unit = selectedUnit()) {
+  return state.unitId === 'parent'
+    ? parentHasWork(data)
+    : LIVE.has(unit.status) ||
+        sending.has(conversationId()) ||
+        Boolean(unit.queue?.steering?.length || unit.queue?.followUp?.length);
+}
+function featureRequest(id, action, fields, root) {
+  const target = conversationTargets.get(id);
+  return target
+    ? api.agentSession(target.ownerId, {
+        agentId: target.agentId,
+        action,
+        ...fields,
+      })
+    : root();
+}
+const conversationApi = {
+  ...api,
+  respondToDialog: (id, dialogId, value) =>
+    api.respondToDialog(
+      conversationTargets.get(id)?.ownerId || id,
+      dialogId,
+      value,
+    ),
+  sessionFeatures: id =>
+    featureRequest(id, 'features', {}, () => api.sessionFeatures(id)),
+  configureSession: (id, configuration) =>
+    featureRequest(id, 'configure', {configuration}, () =>
+      api.configureSession(id, configuration),
+    ),
+  promptSession: (id, request) =>
+    featureRequest(id, 'prompt', request, () => api.promptSession(id, request)),
+  compactSession: (id, instructions) =>
+    featureRequest(id, 'compact', {instructions}, () =>
+      api.compactSession(id, instructions),
+    ),
+  reloadSession: id =>
+    featureRequest(id, 'reload', {}, () => api.reloadSession(id)),
+};
 function date(value) {
   if (!value) return '—';
   const parsed = new Date(value);
@@ -342,7 +432,8 @@ function persistComposerDraft(id) {
 function saveDraft() {
   if (!state.sessionId) return;
   const textarea = $('parent-prompt');
-  const previous = promptDrafts.get(state.sessionId);
+  const id = conversationId();
+  const previous = promptDrafts.get(id);
   const position = editorPosition(textarea);
   if (
     previous?.value === textarea.value &&
@@ -351,12 +442,12 @@ function saveDraft() {
     return;
   const revision =
     (previous?.revision || 0) + Number(previous?.value !== textarea.value);
-  promptDrafts.set(state.sessionId, {
+  promptDrafts.set(id, {
     value: textarea.value,
     revision,
     ...position,
   });
-  persistComposerDraft(state.sessionId);
+  persistComposerDraft(id);
 }
 function restoreDraft(id) {
   const textarea = $('parent-prompt');
@@ -372,8 +463,9 @@ function restoreDraft(id) {
   };
   textarea.value = draft.value;
   textarea.style.height = draft.height;
-  $('prompt-error').hidden = !promptDraftStorageError;
-  if (promptDraftStorageError) text($('prompt-error'), promptDraftStorageError);
+  const error = promptErrors.get(id) || promptDraftStorageError;
+  $('prompt-error').hidden = !error;
+  if (error) text($('prompt-error'), error);
   restorePosition(textarea, draft);
   pendingDraftPosition = {id, position: draft};
 }
@@ -384,7 +476,7 @@ function clearSubmittedDraft(id, submitted) {
     current.value !== submitted.value
   )
     return;
-  if (id === state.sessionId && $('parent-prompt').value !== submitted.value)
+  if (id === conversationId() && $('parent-prompt').value !== submitted.value)
     return;
   promptDrafts.set(id, {
     ...current,
@@ -397,7 +489,7 @@ function clearSubmittedDraft(id, submitted) {
     scrollLeft: 0,
   });
   persistComposerDraft(id);
-  if (id === state.sessionId) restoreDraft(id);
+  if (id === conversationId()) restoreDraft(id);
 }
 function expandEditor(element, textarea, button) {
   if (expandedEditor) {
@@ -517,19 +609,20 @@ function submitFromEditor(event, form) {
   form.requestSubmit();
 }
 
-function selectSession(id) {
+function selectSession(id, unitId = 'parent') {
   if (
-    state.sessionId === id ||
+    (state.sessionId === id && state.unitId === unitId) ||
     !state.hub.sessions.some(item => item.session.id === id)
   )
     return;
   saveDraft();
   saveConversationDisclosures();
   state.sessionId = id;
-  state.unitId = 'parent';
+  state.unitId = unitId;
+  if (unitId !== 'parent') terminalTabs.showPrompt();
   state.historyQuery = '';
   $('history-search').value = '';
-  restoreDraft(id);
+  restoreDraft(conversationId());
   setTab('conversation');
   render();
 }
@@ -538,15 +631,14 @@ function selectUnit(id) {
     return;
   liveView.close();
   if (state.unitId !== id) {
-    if (state.unitId === 'parent') rememberComposerHeight();
     saveConversationDisclosures();
     saveDraft();
     state.unitId = id;
+    if (id !== 'parent') terminalTabs.showPrompt();
+    restoreDraft(conversationId());
   }
   setTab('conversation');
-  renderFactory();
-  renderWorkers();
-  renderInspector();
+  render();
 }
 function createParentCard(data) {
   const element = node('button', 'parent-card');
@@ -562,10 +654,10 @@ function createParentCard(data) {
   return {element, name, status, path, activity};
 }
 function renderOverview() {
-  const parents = [...state.hub.sessions].sort((a, b) => {
-    const active = item =>
-      ['running', 'compacting'].includes(item.session.status) ||
-      item.agents.some(agent => LIVE.has(agent.status));
+  const workspaces = [...state.hub.sessions].sort((a, b) => {
+    const active = data =>
+      ['running', 'compacting'].includes(data.session.status) ||
+      data.agents.some(agent => LIVE.has(agent.status));
     return (
       Number(active(b)) - Number(active(a)) ||
       String(b.session.startedAt).localeCompare(String(a.session.startedAt))
@@ -574,51 +666,43 @@ function renderOverview() {
   reconcile(
     $('parents'),
     parentNodes,
-    parents,
-    item => item.session.id,
+    workspaces,
+    data => data.session.id,
     createParentCard,
     (entry, data) => {
       const session = data.session;
-      const tally = counts(data);
-      entry.element.classList.toggle(
-        'selected',
-        session.id === state.sessionId,
-      );
-      entry.element.setAttribute(
-        'aria-pressed',
-        String(session.id === state.sessionId),
-      );
+      const selected = session.id === state.sessionId;
+      entry.element.classList.toggle('selected', selected);
+      entry.element.setAttribute('aria-pressed', String(selected));
       text(entry.name, session.name);
       parentBadge(entry.status, session);
       const needsInput = !!data.ui?.dialogs?.length;
       entry.element.classList.toggle(
         'attention',
-        parentHasError(session) || needsInput,
+        Boolean(session.error) || needsInput,
       );
       text(entry.path, session.cwd);
       text(
         entry.activity,
         needsInput
           ? `Needs input: ${data.ui.dialogs[0].title}`
-          : parentHasError(session)
-            ? session.error
-            : session.activity || 'Waiting for a task',
+          : session.error || session.activity || 'Waiting for a task',
       );
-      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${tally.working} working · ${tally.queued} queued · ${data.totalAgents} agents${session.error ? `\n${session.error}` : ''}`;
+      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${data.agents.length + 1} agents${session.error ? `\n${session.error}` : ''}`;
     },
   );
-  const workingParents = parents.filter(item =>
-    ['running', 'compacting'].includes(item.session.status),
-  ).length;
-  const workingAgents = parents.reduce(
-    (sum, item) => sum + counts(item).working,
+  const working = workspaces.reduce(
+    (sum, data) =>
+      sum +
+      Number(['running', 'compacting'].includes(data.session.status)) +
+      data.agents.filter(agent => WORKING.has(agent.status)).length,
     0,
   );
   text(
     $('hub-counts'),
-    parents.length
-      ? `${parents.length} parent sessions (${workingParents} working) · ${workingAgents} working agents`
-      : 'No parent sessions yet',
+    workspaces.length
+      ? `${workspaces.length} ${workspaces.length === 1 ? 'workspace' : 'workspaces'} · ${working} working ${working === 1 ? 'agent' : 'agents'}`
+      : 'No workspaces yet',
   );
   $('hub-counts').title = $('hub-counts').textContent;
 }
@@ -702,7 +786,7 @@ function renderFallback(data) {
     (entry, unit) => {
       entry.element.dataset.unitId = unit.id;
       const parent = unit.id === 'parent';
-      const task = parent ? unit.prompt || 'Parent session prompt' : unit.task;
+      const task = parent ? unit.prompt || 'Main agent prompt' : unit.task;
       const activity = unit.activity || statusName(unit.status);
       entry.element.className = `fallback-station ${parent ? 'parent-session' : 'agent'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
       entry.element.classList.toggle('selected', state.unitId === unit.id);
@@ -805,20 +889,22 @@ function renderFactory() {
   const session = data.session;
   if (stopEffectSession && stopEffectSession !== session.id) clearStopEffect();
   const tally = counts(data);
-  text($('factory-title'), session.name);
-  $('factory-title').title = session.name;
-  text($('factory-model'), session.model);
-  $('factory-model').title = session.model;
-  text($('factory-effort'), `Effort: ${session.thinkingLevel ?? ''}`);
-  $('factory-effort').hidden = !session.thinkingLevel;
-  parentBadge($('parent-status'), session);
+  const selected = selectedUnit() || session;
+  text($('factory-title'), selected.name);
+  $('factory-title').title = selected.name;
+  text($('factory-model'), selected.model);
+  $('factory-model').title = selected.model || '';
+  text($('factory-effort'), `Effort: ${selected.thinkingLevel ?? ''}`);
+  $('factory-effort').hidden = !selected.thinkingLevel;
+  if (state.unitId === 'parent') parentBadge($('parent-status'), selected);
+  else badge($('parent-status'), selected.status);
   for (const [key, value] of Object.entries(tally)) {
     const item = $(
       `metric-${key === 'failed' ? 'attention' : key === 'working' ? 'running' : key}`,
     );
     if (item) text(item, value);
   }
-  const context = session.context;
+  const context = selected.context;
   text(
     $('context-meter'),
     context
@@ -826,7 +912,10 @@ function renderFactory() {
       : '',
   );
   $('context-meter').hidden = !context;
-  text($('parent-activity'), session.activity || 'Waiting for a task');
+  text(
+    $('parent-activity'),
+    selected.activity || selected.task || 'Waiting for a task',
+  );
   $('parent-activity').title = $('parent-activity').textContent;
   renderProcessing(data);
   agentControls.render();
@@ -1407,12 +1496,7 @@ function renderConversation(snapshot) {
     if (!messageKeys.has(id)) entry.visualizations.dispose();
   }
   let changed = sessionChanged || messages.length !== conversationNodes.size;
-  text(
-    $('conversation-recipient'),
-    parent
-      ? `Parent session · ${data.session.name}`
-      : `Agent conversation · ${data.session.name}`,
-  );
+  text($('conversation-recipient'), `Agent · ${data.session.name}`);
   $('conversation-truncated').hidden = !data.conversationTruncated;
   $('conversation-session-file').hidden =
     !data.conversationTruncated || !data.session.sessionFile;
@@ -1568,28 +1652,14 @@ function renderSteering(data) {
     (entry, message) => text(entry.content, message.text),
   );
 }
-function rememberComposerHeight() {
-  const dock = $('composer-slot');
-  if (
-    state.unitId !== 'parent' ||
-    dock.hidden ||
-    expandedEditor?.textarea === $('parent-prompt')
-  )
-    return;
-  const height = dock.getBoundingClientRect().height;
-  if (height > 0) dock.style.setProperty('--agent-dock-height', `${height}px`);
-}
 function renderInspector() {
   terminalTabs.update();
   const data = snapshot();
   const unit = selectedUnit();
   if (!data || !unit) return;
   const parent = state.unitId === 'parent';
-  $('inspector').dataset.conversationKind = parent ? 'parent' : 'agent';
-  text(
-    $('conversation-kind-label'),
-    parent ? 'Parent session' : 'Agent conversation',
-  );
+  $('inspector').dataset.conversationKind = 'agent';
+  text($('conversation-kind-label'), 'Agent');
   const key = `${state.sessionId}:${state.unitId}`;
   if (inspectorKey !== key) {
     for (const tab of ['details', 'feed', 'changes', 'tokens'])
@@ -1605,7 +1675,8 @@ function renderInspector() {
     unit.activity || (parent ? 'No current activity' : statusName(unit.status)),
   );
   $('back-to-parent').hidden = parent;
-  $('tab-context').hidden = !parent;
+  $('tab-context').hidden =
+    !api?.sessionFeatures || !conversationControllable(data, unit);
   if (!parent) {
     const active = WORKING.has(unit.status);
     $('processing-state').hidden = !active;
@@ -1619,8 +1690,11 @@ function renderInspector() {
     );
   }
   renderInspectorPanel(data, unit, parent);
-  renderSteering(data);
-  renderSessionFeatures(data, {parent});
+  renderSteering(conversationSnapshot());
+  renderSessionFeatures(conversationSnapshot(), {
+    parent,
+    available: conversationControllable(data, unit),
+  });
   updateMarkdownFiles();
   renderComposer(data, unit, parent);
 }
@@ -1638,7 +1712,7 @@ function renderInspectorPanel(data, unit, parent) {
       parent && parentHasError(unit) ? 'Error' : statusName(unit.status),
     ],
     ['Model', unit.model],
-    ...(parent ? [['Effort', unit.thinkingLevel]] : []),
+    ['Effort', unit.thinkingLevel],
     ['Elapsed', duration(unit)],
     ['Started', date(unit.startedAt)],
     ['Created', date(parent ? unit.startedAt : unit.createdAt)],
@@ -1653,8 +1727,8 @@ function renderInspectorPanel(data, unit, parent) {
             'Control',
             canControl(unit)
               ? unit.owned
-                ? 'Desktop parent session'
-                : 'Connected parent session'
+                ? 'Desktop agent'
+                : 'Connected agent'
               : 'Unavailable',
           ],
         ]
@@ -1682,71 +1756,53 @@ function renderInspectorPanel(data, unit, parent) {
   ]);
 }
 function renderComposer(data, unit, parent) {
-  if (!parent) {
-    $('extension-notifications').hidden = true;
-    $('extension-statuses').hidden = true;
-    $('steering-messages').hidden = true;
-    $('command-suggestions').hidden = true;
-  }
-  if (
-    (!parent || !canControl(data.session)) &&
-    expandedEditor?.textarea === $('parent-prompt')
-  )
+  const id = conversationId();
+  const controllable = conversationControllable(data, unit);
+  if (!controllable && expandedEditor?.textarea === $('parent-prompt'))
     collapseEditor(false);
   $('composer-slot').hidden = false;
-  $('composer-slot').classList.toggle('agent-selected', !parent);
+  $('composer-slot').classList.remove('agent-selected');
   agentControls.render();
-  $('agent-task-dock').hidden = parent;
-  text($('agent-task-text'), parent ? '' : unit.task);
-  $('parent-controls').hidden = !parent || !canControl(data.session);
-  $('inspector').classList.toggle(
-    'has-composer',
-    parent && canControl(data.session),
-  );
-  text($('prompt-recipient'), data.session.name);
+  $('agent-task-dock').hidden = true;
+  $('parent-controls').hidden = !controllable;
+  $('inspector').classList.toggle('has-composer', controllable);
+  text($('prompt-recipient'), unit.name);
   $('attached-note').hidden = !parent || data.session.owned;
   text(
     $('attached-note'),
-    canControl(data.session)
-      ? 'Connected parent session'
-      : 'Disconnected parent session',
+    canControl(data.session) ? 'Connected agent' : 'Disconnected agent',
   );
-  if (
-    pendingDraftPosition?.id === state.sessionId &&
-    parent &&
-    canControl(data.session)
-  ) {
+  if (pendingDraftPosition?.id === id && controllable) {
     restorePosition($('parent-prompt'), pendingDraftPosition.position);
     pendingDraftPosition = null;
   }
+  const closing =
+    closingSessions.has(id) || closingSessions.has(state.sessionId);
   $('abort-parent').disabled =
-    !canControl(data.session) ||
-    !parentHasWork(data) ||
-    stopping.has(state.sessionId) ||
-    closingSessions.has(state.sessionId);
-  text(
-    $('abort-parent'),
-    stopping.has(state.sessionId) ? 'Stopping…' : 'Stop · Esc',
-  );
+    !controllable ||
+    !conversationHasWork(data, unit) ||
+    stopping.has(id) ||
+    closing;
+  text($('abort-parent'), stopping.has(id) ? 'Stopping…' : 'Stop · Esc');
   $('send-prompt').disabled =
-    sending.has(state.sessionId) ||
-    stopping.has(state.sessionId) ||
-    closingSessions.has(state.sessionId) ||
-    data.session.status === 'closed';
-  const steering = data.session.status === 'running';
+    !controllable || sending.has(id) || stopping.has(id) || closing;
+  const steering = ['running', 'queued'].includes(unit.status);
   text($('prompt-action'), steering ? 'Steer' : 'Message');
   text(
     $('send-prompt'),
-    sending.has(state.sessionId) ? 'Sending…' : steering ? 'Steer' : 'Send',
+    sending.has(id) ? 'Sending…' : steering ? 'Steer' : 'Send',
   );
   $('send-prompt').title = steering
-    ? 'Steer this session at its next model turn'
+    ? 'Steer this agent at its next model turn'
     : 'Send a message';
   $('parent-prompt').placeholder = steering
     ? 'Guide the current task…'
     : 'Describe the next task…';
 }
 function renderWorkspace() {
+  const available = selectedUnit()?.cwd === snapshot()?.session.cwd;
+  $('load-workspace').closest('.workspace-section').hidden = !available;
+  if (!available) return;
   const cached = workspaceCache.get(state.sessionId);
   const pending = workspacePending.has(state.sessionId);
   $('load-workspace').disabled = pending;
@@ -1814,6 +1870,7 @@ function render() {
   factoryCane.setSession(hasSession ? state.sessionId : null);
   appMenu.place(hasSession);
   renderSessionActions();
+  agentTemplates.render?.();
   if (!themesDiscovered || themeSessionId !== state.sessionId) {
     themesDiscovered = true;
     themeSessionId = state.sessionId;
@@ -1865,8 +1922,11 @@ function receive(hub) {
   if (
     state.unitId !== 'parent' &&
     !snapshot()?.agents.some(item => item.id === state.unitId)
-  )
+  ) {
+    saveDraft();
     state.unitId = 'parent';
+    restoreDraft(conversationId());
+  }
   renderScheduler.schedule();
 }
 function applyMotion() {
@@ -1898,49 +1958,61 @@ async function selectOpenedSession(id) {
   void recentProjects.refresh();
 }
 function renderSessionActions() {
+  $('open-workspace-config').disabled = !api?.openWorkspaceConfiguration;
   const session = snapshot()?.session;
+  const unit = selectedUnit();
+  const id = conversationId();
+  const parent = state.unitId === 'parent';
   $('open-session-settings').disabled =
     !api?.promptSession ||
     !session ||
-    !canControl(session) ||
-    session.status === 'closed' ||
-    stopping.has(session.id) ||
+    !conversationControllable() ||
+    stopping.has(id) ||
+    closingSessions.has(id) ||
     closingSessions.has(session.id);
   recentProjects.setBusy(Boolean(creating));
   for (const id of ['new-session', 'welcome-create'])
     $(id).disabled = Boolean(creating);
   const replacementCwd = pendingReplacement?.cwd || session?.cwd;
-  $('start-session').hidden = !replacementCwd;
+  $('start-session').hidden = !parent || !replacementCwd;
   $('start-session').disabled =
     Boolean(creating) ||
     closingSessions.size > 0 ||
     !replacementCwd ||
     !api?.closeSession;
   $('start-session').title = replacementCwd
-    ? `Start a new session in ${replacementCwd}`
+    ? `Reset the conversation in ${replacementCwd}`
     : '';
   text(
     $('start-session'),
     creating === 'session'
       ? 'Creating…'
       : pendingReplacement
-        ? 'Retry new session'
-        : 'New session',
+        ? 'Retry reset conversation'
+        : 'Reset conversation',
   );
   for (const id of ['close-session', 'close-parent-session']) {
     $(id).disabled =
       Boolean(creating) ||
       !session ||
-      !api?.closeSession ||
+      !(parent ? api?.closeSession : api?.agentSession) ||
+      !unit ||
+      closingSessions.has(conversationId()) ||
       closingSessions.has(session.id);
-    $(id).title = session
-      ? session.owned
-        ? `Close ${session.name} and stop its running work and agents`
-        : `Close ${session.name} in this window`
+    $(id).title = unit
+      ? parent
+        ? session.owned
+          ? `Close workspace ${session.name} and stop its agents`
+          : `Close workspace ${session.name} in this window`
+        : `Close ${unit.name}`
       : '';
     text(
       $(id),
-      closingSessions.has(session?.id) ? 'Closing…' : 'Close session',
+      closingSessions.has(conversationId())
+        ? 'Closing…'
+        : parent
+          ? 'Close workspace'
+          : 'Close agent',
     );
   }
 }
@@ -2022,6 +2094,30 @@ async function startSession(submission) {
   }
 }
 async function closeSession() {
+  if (state.unitId !== 'parent') {
+    const ownerId = state.sessionId;
+    const agentId = state.unitId;
+    const id = conversationId();
+    if (creating || !api?.agentSession || closingSessions.has(id)) return;
+    saveDraft();
+    saveConversationDisclosures();
+    closingSessions.add(id);
+    $('app-error').hidden = true;
+    render();
+    try {
+      await api.agentSession(ownerId, {agentId, action: 'close'});
+      const version = snapshotVersion;
+      const hub = await api.getState();
+      if (version === snapshotVersion) receive(hub);
+      agentControls.dismiss(ownerId, agentId);
+    } catch (error) {
+      showError(error);
+    } finally {
+      closingSessions.delete(id);
+      render();
+    }
+    return;
+  }
   const id = state.sessionId;
   if (creating || !id || !api?.closeSession || closingSessions.has(id)) return;
   saveDraft();
@@ -2046,19 +2142,20 @@ async function closeSession() {
 }
 async function sendPrompt(event) {
   event.preventDefault();
-  const id = state.sessionId;
+  const ownerId = state.sessionId;
+  const agentId = state.unitId === 'parent' ? undefined : state.unitId;
+  const id = conversationId();
   const textarea = $('parent-prompt');
   const prompt = textarea.value.trim();
-  const session = snapshot()?.session;
+  const session = selectedUnit();
   if (
     !api ||
-    state.unitId !== 'parent' ||
     !session ||
-    !canControl(session) ||
-    session.status === 'closed' ||
+    !conversationControllable() ||
     sending.has(id) ||
     stopping.has(id) ||
     closingSessions.has(id) ||
+    closingSessions.has(ownerId) ||
     !prompt
   )
     return;
@@ -2068,26 +2165,65 @@ async function sendPrompt(event) {
   const native = command && nativeCommand(command.name);
   let animated = false;
   sending.add(id);
+  promptErrors.delete(id);
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
   renderInspector();
   try {
-    const routing = routeNativeCommand({
-      prompt,
-      data: state.hub.sessions.find(item => item.session.id === id),
-      submission: {id, draft: submitted},
-    });
+    if (agentId && command && ['model', 'thinking'].includes(command.name)) {
+      if (!command.args) await openAgentSettings(ownerId, agentId);
+      else {
+        const configuration = {};
+        if (command.name === 'thinking')
+          configuration.thinkingLevel = command.args;
+        else {
+          const separator = command.args.indexOf('/');
+          if (separator < 1 || separator === command.args.length - 1)
+            throw new Error('Usage: /model provider/model');
+          configuration.provider = command.args.slice(0, separator);
+          configuration.modelId = command.args.slice(separator + 1);
+        }
+        await api.agentSession(ownerId, {
+          agentId,
+          action: 'configure',
+          configuration,
+        });
+      }
+      clearSubmittedDraft(id, submitted);
+      return;
+    }
+    if (agentId && native && !['compact', 'reload'].includes(command.name))
+      throw new Error(`/${command.name} is unavailable for this agent.`);
+    const routing = !agentId
+      ? routeNativeCommand({
+          prompt,
+          data: state.hub.sessions.find(item => item.session.id === id),
+          submission: {id, draft: submitted},
+        })
+      : undefined;
     if (routing !== undefined) {
       if (await routing) clearSubmittedDraft(id, submitted);
       return;
     }
-    if (!(await toolSettings.beforePrompt(prompt))) return;
-    if (!native && session.status === 'idle') {
+    if (!agentId && !(await toolSettings.beforePrompt(prompt))) return;
+    if (!agentId && !native && session.status === 'idle') {
       if (stopEffectSession === id) clearStopEffect();
       (scene || fallbackScene)?.prompt(id);
       animated = true;
     }
-    await api.promptSession(id, {prompt});
+    if (agentId) {
+      if (command?.name === 'compact')
+        await api.agentSession(ownerId, {
+          agentId,
+          action: 'compact',
+          instructions: command.args,
+        });
+      else if (command?.name === 'reload') {
+        if (command.args) throw new Error('Usage: /reload');
+        await api.agentSession(ownerId, {agentId, action: 'reload'});
+      } else
+        await api.agentSession(ownerId, {agentId, action: 'prompt', prompt});
+    } else await api.promptSession(id, {prompt});
     if (!native) {
       pausedActivity.delete(id);
       if (stopEffectSession === id) clearStopEffect();
@@ -2095,41 +2231,50 @@ async function sendPrompt(event) {
     clearSubmittedDraft(id, submitted);
   } catch (error) {
     if (animated) (scene || fallbackScene)?.cancelPrompt(id);
-    if (id === state.sessionId) showError(error, $('prompt-error'));
-    else showError(error);
+    promptErrors.set(
+      id,
+      error instanceof Error ? error.message : String(error),
+    );
+    if (id === conversationId()) showError(error, $('prompt-error'));
   } finally {
     sending.delete(id);
     renderInspector();
   }
 }
 async function abortParent() {
-  const id = state.sessionId;
+  const ownerId = state.sessionId;
+  const agentId = state.unitId === 'parent' ? undefined : state.unitId;
+  const id = conversationId();
   const data = snapshot();
-  const session = data?.session;
+  const session = selectedUnit();
   if (
     !api ||
-    state.unitId !== 'parent' ||
     !session ||
-    !canControl(session) ||
-    !parentHasWork(data) ||
+    !conversationControllable() ||
+    !conversationHasWork(data, session) ||
     stopping.has(id) ||
-    closingSessions.has(id)
+    closingSessions.has(id) ||
+    closingSessions.has(ownerId)
   )
     return;
   stopping.add(id);
-  pausedActivity.add(id);
+  promptErrors.delete(id);
+  $('prompt-error').hidden = true;
+  if (!agentId) pausedActivity.add(id);
   $('app-error').hidden = true;
   renderFactory();
   renderInspector();
-  stopEffect();
+  if (!agentId) stopEffect();
   try {
-    const queued = await api.abortSession(id);
+    const queued = agentId
+      ? await api.agentSession(ownerId, {agentId, action: 'abort'})
+      : await api.abortSession(id);
     const recovered = [
       ...(queued?.steering || []),
       ...(queued?.followUp || []),
     ];
     if (recovered.length) {
-      if (id === state.sessionId) saveDraft();
+      if (id === conversationId()) saveDraft();
       const draft = promptDrafts.get(id) || {value: '', revision: 0};
       // A submitted draft can still be awaiting its acknowledgement when Stop wins.
       const submitted =
@@ -2146,15 +2291,19 @@ async function abortParent() {
         direction: draft.direction || 'none',
       });
       persistComposerDraft(id);
-      if (id === state.sessionId) {
+      if (id === conversationId()) {
         restoreDraft(id);
-        if (state.unitId === 'parent') $('parent-prompt').focus();
+        $('parent-prompt').focus();
       }
     }
   } catch (error) {
     if (stopEffectSession === id) clearStopEffect();
     pausedActivity.delete(id);
-    showError(error);
+    promptErrors.set(
+      id,
+      error instanceof Error ? error.message : String(error),
+    );
+    if (id === conversationId()) showError(error, $('prompt-error'));
   } finally {
     stopping.delete(id);
     renderFactory();
@@ -2182,6 +2331,17 @@ async function loadWorkspace() {
 
 $('new-session').addEventListener('click', openFolder);
 $('welcome-create').addEventListener('click', openFolder);
+$('open-workspace-config').addEventListener('click', async () => {
+  const menu = $('app-menu-panel');
+  if (menu.matches(':popover-open')) menu.hidePopover();
+  try {
+    await api.openWorkspaceConfiguration(
+      snapshot()?.session.cwd || state.hub.launchCwd,
+    );
+  } catch (error) {
+    showError(error);
+  }
+});
 $('start-session').addEventListener('click', () => void startSession());
 $('close-session').addEventListener('click', closeSession);
 $('close-parent-session').addEventListener('click', closeSession);
@@ -2240,12 +2400,7 @@ document.addEventListener('keydown', event => {
     return;
   if (document.querySelector('dialog[open]')) return;
   const data = snapshot();
-  if (
-    state.unitId === 'parent' &&
-    data &&
-    canControl(data.session) &&
-    parentHasWork(data)
-  ) {
+  if (data && conversationControllable() && conversationHasWork(data)) {
     event.preventDefault();
     void abortParent();
   } else if (expandedEditor) {
@@ -2338,10 +2493,6 @@ for (const id of [
   'panel-conversation',
 ])
   conversationResize.observe($(id));
-const composerResize = new window.ResizeObserver(() => {
-  rememberComposerHeight();
-});
-composerResize.observe($('composer-slot'));
 $('follow-feed').addEventListener('change', () => {
   if ($('follow-feed').checked)
     $('panel-feed').scrollTop = $('panel-feed').scrollHeight;
@@ -2383,9 +2534,7 @@ const cleanupZoom = initZoom(api);
 const cleanupAccounts = initAccounts(api);
 const routeNativeCommand = createNativeCommandRouter({
   api,
-  accounts: options => cleanupAccounts.open(options),
   newSession: startSession,
-  resume: () => $('resume-session').click(),
   hotkeys: () => {
     if (!$('hotkeys-dialog').open) $('hotkeys-dialog').showModal();
   },
@@ -2411,7 +2560,7 @@ const receiveNavigation = createNavigationReceiver({
         height: existing?.height || '',
       });
       persistComposerDraft(id);
-      if (state.sessionId === id) restoreDraft(id);
+      if (state.sessionId === id && state.unitId === 'parent') restoreDraft(id);
     }
     await selectOpenedSession(id);
   },
@@ -2454,21 +2603,32 @@ const agentControls = initAgentControls({
     renderInspector();
   },
 });
+async function openAgentSettings(ownerId, agentId) {
+  const data = state.hub.sessions.find(item => item.session.id === ownerId);
+  const agent = data?.agents.find(item => item.id === agentId);
+  if (!agent || !agentResumable(agent)) return;
+  await api.agentSession(ownerId, {
+    agentId,
+    action: 'command',
+    command: '/model',
+  });
+}
 $('open-session-settings').addEventListener('click', async () => {
-  const session = snapshot()?.session;
+  const unit = selectedUnit();
+  const id = conversationId();
   if (
-    !api?.promptSession ||
-    !session ||
-    !canControl(session) ||
-    session.status === 'closed' ||
-    stopping.has(session.id) ||
-    closingSessions.has(session.id)
+    !unit ||
+    !conversationControllable() ||
+    stopping.has(id) ||
+    closingSessions.has(id) ||
+    closingSessions.has(state.sessionId)
   )
     return;
-  selectUnit('parent');
   $('app-error').hidden = true;
   try {
-    await api.promptSession(session.id, {prompt: '/model'});
+    if (state.unitId !== 'parent')
+      await openAgentSettings(state.sessionId, state.unitId);
+    else await api.promptSession(state.sessionId, {prompt: '/model'});
   } catch (error) {
     showError(error);
   }
@@ -2476,6 +2636,12 @@ $('open-session-settings').addEventListener('click', async () => {
 const appMenu = initAppMenu();
 const liveView = initLiveView();
 const recentProjects = initRecentProjects({api, open: openFolder});
+const agentTemplates = initAgentTemplates({
+  api,
+  selected: () => snapshot(),
+  launchCwd: () => state.hub.launchCwd,
+  opened: selectOpenedSession,
+});
 const cleanupSessionHistory = initSessionHistory({
   api,
   currentFolder: () => snapshot()?.session.cwd || state.hub.launchCwd,
@@ -2491,8 +2657,8 @@ $('scene-labels').hidden = !scene;
 applyMotion();
 initMarkdownFiles({api, selected: snapshot});
 initSessionFeatures({
-  api,
-  selected: () => (state.unitId === 'parent' ? snapshot() : undefined),
+  api: conversationApi,
+  selected: conversationSnapshot,
   draftChanged: saveDraft,
 });
 initUsage(call => {
@@ -2543,7 +2709,6 @@ window.addEventListener('unload', () => {
   conversationResize.disconnect();
   conversationVisualizations.dispose();
   terminalTabs.dispose();
-  composerResize.disconnect();
   window.cancelAnimationFrame(conversationScrollFrame);
   cleanupThemes();
   cleanupZoom();
@@ -2553,6 +2718,7 @@ window.addEventListener('unload', () => {
   appMenu.dispose();
   liveView.dispose();
   recentProjects.dispose();
+  agentTemplates.dispose();
   cleanupSessionHistory();
   cleanupSessionSelection?.();
   factoryCane.dispose();

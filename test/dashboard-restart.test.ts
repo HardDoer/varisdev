@@ -18,6 +18,7 @@ import {
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 import type {DesktopStartup} from '../src/desktop/startup.ts';
+import {saveAgentTemplate} from '../src/agents/templates.ts';
 
 void test(
   'live restart snapshots preserve buffered blank parents, custom entries, active tools and CLI resources through real SDK restoration',
@@ -65,8 +66,19 @@ void test(
     );
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}, extensions: [extension]}),
+      JSON.stringify({
+        retry: {enabled: false},
+        extensions: [extension],
+        default_agent: 'new-default',
+      }),
     );
+    await saveAgentTemplate(cwd, {
+      scope: 'global',
+      id: 'new-default',
+      name: 'New default',
+      mode: 'primary',
+      instructions: 'New conversations only profile body.',
+    });
     const runtime = await ModelRuntime.create({
       authPath: join(agentDir, 'auth.json'),
       modelsPath: null,
@@ -150,6 +162,19 @@ void test(
     assert.equal(parent.state.snapshot().session.id, sourceId);
     assert.equal(blank.entries[0].type, 'session');
     assert.equal(blank.entries[0].id, sourceId);
+    assert.equal(
+      (await parent.features()).agentProfile?.id,
+      'default',
+      'legacy startup receives neutral Default instead of a later configured default',
+    );
+    assert.ok(
+      blank.entries.some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile' &&
+          (entry.data as {id?: string}).id === 'default',
+      ),
+    );
     assert.deepEqual(blank.tools, ['read', 'write', 'codemode', 'tool_search']);
     assert.ok(
       !(await parent.features()).commands.some(
@@ -173,6 +198,7 @@ void test(
     assert.ok(
       (await fresh.features()).commands.some(command => command.name === 'mcp'),
     );
+    assert.equal((await fresh.features()).agentProfile?.id, 'new-default');
     const unsent = fresh.restartSnapshot();
     assert.ok(unsent.sessionFile);
     await assert.rejects(access(unsent.sessionFile), /ENOENT/);

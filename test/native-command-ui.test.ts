@@ -25,15 +25,9 @@ void test('desktop routing uses the shared targets and leaves SDK and extension 
         return name === 'copy' ? {ok: true} : {cancelled};
       },
     },
-    accounts: async (options: unknown) => {
-      calls.push(['accounts', options]);
-    },
     newSession: async (target: unknown) => {
       calls.push(['new', target]);
       return true;
-    },
-    resume: async (cwd: string) => {
-      calls.push(['resume', cwd]);
     },
     hotkeys: async () => {
       calls.push(['hotkeys']);
@@ -51,20 +45,12 @@ void test('desktop routing uses the shared targets and leaves SDK and extension 
     'normal prompts retain synchronous routing and immediate wake timing',
   );
   assert.equal(calls.length, 0);
-  assert.equal(await route('/login openai'), true);
-  assert.deepEqual(calls.pop(), [
-    'accounts',
-    {provider: 'openai', logout: false},
-  ]);
-  assert.equal(await route('/logout openai-codex'), true);
-  assert.deepEqual(calls.pop(), [
-    'accounts',
-    {provider: 'openai-codex', logout: true},
-  ]);
+  assert.equal(route('/login openai'), undefined);
+  assert.equal(route('/logout openai-codex'), undefined);
+  assert.equal(route('/resume'), undefined);
+  assert.equal(calls.length, 0);
   assert.equal(await route('/new'), true);
   assert.deepEqual(calls.pop(), ['new', submission]);
-  assert.equal(await route('/resume'), true);
-  assert.deepEqual(calls.pop(), ['resume', '/project']);
   assert.equal(await route('/copy'), true);
   assert.deepEqual(calls.pop(), ['copy', {sessionId: 'original'}]);
   assert.equal(await route('/hotkeys'), true);
@@ -76,7 +62,7 @@ void test('desktop routing uses the shared targets and leaves SDK and extension 
   );
   cancelled = false;
   assert.equal(await route('/quit'), true);
-  for (const command of ['new', 'resume', 'copy', 'hotkeys', 'quit'])
+  for (const command of ['new', 'copy', 'hotkeys', 'quit'])
     await assert.rejects(
       async () => route(`/${command} unexpected`),
       new RegExp(`Usage: /${command}`),

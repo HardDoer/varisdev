@@ -29,6 +29,7 @@ import {
 } from '../src/agents/session.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
+import type {SessionFeatures} from '../src/dashboard/features.ts';
 
 type AgentEventHandler = (
   event: {reason?: string},
@@ -66,6 +67,7 @@ function controlledWorker(cooperative = true, directory = '') {
     message: string;
     signal: AbortSignal;
     finish: (output: string) => void;
+    fail: (error: unknown) => void;
   }> = [];
   let disposed = 0;
   const steering: string[] = [];
@@ -80,7 +82,7 @@ function controlledWorker(cooperative = true, directory = '') {
       const result = deferred<string>();
       const abort = () => result.reject(signal.reason);
       if (cooperative) signal.addEventListener('abort', abort, {once: true});
-      runs.push({message, signal, finish: result.resolve});
+      runs.push({message, signal, finish: result.resolve, fail: result.reject});
       onActivity('Using read');
       try {
         signal.throwIfAborted();
@@ -104,7 +106,8 @@ function controlledWorker(cooperative = true, directory = '') {
 }
 
 async function until(condition: () => boolean) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
     if (condition()) return;
     await nextTick();
   }
@@ -230,7 +233,7 @@ for (const action of ['cancel', 'timeout'] as const) {
     );
     assert.equal(result.output, undefined);
     assert.equal(created, 1);
-    assert.equal(first.disposed, 1);
+    assert.equal(first.disposed, 0);
     other.runs[0].finish('done');
     await manager.wait([queued.id]);
   });
@@ -274,7 +277,7 @@ void test('timeouts exclude queue time and reset when completed agents resume', 
   assert.equal(result.status, 'failed');
   assert.match(result.error!, /Timed out after 100 milliseconds/);
   assert.equal(created, 1);
-  assert.equal(controlled.disposed, 1);
+  assert.equal(controlled.disposed, 0);
 });
 
 void test('cancellation retains the worker slot until active work has stopped', async t => {
@@ -294,7 +297,7 @@ void test('cancellation retains the worker slot until active work has stopped', 
   await until(() => second.runs.length === 1);
   assert.equal(manager.get(a.id).status, 'cancelled');
   assert.equal(manager.get(a.id).output, undefined);
-  assert.equal(first.disposed, 1);
+  assert.equal(first.disposed, 0);
   second.runs[0].finish('done');
   await manager.wait([b.id]);
 });
@@ -334,11 +337,12 @@ void test('startup failures and timeouts release slots and preserve errors', asy
   );
   assert.match(results[1].error ?? '', /Timed out after 20 milliseconds/);
   assert.match(results[1].activity, /Timed out after 20 milliseconds/);
-  assert.equal(slow.disposed, 1);
-  await assert.rejects(
-    manager.send(timed.id, 'retry'),
-    /Cannot message a failed/,
-  );
+  assert.equal(slow.disposed, 0);
+  assert.equal(manager.get(timed.id).resumable, true);
+  await manager.send(timed.id, 'retry');
+  await until(() => slow.runs.length === 2);
+  slow.runs[1].finish('Recovered');
+  assert.equal((await manager.wait([timed.id]))[0].output, 'Recovered');
 });
 
 void test('wait supports any, all, polling, and interruption without cancelling agents', async t => {
@@ -439,10 +443,16 @@ function fakeSession() {
   const messages: AgentSession['messages'] = [];
   let disposed = 0;
   let aborts = 0;
+  const customEntries: Array<{customType: string; data: unknown}> = [];
   const session = {
     messages,
     extensionRunner: {emit: async () => {}},
-    sessionManager: {getSessionFile: () => '/saved/session.jsonl'},
+    sessionManager: {
+      getSessionFile: () => '/saved/session.jsonl',
+      appendCustomEntry(customType: string, data: unknown) {
+        customEntries.push({customType, data: structuredClone(data)});
+      },
+    },
     subscribe(listener: (event: AgentSessionEvent) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -465,6 +475,7 @@ function fakeSession() {
       for (const listener of listeners) listener(event);
     },
     listeners,
+    customEntries,
     get disposed() {
       return disposed;
     },
@@ -492,10 +503,29 @@ void test('session workers save the final answer, track tools, and detect API fa
     fake.session as unknown as AgentSession,
     resultFile,
   );
+  assert.equal(fake.customEntries[0].customType, 'varisdev.agent-profile');
+  const defaultProfile = fake.customEntries[0].data as {
+    id: string;
+    name: string;
+    instructions: string;
+    permissions: unknown[];
+    mode: string;
+    model?: string;
+    thinkingLevel?: string;
+    steps?: number;
+  };
+  assert.equal(defaultProfile.id, 'default');
+  assert.equal(defaultProfile.name, 'Default');
+  assert.equal(defaultProfile.instructions, '');
+  assert.deepEqual(defaultProfile.permissions, []);
+  assert.equal(defaultProfile.mode, 'all');
+  assert.equal(defaultProfile.model, undefined);
+  assert.equal(defaultProfile.thinkingLevel, undefined);
+  assert.equal(defaultProfile.steps, undefined);
   const activities: string[] = [];
   fake.session.prompt = async (message, options) => {
     assert.equal(message, 'Do the work');
-    assert.deepEqual(options, {expandPromptTemplates: false});
+    assert.deepEqual(options, {expandPromptTemplates: true});
     fake.emit({
       type: 'tool_execution_start',
       toolName: 'read',
@@ -665,6 +695,9 @@ void test('agent tools select registered models and effort without adding parent
       projectTrustOverride: false,
       name: 'Review',
       instructions: undefined,
+      agentProfile: undefined,
+      approval: undefined,
+      context: 'workspace',
       model: selectedModel,
       modelRegistry: ctx.modelRegistry,
       thinkingLevel: 'high',
@@ -739,7 +772,7 @@ void test('agent tools select registered models and effort without adding parent
     assert.deepEqual(listed.agents, []);
     assert.ok(Object.values(listed.summary).every(count => count === 0));
     const spawnDescription = tools.get('agent_spawn')!.description;
-    assert.match(spawnDescription, /any model from the parent model registry/);
+    assert.match(spawnDescription, /any model from the current model registry/);
     for (const model of ['', 'gpt-5.6-sol', '/model', 'provider/']) {
       await assert.rejects(
         execute('agent_spawn', {name: 'bad model', task: 'test', model}),
@@ -774,7 +807,7 @@ void test('agent tools select registered models and effort without adding parent
     parentModel = undefined;
     await assert.rejects(
       execute('agent_spawn', {name: 'no selection', task: 'test'}),
-      /Choose a parent model or specify the agent model/,
+      /Choose a model or specify the agent model/,
     );
     assert.equal(optionsSeen.length, beforeMissingModel);
     parentModel = selectedModel;
@@ -878,6 +911,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
     const workerTools = new Map<string, ToolDefinition>();
     await options.agentToolsExtension({
       on() {},
+      registerCommand() {},
       registerTool(tool: ToolDefinition) {
         workerTools.set(tool.name, tool);
       },
@@ -918,7 +952,16 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   t.after(() => events.get('session_shutdown')!({reason: 'new'}, ctx));
   const sender = await spawn('Designer');
   const receiver = await spawn('Builder');
-  assert.deepEqual([...sender.tools.keys()], ['agent_list', 'agent_send']);
+  assert.deepEqual([...sender.tools.keys()].sort(), [
+    'agent_cancel',
+    'agent_inbox',
+    'agent_list',
+    'agent_send',
+    'agent_spawn',
+    'agent_status',
+    'agent_templates',
+    'agent_wait',
+  ]);
   const listed = await execute(sender.tools, 'agent_list', {});
   const listing = listed.details as {selfId: string; agents: AgentRecord[]};
   assert.equal(listing.selfId, sender.id);
@@ -977,16 +1020,14 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   );
   assert.equal(notifications.length, 0);
   await execute(tools, 'agent_cancel', {id: receiver.id});
-  await assert.rejects(
-    send(receiver.id, 'Too late'),
-    /Cannot message a cancel/,
+  await send(receiver.id, 'Resume after cancellation');
+  await until(() => receiver.controlled.runs.length === 2);
+  assert.equal(
+    receiver.controlled.runs[1].message.includes('Resume after cancellation'),
+    true,
   );
+  receiver.controlled.runs[1].finish('Resumed');
   await execute(tools, 'agent_wait', {ids: [receiver.id]});
-  assert.equal(receiver.controlled.runs.length, 1);
-  await assert.rejects(
-    send(receiver.id, 'Too late'),
-    /Cannot message a cancelled/,
-  );
   const parentMessageIds: string[] = [];
   for (let i = 0; i < 105; i++) {
     const message = i === 104 ? 'z'.repeat(700) : `Parent update ${i}`;
@@ -1036,7 +1077,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   );
   await assert.rejects(
     execute(tools, 'agent_inbox', {messageId: firstParentMessageId}),
-    /Unknown parent inbox message/,
+    /Unknown main agent inbox message/,
   );
   assert.equal(notifications.length, 0);
 
@@ -1153,6 +1194,7 @@ function teamWorkers() {
     const tools = new Map<string, ToolDefinition>();
     await options.agentToolsExtension({
       on() {},
+      registerCommand() {},
       registerTool(tool: ToolDefinition) {
         tools.set(tool.name, tool);
       },
@@ -1652,7 +1694,7 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   await parent.emit('turn_end');
   assert.match(
     parent.tools.get('agent_spawn')!.description,
-    /any model from the parent model registry/,
+    /any model from the current model registry/,
   );
   assert.ok(
     Check(parent.tools.get('agent_spawn')!.parameters, {
@@ -1959,4 +2001,380 @@ void test('inbox tool forwards incremental cursors and message lookup still retr
   ).content[0];
   assert.ok(full.type === 'text');
   assert.equal(JSON.parse(full.text).message.message, 'First report');
+});
+
+void test('cancelled operations settle before concurrent messages reuse the retained worker', async t => {
+  const manager = new AgentOrchestrator(2);
+  const controlled = controlledWorker(false);
+  t.after(() => {
+    controlled.runs.at(-1)?.finish('Cleanup');
+    return manager.close();
+  });
+  let created = 0;
+  const {id} = manager.spawn(spec, async () => {
+    created++;
+    return controlled.worker;
+  });
+  await until(() => controlled.runs.length === 1);
+  manager.cancel(id);
+  const first = manager.send(id, 'Resume after stop');
+  const second = manager.send(id, 'Include the tests');
+  await nextTick();
+  assert.equal(controlled.runs.length, 1);
+  controlled.runs[0].finish('Discard this late output');
+  await Promise.all([first, second]);
+  await until(() => controlled.runs.length === 2);
+  assert.equal(created, 1);
+  assert.equal(controlled.disposed, 0);
+  assert.equal(controlled.runs[1].message, 'Resume after stop');
+  assert.deepEqual(controlled.steering, ['Include the tests']);
+  assert.equal(manager.get(id).error, undefined);
+  controlled.runs[1].finish('Recovered response');
+  const [record] = await manager.wait([id]);
+  assert.equal(record.output, 'Recovered response');
+  assert.equal(record.resumable, true);
+});
+
+void test('a finishing prompt resumes only after its operation settles and model errors stay reusable', async t => {
+  const manager = new AgentOrchestrator(2);
+  const controlled = controlledWorker();
+  controlled.worker.steer = async () => false;
+  t.after(() => manager.close());
+  const {id} = manager.spawn(spec, async () => controlled.worker);
+  await until(() => controlled.runs.length === 1);
+  const sending = manager.send(id, 'Next request');
+  await nextTick();
+  assert.equal(controlled.runs.length, 1);
+  controlled.runs[0].finish('Original response');
+  await sending;
+  await until(() => controlled.runs.length === 2);
+  controlled.runs[1].fail(new Error('Provider failed'));
+  await manager.wait([id]);
+  assert.equal(manager.get(id).status, 'failed');
+  assert.equal(manager.get(id).resumable, true);
+  assert.equal(controlled.disposed, 0);
+  await manager.send(id, 'Recover from provider error');
+  await until(() => controlled.runs.length === 3);
+  controlled.runs[2].finish('Recovered');
+  assert.equal((await manager.wait([id]))[0].output, 'Recovered');
+});
+
+void test('cancellation before initialization retains the factory and closing makes the conversation disposable', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const busy = controlledWorker();
+  const controlled = controlledWorker();
+  manager.spawn(spec, async () => busy.worker);
+  let created = 0;
+  const {id} = manager.spawn(spec, async () => {
+    created++;
+    return controlled.worker;
+  });
+  await until(() => busy.runs.length === 1);
+  manager.cancel(id);
+  assert.equal(manager.get(id).resumable, true);
+  assert.equal(created, 0);
+  await manager.send(id, 'Replace the cancelled initial task');
+  assert.equal(manager.get(id).status, 'queued');
+  busy.runs[0].finish('Done');
+  await until(() => controlled.runs.length === 1);
+  assert.equal(
+    controlled.runs[0].message,
+    'Replace the cancelled initial task',
+  );
+  controlled.runs[0].finish('Retained result');
+  await manager.wait([id]);
+  const history = manager.conversation(id);
+  await manager.closeAgent(id);
+  assert.equal(controlled.disposed, 1);
+  assert.equal(manager.get(id).resumable, false);
+  assert.equal(manager.get(id).output, 'Retained result');
+  assert.deepEqual(manager.conversation(id), history);
+  await assert.rejects(manager.send(id, 'Cannot reopen'), /cleaned up/);
+  await manager.close();
+  assert.equal(controlled.disposed, 1);
+});
+
+void test('abort recovers and clears queued messages while preserving a worker for reuse', async t => {
+  const manager = new AgentOrchestrator(1);
+  const busy = controlledWorker();
+  const controlled = controlledWorker();
+  const pending: string[] = [];
+  controlled.worker.steer = async message => {
+    pending.push(message);
+    return true;
+  };
+  controlled.worker.clearQueue = () => ({
+    steering: pending.splice(0),
+    followUp: [],
+  });
+  t.after(() => manager.close());
+  manager.spawn(spec, async () => busy.worker);
+  const {id} = manager.spawn(spec, async () => controlled.worker);
+  await until(() => busy.runs.length === 1);
+  await manager.send(id, 'Pending scope');
+  assert.deepEqual(await manager.abort(id), {
+    steering: ['Pending scope'],
+    followUp: [],
+  });
+  assert.deepEqual(pending, []);
+  assert.equal(controlled.disposed, 0);
+  await manager.send(id, 'Fresh scope');
+  busy.runs[0].finish('Done');
+  await until(() => controlled.runs.length === 1);
+  assert.equal(controlled.runs[0].message, 'Fresh scope');
+  controlled.runs[0].finish('Fresh result');
+  await manager.wait([id]);
+});
+
+void test('worker configuration updates records and serializes queued maintenance before a prompt starts', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const busy = controlledWorker();
+  const controlled = controlledWorker();
+  const configuration = deferred<void>();
+  const actions: string[] = [];
+  const features: SessionFeatures = {
+    commands: [],
+    models: [{provider: 'test', id: 'updated', name: 'Updated'}],
+    model: {provider: 'test', id: 'updated'},
+    thinkingLevel: 'high',
+    thinkingLevels: ['off', 'high'],
+    tools: [],
+    diagnostics: [],
+  };
+  controlled.worker.features = async () => structuredClone(features);
+  controlled.worker.configure = async input => {
+    actions.push(JSON.stringify(input));
+    await configuration.promise;
+    return structuredClone(features);
+  };
+  controlled.worker.compact = async instructions => {
+    actions.push(`compact:${instructions}`);
+  };
+  controlled.worker.reload = async () => {
+    actions.push('reload');
+  };
+  manager.spawn(spec, async () => busy.worker);
+  const {id} = manager.spawn(spec, async () => controlled.worker);
+  await until(() => busy.runs.length === 1);
+  assert.deepEqual(await manager.features(id), features);
+  const changing = manager.configure(id, {
+    provider: 'test',
+    modelId: 'updated',
+    thinkingLevel: 'high',
+    persist: false,
+  });
+  await until(() => actions.length === 1);
+  busy.runs[0].finish('Done');
+  await nextTick();
+  assert.equal(controlled.runs.length, 0);
+  configuration.resolve();
+  const record = await changing;
+  assert.equal(record.model, 'test/updated');
+  assert.equal(record.thinkingLevel, 'high');
+  await until(() => controlled.runs.length === 1);
+  controlled.runs[0].finish('Configured result');
+  await manager.wait([id]);
+  await manager.compact(id, 'Keep findings');
+  await manager.reload(id);
+  assert.deepEqual(actions.slice(1), ['compact:Keep findings', 'reload']);
+  await manager.close();
+  await assert.rejects(manager.features(id), /closed/);
+});
+
+void test('stop clears messages awaiting session initialization and retained startup failures can retry', async t => {
+  const manager = new AgentOrchestrator(1);
+  const controlled = controlledWorker();
+  const initializing = deferred<AgentWorker>();
+  t.after(() => {
+    initializing.resolve(controlled.worker);
+    return manager.close();
+  });
+  let created = 0;
+  const {id} = manager.spawn(spec, async () => {
+    created++;
+    return initializing.promise;
+  });
+  await until(() => created === 1);
+  const oldMessage = manager.send(id, 'Discard pending preflight message');
+  const rejected = assert.rejects(oldMessage, /message cancelled/);
+  await nextTick();
+  manager.cancel(id);
+  initializing.resolve(controlled.worker);
+  await rejected;
+  await manager.wait([id]);
+  assert.deepEqual(controlled.steering, []);
+  assert.equal(controlled.runs.length, 0);
+  await manager.send(id, 'Resume initialized session');
+  await until(() => controlled.runs.length === 1);
+  controlled.runs[0].finish('Ready');
+  await manager.wait([id]);
+  assert.equal(created, 1);
+
+  let attempts = 0;
+  const recovered = controlledWorker();
+  const startup = manager.spawn(spec, async () => {
+    if (++attempts === 1) throw new Error('Credentials missing');
+    return recovered.worker;
+  });
+  await manager.wait([startup.id]);
+  assert.equal(manager.get(startup.id).resumable, true);
+  await manager.send(startup.id, 'Retry after credentials are restored');
+  await until(() => recovered.runs.length === 1);
+  recovered.runs[0].finish('Authenticated');
+  assert.equal((await manager.wait([startup.id]))[0].output, 'Authenticated');
+  assert.equal(attempts, 2);
+});
+
+void test('abort waits for queued automatic cleanup to dispose its initialized worker', async t => {
+  const manager = new AgentOrchestrator(1);
+  const busy = controlledWorker();
+  const controlled = controlledWorker();
+  const cleanup = deferred<void>();
+  t.after(() => {
+    cleanup.resolve();
+    return manager.close();
+  });
+  manager.spawn(spec, async () => busy.worker);
+  const {id} = manager.spawn({...spec, autoCleanup: true}, async () => ({
+    ...controlled.worker,
+    async dispose() {
+      await controlled.worker.dispose();
+      await cleanup.promise;
+    },
+  }));
+  await until(() => busy.runs.length === 1);
+  await manager.send(id, 'Initialize before a slot opens');
+  let stopped = false;
+  const stopping = manager.abort(id).then(() => {
+    stopped = true;
+  });
+  await until(() => controlled.disposed === 1);
+  await nextTick();
+  assert.equal(stopped, false);
+  cleanup.resolve();
+  await stopping;
+  assert.equal(manager.get(id).resumable, false);
+  assert.equal(controlled.runs.length, 0);
+});
+
+void test('nested waits yield a single worker slot to children and restore it before starting queued work', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => {
+    parentFinish.resolve();
+    return manager.close();
+  });
+  const child = controlledWorker();
+  const sibling = controlledWorker();
+  const parentFinish = deferred<void>();
+  let childId = '';
+  let returned = false;
+  const parent = manager.spawn(spec, async id => ({
+    async steer() {
+      return true;
+    },
+    async run(_message, signal) {
+      childId = manager.spawn(
+        {...spec, name: 'Child'},
+        async () => child.worker,
+      ).id;
+      const [record] = await manager.wait([childId], {
+        callerId: id,
+        signal,
+        timeoutMs: 1000,
+      });
+      assert.equal(record.output, 'Child output');
+      returned = true;
+      await parentFinish.promise;
+      return 'Parent output';
+    },
+    dispose() {},
+  }));
+  await until(() => child.runs.length === 1);
+  const queued = manager.spawn(
+    {...spec, name: 'Sibling'},
+    async () => sibling.worker,
+  );
+  await assert.rejects(
+    manager.wait([parent.id], {callerId: parent.id}),
+    /cannot wait for itself/,
+  );
+  child.runs[0].finish('Child output');
+  await until(() => returned);
+  assert.equal(sibling.runs.length, 0);
+  assert.equal(manager.get(parent.id).status, 'running');
+  parentFinish.resolve();
+  await until(() => sibling.runs.length === 1);
+  sibling.runs[0].finish('Sibling output');
+  assert.deepEqual(
+    (await manager.wait([parent.id, queued.id])).map(record => record.output),
+    ['Parent output', 'Sibling output'],
+  );
+});
+
+void test('waiting agents reacquire slots after a wait timeout without exceeding concurrency', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const child = controlledWorker();
+  const sibling = controlledWorker();
+  let timedOut = false;
+  const parent = manager.spawn(spec, async id => ({
+    async steer() {
+      return true;
+    },
+    async run() {
+      const childId = manager.spawn(spec, async () => child.worker).id;
+      const [record] = await manager.wait([childId], {
+        callerId: id,
+        timeoutMs: 10,
+      });
+      assert.equal(record.status, 'completed');
+      timedOut = true;
+      return 'Parent resumed';
+    },
+    dispose() {},
+  }));
+  await until(() => child.runs.length === 1);
+  const queued = manager.spawn(spec, async () => sibling.worker);
+  await delay(30);
+  assert.equal(
+    timedOut,
+    false,
+    'A timed out wait still reacquires its slot before returning',
+  );
+  assert.equal(sibling.runs.length, 0);
+  child.runs[0].finish('Child result');
+  await until(() => sibling.runs.length === 1);
+  assert.equal(timedOut, true);
+  sibling.runs[0].finish('Sibling result');
+  await manager.wait([parent.id, queued.id]);
+});
+
+void test('cancelling a waiting agent releases no extra slots and leaves its children running', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const child = controlledWorker();
+  const next = controlledWorker();
+  const parent = manager.spawn(spec, async id => ({
+    async steer() {
+      return true;
+    },
+    async run() {
+      const childId = manager.spawn(spec, async () => child.worker).id;
+      await manager.wait([childId], {callerId: id, timeoutMs: 1000});
+      return 'Should not return';
+    },
+    dispose() {},
+  }));
+  await until(() => child.runs.length === 1);
+  const queued = manager.spawn(spec, async () => next.worker);
+  await manager.abort(parent.id);
+  assert.equal(manager.get(parent.id).status, 'cancelled');
+  assert.equal(child.runs[0].signal.aborted, false);
+  assert.equal(next.runs.length, 0);
+  child.runs[0].finish('Child continued');
+  await until(() => next.runs.length === 1);
+  next.runs[0].finish('Next result');
+  await manager.wait([queued.id]);
 });

@@ -32,6 +32,11 @@ import {DashboardState} from '../src/dashboard/state.ts';
 import type {ModelUsage} from '../src/usage.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
+import {
+  saveAgentTemplate,
+  type AgentTemplate,
+} from '../src/agents/templates.ts';
+import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
 
 function toolContext(ctx: ExtensionContext): ExtensionToolContext {
   return Object.assign(ctx, {
@@ -171,6 +176,20 @@ void test(
       join(cwd, 'context.txt'),
       'Fixture contents from the worker directory.',
     );
+    await mkdir(join(cwd, '.pi', 'prompts'), {recursive: true});
+    await mkdir(join(cwd, '.pi', 'skills', 'fixture'), {recursive: true});
+    await writeFile(
+      join(cwd, '.pi', 'prompts', 'report.md'),
+      '---\ndescription: Fixture report\n---\nProject template marker: $1',
+    );
+    await writeFile(
+      join(cwd, '.pi', 'skills', 'fixture', 'SKILL.md'),
+      '---\nname: fixture\ndescription: Fixture skill\n---\nProject skill marker: inspect every finding.',
+    );
+    await saveToolSettings('agents', {
+      allowedModels: ['varisdev-agent-test/worker-model'],
+    });
+
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(0, '127.0.0.1', resolve);
@@ -207,6 +226,7 @@ void test(
       model: registry.find('varisdev-agent-test', 'worker-model')!,
       modelRegistry: registry,
       thinkingLevel: 'high',
+      projectTrustOverride: true,
       agentToolsExtension: pi => {
         pi.on('session_start', () => {
           workerTools = pi.getAllTools().map(tool => tool.name);
@@ -221,6 +241,28 @@ void test(
       workerTools.includes('codemode') && workerTools.includes('tool_search'),
     );
     assert.ok(workerCommands.includes('mcp'));
+    const initialFeatures = await worker.features!();
+    assert.deepEqual(initialFeatures.agentProfile, {
+      id: 'default',
+      name: 'Default',
+      mode: 'all',
+    });
+    assert.ok(
+      initialFeatures.commands.some(
+        command => command.name === 'report' && command.source === 'prompt',
+      ),
+    );
+    assert.ok(
+      initialFeatures.commands.some(
+        command =>
+          command.name === 'skill:fixture' && command.source === 'skill',
+      ),
+    );
+    assert.deepEqual(
+      initialFeatures.models.map(model => `${model.provider}/${model.id}`),
+      ['varisdev-agent-test/worker-model'],
+    );
+
     const activity: string[] = [];
     const usageUpdates: ModelUsage[] = [];
     assert.equal(
@@ -233,6 +275,22 @@ void test(
       'Final answer 2',
     );
     assert.ok(activity.includes('Using read'));
+    const selectedProfiles = SessionManager.open(worker.sessionFile!)
+      .getBranch()
+      .filter(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+    assert.equal(selectedProfiles.length, 1);
+    assert.ok(selectedProfiles[0].type === 'custom');
+    const selectedDefault = selectedProfiles[0].data as AgentTemplate;
+    assert.equal(selectedDefault.key, 'builtin:default');
+    assert.equal(selectedDefault.instructions, '');
+    assert.deepEqual(selectedDefault.permissions, []);
+    assert.equal(selectedDefault.steps, undefined);
+    assert.equal(selectedDefault.model, undefined);
+    assert.equal(selectedDefault.thinkingLevel, undefined);
     assert.equal(worker.usage?.calls.length, 2);
     assert.equal(worker.usage?.totalTokens, 220);
     assert.deepEqual(
@@ -273,6 +331,20 @@ void test(
     assert.match(
       JSON.stringify(requests[0].messages),
       /Worker instruction marker/,
+    );
+    const defaultSystem = JSON.stringify(
+      requests[0].messages.filter(message =>
+        ['system', 'developer'].includes(message.role),
+      ),
+    );
+    assert.match(defaultSystem, /You are an expert coding assistant/);
+    assert.doesNotMatch(
+      defaultSystem,
+      /Other agents may edit files in this working directory\./,
+    );
+    assert.doesNotMatch(
+      defaultSystem,
+      /builtin:default|Agent \\"Default\\"|You are delegated|Your final answer should report/,
     );
     assert.match(
       JSON.stringify(
@@ -382,6 +454,63 @@ void test(
         message.at,
       ]),
       'Serialized SDK history restores the same public message identities and tool inputs',
+    );
+    await assert.rejects(
+      worker.configure!({thinkingLevel: 'invalid'}),
+      /Thinking level must be one of/,
+    );
+    await assert.rejects(
+      worker.configure!({provider: 'missing', modelId: 'missing'}),
+      /Model is unavailable/,
+    );
+    await saveToolSettings('agents', {allowedModels: []});
+    await assert.rejects(
+      worker.configure!({modelId: 'worker-model'}),
+      /No agent models selected/,
+    );
+    await saveToolSettings('agents', {
+      allowedModels: ['varisdev-agent-test/worker-model'],
+    });
+    const configured = await worker.configure!({
+      thinkingLevel: 'low',
+      persist: false,
+    });
+    assert.deepEqual(configured.model, {
+      provider: 'varisdev-agent-test',
+      id: 'worker-model',
+    });
+    assert.equal(configured.thinkingLevel, 'low');
+    await worker.run('/report selected', AbortSignal.timeout(5000), () => {});
+    assert.match(
+      JSON.stringify(requests[6].messages.at(-1)),
+      /Project template marker: selected/,
+    );
+    assert.equal(requests[6].reasoning_effort, 'low');
+    await worker.run('/skill:fixture', AbortSignal.timeout(5000), () => {});
+    assert.match(
+      JSON.stringify(requests[7].messages.at(-1)),
+      /Project skill marker/,
+    );
+    await writeFile(
+      join(cwd, '.pi', 'prompts', 'report.md'),
+      '---\ndescription: Revised report\n---\nReloaded template marker: $1',
+    );
+    await worker.reload!();
+    assert.ok(
+      (await worker.features!()).commands.some(
+        command =>
+          command.name === 'report' && command.description === 'Revised report',
+      ),
+    );
+    await worker.run('/report revised', AbortSignal.timeout(5000), () => {});
+    assert.match(
+      JSON.stringify(requests[8].messages.at(-1)),
+      /Reloaded template marker: revised/,
+    );
+    await worker.compact!('Keep fixture findings');
+    assert.ok(
+      worker.usage!.calls.filter(call => call.kind === 'compaction').length >=
+        2,
     );
   },
 );
@@ -626,7 +755,15 @@ void test(
               .map(tool => tool.function.name)
               .filter(tool => tool.startsWith('agent_'))
               .sort(),
-            ['agent_list', 'agent_send'],
+            [
+              'agent_cancel',
+              'agent_inbox',
+              'agent_list',
+              'agent_send',
+              'agent_spawn',
+              'agent_status',
+              'agent_wait',
+            ],
           );
           assert.ok(input.tools.some(tool => tool.function.name === 'read'));
           const prompt = JSON.stringify(
@@ -634,14 +771,14 @@ void test(
               ['system', 'developer'].includes(message.role),
             ),
           );
-          assert.match(prompt, new RegExp(name));
-          assert.match(
+          assert.doesNotMatch(
             prompt,
-            new RegExp(name === 'Receiver' ? receiver.id : sender.id),
+            /Other agents may edit files in this working directory\./,
           );
-          assert.match(prompt, /agent_list/);
-          assert.match(prompt, /agent_send/);
-          assert.match(prompt, /parent/);
+          assert.doesNotMatch(
+            prompt,
+            /You are delegated|Complete the task using its instructions|Your final answer should report|reads its inbox|Do not duplicate the final answer/,
+          );
           reply(response, {name: 'agent_list', arguments: {view: 'all'}});
         } else if (name === 'Receiver' && step === 2) {
           assert.equal(discover(input, receiver).id, sender.id);
@@ -942,7 +1079,10 @@ void test(
         input.messages.find(message => message.role === 'user')?.content,
       );
       requests.push(initial);
-      if (initial.includes('worker-b')) {
+      if (
+        initial.includes('worker-b') &&
+        requests.filter(item => item === initial).length === 1
+      ) {
         heldResponse = response;
         response.once('close', () => {
           disconnected = true;
@@ -976,6 +1116,11 @@ void test(
           })}\n\n`,
         );
       } else {
+        if (initial.includes('worker-b'))
+          assert.doesNotMatch(
+            JSON.stringify(input.messages),
+            /Discard queued scope/,
+          );
         const count = requests.filter(item => item === initial).length;
         reply(
           response,
@@ -1069,7 +1214,7 @@ void test(
     assert.equal(aUsage.calls.length, 2);
     assert.equal(aUsage.totalTokens, 270);
     assert.ok(Math.abs(aUsage.cost - 0.000473) < 1e-12);
-    const b = spawn('worker-b', true);
+    const b = spawn('worker-b');
     await partial.promise;
     const conversationDeadline = Date.now() + 5000;
     while (
@@ -1099,6 +1244,7 @@ void test(
       false,
       'queued local work sends no model request',
     );
+    await manager.send(b.id, 'Discard queued scope');
     manager.cancel(b.id);
     const completed = await manager.wait([b.id, c.id], {timeoutMs: 10000});
     assert.deepEqual(
@@ -1138,7 +1284,8 @@ void test(
       aUsage,
       'another worker cancellation does not alter this worker',
     );
-    assert.ok(disposed.has('worker-b') && disposed.has('worker-c'));
+    assert.equal(disposed.has('worker-b'), false);
+    assert.equal(disposed.has('worker-c'), true);
     assert.deepEqual(
       workers.get('worker-b')!.usage,
       bUsage,
@@ -1175,8 +1322,1040 @@ void test(
         .calls[0].toolNames,
       [],
     );
+    await manager.send(b.id, 'Resume the retained SDK conversation');
+    const [resumed] = await manager.wait([b.id], {timeoutMs: 10000});
+    assert.equal(resumed.status, 'completed');
+    assert.equal(resumed.resumable, true);
+    assert.equal(
+      resumed.sessionFile,
+      b.sessionFile ?? workers.get('worker-b')!.sessionFile,
+    );
+    assert.equal(resumed.usage!.calls.length, 2);
+    assert.equal(resumed.usage!.totalTokens, 375);
+    assert.equal(disposed.has('worker-b'), false);
+    assert.ok(
+      manager
+        .conversation(b.id)
+        .conversation.some(
+          message => message.text === 'Partial measured response',
+        ),
+    );
     await manager.close();
+    assert.equal(disposed.has('worker-b'), true);
     assert.deepEqual(manager.get(a.id).usage, aUsage);
-    assert.equal(manager.get(b.id).usage!.totalTokens, 215);
+    assert.equal(manager.get(b.id).usage!.totalTokens, 375);
+  },
+);
+
+void test(
+  'retained SDK workers await /commit responses with the active workspace skill and agent configuration',
+  {timeout: 15000},
+  async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-commit-'));
+    const agentDir = join(directory, 'config');
+    const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await mkdir(join(cwd, '.git'), {recursive: true});
+    await mkdir(agentDir, {recursive: true});
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({retry: {enabled: false}, compaction: {enabled: false}}),
+    );
+    const providerId = 'worker-commit-test';
+    const registry = new ModelRegistry(
+      await ModelRuntime.create({
+        authPath: join(agentDir, 'auth.json'),
+        modelsPath: null,
+        refreshOnCreate: false,
+      }),
+    );
+    const manager = new AgentOrchestrator(1);
+    const requests: ProviderRequest[] = [];
+    const commitStarted = Promise.withResolvers<void>();
+    const finishCommit = Promise.withResolvers<void>();
+    const toolExecutions: string[] = [];
+    const server = createServer(async (request, response) => {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      requests.push(JSON.parse(body));
+      if (requests.length === 1) {
+        reply(response, 'Initial context retained.');
+      } else {
+        commitStarted.resolve();
+        await finishCommit.promise;
+        reply(response, 'Commit delegation response.');
+      }
+    });
+    t.after(async () => {
+      finishCommit.resolve();
+      await manager.close();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      registry.unregisterProvider(providerId);
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    registry.registerProvider(providerId, {
+      api: 'openai-completions',
+      baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+      apiKey: 'fixture-key',
+      models: [
+        {
+          id: 'worker-model',
+          name: 'Commit fixture',
+          reasoning: true,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+        },
+      ],
+    });
+    await saveToolSettings('agents', {
+      allowedModels: [`${providerId}/worker-model`],
+    });
+    await saveAgentTemplate(cwd, {
+      scope: 'global',
+      id: 'commit',
+      name: 'Global commit',
+      instructions: 'Global commit configuration.',
+      thinkingLevel: 'high',
+    });
+    await saveAgentTemplate(cwd, {
+      scope: 'workspace',
+      id: 'commit',
+      name: 'Workspace commit',
+      instructions: 'Workspace commit configuration.',
+      model: `${providerId}/worker-model`,
+      thinkingLevel: 'low',
+    });
+    const skillDirectory = join(
+      workspaceConfigPaths(cwd, agentDir).workspaceDir,
+      'skills',
+      'commit',
+    );
+    const skillPath = join(skillDirectory, 'SKILL.md');
+    await mkdir(skillDirectory, {recursive: true});
+    await writeFile(
+      skillPath,
+      '---\nname: commit\ndescription: Workspace commit workflow\n---\nActive workspace commit skill marker: read [guidance](guidance.md) before delegating.',
+    );
+    const {id} = manager.spawn(
+      {
+        name: 'Retained committer',
+        task: 'Inspect the fixture.',
+        cwd,
+        model: `${providerId}/worker-model`,
+        thinkingLevel: 'high',
+      },
+      id =>
+        createSessionWorker({
+          id,
+          parentSessionId: 'commit-parent',
+          cwd,
+          name: 'Retained committer',
+          model: registry.find(providerId, 'worker-model')!,
+          modelRegistry: registry,
+          thinkingLevel: 'high',
+          agentToolsExtension: pi => {
+            pi.on('tool_execution_start', event => {
+              toolExecutions.push(event.toolName);
+            });
+          },
+        }),
+    );
+    const [initial] = await manager.wait([id], {timeoutMs: 10000});
+    assert.equal(initial.status, 'completed');
+    assert.equal(initial.output, 'Initial context retained.');
+    assert.ok(
+      (await manager.features(id)).commands.some(
+        command => command.name === 'commit' && command.source === 'extension',
+      ),
+    );
+
+    await manager.send(id, '/commit Use the requested commit message.');
+    await commitStarted.promise;
+    await delay(20);
+    assert.equal(
+      manager.get(id).status,
+      'running',
+      'The command remains active until its model turn finishes',
+    );
+    assert.equal(manager.get(id).output, undefined);
+    assert.equal(
+      await readFile(initial.resultFile!, 'utf8'),
+      'Initial context retained.',
+    );
+    const prompt = JSON.stringify(requests[1].messages.at(-1)?.content);
+    assert.match(prompt, /Active workspace commit skill marker/);
+    assert.ok(prompt.includes(skillPath));
+    assert.ok(prompt.includes(`References are relative to ${skillDirectory}.`));
+    assert.match(prompt, /Use the requested commit message/);
+    const text = requests[1].messages.at(-1)!.content;
+    const content =
+      typeof text === 'string'
+        ? text
+        : (text as Array<{text?: string}>)
+            .map(part => part.text ?? '')
+            .join('\n');
+    const configuration = content.match(
+      /Use these exact agent_spawn configuration arguments: (\{[^\n]+\})/,
+    );
+    assert.ok(configuration);
+    assert.deepEqual(JSON.parse(configuration[1]), {
+      template: 'workspace:commit',
+      model: `${providerId}/worker-model`,
+      thinkingLevel: 'low',
+      autoCleanup: true,
+    });
+    assert.match(
+      JSON.stringify(requests[1].messages),
+      /Initial context retained/,
+    );
+
+    finishCommit.resolve();
+    const [completed] = await manager.wait([id], {timeoutMs: 5000});
+    assert.equal(completed.status, 'completed');
+    assert.equal(completed.output, 'Commit delegation response.');
+    assert.equal(completed.sessionFile, initial.sessionFile);
+    assert.equal(completed.resumable, true);
+    assert.equal(
+      await readFile(completed.resultFile!, 'utf8'),
+      'Commit delegation response.',
+    );
+    assert.deepEqual(toolExecutions, []);
+    assert.equal(requests.length, 2);
+    assert.equal(completed.usage!.calls.length, 2);
+  },
+);
+
+void test(
+  'worker profiles persist their prompt and policy snapshot, relay approval cancellation, and bound model steps',
+  {timeout: 15000},
+  async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-profile-'));
+    const agentDir = join(directory, 'config');
+    const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await mkdir(join(cwd, '.pi'), {recursive: true});
+    await mkdir(agentDir, {recursive: true});
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({retry: {enabled: false}, compaction: {enabled: false}}),
+    );
+    await writeFile(
+      join(cwd, '.pi', 'SYSTEM.md'),
+      'Default project base marker.',
+    );
+    await writeFile(join(cwd, 'AGENTS.md'), 'Retained project context marker.');
+    await writeFile(join(cwd, 'context.txt'), 'Approved fixture contents.');
+    const providerId = 'worker-profile-test';
+    const registry = new ModelRegistry(
+      await ModelRuntime.create({
+        authPath: join(agentDir, 'auth.json'),
+        modelsPath: null,
+        refreshOnCreate: false,
+      }),
+    );
+    const manager = new AgentOrchestrator(1);
+    const requests: ProviderRequest[] = [];
+    const providerErrors: unknown[] = [];
+    const approvalStarted = Promise.withResolvers<void>();
+    const approvals: Array<{
+      title: string;
+      message: string;
+      signal?: AbortSignal;
+    }> = [];
+    const profile: AgentTemplate = {
+      id: 'reviewer',
+      key: 'workspace:reviewer',
+      name: 'Scoped reviewer',
+      instructions:
+        'Profile base system marker: inspect this project carefully.',
+      scope: 'workspace',
+      sourcePath: join(directory, 'reviewer.md'),
+      mode: 'all',
+      context: 'workspace',
+      hidden: false,
+      disabled: false,
+      color: '#abcdef',
+      permissions: [
+        {action: 'read', resource: '*', effect: 'ask'},
+        {action: 'edit', resource: 'blocked.txt', effect: 'deny'},
+      ],
+    };
+    const snapshot = structuredClone(profile);
+    const server = createServer(async (request, response) => {
+      try {
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        const input = JSON.parse(body) as ProviderRequest;
+        requests.push(input);
+        if (requests.length === 1 || requests.length === 4) {
+          reply(response, {name: 'read', arguments: {path: 'context.txt'}});
+        } else if (requests.length === 2) {
+          assert.match(
+            JSON.stringify(input.messages.at(-1)),
+            /Approved fixture contents/,
+          );
+          reply(response, {
+            name: 'write',
+            arguments: {path: 'blocked.txt', content: 'Must not be written'},
+          });
+        } else if (requests.length === 3) {
+          assert.match(
+            JSON.stringify(input.messages.at(-1)),
+            /Agent permission denied: edit .*blocked\.txt/,
+          );
+          reply(response, 'Profile inspection complete.');
+        } else if (requests.length === 5) {
+          reply(response, 'Profile conversation resumed.');
+        } else {
+          assert.equal(requests.length, 6);
+          assert.equal(input.tools?.length ?? 0, 0);
+          assert.match(
+            JSON.stringify(input.messages),
+            /final allowed model step/,
+          );
+          reply(response, 'Budget summary complete.');
+        }
+      } catch (error) {
+        providerErrors.push(error);
+        reply(response, `Profile fixture failed: ${String(error)}`);
+      }
+    });
+    t.after(async () => {
+      await manager.close();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      registry.unregisterProvider(providerId);
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    registry.registerProvider(providerId, {
+      api: 'openai-completions',
+      baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+      apiKey: 'fixture-key',
+      models: [
+        {
+          id: 'worker-model',
+          name: 'Profile fixture',
+          reasoning: false,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+        },
+      ],
+    });
+    await saveToolSettings('agents', {
+      allowedModels: [`${providerId}/worker-model`],
+    });
+    const {id} = manager.spawn(
+      {
+        name: 'Approval worker',
+        task: 'Inspect the fixture.',
+        cwd,
+        model: `${providerId}/worker-model`,
+      },
+      id => {
+        const creating = createSessionWorker({
+          id,
+          parentSessionId: 'profile-parent',
+          cwd,
+          name: 'Approval worker',
+          model: registry.find(providerId, 'worker-model')!,
+          modelRegistry: registry,
+          thinkingLevel: 'off',
+          agentProfile: profile,
+          instructions: 'Additional explicit spawn instructions marker.',
+          approval: {
+            hasUI: true,
+            async confirm(title, message, options) {
+              approvals.push({title, message, signal: options?.signal});
+              if (approvals.length === 1) return true;
+              approvalStarted.resolve();
+              return new Promise<boolean>(resolve => {
+                options?.signal?.addEventListener(
+                  'abort',
+                  () => resolve(false),
+                  {once: true},
+                );
+              });
+            },
+          },
+          agentToolsExtension: () => {},
+        });
+        profile.instructions = 'Mutated after worker creation';
+        profile.permissions[0].effect = 'allow';
+        return creating;
+      },
+    );
+    const [completed] = await manager.wait([id], {timeoutMs: 10000});
+    assert.deepEqual(providerErrors, []);
+    assert.equal(completed.status, 'completed');
+    assert.equal(completed.output, 'Profile inspection complete.');
+    assert.equal(approvals.length, 1);
+    assert.match(approvals[0].title, /Approval worker/);
+    assert.match(approvals[0].message, /read.*context.txt/);
+    assert.ok(approvals[0].signal instanceof AbortSignal);
+    await assert.rejects(readFile(join(cwd, 'blocked.txt')), {code: 'ENOENT'});
+    const system = JSON.stringify(
+      requests[0].messages.filter(message =>
+        ['system', 'developer'].includes(message.role),
+      ),
+    );
+    assert.equal(system.split(snapshot.instructions).length - 1, 1);
+    assert.match(system, /Retained project context marker/);
+    assert.match(system, /Additional explicit spawn instructions marker/);
+    assert.doesNotMatch(
+      system,
+      /Default project base marker|Mutated after worker creation|You are an expert coding assistant/,
+    );
+    const entry = SessionManager.open(completed.sessionFile!)
+      .getBranch()
+      .find(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+    assert.ok(entry?.type === 'custom');
+    assert.deepEqual(entry.data, {...snapshot, permissionsVersion: 1});
+    const features = await manager.features(id);
+    assert.deepEqual(features.agentProfile, {
+      id: snapshot.id,
+      name: snapshot.name,
+      mode: snapshot.mode,
+      color: snapshot.color,
+    });
+    features.agentProfile!.name = 'Mutated feature accessor';
+    assert.equal(
+      (await manager.features(id)).agentProfile!.name,
+      snapshot.name,
+    );
+
+    await manager.send(id, 'Inspect again with approval.');
+    await approvalStarted.promise;
+    await manager.abort(id);
+    assert.equal(manager.get(id).status, 'cancelled');
+    assert.equal(manager.get(id).resumable, true);
+    assert.equal(approvals[1].signal?.aborted, true);
+    await manager.send(id, 'Recover after approval cancellation.');
+    const [resumed] = await manager.wait([id], {timeoutMs: 5000});
+    assert.equal(resumed.output, 'Profile conversation resumed.');
+    assert.equal(resumed.sessionFile, completed.sessionFile);
+    await manager.reload(id);
+    assert.deepEqual((await manager.features(id)).agentProfile, {
+      id: snapshot.id,
+      name: snapshot.name,
+      mode: snapshot.mode,
+      color: snapshot.color,
+    });
+
+    const budget = manager.spawn(
+      {
+        name: 'Budget worker',
+        task: 'Summarize the fixture.',
+        cwd,
+        model: `${providerId}/worker-model`,
+      },
+      id =>
+        createSessionWorker({
+          id,
+          parentSessionId: 'profile-parent',
+          cwd,
+          name: 'Budget worker',
+          model: registry.find(providerId, 'worker-model')!,
+          modelRegistry: registry,
+          thinkingLevel: 'off',
+          agentProfile: {
+            ...snapshot,
+            id: 'budget',
+            key: 'workspace:budget',
+            permissions: [],
+            steps: 1,
+          },
+          agentToolsExtension: () => {},
+        }),
+    );
+    const [summary] = await manager.wait([budget.id], {timeoutMs: 5000});
+    assert.deepEqual(providerErrors, []);
+    assert.equal(summary.output, 'Budget summary complete.');
+    assert.equal(summary.usage!.calls.length, 1);
+    assert.equal(requests.length, 6);
+  },
+);
+
+void test(
+  'task context excludes parent history and automatic workspace resources while retaining explicit instructions and tools',
+  {timeout: 15000},
+  async t => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'varisdev-worker-task-context-'),
+    );
+    const agentDir = join(directory, 'config');
+    const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await mkdir(join(cwd, '.git'), {recursive: true});
+    await mkdir(join(cwd, '.pi'), {recursive: true});
+    await mkdir(agentDir, {recursive: true});
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({retry: {enabled: false}, compaction: {enabled: false}}),
+    );
+    const workspaceDir = workspaceConfigPaths(cwd, agentDir).workspaceDir;
+    await mkdir(workspaceDir, {recursive: true});
+    for (const [root, scope] of [
+      [agentDir, 'GLOBAL'],
+      [join(cwd, '.pi'), 'REPOSITORY'],
+      [workspaceDir, 'WORKSPACE'],
+    ]) {
+      await writeFile(
+        join(root, 'AGENTS.md'),
+        `UNRELATED_${scope}_AGENTS_SENTINEL`,
+      );
+      await writeFile(
+        join(root, 'SYSTEM.md'),
+        `UNRELATED_${scope}_SYSTEM_SENTINEL`,
+      );
+      await writeFile(
+        join(root, 'APPEND_SYSTEM.md'),
+        `UNRELATED_${scope}_APPEND_SENTINEL`,
+      );
+      const skillDir = join(root, 'skills', `unrelated-${scope.toLowerCase()}`);
+      await mkdir(skillDir, {recursive: true});
+      await writeFile(
+        join(skillDir, 'SKILL.md'),
+        `---\nname: unrelated-${scope.toLowerCase()}\ndescription: UNRELATED_${scope}_SKILL_SENTINEL\n---\nUnrelated skill instructions.`,
+      );
+      await mkdir(join(root, 'prompts'), {recursive: true});
+      await writeFile(
+        join(root, 'prompts', `unrelated-${scope.toLowerCase()}.md`),
+        `---\ndescription: UNRELATED_${scope}_PROMPT_SENTINEL\n---\nUnrelated prompt instructions.`,
+      );
+    }
+    await writeFile(
+      join(cwd, 'AGENTS.md'),
+      'UNRELATED_PROJECT_AGENTS_SENTINEL',
+    );
+    const parentSession = SessionManager.create(cwd);
+    parentSession.appendMessage({
+      role: 'user',
+      content: 'PARENT_TRANSCRIPT_SENTINEL',
+      timestamp: Date.now(),
+    });
+    const providerId = 'worker-task-context-test';
+    const registry = new ModelRegistry(
+      await ModelRuntime.create({
+        authPath: join(agentDir, 'auth.json'),
+        modelsPath: null,
+        refreshOnCreate: false,
+      }),
+    );
+    const requests: ProviderRequest[] = [];
+    const workers: AgentWorker[] = [];
+    const server = createServer(async (request, response) => {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      requests.push(JSON.parse(body));
+      reply(response, `Task context answer ${requests.length}`);
+    });
+    t.after(async () => {
+      await Promise.all(workers.map(worker => worker.dispose()));
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      registry.unregisterProvider(providerId);
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    registry.registerProvider(providerId, {
+      api: 'openai-completions',
+      baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+      apiKey: 'fixture-key',
+      models: [
+        {
+          id: 'worker-model',
+          name: 'Task fixture',
+          reasoning: false,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+        },
+      ],
+    });
+    await saveToolSettings('agents', {
+      allowedModels: [`${providerId}/worker-model`],
+    });
+    const profile: AgentTemplate = {
+      id: 'task-reviewer',
+      key: 'workspace:task-reviewer',
+      name: 'Task reviewer',
+      instructions: 'TASK_PROFILE_BASE_SENTINEL: report on the assigned task.',
+      mode: 'subagent',
+      context: 'task',
+      hidden: false,
+      disabled: false,
+      permissions: [
+        {action: 'edit', resource: '*', effect: 'deny'},
+        {action: 'shell', resource: '*', effect: 'deny'},
+        {action: 'subagent', resource: '*', effect: 'deny'},
+      ],
+      scope: 'workspace',
+      sourcePath: join(workspaceDir, 'agents', 'task-reviewer.md'),
+    };
+    const create = async (
+      id: string,
+      context?: 'task' | 'workspace',
+      agentProfile: AgentTemplate | null = profile,
+    ) => {
+      const worker = await createSessionWorker({
+        id,
+        parentSessionId: parentSession.getSessionId(),
+        cwd,
+        name: 'Task reviewer',
+        model: registry.find(providerId, 'worker-model')!,
+        modelRegistry: registry,
+        thinkingLevel: 'off',
+        agentProfile: agentProfile ?? undefined,
+        context,
+        instructions: 'EXPLICIT_TASK_INSTRUCTIONS_SENTINEL',
+        projectTrustOverride: true,
+        agentToolsExtension: () => {},
+      });
+      workers.push(worker);
+      return worker;
+    };
+    const task = await create('task-scope');
+    await task.run(
+      'TASK_USER_MESSAGE_SENTINEL',
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    const taskInput = JSON.stringify(requests[0].messages);
+    assert.equal(taskInput.split(profile.instructions).length - 1, 1);
+    assert.match(taskInput, /EXPLICIT_TASK_INSTRUCTIONS_SENTINEL/);
+    assert.match(taskInput, /TASK_USER_MESSAGE_SENTINEL/);
+    assert.equal(
+      taskInput.includes('Agent \\"Task reviewer\\" (task-scope).'),
+      false,
+    );
+    assert.doesNotMatch(
+      taskInput,
+      /You are delegated|You are an expert coding assistant|Your final answer should|Send blockers or progress|Do not duplicate the final answer/,
+    );
+    assert.doesNotMatch(taskInput, /PARENT_TRANSCRIPT_SENTINEL|UNRELATED_/);
+    assert.doesNotMatch(
+      taskInput,
+      /coordinate file ownership|reads its inbox|Shared working directory|Other agents share this directory|Other agents may edit files/,
+    );
+    assert.ok(requests[0].tools.some(tool => tool.function.name === 'read'));
+    assert.equal(requests[0].model, 'worker-model');
+    const taskFeatures = await task.features!();
+    assert.equal(
+      taskFeatures.commands.some(
+        command => command.source === 'skill' || command.source === 'prompt',
+      ),
+      false,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(taskFeatures.contextFiles),
+      /UNRELATED_/,
+    );
+    const persisted = SessionManager.open(task.sessionFile!)
+      .getBranch()
+      .find(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-context',
+      );
+    assert.ok(persisted?.type === 'custom');
+    assert.deepEqual(persisted.data, {scope: 'task'});
+
+    await task.reload!();
+    await task.run(
+      'Continue the assigned task.',
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    assert.doesNotMatch(
+      JSON.stringify(requests[1].messages),
+      /PARENT_TRANSCRIPT_SENTINEL|UNRELATED_/,
+    );
+    assert.match(
+      JSON.stringify(requests[1].messages),
+      /TASK_USER_MESSAGE_SENTINEL/,
+    );
+    assert.equal(
+      JSON.stringify(requests[1].messages).split(profile.instructions).length -
+        1,
+      1,
+    );
+
+    const workspace = await create('workspace-override', 'workspace');
+    await workspace.run(
+      'Check explicit workspace context.',
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    const workspaceInput = JSON.stringify(requests[2].messages);
+    assert.match(workspaceInput, /UNRELATED_PROJECT_AGENTS_SENTINEL/);
+    assert.match(workspaceInput, /UNRELATED_WORKSPACE_AGENTS_SENTINEL/);
+    assert.doesNotMatch(
+      workspaceInput,
+      /PARENT_TRANSCRIPT_SENTINEL|TASK_USER_MESSAGE_SENTINEL/,
+    );
+    assert.equal(workspaceInput.split(profile.instructions).length - 1, 1);
+    assert.ok(
+      (await workspace.features!()).commands.some(
+        command =>
+          command.name === 'unrelated-workspace' && command.source === 'prompt',
+      ),
+    );
+    const override = SessionManager.open(workspace.sessionFile!)
+      .getBranch()
+      .find(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-context',
+      );
+    assert.ok(override?.type === 'custom');
+    assert.deepEqual(override.data, {scope: 'workspace'});
+    assert.deepEqual(
+      requests[2].tools.map(tool => tool.function.name),
+      requests[0].tools.map(tool => tool.function.name),
+    );
+
+    const explicitTask = await create('task-override', 'task', {
+      ...profile,
+      context: 'workspace',
+    });
+    await explicitTask.run(
+      'Use explicit task context.',
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    assert.doesNotMatch(
+      JSON.stringify(requests[3].messages),
+      /PARENT_TRANSCRIPT_SENTINEL|UNRELATED_/,
+    );
+    assert.equal(
+      JSON.stringify(requests[3].messages).split(profile.instructions).length -
+        1,
+      1,
+    );
+
+    const defaultWorker = await create('default-task', 'task', null);
+    assert.deepEqual((await defaultWorker.features!()).agentProfile, {
+      id: 'default',
+      name: 'Default',
+      mode: 'all',
+    });
+    await defaultWorker.run(
+      'Answer this task with the Default agent.',
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    const defaultSystem = JSON.stringify(
+      requests[4].messages.filter(message =>
+        ['system', 'developer'].includes(message.role),
+      ),
+    );
+    assert.equal(
+      defaultSystem.includes('Agent \\"Task reviewer\\" (default-task).'),
+      false,
+    );
+    assert.doesNotMatch(
+      defaultSystem,
+      /Other agents may edit files in this working directory\./,
+    );
+    assert.match(defaultSystem, /EXPLICIT_TASK_INSTRUCTIONS_SENTINEL/);
+    const defaultProfile = SessionManager.open(defaultWorker.sessionFile!)
+      .getBranch()
+      .find(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+    assert.ok(defaultProfile?.type === 'custom');
+    assert.equal((defaultProfile.data as AgentTemplate).key, 'builtin:default');
+    assert.equal((defaultProfile.data as AgentTemplate).instructions, '');
+    assert.doesNotMatch(
+      defaultSystem,
+      /TASK_PROFILE_BASE_SENTINEL|PARENT_TRANSCRIPT_SENTINEL|UNRELATED_|You are delegated|Complete the task using its instructions|Your final answer should report|Send blockers or progress|reads its inbox|Do not duplicate the final answer/,
+    );
+
+    await saveAgentTemplate(cwd, {
+      scope: 'workspace',
+      id: 'default',
+      name: 'Local default',
+      mode: 'all',
+      context: 'task',
+      instructions: 'SELECTED_DEFAULT_PROFILE_SENTINEL',
+    });
+    const configuredDefault = await create(
+      'configured-default',
+      undefined,
+      null,
+    );
+    assert.deepEqual((await configuredDefault.features!()).agentProfile, {
+      id: 'default',
+      name: 'Local default',
+      mode: 'all',
+    });
+    await configuredDefault.run(
+      'Use the configured Default agent.',
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    const configuredSystem = JSON.stringify(requests[5].messages);
+    assert.equal(
+      configuredSystem.split('SELECTED_DEFAULT_PROFILE_SENTINEL').length - 1,
+      1,
+    );
+    assert.doesNotMatch(
+      configuredSystem,
+      /PARENT_TRANSCRIPT_SENTINEL|UNRELATED_|TASK_PROFILE_BASE_SENTINEL/,
+    );
+    const configuredSnapshot = SessionManager.open(
+      configuredDefault.sessionFile!,
+    )
+      .getBranch()
+      .find(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+    assert.ok(configuredSnapshot?.type === 'custom');
+    assert.equal(
+      (configuredSnapshot.data as AgentTemplate).key,
+      'workspace:default',
+    );
+    assert.equal(
+      (configuredSnapshot.data as AgentTemplate).instructions,
+      'SELECTED_DEFAULT_PROFILE_SENTINEL',
+    );
+  },
+);
+
+void test(
+  'worker skill policies hide denied discovery, gate explicit commands and reads, and cancel approval preflight',
+  {timeout: 15000},
+  async t => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'varisdev-worker-skill-policy-'),
+    );
+    const agentDir = join(directory, 'config');
+    const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await mkdir(cwd, {recursive: true});
+    await mkdir(agentDir, {recursive: true});
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({retry: {enabled: false}, compaction: {enabled: false}}),
+    );
+    const skillPaths = new Map<string, string>();
+    for (const name of ['approved', 'blocked']) {
+      const skillDirectory = join(agentDir, 'skills', name);
+      await mkdir(skillDirectory, {recursive: true});
+      const path = join(skillDirectory, 'SKILL.md');
+      skillPaths.set(name, path);
+      await writeFile(
+        path,
+        `---\nname: ${name}\ndescription: ${name.toUpperCase()}_SKILL_DISCOVERY_SENTINEL\n---\n${name.toUpperCase()}_SKILL_BODY_SENTINEL`,
+      );
+    }
+    const providerId = 'worker-skill-policy-test';
+    const registry = new ModelRegistry(
+      await ModelRuntime.create({
+        authPath: join(agentDir, 'auth.json'),
+        modelsPath: null,
+        refreshOnCreate: false,
+      }),
+    );
+    const requests: ProviderRequest[] = [];
+    const providerErrors: unknown[] = [];
+    const approvalStarted = Promise.withResolvers<void>();
+    const approvals: Array<{
+      title: string;
+      message: string;
+      signal?: AbortSignal;
+    }> = [];
+    let worker: AgentWorker | undefined;
+    const server = createServer(async (request, response) => {
+      try {
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        const input = JSON.parse(body) as ProviderRequest;
+        requests.push(input);
+        assert.doesNotMatch(
+          JSON.stringify(input.messages),
+          /BLOCKED_SKILL_DISCOVERY_SENTINEL|BLOCKED_SKILL_BODY_SENTINEL/,
+        );
+        if (requests.length === 2) {
+          reply(response, {
+            name: 'read',
+            arguments: {path: skillPaths.get('blocked')!},
+          });
+        } else if (requests.length === 3) {
+          assert.match(
+            JSON.stringify(input.messages.at(-1)),
+            /skill.*blocked.*denied|denied.*skill.*blocked/i,
+          );
+          reply(response, 'Blocked skill read prevented.');
+        } else {
+          assert.match(
+            JSON.stringify(input.messages.at(-1)),
+            /APPROVED_SKILL_BODY_SENTINEL/,
+          );
+          reply(response, 'Approved skill response.');
+        }
+      } catch (error) {
+        providerErrors.push(error);
+        reply(response, `Skill policy fixture failed: ${String(error)}`);
+      }
+    });
+    t.after(async () => {
+      await worker?.dispose();
+      worker = undefined;
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      registry.unregisterProvider(providerId);
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    registry.registerProvider(providerId, {
+      api: 'openai-completions',
+      baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+      apiKey: 'fixture-key',
+      models: [
+        {
+          id: 'worker-model',
+          name: 'Skill fixture',
+          reasoning: false,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+        },
+      ],
+    });
+    await saveToolSettings('agents', {
+      allowedModels: [`${providerId}/worker-model`],
+    });
+    worker = await createSessionWorker({
+      id: 'skill-worker',
+      parentSessionId: 'skill-parent',
+      cwd,
+      name: 'Skill worker',
+      model: registry.find(providerId, 'worker-model')!,
+      modelRegistry: registry,
+      thinkingLevel: 'off',
+      agentProfile: {
+        id: 'skill-policy',
+        key: 'workspace:skill-policy',
+        name: 'Skill policy',
+        instructions: '',
+        mode: 'all',
+        context: 'workspace',
+        hidden: false,
+        disabled: false,
+        permissions: [
+          {action: 'skill', resource: 'blocked', effect: 'deny'},
+          {action: 'skill', resource: 'approved', effect: 'ask'},
+        ],
+        scope: 'workspace',
+        sourcePath: join(directory, 'skill-policy.md'),
+      },
+      approval: {
+        hasUI: true,
+        async confirm(title, message, options) {
+          approvals.push({title, message, signal: options?.signal});
+          if (approvals.length !== 2) return true;
+          approvalStarted.resolve();
+          return new Promise<boolean>(resolve => {
+            options?.signal?.addEventListener('abort', () => resolve(false), {
+              once: true,
+            });
+          });
+        },
+      },
+      agentToolsExtension: () => {},
+    });
+    const features = await worker.features!();
+    assert.equal(
+      features.commands.some(command => command.name === 'skill:blocked'),
+      false,
+    );
+    assert.ok(
+      features.commands.some(command => command.name === 'skill:approved'),
+    );
+    assert.doesNotMatch(
+      JSON.stringify(features.contextFiles),
+      /BLOCKED_SKILL_DISCOVERY_SENTINEL/,
+    );
+    await assert.rejects(
+      worker.run('/skill:blocked', AbortSignal.timeout(5000), () => {}),
+      /denied.*skill.*blocked|skill.*blocked.*denied/i,
+    );
+    assert.equal(requests.length, 0);
+    assert.equal(approvals.length, 0);
+    assert.equal(
+      await worker.run('/skill:approved', AbortSignal.timeout(5000), () => {}),
+      'Approved skill response.',
+    );
+    assert.equal(approvals.length, 1);
+    assert.match(approvals[0].title, /Skill worker/);
+    assert.match(approvals[0].message, /skill.*approved/);
+    assert.ok(approvals[0].signal instanceof AbortSignal);
+    assert.equal(
+      await worker.run(
+        'Read the blocked skill file.',
+        AbortSignal.timeout(5000),
+        () => {},
+      ),
+      'Blocked skill read prevented.',
+    );
+    assert.deepEqual(providerErrors, []);
+
+    const controller = new AbortController();
+    const running = worker.run('/skill:approved', controller.signal, () => {});
+    await approvalStarted.promise;
+    controller.abort(new Error('Cancel skill approval'));
+    await assert.rejects(running, /Cancel skill approval/);
+    assert.equal(approvals[1].signal?.aborted, true);
+    assert.equal(requests.length, 3);
+    await worker.reload!();
+    await assert.rejects(
+      worker.run('/skill:blocked', AbortSignal.timeout(5000), () => {}),
+      /denied.*skill.*blocked|skill.*blocked.*denied/i,
+    );
+    assert.equal(
+      requests.length,
+      3,
+      'Denied input cannot return a stale assistant result or start a model turn',
+    );
+    assert.equal(
+      await worker.run('/skill:approved', AbortSignal.timeout(5000), () => {}),
+      'Approved skill response.',
+    );
+    assert.deepEqual(providerErrors, []);
+    assert.equal(requests.length, 4);
   },
 );

@@ -12,6 +12,13 @@
 - Give the live scene enough space to remain readable and clickable. Keep session information and actions accessible from its compact controls.
 - Review actual rendered screenshots for clipping, overlap, readable content, and usable scene size. Geometry checks alone do not establish that a layout works.
 
+# Pi interfaces
+
+- Show Pi features through Pi's shipped terminal components, using the Model/Thinking menu's terminal dialog bridge as the reference.
+- Preserve Pi's rendering, keyboard handling, search, submenus, and available options. Do not recreate Pi menus in HTML or maintain a separate list of their settings.
+- Keep adapters limited to desktop hosting, session callbacks, sizing, focus, cancellation, and cleanup. Use Pi's settings and session APIs for changes. If a view is only available through a shipped Pi handler, host that handler through a small adapter rather than copying its menus or field lists.
+- Verify the wrapper and its integration with the active session, including compact layouts and cancellation; do not duplicate tests of Pi's components.
+
 # UI text
 
 - Avoid redundant UI notes that explain obvious behavior or internal implementation details, such as “Choices follow Pi’s Scoped models.” Include notes only when they help the user make a decision or understand a non-obvious constraint.

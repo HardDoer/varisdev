@@ -1,30 +1,13 @@
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 
 /** Return undefined for SDK/extension commands, false for a cancelled action. */
-export function createNativeCommandRouter({
-  api,
-  accounts,
-  newSession,
-  resume,
-  hotkeys,
-}) {
+export function createNativeCommandRouter({api, newSession, hotkeys}) {
   async function dispatch(command, {data, submission}) {
     const {name, args} = command;
-    if (args && !['login', 'logout'].includes(name))
-      throw new Error(`Usage: /${name}`);
+    if (args) throw new Error(`Usage: /${name}`);
     switch (name) {
-      case 'login':
-      case 'logout':
-        await accounts({
-          provider: args || undefined,
-          logout: name === 'logout',
-        });
-        return true;
       case 'new':
         return newSession(submission);
-      case 'resume':
-        await resume(data.session.cwd);
-        return true;
       case 'copy': {
         // The dashboard preview can be truncated and can include custom messages.
         // Resolve the complete real assistant response in the owning SDK parent.

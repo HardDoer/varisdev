@@ -189,15 +189,25 @@ for (const scenario of ['owned', 'tree', 'fork']) {
       if (scenario !== 'owned') {
         const committing = parent.prompt('/' + scenario);
         await until(() => parent.ui.snapshot().dialogs.length > 0);
+        await until(
+          () =>
+            parent.ui
+              .snapshot()
+              .dialogs[0]?.terminal?.output.includes(
+                scenario === 'tree' ? 'Session Tree' : 'Fork from Message',
+              ) === true,
+        );
         const dialog = parent.ui.snapshot().dialogs[0];
-        const option =
-          scenario === 'tree'
-            ? dialog.options!.find(value =>
-                value.includes('thinking_level_change'),
-              )
-            : dialog.options![0];
-        assert.ok(option);
-        parent.ui.respond(dialog.id, option);
+        parent.ui.respond(dialog.id, {
+          input: scenario === 'tree' ? '\x01thinking\r' : '\r',
+        });
+        if (scenario === 'tree') {
+          await until(
+            () =>
+              parent.ui.snapshot().dialogs[0]?.title === 'Summarize branch?',
+          );
+          parent.ui.respond(parent.ui.snapshot().dialogs[0].id, 'No summary');
+        }
         await committing;
         await until(() => env.disconnected);
         assert.equal(env.requests.length, 1);

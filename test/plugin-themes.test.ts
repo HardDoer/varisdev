@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import {execFile as execFileCallback} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -8,6 +15,7 @@ import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
 import {loadPluginThemes} from '../src/desktop/plugin-themes.ts';
+import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
 import {THEMES} from '../assets/dashboard/themes.js';
 import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
@@ -94,6 +102,10 @@ void test('installed global and project packages expose declarative themes witho
     agentDir: f.agentDir,
   });
   assert.equal(globalOnly.themes.length, 1);
+  await assert.rejects(
+    access(workspaceConfigPaths(f.cwd, f.agentDir).workspaceDir),
+    {code: 'ENOENT'},
+  );
 });
 
 void test('plugins can inherit and override every shipped palette', async t => {
@@ -328,3 +340,97 @@ void test(
     assert.equal(report.cases.length, 6);
   },
 );
+
+void test('workspace themes override canonical repository and global packages while retaining every scope', async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.cwd, '.git'));
+  const nested = join(f.cwd, 'nested');
+  await mkdir(join(nested, '.pi'), {recursive: true});
+  const paths = workspaceConfigPaths(nested, f.agentDir);
+  const settingsPaths: string[] = [];
+  for (const [scope, directory, plugin] of [
+    ['global', f.agentDir, f.plugin],
+    [
+      'repository',
+      paths.repositoryConfigDir,
+      join(paths.repositoryConfigDir, 'npm/node_modules/test-style'),
+    ],
+    [
+      'nested',
+      join(nested, '.pi'),
+      join(nested, '.pi/npm/node_modules/test-style'),
+    ],
+    [
+      'workspace',
+      paths.workspaceDir,
+      join(paths.workspaceDir, 'npm/node_modules/test-style'),
+    ],
+  ]) {
+    await mkdir(plugin, {recursive: true});
+    const settingsPath = join(directory, 'settings.json');
+    settingsPaths.push(settingsPath);
+    await writeFile(
+      settingsPath,
+      JSON.stringify({packages: ['npm:test-style', './missing-package']}),
+    );
+    await writeFile(
+      join(plugin, 'package.json'),
+      JSON.stringify({
+        name: 'test-style',
+        pi: {extensions: ['./index.js']},
+        varisdev: {themes: ['./blue.json', './extra.json']},
+      }),
+    );
+    await writeFile(
+      join(plugin, 'index.js'),
+      'throw new Error("Theme discovery must not execute extensions");',
+    );
+    await writeFile(
+      join(plugin, 'blue.json'),
+      JSON.stringify({id: 'blue', name: `${scope} blue`}),
+    );
+    await writeFile(
+      join(plugin, 'extra.json'),
+      JSON.stringify({id: scope, name: `${scope} extra`}),
+    );
+  }
+  const before = await Promise.all(
+    settingsPaths.map(path => readFile(path, 'utf8')),
+  );
+  const result = await loadPluginThemes({cwd: nested, agentDir: f.agentDir});
+  assert.deepEqual(result.errors, []);
+  assert.equal(
+    result.themes.find(theme => theme.id === 'plugin:test-style:blue')?.name,
+    'workspace blue',
+  );
+  for (const scope of ['workspace', 'nested', 'repository', 'global'])
+    assert.ok(
+      result.themes.some(theme => theme.id === `plugin:test-style:${scope}`),
+      scope,
+    );
+  assert.equal(result.themes.length, 5);
+  assert.deepEqual(
+    await Promise.all(settingsPaths.map(path => readFile(path, 'utf8'))),
+    before,
+  );
+  await assert.rejects(access(join(paths.workspaceDir, 'missing-package')), {
+    code: 'ENOENT',
+  });
+  await writeFile(join(paths.workspaceDir, 'settings.json'), '{invalid');
+  const invalid = await loadPluginThemes({cwd: nested, agentDir: f.agentDir});
+  assert.ok(
+    invalid.errors.some(error =>
+      error.includes(join(paths.workspaceDir, 'settings.json')),
+    ),
+  );
+  assert.equal(
+    invalid.themes.find(theme => theme.id === 'plugin:test-style:blue')?.name,
+    'nested blue',
+  );
+  assert.ok(
+    invalid.themes.some(theme => theme.id === 'plugin:test-style:repository'),
+  );
+  assert.ok(
+    invalid.themes.some(theme => theme.id === 'plugin:test-style:global'),
+  );
+});

@@ -162,7 +162,7 @@ export function observeDashboardSession(
     state?.recordChange({
       ...change,
       unitId: 'parent',
-      unitName: 'Parent session',
+      unitName: 'Main agent',
     });
   });
 
@@ -449,7 +449,7 @@ export function observeDashboardSession(
         status: 'running',
         activity: 'Working',
       });
-      state!.record('session', 'Parent session started working');
+      state!.record('session', 'Main agent started working');
     });
   });
   pi.on('message_start', (event, ctx) => {
@@ -658,7 +658,7 @@ export function observeDashboardSession(
       });
       state!.record(
         'session',
-        lastError ? 'Run ended with an error' : 'Parent session finished',
+        lastError ? 'Run ended with an error' : 'Main agent finished',
       );
     });
   });

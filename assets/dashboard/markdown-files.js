@@ -587,7 +587,7 @@ function hidePanel() {
 }
 function render() {
   const doc = activeDocument();
-  $('markdown-session').textContent = current?.key || 'Select a parent session';
+  $('markdown-session').textContent = current?.key || 'Select a workspace';
   $('markdown-open-path').disabled = !current;
   $('markdown-path').disabled = !current;
   const choices = [
@@ -611,7 +611,7 @@ function render() {
     picker.dataset.choices = signature;
   }
   $('markdown-empty').textContent = !current
-    ? 'Select a parent session.'
+    ? 'Select a workspace.'
     : current.finding
       ? 'Loading files…'
       : current.catalogError

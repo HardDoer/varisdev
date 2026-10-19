@@ -116,8 +116,12 @@ void test(
         let text = '';
         for await (const chunk of request) text += chunk;
         const body = JSON.parse(text) as ProviderRequest;
-        const worker = !body.tools.some(
-          tool => tool.function.name === 'agent_spawn',
+        const worker = body.messages.some(
+          message =>
+            message.role === 'user' &&
+            /Write the worker fixture and report\.|hold-worker until cancelled/.test(
+              JSON.stringify(message.content),
+            ),
         );
         requests.push({body, headers: request.headers, worker});
         const userIndex = body.messages.findLastIndex(
@@ -266,7 +270,13 @@ void test(
       thinkingLevel: 'high' as const,
     };
     const parent = await createDashboardParent(
-      {cwd, name: 'Chosen parent'},
+      {
+        cwd,
+        name: 'Chosen parent',
+        instructions: 'Template instance instruction marker.',
+        model: `${providerId}/dashboard-model`,
+        thinkingLevel: 'high',
+      },
       inherited,
     );
     parents.push(parent);
@@ -444,6 +454,16 @@ void test(
       /Chosen project context marker/,
     );
     assert.match(
+      JSON.stringify(requests[0].body.messages),
+      /Template instance instruction marker/,
+    );
+    assert.ok(
+      parent
+        .restartSnapshot()
+        .argv.includes('Template instance instruction marker.'),
+      'restart keeps the resolved template instructions',
+    );
+    assert.match(
       JSON.stringify(requests.find(item => item.worker)!.body.messages),
       /Chosen project context marker/,
     );
@@ -517,6 +537,71 @@ void test(
     );
     assert.deepEqual(other.state.snapshot().agents, []);
     assert.deepEqual(other.state.snapshot().changes, []);
+
+    const resumedTemplate = await createDashboardParent(
+      {
+        cwd,
+        resume: {id: initial.session.id, path: completed.session.sessionFile!},
+      },
+      inherited,
+    );
+    parents.push(resumedTemplate);
+    await resumedTemplate.prompt(
+      'follow-up-parent: confirm restored instructions.',
+    );
+    assert.match(
+      JSON.stringify(requests.at(-1)!.body.messages),
+      /Template instance instruction marker/,
+      'saved conversations retain their resolved instructions',
+    );
+
+    const directAgentId = completed.agents[0].id;
+    assert.ok(parent.agentSession);
+    const directFeatures = await parent.agentSession({
+      agentId: directAgentId,
+      action: 'features',
+    });
+    assert.ok(directFeatures && 'models' in directFeatures);
+    assert.equal(directFeatures.model?.id, 'dashboard-model');
+    await parent.agentSession({
+      agentId: directAgentId,
+      action: 'configure',
+      configuration: {thinkingLevel: 'low'},
+    });
+    await parent.agentSession({agentId: directAgentId, action: 'reload'});
+    await assert.rejects(
+      other.agentSession!({
+        agentId: directAgentId,
+        action: 'prompt',
+        prompt: 'wrong-owner-marker',
+      }),
+      /Unknown agent/,
+    );
+    const parentResponse = parent.state.snapshot().session.response;
+    await parent.agentSession({
+      agentId: directAgentId,
+      action: 'prompt',
+      prompt: 'direct-worker-marker',
+    });
+    await waitFor(
+      () =>
+        requests.some(
+          item =>
+            item.worker &&
+            JSON.stringify(item.body.messages).includes('direct-worker-marker'),
+        ),
+      'direct worker prompt reaches its SDK session',
+    );
+    await waitFor(
+      () =>
+        parent.state.snapshot().agents.find(agent => agent.id === directAgentId)
+          ?.status === 'completed',
+      'direct worker completes',
+    );
+    const directRequest = requests.findLast(item => item.worker)!;
+    assert.equal(directRequest.body.reasoning_effort, 'low');
+    assert.equal(parent.state.snapshot().session.response, parentResponse);
+    assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
 
     await parent.reload();
     const steeredRun = parent.prompt(

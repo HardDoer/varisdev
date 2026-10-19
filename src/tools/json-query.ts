@@ -7,14 +7,18 @@ import {
   type TruncationResult,
   withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
-import {glob, mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
+import {mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {isAbsolute, join, relative, resolve} from 'node:path';
+import {join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {Type} from 'typebox';
+import {
+  DEFAULT_MAX_FILES,
+  MAX_FILES,
+  getFileQueryMatches,
+  type QueryFile,
+} from './file-matches.ts';
 
-const DEFAULT_MAX_FILES = 100;
-const MAX_FILES = 500;
 const DEFAULT_MAX_GROUPS = 50;
 const MAX_GROUPS = 500;
 const MAX_GROUP_BY_PATHS = 8;
@@ -162,11 +166,6 @@ type JsonQueryToolDetails = {
   fullOutputPath?: string;
 };
 
-type QueryFile = {
-  absolutePath: string;
-  displayPath: string;
-};
-
 export type QueryToolConfiguration = {
   name: string;
   label: string;
@@ -185,16 +184,6 @@ function normalizeBoundedInteger(
 ): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.min(Math.max(Math.round(value), minimum), maximum);
-}
-
-function stripAtPath(value: string): string {
-  return value.startsWith('@') ? value.slice(1) : value;
-}
-
-function normalizePattern(rawPattern: string, toolName: string): string {
-  const pattern = stripAtPath(rawPattern.trim());
-  if (!pattern) throw new Error(`${toolName} path cannot be empty.`);
-  return pattern;
 }
 
 function decodeJsonPointerToken(token: string, path: string): string {
@@ -368,55 +357,10 @@ function describeError(error: unknown): string {
   return truncateChars(message.replace(/\s+/g, ' ').trim(), MAX_VALUE_CHARS);
 }
 
-function displayPath(cwd: string, absolutePath: string): string {
-  const relativePath = relative(cwd, absolutePath);
-  const output =
-    relativePath && !relativePath.startsWith('..') && !isAbsolute(relativePath)
-      ? relativePath
-      : absolutePath;
-  return output.replaceAll('\\', '/');
-}
-
 function throwIfAborted(toolName: string, signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   if (signal.reason instanceof Error) throw signal.reason;
   throw new Error(`${toolName} cancelled.`);
-}
-
-async function findQueryFiles(
-  cwd: string,
-  pattern: string,
-  maxFiles: number,
-  toolName: string,
-  signal?: AbortSignal,
-): Promise<{files: QueryFile[]; limitReached: boolean}> {
-  const files: QueryFile[] = [];
-  let limitReached = false;
-
-  for await (const match of glob(pattern, {cwd})) {
-    throwIfAborted(toolName, signal);
-    const absolutePath = resolve(cwd, match);
-
-    try {
-      if (!(await stat(absolutePath)).isFile()) continue;
-    } catch {
-      // Keep transient or inaccessible matches so the per-file error is visible.
-    }
-
-    if (files.length >= maxFiles) {
-      limitReached = true;
-      break;
-    }
-    files.push({
-      absolutePath,
-      displayPath: displayPath(cwd, absolutePath),
-    });
-  }
-
-  files.sort((left, right) =>
-    left.displayPath.localeCompare(right.displayPath),
-  );
-  return {files, limitReached};
 }
 
 async function queryFile(
@@ -616,21 +560,14 @@ export function registerQueryTool(
     promptGuidelines: config.promptGuidelines,
     parameters: jsonQuerySchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const pattern = normalizePattern(params.path, config.name);
-      const maxFiles = normalizeBoundedInteger(
-        params.maxFiles,
-        DEFAULT_MAX_FILES,
-        1,
-        MAX_FILES,
-      );
       const plan = makeQueryPlan(params);
-      const found = await findQueryFiles(
-        ctx.cwd,
-        pattern,
-        maxFiles,
+      const found = await getFileQueryMatches(
         config.name,
+        params,
+        ctx.cwd,
         signal,
       );
+      const {pattern, maxFiles} = found;
       if (found.files.length === 0) {
         throw new Error(
           `No files matched ${config.name} path ${JSON.stringify(pattern)} from ${ctx.cwd}.`,

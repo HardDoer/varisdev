@@ -72,7 +72,7 @@ class AgentTeam {
   updateContext(ctx: ExtensionContext): void {
     this.getManager();
     if (this.sessionId !== ctx.sessionManager.getSessionId()) {
-      throw new Error('This parent session has closed.');
+      throw new Error('This workspace has closed.');
     }
     this.context = ctx;
   }
@@ -121,7 +121,7 @@ class AgentTeam {
   getMessage(id: string): ParentMessage {
     this.getManager();
     const message = this.messages.find(message => message.id === id);
-    if (!message) throw new Error(`Unknown parent inbox message: ${id}`);
+    if (!message) throw new Error(`Unknown main agent inbox message: ${id}`);
     return copyMessage(message);
   }
 
@@ -140,7 +140,7 @@ class AgentTeam {
         after > this.messageSequence)
     ) {
       throw new Error(
-        `Message cursor must be a safe integer from 0 to ${this.messageSequence} in this parent session.`,
+        `Message cursor must be a safe integer from 0 to ${this.messageSequence} in this workspace.`,
       );
     }
     if (
@@ -266,8 +266,7 @@ export class AgentSessionController {
   }
 
   attach(ctx: ExtensionContext): void {
-    if (this.shuttingDown)
-      throw new Error('The parent session is shutting down.');
+    if (this.shuttingDown) throw new Error('The workspace is shutting down.');
     if (this.team) this.team.updateContext(ctx);
     else {
       this.team = new AgentTeam(ctx, () => this.changed());

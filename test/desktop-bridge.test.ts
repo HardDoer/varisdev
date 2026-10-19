@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import type {ChildProcess} from 'node:child_process';
 import {EventEmitter} from 'node:events';
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import {setImmediate as tick} from 'node:timers/promises';
 import type {
@@ -9,6 +12,12 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionController} from '../src/agents/team.ts';
+import type {AgentToolsOptions} from '../src/tools/agents.ts';
+import {
+  createDefaultAgentProfile,
+  saveAgentTemplate,
+  type AgentTemplate,
+} from '../src/agents/templates.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import type {SessionFeatures} from '../src/dashboard/features.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
@@ -238,6 +247,8 @@ function extensionFixture(
   mode: ExtensionContext['mode'],
   id: string,
   launcher: FactoryLauncher,
+  cwd = process.cwd(),
+  agentTools: AgentToolsOptions = {},
 ) {
   const handlers = new Map<
     string,
@@ -270,7 +281,37 @@ function extensionFixture(
     subscribe: () => () => {},
     getTeam: () => ({getManager: () => manager}),
   };
+  const confirmations: Array<{title: string; message: string}> = [];
+  const events = new EventEmitter();
+  let activeTools = ['fixture_tool'];
+  const entries: ReturnType<ExtensionContext['sessionManager']['getEntries']> =
+    [];
   const pi = {
+    events: {
+      on(name: string, handler: (value: unknown) => void) {
+        events.on(name, handler);
+        return () => events.off(name, handler);
+      },
+      emit(name: string, value: unknown) {
+        events.emit(name, value);
+      },
+    },
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names: string[]) => {
+      activeTools = [...names];
+    },
+    appendEntry(customType: string, data: unknown) {
+      const entry = {
+        type: 'custom' as const,
+        id: `entry-${entries.length}`,
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType,
+        data: structuredClone(data),
+      };
+      entries.push(entry);
+      return entry.id;
+    },
     on(
       event: string,
       handler: (event: unknown, context: ExtensionContext) => unknown,
@@ -278,6 +319,10 @@ function extensionFixture(
       const list = handlers.get(event) ?? [];
       list.push(handler);
       handlers.set(event, list);
+      return () => {
+        const index = list.indexOf(handler);
+        if (index !== -1) list.splice(index, 1);
+      };
     },
     registerCommand(
       name: string,
@@ -315,7 +360,7 @@ function extensionFixture(
     },
   };
   let systemPromptOptions: BuildSystemPromptOptions = {
-    cwd: process.cwd(),
+    cwd,
     contextFiles: [
       {path: '/fixture/AGENTS.md', content: 'ATTACHED INSTRUCTIONS'},
     ],
@@ -323,8 +368,9 @@ function extensionFixture(
   };
   const ctx = {
     getSystemPromptOptions: () => systemPromptOptions,
+    hasUI: true,
     mode,
-    cwd: process.cwd(),
+    cwd,
     model: models[0],
     scopedModels: [],
     compact: (options: {customInstructions?: string; onComplete(): void}) => {
@@ -342,6 +388,10 @@ function extensionFixture(
       aborts++;
     },
     ui: {
+      async confirm(title: string, message: string) {
+        confirmations.push({title, message});
+        return true;
+      },
       notify: (message: string) => {
         notifications.push(message);
       },
@@ -351,7 +401,8 @@ function extensionFixture(
       getSessionName: () => id,
       getSessionFile: () => undefined,
       getHeader: () => undefined,
-      getBranch: () => [],
+      getEntries: () => entries,
+      getBranch: () => entries,
       buildContextEntries: () => [],
     },
   } as unknown as ExtensionContext;
@@ -363,6 +414,7 @@ function extensionFixture(
       launch: (state, callbacks) => launcher.launch(state, callbacks),
       detach: (state, quit) => launcher.detach(state, quit),
     },
+    agentTools,
   );
   return {
     ctx,
@@ -370,6 +422,7 @@ function extensionFixture(
     messages,
     compacted,
     notifications,
+    confirmations,
     worker,
     control,
     get aborts() {
@@ -382,9 +435,11 @@ function extensionFixture(
       systemPromptOptions = options;
     },
     async emit(event: string, payload: unknown = {}) {
+      const results = [];
       for (const handler of handlers.get(event) ?? [])
-        await handler(payload, ctx);
+        results.push(await handler(payload, ctx));
       await tick();
+      return results;
     },
     show: () => commands.get('factory')!.handler('', ctx),
   };
@@ -717,6 +772,11 @@ void test('feature catalogs and configuration results cross source IPC with sess
     'features',
     'features-primary',
   );
+  assert.deepEqual(catalog.agentProfile, {
+    id: 'default',
+    name: 'Default',
+    mode: 'all',
+  });
   assert.equal(catalog.commands[0].name, 'skill:fixture');
   assert.equal(catalog.commands[1].source, 'prompt');
   assert.equal(catalog.models[1].id, 'other');
@@ -823,4 +883,251 @@ void test('attached extension commands reach SDK command dispatch without creden
   ]);
   assert.equal(desktop.current!.snapshot().session.status, 'idle');
   await source.emit('session_shutdown', {reason: 'quit'});
+});
+
+void test('native attached sessions persist neutral selection and compose shared rules once', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-attached-profile-'));
+  const agentDir = join(directory, 'settings');
+  const cwd = join(directory, 'project');
+  await mkdir(agentDir);
+  await mkdir(cwd);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(async () => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(directory, {recursive: true, force: true});
+  });
+  const sharedRule = {
+    action: 'shell',
+    resource: 'blocked-native-command',
+    effect: 'deny',
+  } as const;
+  await writeFile(
+    join(agentDir, 'settings.json'),
+    JSON.stringify({default_agent: 'replacement', permissions: [sharedRule]}),
+  );
+  for (const id of ['default', 'replacement'])
+    await saveAgentTemplate(cwd, {
+      scope: 'global',
+      id,
+      mode: 'primary',
+      instructions: 'Never inject this replacement into native Pi.',
+      model: 'fixture/other',
+      thinkingLevel: 'off',
+    });
+  const launcher = new FactoryLauncher(async () => fakeWindow().window);
+  const source = extensionFixture('tui', 'native-neutral', launcher, cwd);
+  const originalModel = source.ctx.model;
+  await source.emit('session_start');
+  const profiles = () =>
+    source.ctx.sessionManager
+      .getEntries()
+      .filter(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      );
+  assert.equal(profiles().length, 1);
+  const entry = profiles()[0];
+  assert.equal(entry.type, 'custom');
+  const profile =
+    entry.type === 'custom' ? (entry.data as AgentTemplate) : undefined;
+  assert.equal(profile?.id, 'default');
+  assert.equal(profile?.key, 'builtin:default');
+  assert.equal(profile?.instructions, '');
+  assert.equal(profile?.model, undefined);
+  assert.equal(profile?.thinkingLevel, undefined);
+  assert.equal(profile?.permissionsVersion, 1);
+  assert.deepEqual(profile?.permissions, [sharedRule]);
+  assert.equal(source.ctx.model, originalModel);
+  await writeFile(
+    join(agentDir, 'settings.json'),
+    JSON.stringify({
+      permissions: [{action: 'shell', resource: '*', effect: 'deny'}],
+    }),
+  );
+  await source.emit('session_start');
+  assert.equal(
+    profiles().length,
+    1,
+    'an already composed snapshot is retained',
+  );
+  assert.deepEqual(profiles()[0], entry);
+
+  const explicit = extensionFixture('tui', 'native-explicit', launcher, cwd);
+  const saved = {
+    ...createDefaultAgentProfile(),
+    id: 'saved',
+    key: 'global:saved',
+    name: 'Saved',
+    instructions: 'Original saved body.',
+    model: 'fixture/saved-model',
+    thinkingLevel: 'off' as const,
+    permissions: [
+      {action: 'shell', resource: 'allowed-command', effect: 'allow'} as const,
+    ],
+  };
+  explicit.pi.appendEntry('varisdev.agent-profile', saved);
+  await explicit.emit('session_start');
+  const upgraded = explicit.ctx.sessionManager.getEntries().at(-1);
+  assert.equal(upgraded?.type, 'custom');
+  const snapshot =
+    upgraded?.type === 'custom' ? (upgraded.data as AgentTemplate) : undefined;
+  assert.equal(snapshot?.id, 'saved');
+  assert.equal(snapshot?.instructions, saved.instructions);
+  assert.equal(snapshot?.model, saved.model);
+  assert.deepEqual(snapshot?.permissions, [
+    {action: 'shell', resource: '*', effect: 'deny'},
+    ...saved.permissions,
+  ]);
+  const count = explicit.ctx.sessionManager.getEntries().length;
+  await explicit.emit('session_start');
+  assert.equal(explicit.ctx.sessionManager.getEntries().length, count);
+});
+
+void test('native attached policies enforce shared rules and respect session-scoped host management', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-native-policy-'));
+  const agentDir = join(directory, 'settings');
+  const cwd = join(directory, 'project');
+  await mkdir(agentDir);
+  await mkdir(cwd);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(async () => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(directory, {recursive: true, force: true});
+  });
+  const permissions = [
+    {action: 'shell', resource: 'blocked-native-command', effect: 'deny'},
+    {action: 'shell', resource: 'approved-native-command', effect: 'ask'},
+    {action: 'skill', resource: 'fixture', effect: 'deny'},
+  ] as const;
+  await writeFile(
+    join(agentDir, 'settings.json'),
+    JSON.stringify({permissions}),
+  );
+  const window = fakeWindow();
+  const launcher = new FactoryLauncher(async () => window.window);
+  const shared: AgentToolsOptions = {};
+  const source = extensionFixture(
+    'tui',
+    'native-policy',
+    launcher,
+    cwd,
+    shared,
+  );
+  source.pi.events.emit('varisdev:agent-profile-managed', {
+    sessionId: 'other-session',
+    profile: {...createDefaultAgentProfile(), permissionsVersion: 1},
+  });
+  await source.emit('session_start');
+  assert.deepEqual(shared.agentProfile?.permissions, permissions);
+  await source.show();
+  assert.ok(
+    !(await window.callbacks!.features!()).commands.some(
+      command => command.name === 'skill:fixture',
+    ),
+  );
+  const denied = await source.emit('tool_call', {
+    toolName: 'bash',
+    input: {command: 'blocked-native-command'},
+  });
+  assert.ok(
+    denied.some(result =>
+      JSON.stringify(result)?.includes(
+        'Agent permission denied: shell blocked-native-command',
+      ),
+    ),
+  );
+  const read = await source.emit('tool_call', {
+    toolName: 'read',
+    input: {path: '/fixture/SKILL.md'},
+  });
+  assert.ok(
+    read.some(result =>
+      JSON.stringify(result)?.includes(
+        'Agent permission denied: skill fixture',
+      ),
+    ),
+  );
+  const skill = await source.emit('input', {
+    source: 'interactive',
+    text: '/skill:fixture',
+  });
+  assert.ok(
+    skill.some(result => JSON.stringify(result) === '{"action":"handled"}'),
+  );
+  assert.match(
+    source.notifications.at(-1)!,
+    /permission denied: skill fixture/,
+  );
+  await source.emit('tool_call', {
+    toolName: 'bash',
+    input: {command: 'approved-native-command'},
+  });
+  assert.equal(source.confirmations.length, 1);
+  await source.emit('session_start');
+  await source.emit('tool_call', {
+    toolName: 'bash',
+    input: {command: 'approved-native-command'},
+  });
+  assert.equal(
+    source.confirmations.length,
+    2,
+    'repeated session start installs one policy',
+  );
+
+  const hostShared: AgentToolsOptions = {};
+  const managed = extensionFixture(
+    'tui',
+    'managed-policy',
+    launcher,
+    cwd,
+    hostShared,
+  );
+  const hostProfile: AgentTemplate = {
+    ...createDefaultAgentProfile(),
+    id: 'host-selected',
+    name: 'Host selected',
+    permissions: [...permissions],
+    permissionsVersion: 1,
+  };
+  managed.pi.events.emit('varisdev:agent-profile-managed', {
+    sessionId: 'managed-policy',
+    profile: hostProfile,
+  });
+  await managed.emit('session_start');
+  assert.equal(hostShared.agentProfile?.id, 'host-selected');
+  const forwarded = await managed.emit('tool_call', {
+    toolName: 'bash',
+    input: {command: 'blocked-native-command'},
+  });
+  assert.ok(
+    forwarded.every(
+      result => !JSON.stringify(result)?.includes('"block":true'),
+    ),
+  );
+  await managed.emit('tool_call', {
+    toolName: 'bash',
+    input: {command: 'approved-native-command'},
+  });
+  assert.equal(
+    managed.confirmations.length,
+    0,
+    'the host owns permission approvals',
+  );
+
+  await writeFile(join(agentDir, 'settings.json'), '{}');
+  const neutral = extensionFixture('tui', 'native-no-policy', launcher, cwd);
+  await neutral.emit('session_start');
+  const input = await neutral.emit('input', {
+    source: 'interactive',
+    text: '/skill:fixture',
+  });
+  assert.ok(
+    input.every(result => !JSON.stringify(result)?.includes('handled')),
+  );
+  assert.equal(neutral.confirmations.length, 0);
 });

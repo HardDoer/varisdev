@@ -42,7 +42,7 @@ void test('update restart requires completed staging and idle parent sessions an
   );
   assert.throws(
     () => requireUpdateRestart(ready, empty, 1),
-    /Wait for parent sessions/,
+    /Wait for workspaces/,
   );
   for (const parentStatus of ['running', 'compacting']) {
     const snapshot = {
@@ -50,7 +50,7 @@ void test('update restart requires completed staging and idle parent sessions an
     } as unknown as DashboardHubSnapshot;
     assert.throws(
       () => requireUpdateRestart(ready, snapshot),
-      /Wait for parent sessions/,
+      /Wait for workspaces/,
     );
   }
   for (const agentStatus of ['queued', 'running', 'cancelling']) {
@@ -59,7 +59,7 @@ void test('update restart requires completed staging and idle parent sessions an
     } as unknown as DashboardHubSnapshot;
     assert.throws(
       () => requireUpdateRestart(ready, snapshot),
-      /Wait for parent sessions/,
+      /Wait for workspaces/,
     );
   }
   const queued = {
@@ -73,7 +73,7 @@ void test('update restart requires completed staging and idle parent sessions an
   } as unknown as DashboardHubSnapshot;
   assert.throws(
     () => requireUpdateRestart(ready, queued),
-    /Wait for parent sessions/,
+    /Wait for workspaces/,
   );
   assert.doesNotThrow(() => requireUpdateRestart(ready, empty));
   assert.doesNotThrow(() =>

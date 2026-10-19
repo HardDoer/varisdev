@@ -411,7 +411,7 @@ export function createFactoryScene(
   if (!gl) return null;
   const defaultCanvasLabel =
     canvas.getAttribute('aria-label') ||
-    'Factory view with a parent session and agents';
+    'Workspace factory with a main agent and additional agents';
   const resources = {shaders: [], buffers: []};
   let program, attributes, uniforms;
   function releaseResources() {
@@ -1751,8 +1751,10 @@ export function createFactoryScene(
       .filter(visitor => visitor.id !== sessionId)
       .map(visitor => visitor.name || visitor.id);
     const canvasDetails = [
-      parentAwayMessage ? `Parent: ${parentAwayMessage}` : '',
-      foreignNames.length ? `Visiting parents: ${foreignNames.join(', ')}` : '',
+      parentAwayMessage ? `Main agent: ${parentAwayMessage}` : '',
+      foreignNames.length
+        ? `Visiting main agents: ${foreignNames.join(', ')}`
+        : '',
     ].filter(Boolean);
     setCanvasAttribute(
       'aria-label',

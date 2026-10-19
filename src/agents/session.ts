@@ -5,7 +5,6 @@ import {
   resolveModelScopeWithDiagnostics,
   getAgentDir,
   SessionManager,
-  SettingsManager,
   type AgentSession,
   type CreateAgentSessionOptions,
   type ExtensionContext,
@@ -16,10 +15,34 @@ import {join} from 'node:path';
 import {registerProjectTools} from '../tools/index.ts';
 import {createBuiltinExtensions} from '../builtin-extensions.ts';
 import {createAppResourceFilter} from '../dashboard/resources.ts';
+import {createWorkspaceConfiguration} from '../dashboard/workspace-config.ts';
 import type {AgentWorker} from './orchestrator.ts';
 import {registerParentModelProviders} from './model-runtime.ts';
 import {projectTrustReloadOptions} from '../dashboard/project-trust.ts';
+import {runSessionCommand} from '../dashboard/session-commands.ts';
+import {runSettingsCommand} from '../dashboard/settings-commands.ts';
+import type {DesktopExtensionUI} from '../dashboard/extension-ui.ts';
+import {
+  nativeCommand,
+  parseSlashCommand,
+} from '../dashboard/command-catalog.mjs';
 import {WorkerConversation} from './conversation.ts';
+import {registerCommitCommand} from '../commit.ts';
+import {
+  createDefaultAgentProfile,
+  ensureAgentProfilePermissions,
+  resolveDefaultAgentTemplate,
+  type AgentContextScope,
+  type AgentTemplate,
+} from './templates.ts';
+import {createAgentPolicyExtension} from './policy.ts';
+import {createAgentResourcePolicy} from './resources.ts';
+import {
+  sessionFeatures,
+  supportedThinkingLevels,
+  type SessionConfiguration,
+} from '../dashboard/features.ts';
+import {assertAgentModelAllowed, readToolSettings} from '../tools/settings.ts';
 import {
   modelUsage,
   sessionUsageCalls,
@@ -27,29 +50,59 @@ import {
   type ModelUsage,
 } from '../usage.ts';
 
-interface WorkerOptions {
+export interface WorkerOptions {
   id: string;
   parentSessionId: string;
   cwd: string;
   name: string;
   instructions?: string;
+  context?: AgentContextScope;
+  agentProfile?: AgentTemplate;
+  approval?: {
+    hasUI: boolean;
+    confirm: ExtensionContext['ui']['confirm'];
+  };
   model: NonNullable<CreateAgentSessionOptions['model']>;
   modelRegistry: ExtensionContext['modelRegistry'];
   thinkingLevel: CreateAgentSessionOptions['thinkingLevel'];
+  ui?: DesktopExtensionUI;
   projectTrustOverride?: boolean;
   agentToolsExtension: ExtensionFactory;
 }
 
-/** Translate Pi's session lifecycle into a cancellable background worker. */
+interface WorkerPromptState {
+  signal?: AbortSignal;
+  blocked?: string;
+}
+
+/** Adapt an already configured Pi session; factories resolve profile permissions first. */
 export function sessionWorker(
   session: AgentSession,
   resultFile: string,
+  profile: AgentTemplate = createDefaultAgentProfile(),
+  promptState: WorkerPromptState = {},
+  ui?: DesktopExtensionUI,
 ): AgentWorker {
+  const agentProfile = structuredClone(profile);
+  if (
+    !session.sessionManager
+      .getBranch?.()
+      .some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      )
+  )
+    session.sessionManager.appendCustomEntry?.(
+      'varisdev.agent-profile',
+      structuredClone(agentProfile),
+    );
   const usage = new ModelUsageTracker();
   const conversation = new WorkerConversation(
     session.sessionManager.getBranch?.() ?? [],
     session.sessionManager.getCwd?.(),
   );
+  let commandController: AbortController | undefined;
   let finishing = false;
   let closing: Promise<void> | undefined;
   let publishUsage: ((usage: ModelUsage) => void) | undefined;
@@ -58,6 +111,31 @@ export function sessionWorker(
     if (branch) usage.replace(sessionUsageCalls(branch));
   }
   restoreUsage();
+  const features = async () => {
+    const result = sessionFeatures(
+      session,
+      session.resourceLoader,
+      session.settingsManager,
+    );
+    result.agentProfile = {
+      id: agentProfile.id,
+      name: agentProfile.name,
+      mode: agentProfile.mode,
+      ...(agentProfile.color ? {color: agentProfile.color} : {}),
+    };
+    const {
+      agents: {allowedModels},
+    } = await readToolSettings();
+    if (allowedModels !== null) {
+      const allowed = (model: {provider: string; id: string}) =>
+        allowedModels.includes(`${model.provider}/${model.id}`);
+      result.models = result.models.filter(allowed);
+      result.scopedModels = result.scopedModels?.filter(item =>
+        allowed(item.model),
+      );
+    }
+    return result;
+  };
   // Idle cache warming can append usage between runs. Keep this subscription
   // for the worker lifetime so the orchestrator's cached record stays current.
   const unsubscribeUsage = session.subscribe(event => {
@@ -65,7 +143,7 @@ export function sessionWorker(
     restoreUsage();
     publishUsage?.(usage.snapshot());
   });
-  return {
+  const worker: AgentWorker = {
     sessionFile: session.sessionManager.getSessionFile(),
     resultFile,
     get usage() {
@@ -75,6 +153,81 @@ export function sessionWorker(
     get conversation() {
       return conversation.snapshot();
     },
+    features,
+    async configure(input: SessionConfiguration) {
+      let model = session.model;
+      if (input.provider !== undefined || input.modelId !== undefined) {
+        const provider = input.provider ?? model?.provider;
+        const id = input.modelId ?? model?.id;
+        if (!provider || !id) throw new Error('Specify a provider and model.');
+        model = session.extensionRunner.getModelRegistry().find(provider, id);
+        if (!model) throw new Error(`Model is unavailable: ${provider}/${id}`);
+        await assertAgentModelAllowed(`${provider}/${id}`);
+      }
+      const levels = model
+        ? supportedThinkingLevels(model)
+        : session.getAvailableThinkingLevels();
+      if (
+        input.thinkingLevel !== undefined &&
+        !levels.includes(input.thinkingLevel)
+      )
+        throw new Error(`Thinking level must be one of: ${levels.join(', ')}.`);
+      if (model && (input.modelId !== undefined || model !== session.model))
+        await session.setModel(model, {persist: input.persist});
+      if (input.thinkingLevel !== undefined)
+        session.setThinkingLevel(
+          input.thinkingLevel as Parameters<typeof session.setThinkingLevel>[0],
+          {persist: input.persist},
+        );
+      return features();
+    },
+    async command(command) {
+      const parsed = parseSlashCommand(command);
+      if (
+        !parsed ||
+        !['model', 'thinking', 'settings', 'scoped-models', 'session'].includes(
+          parsed.name,
+        )
+      )
+        throw new Error(
+          `Native command is unavailable in worker conversations: ${command}`,
+        );
+      if (!ui) throw new Error('Worker native commands require a desktop UI.');
+      const controller = new AbortController();
+      commandController = controller;
+      try {
+        if (parsed.name === 'session')
+          await runSessionCommand(parsed.name, parsed.args, {
+            session,
+            ui: ui.forCommand(controller.signal),
+            signal: controller.signal,
+          });
+        else
+          await runSettingsCommand(parsed.name, parsed.args, {
+            session,
+            ui: ui.forCommand(controller.signal),
+            signal: controller.signal,
+            configure: async input => {
+              await worker.configure!(input);
+            },
+          });
+        return await features();
+      } finally {
+        if (commandController === controller) commandController = undefined;
+      }
+    },
+    async compact(instructions) {
+      await session.compact(instructions);
+      restoreUsage();
+      publishUsage?.(usage.snapshot());
+    },
+    async reload() {
+      await session.reload();
+    },
+    clearQueue() {
+      commandController?.abort();
+      return session.clearQueue();
+    },
     async steer(message, starting) {
       if (finishing && !starting) return false;
       await session.steer(message);
@@ -82,11 +235,27 @@ export function sessionWorker(
     },
     async run(message, signal, onActivity, onUsage, onConversation) {
       signal.throwIfAborted();
+      const parsed = parseSlashCommand(message);
+      if (parsed && nativeCommand(parsed.name)) {
+        const stopCommand = () => commandController?.abort();
+        signal.addEventListener('abort', stopCommand, {once: true});
+        try {
+          await worker.command!(message);
+          signal.throwIfAborted();
+          return '';
+        } finally {
+          signal.removeEventListener('abort', stopCommand);
+        }
+      }
+      promptState.signal = signal;
+      promptState.blocked = undefined;
       if (onUsage) publishUsage = onUsage;
       finishing = false;
       conversation.begin();
       let aborting: Promise<void> | undefined;
       const abort = () => {
+        finishing = true;
+        commandController?.abort();
         session.clearQueue();
         session.abortCompaction();
         session.abortBash();
@@ -150,9 +319,10 @@ export function sessionWorker(
       signal.addEventListener('abort', abort, {once: true});
       let failure: unknown;
       try {
-        await session.prompt(message, {expandPromptTemplates: false});
+        await session.prompt(message, {expandPromptTemplates: true});
         finishing = true;
         signal.throwIfAborted();
+        if (promptState.blocked) throw new Error(promptState.blocked);
         const lastAssistant = session.messages.findLast(
           item => item.role === 'assistant',
         );
@@ -195,11 +365,13 @@ export function sessionWorker(
           onUsage?.(usage.snapshot());
         } finally {
           unsubscribe();
+          promptState.signal = undefined;
         }
       }
     },
     dispose() {
       if (closing) return closing;
+      commandController?.abort();
       publishUsage = undefined;
       unsubscribeUsage();
       closing = (async () => {
@@ -215,11 +387,22 @@ export function sessionWorker(
       return closing;
     },
   };
+  return worker;
 }
 
 export async function createSessionWorker(
   options: WorkerOptions,
 ): Promise<AgentWorker> {
+  const selectedProfile = options.agentProfile
+    ? structuredClone(options.agentProfile)
+    : await resolveDefaultAgentTemplate(options.cwd, 'subagent');
+  const agentProfile = await ensureAgentProfilePermissions(
+    options.cwd,
+    selectedProfile,
+  );
+  const profileResources = createAgentResourcePolicy(agentProfile);
+  const promptState: WorkerPromptState = {};
+  const contextScope = options.context ?? agentProfile?.context ?? 'workspace';
   const agentDir = getAgentDir();
   const directory = join(
     agentDir,
@@ -229,11 +412,10 @@ export async function createSessionWorker(
     options.id,
   );
   await mkdir(directory, {recursive: true});
-  const settingsManager = SettingsManager.create(options.cwd, agentDir, {
-    projectTrusted: false,
-  });
+  const configuration = createWorkspaceConfiguration(options.cwd, agentDir);
+  const settingsManager = configuration.settingsManager;
   const resources = createAppResourceFilter(
-    settingsManager,
+    configuration.resourceSettingsManager,
     options.cwd,
     agentDir,
   );
@@ -242,6 +424,11 @@ export async function createSessionWorker(
     modelsPath: null,
     refreshOnCreate: false,
   });
+  const sessionManager = SessionManager.create(options.cwd, directory);
+  sessionManager.appendCustomEntry('varisdev.agent-context', {
+    scope: contextScope,
+  });
+  sessionManager.appendCustomEntry('varisdev.agent-profile', agentProfile);
   const services = await createAgentSessionServices({
     cwd: options.cwd,
     agentDir,
@@ -253,22 +440,54 @@ export async function createSessionWorker(
       settingsManager,
       options.projectTrustOverride,
     ),
-    resourceLoaderOptions: {
-      noThemes: true,
-      noPromptTemplates: true,
-      extensionFactories: [
-        ...createBuiltinExtensions(),
-        registerProjectTools,
-        options.agentToolsExtension,
-      ],
-      appendSystemPrompt: [
-        `You are delegated agent ${JSON.stringify(options.name)}, ID ${options.id}. Complete the task using its instructions, steering messages, and project files.`,
-        'Other agents share this directory. Use agent_list and agent_send to coordinate file ownership and preserve their changes. Send blockers or progress to id="parent"; the parent reads its inbox without being awakened. Your final answer should report findings, changed files, checks, and unresolved issues. Do not duplicate the final answer through agent_send.',
-        ...(options.instructions ? [options.instructions] : []),
-      ],
-    },
+    resourceLoaderOptions: configuration.resourceOptions(
+      profileResources.resourceOptions({
+        noThemes: true,
+        ...(agentProfile?.instructions.trim()
+          ? {systemPrompt: agentProfile.instructions}
+          : {}),
+        extensionFactories: [
+          pi => {
+            pi.events.emit('varisdev:agent-profile-managed', {
+              sessionId: sessionManager.getSessionId(),
+              profile: agentProfile,
+            });
+          },
+          ...createBuiltinExtensions({mcp: configuration.mcpOptions}),
+          registerProjectTools,
+          pi =>
+            registerCommitCommand(
+              pi,
+              (text, options) => session.sendUserMessage(text, options),
+              {approval: options.approval, signal: () => promptState.signal},
+            ),
+          options.agentToolsExtension,
+          ...(agentProfile.permissions.length ||
+          agentProfile.steps !== undefined
+            ? [
+                createAgentPolicyExtension(agentProfile, {
+                  approval: options.approval,
+                  label: options.name,
+                  skills: profileResources.skills,
+                  signal: () => promptState.signal,
+                  onInputBlocked: reason => {
+                    promptState.blocked = reason;
+                  },
+                }),
+              ]
+            : []),
+        ],
+        appendSystemPrompt: [
+          ...(options.instructions ? [options.instructions] : []),
+        ],
+      }),
+      contextScope,
+    ),
   });
   services.settingsManager = settingsManager;
+  services.resourceLoader = configuration.resourceLoader(
+    services.resourceLoader,
+  );
   const errors = services.diagnostics.filter(item => item.type === 'error');
   if (errors.length)
     throw new Error(errors.map(item => item.message).join('\n'));
@@ -283,11 +502,10 @@ export async function createSessionWorker(
     !providers.includes(options.model.provider)
   )
     throw new Error(
-      `Parent model provider is unavailable: ${options.model.provider}`,
+      `Current agent model provider is unavailable: ${options.model.provider}`,
     );
   if (providers.length)
     await modelRuntime.refresh({allowNetwork: false, providers});
-  const sessionManager = SessionManager.create(options.cwd, directory);
   if (
     options.model.api === 'pi-virtual' &&
     !modelRuntime.getModel(options.model.provider, options.model.id)
@@ -306,7 +524,13 @@ export async function createSessionWorker(
     thinkingLevel: options.thinkingLevel,
     sessionManager,
   });
-  const worker = sessionWorker(session, join(directory, 'result.txt'));
+  const worker = sessionWorker(
+    session,
+    join(directory, 'result.txt'),
+    agentProfile,
+    promptState,
+    options.ui,
+  );
   try {
     await session.bindExtensions({mode: 'rpc'});
     return worker;

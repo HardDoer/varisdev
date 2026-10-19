@@ -72,11 +72,15 @@
     "npm": "11.11.0",
     "openai": "^6.0.0",
     "sharp": "^0.35.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "unbash": "6.0.0"
   },
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "skills": [
+      "./assets/skills"
     ]
   },
   "devDependencies": {

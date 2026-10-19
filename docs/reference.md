@@ -6,52 +6,59 @@ This page covers VarisDev's additions. See [Pi's documentation](https://github.c
 
 ## Agents
 
-Each agent has its own conversation and shares its selected working directory. It inherits the parent model and thinking level unless explicitly configured. Without a parent model, `agent_spawn` requires a model choice.
+Each agent has its own conversation and shares its workspace directory. It inherits the current agent's model and thinking level unless explicitly configured. Without a current model, `agent_spawn` requires a model choice.
 
-The **Agent models** section in **Menu → Tool models** controls which models `agent_spawn` may use. The restriction also applies to inherited models. The tool shows the configured choices to the parent model and checks them when agents start or resume. See [model configuration](configuration.md#agent-models).
+The **Agent models** section in **Menu → Tool models** controls which models `agent_spawn` may use. The restriction also applies to inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-models) and [agent configurations](agents.md).
 
-| Tool | Purpose |
-| --- | --- |
-| `agent_spawn` | Start an agent and return its ID. |
-| `agent_list` | List active agents, history, or both. |
-| `agent_status` | Read progress or results; use `details: true` for metadata and transcript paths. |
-| `agent_send` | Steer active work or resume a completed agent. |
-| `agent_inbox` | Read messages sent to the parent session. |
-| `agent_wait` | Wait for selected agents to finish. |
-| `agent_cancel` | Cancel an agent and its queued messages. |
+| Tool              | Purpose                                                                          |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `agent_spawn`     | Start an agent and return its ID.                                                |
+| `agent_list`      | List active agents, history, or both.                                            |
+| `agent_status`    | Read progress or results; use `details: true` for metadata and transcript paths. |
+| `agent_send`      | Steer active work or resume a completed agent.                                   |
+| `agent_inbox`     | Read messages sent to the workspace's main agent.                                |
+| `agent_wait`      | Wait for selected agents to finish.                                              |
+| `agent_cancel`    | Cancel an agent and its queued messages.                                         |
+| `agent_templates` | List, read, save, or delete scoped Markdown agent configurations.                |
 
-`agent_spawn` requires `name` and `task`. Optional fields: `instructions`, `cwd`, `model` (`provider/model`), `thinkingLevel`, `timeoutMs`, and `autoCleanup`.
+`agent_spawn` requires `task`. It automatically selects Default when `template` is omitted; `name` is optional. A spawned configuration must use `subagent` or `all` mode. Hidden configurations can be referenced directly; disabled configurations cannot be launched. Optional fields include `instructions`, `context` (`workspace` or `task`), `cwd`, `model` (`provider/model`), `thinkingLevel`, `timeoutMs`, and `autoCleanup`. Explicit spawn values refine the resolved configuration, while omitted model and thinking values inherit from the calling agent when the configuration does not set them.
 
-Six agents run concurrently; additional agents queue. Each parent session can hold 64 agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
+Agent configurations are optional. `agent_templates` is available through Pi's `tool_search`; listing uses `offset` and `limit` with a default of 20 entries and returns `nextOffset` when more remain. Configuration bodies are returned only by `get`.
+
+Configuration permissions apply to the conversation created from that profile. The calling agent's `subagent` permission also controls which configured agents it may launch. See [agent configurations](agents.md) for scope merging, modes, defaults, and Markdown fields.
+
+Six agents run concurrently; additional agents queue. Each workspace can hold 64 additional agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
 
 Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
 
-Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current parent session. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not trigger parent turns.
+Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current workspace. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not trigger main-agent turns.
 
 Spawn, send, and cancel return short acknowledgements. Status and wait return results; truncated output includes `outputTruncated` and `resultFile` for reading the full text.
 
-The GUI provides individual and collective cancellation. **Stop** stops the parent while its agents continue.
+The GUI provides individual and collective cancellation. **Stop** stops the selected agent's current work; other agents continue.
 
-Select a parent and click **Close session** in its header, or use **Menu → Close session**. Closing a desktop parent stops its work and agents, closes its embedded terminal, and frees its session slot. Saved history remains available through **Menu → Resume session**. Closing the last parent returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a session attached from another terminal, **Close session** dismisses it from this window.
+Select a workspace and click **Close workspace** in its header, or use **Menu → Close workspace**. Closing a workspace stops all of its agents, closes its embedded terminal, and frees its workspace slot. Saved history remains available through **Menu → Resume session**. Closing the last workspace returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a workspace attached from another terminal, **Close workspace** dismisses it from this window.
 
-Resuming a saved session replaces other open sessions in the same folder, stopping their work and agents; sessions in other folders stay open. If the chosen session is already open, it is reused rather than duplicated. If the saved session cannot be loaded, the current sessions stay open.
+Resuming a saved conversation replaces other open workspaces in the same folder, stopping their agents; workspaces in other folders stay open. If the chosen conversation is already open, its workspace is reused rather than duplicated. If it cannot be loaded, the current workspaces stay open.
 
-Each factory has a stable, theme-aware color and architectural variation. Idle parents can visit other idle factories, then hurry back when prompted or when their host starts working. Visiting robots react to cane hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
+Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to cane hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
 ## Commit and push
 
-`/commit [instructions]` delegates committing and pushing to an agent. Choose its model and reasoning level in **Menu → Tool models → Commit**, or inherit those values from the parent session. Its model must be allowed in **Agent models**. The agent inspects the changes, runs checks, and reports the result.
+`/commit [instructions]` delegates committing and pushing to the effective `commit` agent configuration. Workspace, repository, and global `commit` configurations override the built-in configuration. **Menu → Tool models → Commit** supplies defaults for the built-in configuration; custom configurations take precedence. The selected model must be allowed in **Agent models**.
+
+The command uses the active Pi `commit` skill when configured and falls back to VarisDev's bundled skill. `/skill:commit` also invokes it explicitly. The bundled skill and agent instructions stay out of ordinary prompts; they are loaded for the commit request. The delegated agent inspects the changes, runs checks, and reports the result.
 
 ## Browsing and files
 
-| Tool | Purpose |
-| --- | --- |
-| `browse` | Read web pages, links, raw text, or selected JSON fields. |
-| `download` | Save a URL to a project file. |
-| `json_query` | Filter, group, and sample JSON files. |
+| Tool              | Purpose                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| `browse`          | Read web pages, links, raw text, or selected JSON fields.          |
+| `download`        | Save a URL to a project file.                                      |
+| `json_query`      | Filter, group, and sample JSON files.                              |
 | `gamemaker_query` | Query GameMaker `.yy` and `.yyp` files, including trailing commas. |
-| `image_query` | Inspect image dimensions, alpha bounds, and grid occupancy. |
-| `image_preview` | Display a local image in the conversation. |
+| `image_query`     | Inspect image dimensions, alpha bounds, and grid occupancy.        |
+| `image_preview`   | Display a local image in the conversation.                         |
 
 `browse` supports `auto`, `links`, `raw`, and `none` views. Use `jsonPointers` to select fields from large JSON responses.
 

@@ -159,7 +159,7 @@ void test('a future cursor from another parent session is rejected', () => {
   const cursor = first.page(0).nextAfter;
   const second = inbox('second');
   second.store('Different session');
-  assert.throws(() => second.page(cursor), /in this parent session/);
+  assert.throws(() => second.page(cursor), /in this workspace/);
   assert.deepEqual(
     second.page(0).messages.map(message => message.message),
     ['Different session'],

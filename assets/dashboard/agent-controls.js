@@ -20,7 +20,8 @@ export function initAgentControls({
   const dismissed = new Map();
   const key = (sessionId, agentId) => `${sessionId}:${agentId}`;
   const cancellable = agent => ['queued', 'running'].includes(agent.status);
-  const removable = agent => finishedStatuses.has(agent?.status);
+  const removable = agent =>
+    agent?.resumable === false || finishedStatuses.has(agent?.status);
 
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
@@ -61,7 +62,11 @@ export function initAgentControls({
       const ids = dismissed.get(sessionId);
       if (!ids?.size || !Array.isArray(data.agents)) return data;
       for (const agent of data.agents) {
-        if (ids.has(agent.id) && activeStatuses.has(agent.status)) {
+        if (
+          ids.has(agent.id) &&
+          agent.resumable !== false &&
+          activeStatuses.has(agent.status)
+        ) {
           ids.delete(agent.id);
           storageChanged = true;
         }
@@ -151,16 +156,22 @@ export function initAgentControls({
     }
   }
 
-  function dismiss() {
+  function dismiss(
+    sessionId = selected()?.session.id,
+    agentId = selectedAgent(),
+  ) {
     const data = selected();
-    const agent = data?.agents.find(item => item.id === selectedAgent());
-    if (!data || !removable(agent)) return;
-    const sessionId = data.session.id;
+    const agent =
+      data?.session.id === sessionId
+        ? data.agents.find(item => item.id === agentId)
+        : undefined;
+    if (agent && !removable(agent)) return;
+    if (!sessionId || !agentId) return;
     const ids = dismissed.get(sessionId) || new Set();
-    ids.add(agent.id);
+    ids.add(agentId);
     dismissed.set(sessionId, ids);
-    pending.delete(key(sessionId, agent.id));
-    errors.delete(key(sessionId, agent.id));
+    pending.delete(key(sessionId, agentId));
+    errors.delete(key(sessionId, agentId));
     persistDismissed();
     removed();
     render();
@@ -168,6 +179,6 @@ export function initAgentControls({
 
   all.addEventListener('click', () => void cancel('all'));
   one.addEventListener('click', () => void cancel(selectedAgent()));
-  remove.addEventListener('click', dismiss);
-  return {render, filterHub};
+  remove.addEventListener('click', () => dismiss());
+  return {render, filterHub, dismiss};
 }

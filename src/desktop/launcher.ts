@@ -5,6 +5,9 @@ import {fileURLToPath} from 'node:url';
 import type {DashboardState} from '../dashboard/state.ts';
 import {
   agentCancellationId,
+  agentSessionRequest,
+  type AgentSessionRequest,
+  type AgentSessionResult,
   sessionConfiguration,
   compactionInstructions,
   type StoppedMessages,
@@ -24,6 +27,7 @@ export interface FactoryControl {
   prompt(text: string): void | Promise<void>;
   abort(): StoppedMessages | Promise<StoppedMessages>;
   cancelAgent(agentId: string): void | Promise<void>;
+  agentSession?(request: AgentSessionRequest): Promise<AgentSessionResult>;
   features(): Promise<SessionFeatures>;
   configure(input: SessionConfiguration): Promise<void>;
   compact(instructions?: string): Promise<void>;
@@ -120,10 +124,7 @@ export function createFactoryBridge(
       });
     if (requests.has(id)) return;
     if (requests.size >= 32) {
-      reply(
-        false,
-        'The parent session already has 32 pending desktop requests.',
-      );
+      reply(false, 'The workspace already has 32 pending desktop requests.');
       return;
     }
     const current = attachment;
@@ -133,13 +134,14 @@ export function createFactoryBridge(
       request.sessionId !== current.state.deliverySnapshot().session.id ||
       current.state.deliverySnapshot().session.status === 'closed'
     ) {
-      reply(false, 'This parent session is no longer attached to the app.');
+      reply(false, 'This workspace is no longer attached to the app.');
       return;
     }
     if (
       request.action !== 'prompt' &&
       request.action !== 'abort' &&
       request.action !== 'cancelAgent' &&
+      request.action !== 'agentSession' &&
       request.action !== 'features' &&
       request.action !== 'configure' &&
       request.action !== 'compact' &&
@@ -170,6 +172,8 @@ export function createFactoryBridge(
         request.input = conversationImageInput(request.input);
       if (request.action === 'cancelAgent')
         request.input = agentCancellationId(request.input);
+      if (request.action === 'agentSession')
+        request.input = agentSessionRequest(request.input);
       if (request.action === 'configure')
         request.input = sessionConfiguration(request.input);
       if (request.action === 'compact')
@@ -185,13 +189,19 @@ export function createFactoryBridge(
     void Promise.resolve()
       .then(async () => {
         if (attachment !== current)
-          throw new Error('The attached parent session changed.');
+          throw new Error('The attached workspace changed.');
         let value: unknown;
         if (request.action === 'prompt')
           await current.control.prompt((request.input as string).trim());
         else if (request.action === 'cancelAgent')
           await current.control.cancelAgent(request.input as string);
-        else if (request.action === 'conversationImage') {
+        else if (request.action === 'agentSession') {
+          if (!current.control.agentSession)
+            throw new Error('Agent conversations are unavailable.');
+          value = await current.control.agentSession(
+            request.input as AgentSessionRequest,
+          );
+        } else if (request.action === 'conversationImage') {
           const input = request.input as ReturnType<
             typeof conversationImageInput
           >;
@@ -207,7 +217,7 @@ export function createFactoryBridge(
         else if (request.action === 'reload') await current.control.reload();
         else value = await current.control.abort();
         if (attachment !== current)
-          throw new Error('The attached parent session changed.');
+          throw new Error('The attached workspace changed.');
         reply(true, undefined, value);
       })
       .catch(error => {
@@ -215,7 +225,7 @@ export function createFactoryBridge(
           false,
           error instanceof Error
             ? error.message
-            : 'The parent session request failed.',
+            : 'The workspace request failed.',
         );
       })
       .finally(() => requests.delete(id));

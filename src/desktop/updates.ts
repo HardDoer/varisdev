@@ -24,7 +24,7 @@ export function requireUpdateRestart(
     )
   ) {
     throw new Error(
-      'Wait for parent sessions and agents to finish, then retry restarting.',
+      'Wait for workspaces and agents to finish, then retry restarting.',
     );
   }
 }

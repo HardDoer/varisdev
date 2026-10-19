@@ -34,7 +34,7 @@ void test('desktop extension dialogs preserve FIFO order and validate responses'
     ['select', 'confirm', 'input', 'editor'],
   );
   assert.deepEqual(dialogs[0].options, ['First', 'Second']);
-  assert.equal(dialogs[0].searchable, true);
+  assert.ok(dialogs[0].terminal);
   assert.equal(dialogs[1].message, 'Please confirm.');
   assert.equal(dialogs[2].placeholder, 'Enter a name');
   assert.equal(dialogs[3].prefill, 'Old\nnotes');
@@ -1133,4 +1133,137 @@ void test('session thinking tab only applies supported levels and cancellation d
     thinkingLevel: 'off',
     persist: false,
   });
+});
+
+void test('generic Pi dialog keys use the terminal while direct confirmation responses stay compatible', async () => {
+  const adapter = new DesktopExtensionUI(() => {});
+  const confirmation = adapter.context.confirm(
+    'Permission',
+    'Allow this operation?',
+  );
+  const dialog = adapter.snapshot().dialogs[0];
+  assert.equal(dialog.kind, 'confirm');
+  assert.ok(dialog.terminal);
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('Allow this operation?') ===
+      true,
+  );
+  adapter.respond(dialog.id, {input: '\x1b[B\r'});
+  assert.equal(await confirmation, false);
+  const input = adapter.context.input('Native input');
+  const inputId = adapter.snapshot().dialogs[0].id;
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('Native input') === true,
+  );
+  adapter.respond(inputId, {input: 'typed value\r'});
+  assert.equal(await input, 'typed value');
+  const compatible = adapter.context.confirm(
+    'Compatibility',
+    'Keep API responses',
+  );
+  adapter.respond(adapter.snapshot().dialogs[0].id, true);
+  assert.equal(await compatible, true);
+  adapter.dispose();
+});
+
+void test('native component wrappers route focus, resize frames and clean up on abort', async () => {
+  const adapter = new DesktopExtensionUI(() => {});
+  const controller = new AbortController();
+  let disposed = 0;
+  let focused = false;
+  const widths: number[] = [];
+  const keys: string[] = [];
+  const mouse: string[] = [];
+  const result = adapter
+    .forCommand(controller.signal)
+    .native<void>('Native component', () => ({
+      component: {
+        render: width => {
+          widths.push(width);
+          return [`Native width ${width}`];
+        },
+        invalidate() {},
+        handleMouse: event => {
+          mouse.push(event.type);
+          return {handled: true};
+        },
+        dispose: () => {
+          disposed++;
+        },
+      },
+      focus: {
+        get focused() {
+          return focused;
+        },
+        set focused(value: boolean) {
+          focused = value;
+        },
+        render: () => [],
+        invalidate() {},
+        handleInput: data => {
+          keys.push(data);
+        },
+      },
+    }));
+  await waitFor(() => widths.length > 0);
+  const id = adapter.snapshot().dialogs[0].id;
+  assert.equal(focused, true);
+  adapter.respond(id, {columns: 1, rows: 2});
+  assert.equal(adapter.snapshot().dialogs[0].terminal!.columns, 100);
+  adapter.respond(id, {columns: 62, rows: 14});
+  await waitFor(() => widths.includes(62));
+  assert.equal(adapter.snapshot().dialogs[0].terminal!.rows, 14);
+  adapter.respond(id, {input: 'x'});
+  assert.deepEqual(keys, ['x']);
+  adapter.respond(id, {input: '\x1b[<0;1;1M\x1b[<0;1;1m'});
+  assert.ok(mouse.includes('click'));
+  controller.abort();
+  await result;
+  assert.equal(disposed, 1);
+  assert.deepEqual(adapter.snapshot().dialogs, []);
+  adapter.dispose();
+});
+
+void test('native rendering restores the named Pi theme needed by later HTML export', async () => {
+  const sdkTheme = (await import(
+    new URL(
+      './modes/interactive/theme/theme.js',
+      import.meta.resolve('@earendil-works/pi-coding-agent'),
+    ).href
+  )) as {
+    initTheme(name: string): void;
+    getResolvedThemeColors(): Record<string, string>;
+  };
+  const adapter = new DesktopExtensionUI(() => {});
+  sdkTheme.initTheme('light');
+  const exportColors = sdkTheme.getResolvedThemeColors();
+  try {
+    const viewing = adapter.show('Native view', 'Rendered by Pi');
+    await waitFor(
+      () =>
+        adapter
+          .snapshot()
+          .dialogs[0]?.terminal?.output.includes('Rendered by Pi') === true,
+    );
+    assert.deepEqual(sdkTheme.getResolvedThemeColors(), exportColors);
+    adapter.respond(adapter.snapshot().dialogs[0].id);
+    await viewing;
+    assert.deepEqual(sdkTheme.getResolvedThemeColors(), exportColors);
+    await assert.rejects(
+      adapter.native('Failed view', () => {
+        throw new Error('Fixture factory failed');
+      }),
+      /Fixture factory failed/,
+    );
+    assert.deepEqual(sdkTheme.getResolvedThemeColors(), exportColors);
+  } finally {
+    adapter.dispose();
+    sdkTheme.initTheme('dark');
+  }
 });

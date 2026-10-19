@@ -3,14 +3,20 @@ import {execFile as execFileCallback} from 'node:child_process';
 import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {setImmediate as nextTick} from 'node:timers/promises';
+import {
+  setImmediate as nextTick,
+  setTimeout as delay,
+} from 'node:timers/promises';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
 import {ModelRuntime, SessionManager} from '@earendil-works/pi-coding-agent';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
 import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
-import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
+import {
+  DesktopExtensionUI,
+  type DesktopUIDialog,
+} from '../src/dashboard/extension-ui.ts';
 import type {SessionFeatures} from '../src/dashboard/features.ts';
 import {readWorkspaceDiff} from '../src/dashboard/workspace.ts';
 import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
@@ -50,9 +56,10 @@ function state(id: string, cwd = process.cwd()) {
 }
 
 async function until(predicate: () => boolean): Promise<void> {
-  for (let count = 0; count < 200; count++) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
     if (predicate()) return;
-    await nextTick();
+    await delay(5);
   }
   assert.fail('Expected state was not reached');
 }
@@ -153,7 +160,7 @@ void test('dashboard keeps parallel parents isolated, forwards prompts immediate
   assert.deepEqual(parents[0].cancellations, ['worker']);
   assert.deepEqual(parents[1].cancellations, []);
   await assert.rejects(hub.cancelAgent(one.id, {}), /Agent ID/);
-  await assert.rejects(hub.cancelAgent('missing', 'all'), /Unknown parent/);
+  await assert.rejects(hub.cancelAgent('missing', 'all'), /Unknown workspace/);
   await hub.abortSession(one.id);
   assert.equal(parents[0].runs.length, 3);
   assert.equal(parents[0].maximum, 3);
@@ -391,15 +398,19 @@ void test('closing sessions frees capacity and keeps the selected session valid 
     parents.push(parent);
     return parent.parent;
   });
-  t.after(() => hub.close());
-  const opened = await Promise.all(
+  const closeGate = Promise.withResolvers<void>();
+  t.after(async () => {
+    closeGate.resolve();
+    await hub.close();
+  });
+  await Promise.all(
     Array.from({length: 8}, () => hub.createSession({cwd: process.cwd()})),
   );
   await assert.rejects(
     hub.createSession({cwd: process.cwd()}),
-    /eight parent sessions/,
+    /eight workspaces/,
   );
-  const closeGate = Promise.withResolvers<void>();
+  const firstId = parents[0].parent.state.snapshot().session.id;
   const closeFirst = parents[0].parent.close.bind(parents[0].parent);
   parents[0].parent.close = async () => {
     await closeGate.promise;
@@ -409,16 +420,16 @@ void test('closing sessions frees capacity and keeps the selected session valid 
   let changes = 0;
   hub.subscribe(() => changes++);
   await hub.closeSession('terminal');
-  assert.equal(hub.snapshot().selectedSessionId, opened[0].id);
+  assert.equal(hub.snapshot().selectedSessionId, firstId);
   const afterInitialRemoval = changes;
   initial.record('session', 'Late terminal update');
   assert.equal(changes, afterInitialRemoval);
-  const closing = hub.closeSession(opened[0].id);
+  const closing = hub.closeSession(firstId);
   await assert.rejects(
     hub.createSession({cwd: process.cwd()}),
-    /eight parent sessions/,
+    /eight workspaces/,
   );
-  assert.equal(hub.snapshot().sessions[0].session.id, opened[0].id);
+  assert.equal(hub.snapshot().sessions[0].session.id, firstId);
   assert.equal(hub.snapshot().sessions[0].session.activity, 'Closing');
   closeGate.resolve();
   await closing;
@@ -428,7 +439,7 @@ void test('closing sessions frees capacity and keeps the selected session valid 
       item => item.session.id === afterClose.selectedSessionId,
     ),
   );
-  assert.notEqual(afterClose.selectedSessionId, opened[0].id);
+  assert.notEqual(afterClose.selectedSessionId, firstId);
   const replacement = await hub.createSession({cwd: process.cwd()});
   assert.equal(replacement.id, 'owned-8');
   assert.equal(
@@ -1192,5 +1203,102 @@ void test('native reload reconnects hub observation when the SDK replaces its da
   assert.equal(
     hub.snapshot().sessions[0].events.at(-1)?.message,
     'Observed after reload',
+  );
+});
+
+void test('hub forwards bounded terminal input and resize for semantic dialogs', async t => {
+  const current = controlledParent('terminal-protocol', process.cwd());
+  const ui = new DesktopExtensionUI(() => {});
+  current.parent.ui = ui;
+  const hub = new DashboardHub(undefined, async () => current.parent);
+  t.after(async () => {
+    ui.dispose();
+    await hub.close();
+  });
+  await hub.createSession({cwd: process.cwd()});
+  const base = ui.snapshot();
+  const dialog: DesktopUIDialog = {
+    id: 'terminal-input',
+    kind: 'confirm',
+    title: 'Continue?',
+    terminal: {columns: 80, rows: 24, output: '', revision: 0},
+  };
+  let editor = false;
+  t.mock.method(ui, 'snapshot', () => ({
+    ...base,
+    dialogs: [dialog],
+    ...(editor ? {editor: {id: dialog.id, text: ''}} : {}),
+  }));
+  const forwarded: unknown[] = [];
+  t.mock.method(
+    ui,
+    'respond',
+    (id: string, value: Parameters<DesktopExtensionUI['respond']>[1]) => {
+      forwarded.push({id, value});
+    },
+  );
+  for (const value of [
+    {input: '\u001b[B'},
+    {input: ''},
+    {input: 'x'.repeat(262144)},
+    {columns: 20, rows: 6},
+    {columns: 240, rows: 100},
+    true,
+    undefined,
+  ])
+    await hub.respondToDialog('terminal-protocol', dialog.id, value);
+  assert.deepEqual(
+    forwarded,
+    [
+      {input: '\u001b[B'},
+      {input: ''},
+      {input: 'x'.repeat(262144)},
+      {columns: 20, rows: 6},
+      {columns: 240, rows: 100},
+      true,
+      undefined,
+    ].map(value => ({id: dialog.id, value})),
+  );
+  for (const value of [
+    {input: 'x'.repeat(262145)},
+    {input: 1},
+    {input: '', extra: true},
+    {columns: 19, rows: 6},
+    {columns: 241, rows: 24},
+    {columns: 80, rows: 5},
+    {columns: 80, rows: 101},
+    {columns: 80.5, rows: 24},
+    {columns: '80', rows: 24},
+    {columns: 80, rows: 24, extra: true},
+    {columns: 80},
+    {input: '', action: 'close'},
+  ])
+    await assert.rejects(
+      hub.respondToDialog('terminal-protocol', dialog.id, value),
+      /Invalid extension dialog/,
+    );
+  dialog.kind = 'input';
+  await hub.respondToDialog('terminal-protocol', dialog.id, {input: 'text'});
+  await hub.respondToDialog('terminal-protocol', dialog.id, 'semantic text');
+  dialog.kind = 'select';
+  dialog.options = ['One'];
+  await hub.respondToDialog('terminal-protocol', dialog.id, {
+    columns: 80,
+    rows: 24,
+  });
+  await hub.respondToDialog('terminal-protocol', dialog.id, 'One');
+  editor = true;
+  await assert.rejects(
+    hub.respondToDialog('terminal-protocol', dialog.id, {input: 'editor text'}),
+    /Invalid extension dialog/,
+  );
+  editor = false;
+  delete dialog.terminal;
+  await assert.rejects(
+    hub.respondToDialog('terminal-protocol', dialog.id, {
+      columns: 80,
+      rows: 24,
+    }),
+    /Invalid extension dialog/,
   );
 });

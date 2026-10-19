@@ -7,14 +7,18 @@ import {
   type TruncationResult,
   withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
-import {glob, mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
+import {mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {isAbsolute, join, relative, resolve} from 'node:path';
+import {join} from 'node:path';
 import {processImage} from '../sharp.ts';
 import {Type} from 'typebox';
+import {
+  DEFAULT_MAX_FILES,
+  MAX_FILES,
+  getFileQueryMatches,
+  type QueryFile as ImageFile,
+} from './file-matches.ts';
 
-const DEFAULT_MAX_FILES = 100;
-const MAX_FILES = 500;
 const MAX_EXCLUDE_PATTERNS = 20;
 const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
 const MAX_INPUT_PIXELS = 50_000_000;
@@ -145,21 +149,6 @@ type ImageQueryToolDetails = {
   fullOutputPath?: string;
 };
 
-type ImageFile = {
-  absolutePath: string;
-  displayPath: string;
-};
-
-function stripAtPath(value: string): string {
-  return value.startsWith('@') ? value.slice(1) : value;
-}
-
-function normalizePattern(rawPattern: string, label: string): string {
-  const pattern = stripAtPath(rawPattern.trim());
-  if (!pattern) throw new Error(`${label} cannot be empty.`);
-  return pattern;
-}
-
 function normalizeBoundedInteger(
   value: number | undefined,
   fallback: number,
@@ -168,15 +157,6 @@ function normalizeBoundedInteger(
 ): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.min(Math.max(Math.round(value), minimum), maximum);
-}
-
-function displayPath(cwd: string, absolutePath: string): string {
-  const relativePath = relative(cwd, absolutePath);
-  const output =
-    relativePath && !relativePath.startsWith('..') && !isAbsolute(relativePath)
-      ? relativePath
-      : absolutePath;
-  return output.replaceAll('\\', '/');
 }
 
 function describeError(error: unknown): string {
@@ -189,48 +169,6 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   if (signal.reason instanceof Error) throw signal.reason;
   throw new Error('image_query cancelled.');
-}
-
-async function findImageFiles(
-  cwd: string,
-  pattern: string,
-  exclude: string[],
-  maxFiles: number,
-  signal?: AbortSignal,
-): Promise<{files: ImageFile[]; limitReached: boolean}> {
-  const files: ImageFile[] = [];
-  const seen = new Set<string>();
-  let limitReached = false;
-
-  for await (const match of glob(pattern, {
-    cwd,
-    ...(exclude.length > 0 ? {exclude} : {}),
-  })) {
-    throwIfAborted(signal);
-    const absolutePath = resolve(cwd, match);
-    if (seen.has(absolutePath)) continue;
-
-    try {
-      if (!(await stat(absolutePath)).isFile()) continue;
-    } catch {
-      // Keep inaccessible or transient matches so their error is reported.
-    }
-
-    if (files.length >= maxFiles) {
-      limitReached = true;
-      break;
-    }
-    seen.add(absolutePath);
-    files.push({
-      absolutePath,
-      displayPath: displayPath(cwd, absolutePath),
-    });
-  }
-
-  files.sort((left, right) =>
-    left.displayPath.localeCompare(right.displayPath),
-  );
-  return {files, limitReached};
 }
 
 function makeGrid(
@@ -506,21 +444,18 @@ export function registerImageQueryTool(pi: ExtensionAPI): void {
     ],
     parameters: imageQuerySchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const pattern = normalizePattern(params.path, 'image_query path');
-      const exclude = (params.exclude ?? []).map(item =>
-        normalizePattern(item, 'image_query exclude pattern'),
+      const found = await getFileQueryMatches(
+        'image_query',
+        params,
+        ctx.cwd,
+        signal,
       );
+      const {pattern, exclude, maxFiles} = found;
       const alphaThreshold = normalizeBoundedInteger(
         params.alphaThreshold,
         0,
         0,
         254,
-      );
-      const maxFiles = normalizeBoundedInteger(
-        params.maxFiles,
-        DEFAULT_MAX_FILES,
-        1,
-        MAX_FILES,
       );
       const grid = params.grid
         ? {
@@ -538,13 +473,6 @@ export function registerImageQueryTool(pi: ExtensionAPI): void {
             ),
           }
         : undefined;
-      const found = await findImageFiles(
-        ctx.cwd,
-        pattern,
-        exclude,
-        maxFiles,
-        signal,
-      );
       if (found.files.length === 0) {
         throw new Error(
           `No files matched image_query path ${JSON.stringify(pattern)} from ${ctx.cwd}.`,
@@ -571,7 +499,7 @@ export function registerImageQueryTool(pi: ExtensionAPI): void {
       const details: ImageQueryToolDetails = {
         request: {
           path: pattern,
-          ...(exclude.length > 0 ? {exclude} : {}),
+          ...(exclude.length > 0 ? {exclude: [...exclude]} : {}),
           alphaThreshold,
           ...(grid ? {grid} : {}),
           maxFiles,

@@ -30,8 +30,21 @@ let closeDelay;
 let closeError;
 let resumeError;
 let recentProjects;
+let agentPromptError;
+let agentPromptDelay;
+let dialogDelays;
+let dialogErrors;
+let agentTemplates;
+let defaultAgentId;
+let templateError;
 
-function features() {
+function terminalMenuOutput(title, options, selection = 0) {
+  return `\u001bc${title}\r\n${options
+    .map((option, index) => `${index === selection ? '> ' : '  '}${option}`)
+    .join('\r\n')}\r\n\r\n↑/↓ move · Enter select · Esc cancel`;
+}
+
+function features(agentProfile) {
   return {
     commands: [
       {
@@ -65,6 +78,7 @@ function features() {
     thinkingLevels: ['off', 'low', 'medium', 'high'],
     tools: [{name: 'bash', description: 'Run a local command'}],
     diagnostics: [],
+    ...(agentProfile ? {agentProfile} : {}),
   };
 }
 
@@ -120,6 +134,241 @@ function session(id, name) {
   };
 }
 
+const agentScopes = ['builtin', 'global', 'repository', 'workspace'];
+
+function agentSourcePath(scope, id) {
+  if (scope === 'builtin') return `/fixture/builtin/agents/${id}.md`;
+  if (scope === 'global') return `/fixture/settings/agents/${id}.md`;
+  if (scope === 'workspace')
+    return `/fixture/settings/workspaces/project/agents/${id}.md`;
+  return join(directory, '.varisdev', 'agents', `${id}.md`);
+}
+
+function agentDefinition(scope, id, fields) {
+  return {
+    id,
+    key: `${scope}:${id}`,
+    instructions: '',
+    ...fields,
+    scope,
+    sourcePath: fields.sourcePath || agentSourcePath(scope, id),
+  };
+}
+
+function initialAgentTemplates() {
+  return [
+    agentDefinition('builtin', 'default', {
+      name: 'Default',
+      instructions: '',
+      mode: 'all',
+      context: 'workspace',
+    }),
+    agentDefinition('builtin', 'build', {
+      name: 'Build',
+      description: 'Coding agent with broad tool access.',
+      instructions: '',
+      mode: 'primary',
+      context: 'workspace',
+    }),
+    agentDefinition('builtin', 'plan', {
+      name: 'Plan',
+      description: 'Planning agent without normal project edits.',
+      instructions: '',
+      mode: 'primary',
+      context: 'workspace',
+    }),
+    agentDefinition('builtin', 'general', {
+      name: 'General',
+      description: 'General-purpose delegated agent.',
+      instructions: '',
+      mode: 'subagent',
+      context: 'task',
+    }),
+    agentDefinition('builtin', 'explore', {
+      name: 'Explore',
+      description: 'Read-only discovery agent.',
+      instructions: '',
+      mode: 'subagent',
+      context: 'task',
+    }),
+    agentDefinition('builtin', 'commit', {
+      name: 'Commit',
+      instructions: 'Review, commit, and push the requested changes.',
+      mode: 'all',
+      context: 'workspace',
+      hidden: true,
+      permissions: [{action: 'shell', resource: 'git push *', effect: 'ask'}],
+    }),
+  ];
+}
+
+function authoredAgentTemplates() {
+  return [
+    agentDefinition('global', 'writer', {
+      name: 'Writer',
+      instructions: 'Implement requested changes.',
+      mode: 'primary',
+      context: 'workspace',
+      color: '#74F3C0',
+    }),
+    agentDefinition('global', 'researcher', {
+      name: 'Researcher',
+      description: 'Researches delegated questions.',
+      instructions: 'Research the delegated task.',
+      mode: 'subagent',
+      context: 'task',
+    }),
+    agentDefinition('repository', 'flex', {
+      name: 'Flexible agent',
+      instructions: 'Handle primary or delegated work.',
+      mode: 'all',
+      context: 'workspace',
+    }),
+    agentDefinition('global', 'hidden-helper', {
+      name: 'Hidden helper',
+      instructions: 'Perform hidden maintenance.',
+      mode: 'all',
+      hidden: true,
+    }),
+    agentDefinition('global', 'disabled-helper', {
+      name: 'Disabled helper',
+      instructions: 'This agent is disabled.',
+      mode: 'primary',
+      disabled: true,
+    }),
+    agentDefinition('global', 'team/reviewer', {
+      name: 'Team reviewer',
+      description: 'Reviews changes for regressions.',
+      instructions: 'Review changes and report concrete findings.',
+      mode: 'all',
+      context: 'workspace',
+      color: '#FF6B6B',
+      permissions: [{action: 'edit', resource: '*', effect: 'deny'}],
+    }),
+    agentDefinition('repository', 'team/reviewer', {
+      context: 'task',
+      permissions: [{action: 'read', resource: 'src/**', effect: 'allow'}],
+    }),
+    agentDefinition('repository', 'team/reviewer', {
+      description: 'Applies package review rules.',
+      request: {
+        headers: {'x-fixture-scope': 'package'},
+        body: {temperature: 0.2, metadata: {source: 'fixture'}},
+      },
+      permissions: [
+        {action: 'read', resource: 'packages/app/**', effect: 'allow'},
+      ],
+      sourcePath: join(
+        directory,
+        'packages',
+        'app',
+        '.varisdev',
+        'agents',
+        'team',
+        'reviewer.md',
+      ),
+    }),
+    agentDefinition('workspace', 'team/reviewer', {
+      steps: 6,
+    }),
+  ];
+}
+
+function agentDefinitionDirectory(definition) {
+  return definition.sourcePath
+    .slice(0, -`${definition.id}.md`.length)
+    .replace(/[\\/]$/, '');
+}
+
+function mergeAgentDefinitions(id, definitions) {
+  const selected = definitions.at(-1);
+  const effective = {
+    id,
+    key: selected.key,
+    name: id,
+    instructions: '',
+    mode: 'primary',
+    context: 'workspace',
+    hidden: false,
+    disabled: false,
+    permissions: [],
+    scope: selected.scope,
+    sourcePath: selected.sourcePath,
+  };
+  let hasInstructions = false;
+  for (const definition of definitions) {
+    for (const field of [
+      'name',
+      'description',
+      'mode',
+      'context',
+      'model',
+      'thinkingLevel',
+      'hidden',
+      'disabled',
+      'color',
+      'steps',
+      'request',
+    ])
+      if (definition[field] !== undefined) effective[field] = definition[field];
+    if (definition.instructions || !hasInstructions) {
+      effective.instructions = definition.instructions;
+      hasInstructions = true;
+    }
+    if (definition.permissions)
+      effective.permissions.push(...definition.permissions);
+  }
+  return effective;
+}
+
+function listFixtureAgentTemplates(cwd) {
+  const grouped = new Map();
+  for (const scope of agentScopes)
+    for (const definition of agentTemplates.filter(
+      item => item.scope === scope,
+    )) {
+      const definitions = grouped.get(definition.id) || [];
+      definitions.push(definition);
+      grouped.set(definition.id, definitions);
+    }
+  const effective = [...grouped]
+    .map(([id, definitions]) => mergeAgentDefinitions(id, definitions))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    templates: effective.filter(template => !template.disabled),
+    allTemplates: agentTemplates,
+    sources: agentScopes.flatMap(scope => {
+      const scoped = agentTemplates.filter(
+        template => template.scope === scope,
+      );
+      const directories =
+        scope === 'repository'
+          ? [
+              ...new Set([
+                join(cwd, '.varisdev', 'agents'),
+                ...scoped.map(agentDefinitionDirectory),
+              ]),
+            ]
+          : [
+              scope === 'global'
+                ? '/fixture/settings/agents'
+                : scope === 'workspace'
+                  ? '/fixture/settings/workspaces/project/agents'
+                  : '/fixture/builtin/agents',
+            ];
+      return directories.map(directory => ({
+        scope,
+        directory,
+        templates: scoped.filter(
+          template => agentDefinitionDirectory(template) === directory,
+        ),
+      }));
+    }),
+    diagnostics: [],
+    ...(defaultAgentId ? {defaultAgentId} : {}),
+  };
+}
+
 function reset() {
   hub = {
     launchCwd: directory,
@@ -141,6 +390,13 @@ function reset() {
   closeDelay = 0;
   closeError = undefined;
   resumeError = undefined;
+  agentPromptError = undefined;
+  agentPromptDelay = 0;
+  dialogDelays = new Map();
+  dialogErrors = new Map();
+  agentTemplates = initialAgentTemplates();
+  defaultAgentId = 'default';
+  templateError = undefined;
   archivedSessions = new Map();
   savedSessions = [
     {
@@ -221,13 +477,38 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
               title: 'Thinking level',
               options: resources.get(sessionId).thinkingLevels,
               selected: target.session.thinkingLevel,
-              message: 'For the current session.',
+              selection: resources
+                .get(sessionId)
+                .thinkingLevels.indexOf(target.session.thinkingLevel),
+              terminal: {
+                columns: 100,
+                rows: 28,
+                output: terminalMenuOutput(
+                  'Thinking level',
+                  resources.get(sessionId).thinkingLevels,
+                  resources
+                    .get(sessionId)
+                    .thinkingLevels.indexOf(target.session.thinkingLevel),
+                ),
+                revision: 1,
+              },
             }
           : {
               id: 'native-settings',
-              kind: 'select',
-              title: 'Session settings',
+              kind: 'terminal',
+              title: 'Settings',
               options: ['Auto retry: off', 'Transport: auto'],
+              selection: 0,
+              terminal: {
+                columns: 100,
+                rows: 28,
+                output: terminalMenuOutput(
+                  'Settings',
+                  ['Auto retry: off', 'Transport: auto'],
+                  0,
+                ),
+                revision: 1,
+              },
             },
       ];
       window.webContents.send('fixture:snapshot', hub);
@@ -251,6 +532,97 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
   });
 }
 
+ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
+  calls.push({method: 'agentSession', sessionId, request});
+  const owner = hub.sessions.find(item => item.session.id === sessionId);
+  const agent = owner?.agents.find(item => item.id === request.agentId);
+  assert.ok(agent, `Unknown agent ${sessionId}/${request.agentId}`);
+  const key = `${sessionId}:${agent.id}`;
+  if (request.action === 'features') {
+    featureRequests.push(key);
+    if (featureDelays.get(key))
+      await new Promise(resolve => setTimeout(resolve, featureDelays.get(key)));
+    if (featureErrors.get(key)) throw new Error(featureErrors.get(key));
+    return structuredClone(resources.get(key) || features());
+  }
+  if (request.action === 'command') {
+    assert.equal(request.command, '/model');
+    owner.ui ||= {dialogs: [], notifications: [], statuses: []};
+    owner.ui.dialogs = [
+      {
+        id: `worker-model:${agent.id}`,
+        kind: 'terminal',
+        title: 'Model & thinking',
+        actions: [
+          {id: 'default', label: 'Make as default'},
+          {id: 'session', label: 'Apply to session'},
+        ],
+        terminal: {
+          columns: 100,
+          rows: 28,
+          output:
+            '\u001bcModel picker\r\n> fixture/small\r\n  fixture-other/large',
+          revision: 1,
+        },
+      },
+    ];
+  }
+  if (request.action === 'prompt') {
+    if (agentPromptDelay)
+      await new Promise(resolve => setTimeout(resolve, agentPromptDelay));
+    if (agentPromptError) throw new Error(agentPromptError);
+    assert.notEqual(
+      agent.resumable,
+      false,
+      'Disposed agent cannot receive prompts',
+    );
+    agent.queue ||= {steering: [], followUp: []};
+    if (['running', 'queued'].includes(agent.status))
+      agent.queue.steering.push(request.prompt);
+    else {
+      agent.status = 'running';
+      agent.conversation ||= [];
+      agent.conversation.push({
+        id: `direct-${agent.conversation.length}`,
+        role: 'user',
+        text: request.prompt,
+        at,
+      });
+    }
+  }
+  if (request.action === 'abort') {
+    const queue = structuredClone(agent.queue || {steering: [], followUp: []});
+    agent.queue = {steering: [], followUp: []};
+    agent.status = 'cancelled';
+    window.webContents.send('fixture:snapshot', hub);
+    if (abortDelay)
+      await new Promise(resolve => setTimeout(resolve, abortDelay));
+    return queue;
+  }
+  if (request.action === 'configure') {
+    const configuration = request.configuration;
+    if (configuration.modelId)
+      agent.model = `${configuration.provider}/${configuration.modelId}`;
+    if (configuration.thinkingLevel)
+      agent.thinkingLevel = configuration.thinkingLevel;
+    const resource = resources.get(key) || features();
+    if (configuration.modelId)
+      resource.model = {
+        provider: configuration.provider,
+        id: configuration.modelId,
+      };
+    if (configuration.thinkingLevel)
+      resource.thinkingLevel = configuration.thinkingLevel;
+    resources.set(key, resource);
+  }
+  if (request.action === 'close') {
+    agent.resumable = false;
+    if (['running', 'queued', 'cancelling'].includes(agent.status))
+      agent.status = 'cancelled';
+  }
+  window.webContents.send('fixture:snapshot', hub);
+});
+
 ipcMain.handle('fixture:choose-folder', () => {
   calls.push({method: 'chooseFolder'});
   return chosenFolder;
@@ -258,6 +630,32 @@ ipcMain.handle('fixture:choose-folder', () => {
 ipcMain.handle('fixture:list-sessions', (_event, cwd) => {
   calls.push({method: 'listSessions', cwd});
   return cwd === directory ? savedSessions : [];
+});
+ipcMain.handle('fixture:open-workspace-configuration', (_event, cwd) => {
+  calls.push({method: 'openWorkspaceConfiguration', cwd});
+});
+ipcMain.handle('fixture:list-agent-templates', (_event, cwd) =>
+  listFixtureAgentTemplates(cwd),
+);
+ipcMain.handle('fixture:save-agent-template', (_event, cwd, input) => {
+  calls.push({method: 'saveAgentTemplate', cwd, input});
+  if (templateError) throw new Error(templateError);
+  const template = agentDefinition(input.scope, input.id, input);
+  const existingIndex = agentTemplates.findIndex(
+    item =>
+      item.scope === template.scope && item.sourcePath === template.sourcePath,
+  );
+  if (existingIndex < 0) agentTemplates.push(template);
+  else agentTemplates.splice(existingIndex, 1, template);
+  return template;
+});
+ipcMain.handle('fixture:delete-agent-template', (_event, cwd, input) => {
+  calls.push({method: 'deleteAgentTemplate', cwd, input});
+  if (templateError) throw new Error(templateError);
+  const sourcePath = input.sourcePath || agentSourcePath(input.scope, input.id);
+  agentTemplates = agentTemplates.filter(
+    item => item.scope !== input.scope || item.sourcePath !== sourcePath,
+  );
 });
 ipcMain.handle('fixture:create-session', async (_event, input) => {
   calls.push({method: 'createSession', input});
@@ -270,13 +668,34 @@ ipcMain.handle('fixture:create-session', async (_event, input) => {
         archivedSessions.get(input.sessionId) ||
           session(input.sessionId, 'Saved conversation'),
       )
-    : session(creationIds.shift() || 'folder-parent', 'Selected folder');
+    : session(
+        creationIds.shift() || 'folder-parent',
+        input.name || 'Selected folder',
+      );
   parent.session.cwd = input.cwd;
   parent.session.status = 'idle';
   parent.session.activity = 'Ready';
   if (!input.sessionId) parent.conversation = [];
   hub.sessions.push(parent);
-  resources.set(parent.session.id, features());
+  const selectedProfile = input.templateId
+    ? listFixtureAgentTemplates(input.cwd).templates.find(
+        profile =>
+          profile.id === input.templateId || profile.key === input.templateId,
+      )
+    : undefined;
+  resources.set(
+    parent.session.id,
+    features(
+      selectedProfile
+        ? {
+            id: selectedProfile.id,
+            name: selectedProfile.name,
+            mode: selectedProfile.mode,
+            ...(selectedProfile.color ? {color: selectedProfile.color} : {}),
+          }
+        : undefined,
+    ),
+  );
   window.webContents.send('fixture:snapshot', hub);
   return {id: parent.session.id};
 });
@@ -329,17 +748,97 @@ for (const method of ['compact', 'reload']) {
     calls.push({method: `${method}Session`, sessionId, instructions});
   });
 }
-ipcMain.handle('fixture:dialog', (_event, sessionId, dialogId, value) => {
+ipcMain.handle('fixture:dialog', async (_event, sessionId, dialogId, value) => {
   calls.push({method: 'respondToDialog', sessionId, dialogId, value});
   const target = hub.sessions.find(item => item.session.id === sessionId);
   const dialog = target.ui.dialogs.find(item => item.id === dialogId);
+  const delay = dialogDelays.get(sessionId);
+  const failure = dialogErrors.get(sessionId);
+  if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+  if (failure) throw new Error(failure);
+  const terminalInput =
+    value && typeof value === 'object' && typeof value.input === 'string'
+      ? value.input
+      : undefined;
   if (
-    dialogId === 'native-model' &&
+    dialog?.terminal &&
+    value &&
+    typeof value === 'object' &&
+    Number.isInteger(value.columns) &&
+    Number.isInteger(value.rows)
+  ) {
+    dialog.terminal.columns = value.columns;
+    dialog.terminal.rows = value.rows;
+    dialog.terminal.revision++;
+  } else if (
+    (dialogId === 'native-model' || dialogId.startsWith('worker-model:')) &&
     value &&
     typeof value === 'object' &&
     dialog?.actions.some(action => action.id === value.action)
   ) {
     if (!dialog.keepOpen) target.ui.dialogs = [];
+  } else if (dialogId === 'native-thinking' && terminalInput !== undefined) {
+    if (
+      ['\u001b[B', '\u001bOB', '\u001b[A', '\u001bOA'].includes(terminalInput)
+    ) {
+      const direction = ['\u001b[B', '\u001bOB'].includes(terminalInput)
+        ? 1
+        : -1;
+      dialog.selection =
+        (dialog.selection + direction + dialog.options.length) %
+        dialog.options.length;
+      dialog.terminal.output = terminalMenuOutput(
+        dialog.title,
+        dialog.options,
+        dialog.selection,
+      );
+      dialog.terminal.revision++;
+    } else if (terminalInput === '\r') {
+      const selected = dialog.options[dialog.selection];
+      target.session.thinkingLevel = selected;
+      resources.get(sessionId).thinkingLevel = selected;
+      target.ui.dialogs = [];
+    } else if (terminalInput === '\u001b') target.ui.dialogs = [];
+  } else if (dialogId === 'native-settings' && terminalInput !== undefined) {
+    if (
+      ['\u001b[B', '\u001bOB', '\u001b[A', '\u001bOA'].includes(terminalInput)
+    ) {
+      const direction = ['\u001b[B', '\u001bOB'].includes(terminalInput)
+        ? 1
+        : -1;
+      dialog.selection =
+        (dialog.selection + direction + dialog.options.length) %
+        dialog.options.length;
+      dialog.terminal.output = terminalMenuOutput(
+        dialog.title,
+        dialog.options,
+        dialog.selection,
+      );
+      dialog.terminal.revision++;
+    } else if (terminalInput === '\r') {
+      target.ui.dialogs = [
+        {
+          id: 'native-settings-retry',
+          kind: 'terminal',
+          title: 'Auto retry',
+          options: ['on', 'off'],
+          selected: 'off',
+          selection: 1,
+          terminal: {
+            columns: dialog.terminal.columns,
+            rows: dialog.terminal.rows,
+            output: terminalMenuOutput('Auto retry', ['on', 'off'], 1),
+            revision: 1,
+          },
+        },
+      ];
+    } else if (terminalInput === '\u001b') target.ui.dialogs = [];
+  } else if (
+    dialogId === 'native-settings-retry' &&
+    terminalInput !== undefined
+  ) {
+    if (terminalInput === '\u001b') target.ui.dialogs = [];
+    else if (terminalInput === '\r') target.ui.dialogs = [];
   } else if (
     dialogId === 'native-thinking' &&
     dialog?.options.includes(value)
@@ -377,13 +876,41 @@ ipcMain.handle('fixture:dialog', (_event, sessionId, dialogId, value) => {
     ];
   } else if (
     dialogId === 'custom-editor-terminal' &&
-    value === '\r' &&
+    terminalInput === '\r' &&
     editorSubmission !== undefined
   ) {
     target.ui.dialogs = [];
     target.ui.editor = {id: 'submitted-editor-draft', text: editorSubmission};
-  } else if (dialog?.kind === 'terminal' && value !== undefined) {
-    dialog.terminal.output += `\r\nReceived ${JSON.stringify(value)}`;
+  } else if (
+    dialog?.terminal &&
+    dialog.kind !== 'terminal' &&
+    terminalInput !== undefined
+  ) {
+    if (terminalInput === '\u001b' || terminalInput === '\r')
+      target.ui.dialogs = [];
+    else if (
+      dialog.kind === 'select' &&
+      ['\u001b[B', '\u001bOB', '\u001b[A', '\u001bOA'].includes(terminalInput)
+    ) {
+      const direction = ['\u001b[B', '\u001bOB'].includes(terminalInput)
+        ? 1
+        : -1;
+      dialog.selection =
+        ((dialog.selection || 0) + direction + dialog.options.length) %
+        dialog.options.length;
+      dialog.terminal.output = terminalMenuOutput(
+        dialog.title,
+        dialog.options,
+        dialog.selection,
+      );
+      dialog.terminal.revision++;
+    } else {
+      dialog.inputBuffer = `${dialog.inputBuffer || ''}${terminalInput}`;
+      dialog.terminal.output += terminalInput;
+      dialog.terminal.revision++;
+    }
+  } else if (dialog?.terminal && terminalInput !== undefined) {
+    dialog.terminal.output += `\r\nReceived ${JSON.stringify(terminalInput)}`;
     dialog.terminal.revision++;
   } else {
     target.ui.dialogs = target.ui.dialogs.filter(item => item.id !== dialogId);
@@ -459,13 +986,13 @@ async function run(name, callback, width = 1600, height = 1000) {
         storages: ['localstorage'],
       });
     }
-    if (Math.abs(window.webContents.getZoomFactor() - 1) > 0.001)
-      window.webContents.setZoomFactor(1);
     reset();
     window.setContentSize(width, height);
     await window.loadFile(
       resolve(__dirname, '../../assets/dashboard/index.html'),
     );
+    // Reset the file origin's zoom after navigation; about:blank has its own zoom.
+    window.webContents.setZoomFactor(1);
     await until(
       () => document.querySelectorAll('#parents .parent-card').length > 0,
       'Dashboard never connected to the isolated preload fixture',
@@ -562,6 +1089,14 @@ async function main() {
   await run(
     'live view shows details and actions when space allows and preserves the scene across expansion',
     async () => {
+      const conversationActions = () =>
+        calls.filter(
+          call =>
+            !(
+              call.method === 'agentSession' &&
+              call.request.action === 'features'
+            ),
+        );
       const data = hub.sessions[0];
       Object.assign(data.session, {
         name: 'Compact live scene with a long descriptive parent session name',
@@ -610,7 +1145,7 @@ async function main() {
             !window.compactLiveView.inside(r)
           )
             throw new Error(
-              `Unreachable ${selector}: ${JSON.stringify({rect: r.toJSON(), hit: document.elementFromPoint(x, y)?.outerHTML.slice(0, 300), panel: document.getElementById('factory-panel').getBoundingClientRect().toJSON(), column: document.querySelector('.factory-column').getBoundingClientRect().toJSON(), classes: document.getElementById('factory-panel').outerHTML.slice(0, 250), style: ['width', 'minWidth', 'maxWidth', 'gridTemplateColumns'].map(key => [key, getComputedStyle(document.getElementById('factory-panel'))[key]])})}`,
+              `Unreachable ${selector}: ${JSON.stringify({rect: r.toJSON(), hit: document.elementFromPoint(x, y)?.outerHTML.slice(0, 300), drawer: {open: document.getElementById('factory-agents-drawer').matches(':popover-open'), workersInside: !!document.querySelector('#factory-agents-drawer .worker-panels'), rect: document.getElementById('factory-agents-drawer').getBoundingClientRect().toJSON()}, panel: document.getElementById('factory-panel').getBoundingClientRect().toJSON(), column: document.querySelector('.factory-column').getBoundingClientRect().toJSON(), classes: document.getElementById('factory-panel').outerHTML.slice(0, 250), style: ['width', 'minWidth', 'maxWidth', 'gridTemplateColumns'].map(key => [key, getComputedStyle(document.getElementById('factory-panel'))[key]])})}`,
             );
           if (
             ['#factory-info-button', '#expand-live-view'].includes(selector) &&
@@ -853,11 +1388,28 @@ async function main() {
             });
           }
           await press('Escape');
+          await until(
+            () =>
+              !document
+                .getElementById('factory-agents-drawer')
+                .matches(':popover-open'),
+            'Escape did not close the agents drawer',
+          );
           assert.equal(
             await evaluate(() => document.activeElement.id),
             'factory-agents-button',
           );
           await click('#factory-agents-button');
+          await until(
+            () =>
+              document
+                .getElementById('factory-agents-drawer')
+                .matches(':popover-open') &&
+              document
+                .querySelector('#factory-agents-drawer #history-workers button')
+                ?.checkVisibility(),
+            'Reopening the agents drawer did not expose history',
+          );
           await click('#factory-agents-drawer #history-workers button');
           assert.equal(
             await evaluate(
@@ -924,7 +1476,7 @@ async function main() {
         );
         await detailsVisible(false);
         assert.deepEqual(
-          calls,
+          conversationActions(),
           [],
           'Viewing details must not affect the running session',
         );
@@ -989,7 +1541,11 @@ async function main() {
       await click('#expand-live-view');
       await press('Escape');
       await view(false, 'expand-live-view');
-      assert.deepEqual(calls, [], 'Expanded Escape must not abort the session');
+      assert.deepEqual(
+        conversationActions(),
+        [],
+        'Expanded Escape must not abort the session',
+      );
       await click('#expand-live-view');
       await click('#markdown-launcher');
       await until(
@@ -1024,7 +1580,9 @@ async function main() {
         'Close session action did not remove the session',
       );
       await view(false);
-      assert.deepEqual(calls, [{method: 'closeSession', sessionId: 'alpha'}]);
+      assert.deepEqual(conversationActions(), [
+        {method: 'closeSession', sessionId: 'alpha'},
+      ]);
     },
   );
 
@@ -2623,179 +3181,303 @@ async function main() {
   );
 
   await run(
-    'Escape preserves running agents and manual cancellation selects agents with error retry',
+    'selected agent controls configure context commands stop and close without touching its owner',
     async () => {
-      const parent = hub.sessions[0];
-      parent.agents = [
+      const owner = hub.sessions[0];
+      owner.agents = [
         {
-          id: 'alpha-worker',
-          name: 'Working agent',
+          id: 'controlled',
+          name: 'Controlled agent',
+          cwd: directory,
+          task: 'Continue the investigation',
+          status: 'running',
+          activity: 'Thinking',
+          model: 'fixture/small',
+          thinkingLevel: 'medium',
+          resumable: true,
+          createdAt: at,
+          startedAt: at,
+          conversation: [],
+          queue: {
+            steering: ['Recover this steering'],
+            followUp: ['Recover this follow up'],
+          },
+        },
+        {
+          id: 'other',
+          name: 'Other agent',
+          cwd: directory,
           task: 'Keep working',
           status: 'running',
           activity: 'Thinking',
-          startedAt: at,
-          updatedAt: at,
-          conversation: [],
-        },
-        {
-          id: 'alpha-queued',
-          name: 'Queued agent',
-          task: 'Wait for capacity',
-          status: 'queued',
-          activity: 'Queued',
-          startedAt: at,
-          updatedAt: at,
+          createdAt: at,
           conversation: [],
         },
       ];
-      hub.sessions[1].agents = [
-        {
-          id: 'beta-worker',
-          name: 'Other agent',
-          task: 'Other parent task',
-          status: 'running',
-          activity: 'Thinking',
-          startedAt: at,
-          updatedAt: at,
-          conversation: [],
-        },
-      ];
+      owner.totalAgents = 2;
+      resources.set('alpha:controlled', {
+        ...features({
+          id: 'reviewer',
+          name: 'Review specialist',
+          mode: 'subagent',
+          color: '#FF6B6B',
+        }),
+        contextFiles: [
+          {
+            path: '/fixture/controlled/AGENTS.md',
+            name: 'AGENTS.md',
+            kind: 'instructions',
+            status: 'included',
+            description: 'Selected agent instructions',
+            content: '# Controlled agent context',
+          },
+        ],
+      });
       await publish();
-      await evaluate(() => document.getElementById('parent-prompt').focus());
-      await press('Escape');
-      Object.assign(parent.session, {status: 'idle', activity: 'Stopped'});
-      await publish();
-      assert.equal(parent.agents[0].status, 'running');
-      assert.equal(parent.agents[1].status, 'queued');
-      assert.equal(
-        await evaluate(() => document.getElementById('abort-parent').disabled),
-        true,
-      );
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('processing-state-text').textContent,
-        ),
-        'Agents running',
-      );
-      assert.equal(
-        await evaluate(
-          () =>
-            document.querySelector(
-              '[data-agent-id="alpha-worker"].agent-work-marker',
-            )?.textContent,
-        ),
-        'Working',
-      );
-      assert.equal(
-        await evaluate(
-          () =>
-            getComputedStyle(
-              document.querySelector(
-                '[data-agent-id="alpha-worker"].agent-work-marker',
-              ),
-              '::before',
-            ).animationName,
-        ),
-        'working-beacon',
-      );
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Root draft during worker stop';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
       await evaluate(() =>
-        document.querySelector('#active-workers .worker-card').click(),
+        [...document.querySelectorAll('#active-workers button')]
+          .find(item => item.textContent.includes('Controlled agent'))
+          .click(),
       );
-      cancellationError = 'Cancellation fixture unavailable';
-      await evaluate(() => document.getElementById('cancel-agent').click());
-      await until(
-        () => !document.getElementById('cancel-agent-error').hidden,
-        'Cancellation error missing',
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('factory-title').textContent,
+          recipient: document.getElementById('prompt-recipient').textContent,
+          composer: !document.getElementById('parent-controls').hidden,
+          taskDock: document.getElementById('agent-task-dock').hidden,
+          stop: document.getElementById('abort-parent').disabled,
+        })),
+        {
+          title: 'Controlled agent',
+          recipient: 'Controlled agent',
+          composer: true,
+          taskDock: true,
+          stop: false,
+        },
       );
-      assert.match(
-        await evaluate(
-          () => document.getElementById('cancel-agent-error').textContent,
-        ),
-        /unavailable/,
-      );
-      assert.equal(
-        await evaluate(() => document.getElementById('cancel-agent').disabled),
-        false,
-      );
-      cancellationError = undefined;
-      await evaluate(() => document.getElementById('cancel-agent').click());
+      await evaluate(() => {
+        document.getElementById('tab-context').click();
+        document.getElementById('refresh-context').click();
+      });
       await until(
         () =>
-          document.getElementById('cancel-agent').textContent === 'Cancelling…',
-        'Running agent cancellation not shown',
-      );
-      assert.equal(parent.session.status, 'idle');
-      assert.equal(parent.agents[0].status, 'cancelling');
-      assert.equal(parent.agents[1].status, 'queued');
-      assert.equal(hub.sessions[1].agents[0].status, 'running');
-      assert.deepEqual(
-        calls
-          .filter(call => call.method === 'cancelAgent')
-          .map(call => [call.sessionId, call.request]),
-        [
-          ['alpha', 'alpha-worker'],
-          ['alpha', 'alpha-worker'],
-        ],
-      );
-      await evaluate(() =>
-        document.getElementById('cancel-all-agents').click(),
-      );
-      await until(
-        () => document.getElementById('cancel-all-agents').disabled,
-        'Cancel all still enabled',
-      );
-      assert.equal(parent.agents[1].status, 'cancelled');
-      assert.equal(calls.at(-1).sessionId, 'alpha');
-      assert.equal(calls.at(-1).request, 'all');
-      parent.agents[0].status = 'cancelled';
-      await publish();
-      assert.equal(
-        await evaluate(() => document.getElementById('cancel-agent').disabled),
-        true,
+          document
+            .getElementById('context-files')
+            .textContent.includes('Controlled agent context'),
+        'Selected agent context did not load',
       );
       assert.equal(
         await evaluate(
-          () =>
-            document.querySelectorAll('#active-workers button button').length,
+          () => document.getElementById('context-recipient').textContent,
         ),
-        0,
+        'Controlled agent',
       );
       assert.equal(
-        await evaluate(() => document.getElementById('remove-agent').hidden),
-        false,
+        await evaluate(
+          () => document.getElementById('agent-profile-label').textContent,
+        ),
+        'Review specialist',
+      );
+      await evaluate(() => {
+        document.getElementById('app-menu-button').click();
+        document.getElementById('open-session-settings').click();
+      });
+      await until(
+        () =>
+          document.getElementById('extension-dialog').open &&
+          document.getElementById('extension-dialog-title').textContent ===
+            'Model & thinking' &&
+          !document.getElementById('extension-dialog-terminal').hidden,
+        'Agent model terminal did not load',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('agent-settings-dialog')),
+        null,
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'agentSession').at(-1),
+        {
+          method: 'agentSession',
+          sessionId: 'alpha',
+          request: {
+            agentId: 'controlled',
+            action: 'command',
+            command: '/model',
+          },
+        },
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('remove-stopped-agent');
-      await evaluate(() => document.getElementById('remove-agent').click());
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('inspector-title').textContent,
-        ),
-        'Alpha factory',
-        'Removing the inspected agent returns to its parent',
+        await screenshot('selected-agent-settings');
+      await evaluate(() =>
+        document.getElementById('extension-dialog-action-session').click(),
       );
-      await publish();
-      await reloadPage();
+      await until(
+        () => !document.getElementById('extension-dialog').open,
+        'Agent model terminal did not settle',
+      );
+      assert.deepEqual(
+        calls
+          .filter(
+            call =>
+              call.method === 'respondToDialog' &&
+              call.value?.action === 'session',
+          )
+          .at(-1),
+        {
+          method: 'respondToDialog',
+          sessionId: 'alpha',
+          dialogId: 'worker-model:controlled',
+          value: {action: 'session'},
+        },
+      );
+      assert.equal(owner.agents[0].model, 'fixture/small');
+      assert.equal(owner.agents[0].thinkingLevel, 'medium');
+      assert.equal(owner.session.model, 'fixture/small');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/thinking low';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+      });
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Agent thinking command was not acknowledged',
+      );
+      assert.equal(owner.agents[0].thinkingLevel, 'low');
+      assert.equal(owner.session.thinkingLevel, 'medium');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Keep an unsent agent draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.focus();
+      });
+      abortDelay = 160;
+      await press('Escape');
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(
+            item =>
+              item.querySelector('.parent-card-name').textContent ===
+              'Alpha factory',
+          )
+          .click(),
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Root draft during worker stop',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('send-prompt').disabled),
+        false,
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('#history-workers button')]
+          .find(
+            item =>
+              item.querySelector('.history-row-name').textContent ===
+              'Controlled agent',
+          )
+          .click(),
+      );
+      await until(
+        () => !document.getElementById('send-prompt').disabled,
+        'Selected agent Stop did not settle',
+      );
+      assert.equal(owner.agents[0].status, 'cancelled');
+      assert.equal(owner.agents[1].status, 'running');
+      assert.equal(owner.session.status, 'running');
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Recover this steering\n\nRecover this follow up\n\nKeep an unsent agent draft',
+      );
+      await evaluate(() => {
+        document.getElementById('open-commands').click();
+        document.getElementById('command-search').value = 'compact';
+        document
+          .getElementById('command-search')
+          .dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await until(
+        () =>
+          document
+            .getElementById('command-catalog')
+            .textContent.includes('/compact'),
+        'Agent commands did not load',
+      );
+      await evaluate(() => {
+        document.getElementById('compact-instructions').value =
+          'Keep the findings';
+        document.getElementById('compact-session').click();
+      });
+      await settle();
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'agentSession' &&
+            call.request.action === 'compact' &&
+            call.request.instructions === 'Keep the findings',
+        ),
+      );
+      await evaluate(() => document.getElementById('reload-session').click());
+      await settle();
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'agentSession' && call.request.action === 'reload',
+        ),
+      );
+      await evaluate(() => document.getElementById('close-commands').click());
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('selected-agent-controls');
+      await evaluate(() =>
+        document.getElementById('close-parent-session').click(),
+      );
+      await until(
+        () =>
+          document.getElementById('inspector-title').textContent ===
+          'Alpha factory',
+        'Closing selected agent did not return to its owner',
+      );
+      assert.equal(owner.agents.length, 2);
+      assert.equal(owner.agents[0].resumable, false);
       assert.equal(
         await evaluate(() =>
-          document
-            .getElementById('history-workers')
-            .textContent.includes('Working agent'),
+          [
+            ...document.querySelectorAll(
+              '#active-workers .worker-card-name, #history-workers .history-row-name',
+            ),
+          ].some(item => item.textContent === 'Controlled agent'),
         ),
         false,
-        'Removed agent stays hidden through snapshots and reload',
       );
-      assert.equal(parent.agents[0].status, 'cancelled');
-      parent.agents[0].status = 'running';
-      await publish();
-      assert.equal(
-        await evaluate(() =>
-          document
-            .getElementById('active-workers')
-            .textContent.includes('Working agent'),
+      assert.equal(hub.sessions.length, 2);
+      assert.deepEqual(
+        calls.filter(call =>
+          [
+            'prompt',
+            'abort',
+            'configureSession',
+            'compactSession',
+            'reloadSession',
+            'closeSession',
+            'cancelAgent',
+          ].includes(call.method),
         ),
-        true,
-        'A resumed agent returns to the active list',
+        [],
+      );
+      assert.deepEqual(
+        calls
+          .filter(
+            call =>
+              call.method === 'agentSession' && call.request.action === 'close',
+          )
+          .map(call => [call.sessionId, call.request.agentId]),
+        [['alpha', 'controlled']],
       );
     },
   );
@@ -3162,11 +3844,14 @@ async function main() {
           () => document.getElementById('extension-dialog').matches(':modal'),
           `${command} did not route to the session-native dialog`,
         );
-        assert.deepEqual(calls.at(-1), {
-          method: 'prompt',
-          sessionId: 'alpha',
-          request: {prompt: command},
-        });
+        assert.deepEqual(
+          calls.filter(call => call.method === 'prompt').at(-1),
+          {
+            method: 'prompt',
+            sessionId: 'alpha',
+            request: {prompt: command},
+          },
+        );
         assert.equal(
           await evaluate(() =>
             document.getElementById('session-settings-dialog'),
@@ -3174,30 +3859,44 @@ async function main() {
           null,
           'The separate model defaults editor must be removed',
         );
-        if (command === '/thinking') {
-          assert.deepEqual(
-            await evaluate(() => ({
-              title: document.getElementById('extension-dialog-title')
-                .textContent,
-              value: document.getElementById('extension-dialog-select').value,
-              current: document.getElementById('extension-dialog-current')
-                .textContent,
-              searchHidden: document.getElementById('extension-dialog-search')
-                .hidden,
-            })),
-            {
-              title: 'Thinking level',
-              value: 'medium',
-              current: 'Current: medium',
-              searchHidden: true,
-            },
+        assert.deepEqual(
+          await evaluate(() => ({
+            terminal: !document.getElementById('extension-dialog-terminal')
+              .hidden,
+            selectHidden: document.getElementById('extension-dialog-select')
+              .hidden,
+            continueHidden: document.getElementById('submit-extension-dialog')
+              .hidden,
+          })),
+          {terminal: true, selectHidden: true, continueHidden: true},
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(
+            command === '/thinking'
+              ? 'thinking-native-terminal'
+              : 'settings-native-terminal',
           );
-          await evaluate(() => {
-            const select = document.getElementById('extension-dialog-select');
-            select.value = 'high';
-            select.dispatchEvent(new Event('change', {bubbles: true}));
-            document.getElementById('submit-extension-dialog').click();
-          });
+        if (command === '/thinking') {
+          assert.equal(
+            await evaluate(
+              () =>
+                document.getElementById('extension-dialog-title').textContent,
+            ),
+            'Thinking level',
+          );
+          await press('Down');
+          for (let attempt = 0; attempt < 50; attempt++) {
+            if (hub.sessions[0].ui.dialogs[0]?.selection === 3) break;
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          assert.equal(
+            hub.sessions[0].ui.dialogs[0]?.selection,
+            3,
+            `Thinking keyboard response: ${JSON.stringify(
+              calls.filter(call => call.method === 'respondToDialog').slice(-4),
+            )}`,
+          );
+          await press('Return');
           await until(
             () => !document.getElementById('extension-dialog').open,
             'Thinking selection did not close',
@@ -3209,13 +3908,68 @@ async function main() {
               () =>
                 document.getElementById('extension-dialog-title').textContent,
             ),
-            'Session settings',
+            'Settings',
           );
-          await evaluate(() => {
-            document.getElementById('extension-dialog-select').value =
-              'Auto retry: off';
-            document.getElementById('submit-extension-dialog').click();
-          });
+          if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+            const themes = await evaluate(() =>
+              [...document.getElementById('factory-theme').options].map(
+                option => option.value,
+              ),
+            );
+            for (const theme of themes) {
+              await evaluate(theme => {
+                const select = document.getElementById('factory-theme');
+                select.value = theme;
+                select.dispatchEvent(new Event('change'));
+              }, theme);
+              await screenshot(`settings-native-${theme}`);
+            }
+            await evaluate(() => {
+              const select = document.getElementById('factory-theme');
+              select.value = 'factory';
+              select.dispatchEvent(new Event('change'));
+            });
+          }
+          for (const [width, height, zoom] of [
+            [900, 760, 1.5],
+            [900, 760, 2],
+            [1600, 1000, 1],
+          ]) {
+            window.setContentSize(width, height);
+            window.webContents.setZoomFactor(zoom);
+            await settle();
+            assert.deepEqual(
+              await evaluate(() => {
+                const dialog = document
+                  .getElementById('extension-dialog')
+                  .getBoundingClientRect();
+                const terminal = document
+                  .getElementById('extension-dialog-terminal')
+                  .getBoundingClientRect();
+                const cancel = document
+                  .getElementById('cancel-extension-dialog')
+                  .getBoundingClientRect();
+                return {
+                  dialogFits:
+                    dialog.left >= 0 &&
+                    dialog.right <= innerWidth &&
+                    dialog.top >= 0 &&
+                    dialog.bottom <= innerHeight,
+                  terminalVisible: terminal.width > 120 && terminal.height > 60,
+                  cancelVisible:
+                    cancel.top >= dialog.top && cancel.bottom <= dialog.bottom,
+                };
+              }),
+              {
+                dialogFits: true,
+                terminalVisible: true,
+                cancelVisible: true,
+              },
+            );
+            if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+              await screenshot(`settings-native-${width}-${zoom}`);
+          }
+          await press('Return');
           await until(
             () =>
               document.getElementById('extension-dialog-title').textContent ===
@@ -3224,9 +3978,9 @@ async function main() {
           );
           assert.equal(
             await evaluate(
-              () => document.getElementById('extension-dialog-select').value,
+              () => document.getElementById('extension-dialog-select').hidden,
             ),
-            'off',
+            true,
           );
           await press('Escape');
           await until(
@@ -3270,10 +4024,6 @@ async function main() {
           hub.sessions[0].totalAgents = 1;
         }
         await publish();
-        if (status === 'running')
-          await evaluate(() =>
-            document.querySelector('#active-workers button').click(),
-          );
         await evaluate(() => {
           document.getElementById('app-menu-button').click();
           document.getElementById('open-session-settings').click();
@@ -3285,11 +4035,14 @@ async function main() {
               'Model & thinking',
           'Menu Model & thinking did not open the session model picker',
         );
-        assert.deepEqual(calls.at(-1), {
-          method: 'prompt',
-          sessionId: 'alpha',
-          request: {prompt: '/model'},
-        });
+        assert.deepEqual(
+          calls.filter(call => call.method === 'prompt').at(-1),
+          {
+            method: 'prompt',
+            sessionId: 'alpha',
+            request: {prompt: '/model'},
+          },
+        );
         assert.deepEqual(
           await evaluate(() => ({
             draft: document.getElementById('parent-prompt').value,
@@ -3330,12 +4083,19 @@ async function main() {
           () => !document.getElementById('extension-dialog').open,
           'The selector action did not settle',
         );
-        assert.deepEqual(calls.at(-1), {
-          method: 'respondToDialog',
-          sessionId: 'alpha',
-          dialogId: 'native-model',
-          value: {action},
-        });
+        assert.deepEqual(
+          calls
+            .filter(
+              call => call.method === 'respondToDialog' && call.value?.action,
+            )
+            .at(-1),
+          {
+            method: 'respondToDialog',
+            sessionId: 'alpha',
+            dialogId: 'native-model',
+            value: {action},
+          },
+        );
       }
       hub.sessions[0].session.status = 'running';
       await publish();
@@ -3349,7 +4109,7 @@ async function main() {
         () => document.getElementById('extension-dialog').open,
         '/model did not open the same picker',
       );
-      assert.deepEqual(calls.at(-1), {
+      assert.deepEqual(calls.filter(call => call.method === 'prompt').at(-1), {
         method: 'prompt',
         sessionId: 'alpha',
         request: {prompt: '/model'},
@@ -3569,7 +4329,560 @@ async function main() {
   );
 
   await run(
-    'terminal extension dialog renders ANSI and forwards raw input before Cancel',
+    'terminal-backed Pi visualizations keep semantic dialogs keyboard accessible and cancellable',
+    async () => {
+      const requests = [
+        {
+          id: 'pi-select',
+          kind: 'select',
+          title: 'Choose a target',
+          options: ['Current branch', 'New branch'],
+          selection: 0,
+          terminal: {
+            columns: 100,
+            rows: 28,
+            output: terminalMenuOutput(
+              'Choose a target',
+              ['Current branch', 'New branch'],
+              0,
+            ),
+            revision: 1,
+          },
+        },
+        {
+          id: 'pi-confirm',
+          kind: 'confirm',
+          title: 'Confirm change',
+          terminal: {
+            columns: 100,
+            rows: 28,
+            appearance: 'light',
+            output: terminalMenuOutput('Confirm change', ['Yes', 'No'], 0),
+            revision: 1,
+          },
+        },
+        {
+          id: 'pi-input',
+          kind: 'input',
+          title: 'Name the branch',
+          terminal: {
+            columns: 100,
+            rows: 28,
+            output: '\u001bcName the branch\r\n> ',
+            revision: 1,
+          },
+        },
+        {
+          id: 'pi-editor',
+          kind: 'editor',
+          title: 'Edit the summary',
+          terminal: {
+            columns: 100,
+            rows: 28,
+            output: '\u001bcEdit the summary\r\n\r\nInitial summary',
+            revision: 1,
+          },
+        },
+        {
+          id: 'pi-info',
+          kind: 'info',
+          title: 'Branch information',
+          terminal: {
+            columns: 100,
+            rows: 28,
+            output:
+              '\u001bcBranch information\r\nReady to continue.\r\n\r\nEnter closes',
+            revision: 1,
+          },
+        },
+        {
+          id: 'pi-fork',
+          kind: 'terminal',
+          title: 'Fork conversation',
+          terminal: {
+            columns: 100,
+            rows: 45,
+            output:
+              '\u001bcFork conversation\r\n\r\n' +
+              Array.from(
+                {length: 38},
+                (_, index) =>
+                  `${index === 0 ? '> ' : '  '}Message ${index + 1} · ${'long summary '.repeat(5)}`,
+              ).join('\r\n'),
+            revision: 1,
+          },
+        },
+      ];
+      for (const request of requests) {
+        hub.sessions[0].ui = {
+          dialogs: [request],
+          notifications: [],
+          statuses: [],
+        };
+        await publish();
+        await until(
+          () =>
+            document.getElementById('extension-dialog').open &&
+            !!document.querySelector('#extension-dialog-terminal .xterm'),
+          `${request.kind} terminal visualization did not open`,
+        );
+        assert.deepEqual(
+          await evaluate(() => ({
+            terminal: !document.getElementById('extension-dialog-terminal')
+              .hidden,
+            input: document.getElementById('extension-dialog-input').hidden,
+            editor: document.getElementById('extension-dialog-editor').hidden,
+            select: document.getElementById('extension-dialog-select').hidden,
+            submit: document.getElementById('submit-extension-dialog').hidden,
+            session: document.getElementById('extension-dialog-session')
+              .textContent,
+          })),
+          {
+            terminal: true,
+            input: true,
+            editor: true,
+            select: true,
+            submit: true,
+            session: 'Alpha factory',
+          },
+        );
+        if (request.kind === 'confirm') {
+          assert.equal(
+            await evaluate(
+              () =>
+                getComputedStyle(
+                  document.querySelector(
+                    '#extension-dialog-terminal .xterm-viewport',
+                  ),
+                ).backgroundColor,
+            ),
+            'rgb(250, 250, 250)',
+          );
+          if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+            const themes = await evaluate(() =>
+              [...document.getElementById('factory-theme').options].map(
+                option => option.value,
+              ),
+            );
+            for (const theme of themes) {
+              await evaluate(theme => {
+                const select = document.getElementById('factory-theme');
+                select.value = theme;
+                select.dispatchEvent(new Event('change'));
+              }, theme);
+              await screenshot(`pi-confirm-${theme}`);
+            }
+            await evaluate(() => {
+              const select = document.getElementById('factory-theme');
+              select.value = 'factory';
+              select.dispatchEvent(new Event('change'));
+            });
+          }
+          for (const [width, height, zoom] of [
+            [900, 760, 1.5],
+            [900, 760, 2],
+            [1600, 1000, 1],
+          ]) {
+            window.setContentSize(width, height);
+            window.webContents.setZoomFactor(zoom);
+            await settle();
+            assert.equal(
+              await evaluate(() => {
+                const dialog = document
+                  .getElementById('extension-dialog')
+                  .getBoundingClientRect();
+                const cancel = document
+                  .getElementById('cancel-extension-dialog')
+                  .getBoundingClientRect();
+                return (
+                  dialog.left >= 0 &&
+                  dialog.right <= innerWidth &&
+                  dialog.top >= 0 &&
+                  dialog.bottom <= innerHeight &&
+                  cancel.bottom <= dialog.bottom
+                );
+              }),
+              true,
+            );
+            if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+              await screenshot(`pi-confirm-${width}-${zoom}`);
+          }
+        }
+        if (request.id === 'pi-fork') {
+          for (const [width, height, zoom] of [
+            [900, 760, 1.5],
+            [900, 760, 2],
+            [1600, 1000, 1],
+          ]) {
+            window.setContentSize(width, height);
+            window.webContents.setZoomFactor(zoom);
+            await settle();
+            assert.equal(
+              await evaluate(() => {
+                const dialog = document
+                  .getElementById('extension-dialog')
+                  .getBoundingClientRect();
+                const terminal = document
+                  .getElementById('extension-dialog-terminal')
+                  .getBoundingClientRect();
+                const cancel = document
+                  .getElementById('cancel-extension-dialog')
+                  .getBoundingClientRect();
+                return (
+                  dialog.left >= 0 &&
+                  dialog.right <= innerWidth &&
+                  dialog.top >= 0 &&
+                  dialog.bottom <= innerHeight &&
+                  terminal.height > 60 &&
+                  cancel.bottom <= dialog.bottom
+                );
+              }),
+              true,
+            );
+            if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+              await screenshot(`pi-fork-${width}-${zoom}`);
+          }
+        }
+        if (request.kind === 'select') {
+          await press('Down');
+          await press('Return');
+        } else if (['confirm', 'info'].includes(request.kind))
+          await press('Return');
+        else {
+          await press('X');
+          await evaluate(() =>
+            document.getElementById('cancel-extension-dialog').click(),
+          );
+        }
+        await until(
+          () => !document.getElementById('extension-dialog').open,
+          `${request.kind} terminal visualization did not settle`,
+        );
+        const responses = calls.filter(
+          call =>
+            call.method === 'respondToDialog' && call.dialogId === request.id,
+        );
+        assert.ok(
+          responses.some(
+            call =>
+              typeof call.value?.input === 'string' || call.value === undefined,
+          ),
+          `${request.kind} did not use keyboard or cancellation transport`,
+        );
+      }
+    },
+  );
+
+  await run(
+    'additional agent permission confirmations stay scoped to their workspace through switches errors and cancellation',
+    async () => {
+      const [alpha, beta] = hub.sessions;
+      const worker = (id, name) => ({
+        id,
+        name,
+        cwd: directory,
+        model: 'fixture/small',
+        thinkingLevel: 'medium',
+        task: 'Inspect the project',
+        status: 'running',
+        activity: 'Waiting for permission',
+        resumable: true,
+        createdAt: at,
+        startedAt: at,
+        conversation: [],
+      });
+      alpha.agents = [worker('permission-worker', 'Permission worker')];
+      beta.agents = [
+        worker('other-permission-worker', 'Other permission worker'),
+      ];
+      alpha.totalAgents = beta.totalAgents = 1;
+      await publish();
+      const chooseWorker = async name => {
+        await evaluate(
+          name =>
+            [...document.querySelectorAll('#active-workers button')]
+              .find(
+                item =>
+                  item.querySelector('.worker-card-name').textContent === name,
+              )
+              .click(),
+          name,
+        );
+        await settle();
+      };
+      const chooseWorkspace = async name => {
+        await evaluate(
+          name =>
+            [...document.querySelectorAll('#parents button')]
+              .find(
+                item =>
+                  item.querySelector('.parent-card-name').textContent === name,
+              )
+              .click(),
+          name,
+        );
+        await settle();
+      };
+      const confirmation = (id, title) => ({
+        id,
+        title,
+        kind: 'confirm',
+        message: 'Allow this configured tool action?',
+      });
+      const waitDialog = async title => {
+        await until(
+          () => document.getElementById('extension-dialog').open,
+          `Permission confirmation did not open: ${title}`,
+        );
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('extension-dialog-title').textContent,
+          ),
+          title,
+        );
+      };
+      const submit = async () =>
+        evaluate(() =>
+          document.getElementById('submit-extension-dialog').click(),
+        );
+      const closed = async () =>
+        until(
+          () => !document.getElementById('extension-dialog').open,
+          'Permission confirmation did not close',
+        );
+      const editor = async () =>
+        evaluate(() => ({
+          value: document.getElementById('parent-prompt').value,
+          start: document.getElementById('parent-prompt').selectionStart,
+          end: document.getElementById('parent-prompt').selectionEnd,
+        }));
+      await chooseWorker('Permission worker');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Keep this agent draft';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.setSelectionRange(2, 8);
+        editor.dispatchEvent(new Event('select', {bubbles: true}));
+      });
+      alpha.ui = {
+        dialogs: [
+          confirmation('permission-confirm', 'Permission worker · Run bash?'),
+        ],
+        editor: {id: 'workspace-editor', text: 'Main conversation editor text'},
+        notifications: [
+          {
+            id: 'workspace-notice',
+            type: 'info',
+            message: 'Main conversation notice',
+          },
+        ],
+      };
+      await publish();
+      await waitDialog('Permission worker · Run bash?');
+      assert.deepEqual(await editor(), {
+        value: 'Keep this agent draft',
+        start: 2,
+        end: 8,
+      });
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('extension-dialog-session').textContent,
+        ),
+        'Alpha factory',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('extension-notifications').hidden,
+        ),
+        true,
+      );
+      await evaluate(() =>
+        document.getElementById('submit-extension-dialog').focus(),
+      );
+      alpha.agents[0].activity = 'Still waiting for permission';
+      await publish();
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'submit-extension-dialog',
+      );
+      await evaluate(() => document.getElementById('back-to-parent').click());
+      assert.equal(
+        await evaluate(() => document.getElementById('extension-dialog').open),
+        true,
+      );
+      assert.equal((await editor()).value, 'Main conversation editor text');
+      await chooseWorker('Permission worker');
+      assert.deepEqual(await editor(), {
+        value: 'Keep this agent draft',
+        start: 2,
+        end: 8,
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('additional-agent-permission-confirm');
+      await submit();
+      await closed();
+      assert.equal(alpha.ui.dialogs.length, 0);
+      assert.deepEqual(
+        calls.filter(call => call.method === 'respondToDialog'),
+        [
+          {
+            method: 'respondToDialog',
+            sessionId: 'alpha',
+            dialogId: 'permission-confirm',
+            value: true,
+          },
+        ],
+      );
+
+      alpha.ui.dialogs = [
+        confirmation('permission-retry', 'Permission worker · Write file?'),
+      ];
+      dialogErrors.set('alpha', 'Permission confirmation unavailable');
+      await publish();
+      await waitDialog('Permission worker · Write file?');
+      await submit();
+      await until(
+        () =>
+          !document.getElementById('extension-dialog-error').hidden &&
+          !document.getElementById('submit-extension-dialog').disabled,
+        'Permission error did not allow retry',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('extension-dialog-error').textContent,
+        ),
+        /Permission confirmation unavailable/,
+      );
+      assert.equal(alpha.ui.dialogs.length, 1);
+      dialogErrors.delete('alpha');
+      await submit();
+      await closed();
+
+      alpha.ui.dialogs = [
+        confirmation('permission-cancel', 'Permission worker · Delete file?'),
+      ];
+      await publish();
+      await waitDialog('Permission worker · Delete file?');
+      await press('Escape');
+      await closed();
+      assert.deepEqual(
+        calls.filter(call => call.method === 'respondToDialog').at(-1),
+        {
+          method: 'respondToDialog',
+          sessionId: 'alpha',
+          dialogId: 'permission-cancel',
+          value: undefined,
+        },
+      );
+
+      for (const failure of [undefined, 'Late failure from Alpha']) {
+        alpha.ui.dialogs = [
+          confirmation(
+            'shared-permission',
+            'Permission worker · Allow command?',
+          ),
+        ];
+        beta.ui = {
+          dialogs: [
+            confirmation(
+              'shared-permission',
+              'Other permission worker · Allow command?',
+            ),
+          ],
+        };
+        dialogDelays.set('alpha', 160);
+        if (failure) dialogErrors.set('alpha', failure);
+        await publish();
+        await waitDialog('Permission worker · Allow command?');
+        await submit();
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('submit-extension-dialog').disabled,
+          ),
+          true,
+        );
+        await chooseWorkspace('Beta factory');
+        await chooseWorker('Other permission worker');
+        await waitDialog('Other permission worker · Allow command?');
+        await new Promise(resolve => setTimeout(resolve, 220));
+        assert.deepEqual(
+          await evaluate(() => ({
+            open: document.getElementById('extension-dialog').open,
+            errorHidden: document.getElementById('extension-dialog-error')
+              .hidden,
+            disabled: document.getElementById('submit-extension-dialog')
+              .disabled,
+            workspace: document.getElementById('extension-dialog-session')
+              .textContent,
+          })),
+          {
+            open: true,
+            errorHidden: true,
+            disabled: false,
+            workspace: 'Beta factory',
+          },
+        );
+        await submit();
+        await closed();
+        assert.equal(beta.ui.dialogs.length, 0);
+        assert.equal(alpha.ui.dialogs.length, failure ? 1 : 0);
+        dialogDelays.delete('alpha');
+        dialogErrors.delete('alpha');
+        await chooseWorkspace('Alpha factory');
+        await chooseWorker('Permission worker');
+        if (failure) {
+          await waitDialog('Permission worker · Allow command?');
+          await press('Escape');
+          await closed();
+        }
+      }
+
+      alpha.ui.dialogs = [
+        confirmation(
+          'permission-aborted',
+          'Permission worker · Permission cancelled by Stop',
+        ),
+      ];
+      await publish();
+      await waitDialog('Permission worker · Permission cancelled by Stop');
+      alpha.ui.dialogs = [];
+      alpha.agents[0].status = 'cancelled';
+      await publish();
+      await closed();
+      assert.deepEqual(await editor(), {
+        value: 'Keep this agent draft',
+        start: 2,
+        end: 8,
+      });
+      assert.equal(
+        calls.some(
+          call =>
+            call.method === 'abort' ||
+            (call.method === 'agentSession' && call.request.action === 'abort'),
+        ),
+        false,
+      );
+      assert.deepEqual(
+        calls
+          .filter(call => call.method === 'respondToDialog')
+          .map(call => [call.sessionId, call.dialogId, call.value]),
+        [
+          ['alpha', 'permission-confirm', true],
+          ['alpha', 'permission-retry', true],
+          ['alpha', 'permission-retry', true],
+          ['alpha', 'permission-cancel', undefined],
+          ['alpha', 'shared-permission', true],
+          ['beta', 'shared-permission', true],
+          ['alpha', 'shared-permission', true],
+          ['beta', 'shared-permission', true],
+          ['alpha', 'shared-permission', undefined],
+        ],
+      );
+    },
+  );
+
+  await run(
+    'terminal extension dialog renders ANSI and forwards input and viewport size before Cancel',
     async () => {
       await evaluate(() => {
         const Terminal = window.Terminal;
@@ -3590,7 +4903,13 @@ async function main() {
             terminal: {
               columns: 40,
               rows: 6,
-              output: '\u001b[31mANSI ready\u001b[0m\r\nInput: ',
+              output:
+                '\u001b[31mANSI ready\u001b[0m\r\n' +
+                Array.from(
+                  {length: 60},
+                  (_, index) => `Scrollable line ${index + 1}`,
+                ).join('\r\n') +
+                '\r\nInput: ',
               revision: 1,
             },
           },
@@ -3606,6 +4925,10 @@ async function main() {
             ?.translateToString(true) === 'ANSI ready',
         'xterm did not render the ANSI frame',
       );
+      await until(
+        () => window.fixtureTerminal?.buffer.active.length >= 50,
+        'xterm did not finish rendering scrollable output',
+      );
       const rendered = await evaluate(() => ({
         modal: document.getElementById('extension-dialog').matches(':modal'),
         widget: !!document.querySelector('#extension-dialog-terminal .xterm'),
@@ -3616,37 +4939,73 @@ async function main() {
           .getFgColor(),
         columns: window.fixtureTerminal.cols,
         rows: window.fixtureTerminal.rows,
+        scrolls: window.fixtureTerminal.buffer.active.baseY > 0,
+        dialogFits:
+          document.getElementById('extension-dialog').getBoundingClientRect()
+            .bottom <= innerHeight,
+        footerVisible:
+          document
+            .getElementById('cancel-extension-dialog')
+            .getBoundingClientRect().bottom <= innerHeight,
       }));
-      assert.deepEqual(rendered, {
-        modal: true,
-        widget: true,
-        input: true,
-        foreground: 1,
-        columns: 40,
-        rows: 6,
-      });
+      assert.deepEqual(
+        {
+          modal: rendered.modal,
+          widget: rendered.widget,
+          input: rendered.input,
+          foreground: rendered.foreground,
+          scrolls: rendered.scrolls,
+          dialogFits: rendered.dialogFits,
+          footerVisible: rendered.footerVisible,
+        },
+        {
+          modal: true,
+          widget: true,
+          input: true,
+          foreground: 1,
+          scrolls: true,
+          dialogFits: true,
+          footerVisible: true,
+        },
+      );
+      assert.ok(rendered.columns >= 20 && rendered.columns <= 240);
+      assert.ok(rendered.rows >= 6 && rendered.rows <= 100);
       await press('Return');
       await until(
         () =>
-          window.fixtureTerminal.buffer.active
-            .getLine(2)
-            ?.translateToString(true)
-            .includes('Received'),
+          Array.from(
+            {length: window.fixtureTerminal.buffer.active.length},
+            (_, index) =>
+              window.fixtureTerminal.buffer.active
+                .getLine(index)
+                ?.translateToString(true) || '',
+          ).some(line => line.includes('Received')),
         'Terminal response frame did not render',
       );
-      assert.deepEqual(calls[0], {
-        method: 'respondToDialog',
-        sessionId: 'alpha',
-        dialogId: 'terminal-1',
-        value: '\r',
-      });
+      assert.deepEqual(
+        calls.filter(call => typeof call.value?.input === 'string').at(-1),
+        {
+          method: 'respondToDialog',
+          sessionId: 'alpha',
+          dialogId: 'terminal-1',
+          value: {input: '\r'},
+        },
+      );
+      assert.deepEqual(
+        calls.filter(call => Number.isInteger(call.value?.columns)).at(-1)
+          .value,
+        {columns: rendered.columns, rows: rendered.rows},
+      );
       await press('Escape');
-      assert.deepEqual(calls[1], {
-        method: 'respondToDialog',
-        sessionId: 'alpha',
-        dialogId: 'terminal-1',
-        value: '\u001b',
-      });
+      assert.deepEqual(
+        calls.filter(call => typeof call.value?.input === 'string').at(-1),
+        {
+          method: 'respondToDialog',
+          sessionId: 'alpha',
+          dialogId: 'terminal-1',
+          value: {input: '\u001b'},
+        },
+      );
       assert.equal(
         await evaluate(() => document.getElementById('extension-dialog').open),
         true,
@@ -3661,13 +5020,12 @@ async function main() {
         () => !document.getElementById('extension-dialog').open,
         'Cancel did not close the terminal dialog',
       );
-      assert.deepEqual(calls[2], {
+      assert.deepEqual(calls.filter(call => call.value === undefined).at(-1), {
         method: 'respondToDialog',
         sessionId: 'alpha',
         dialogId: 'terminal-1',
         value: undefined,
       });
-      assert.equal(calls.length, 3);
     },
   );
 
@@ -3796,32 +5154,263 @@ async function main() {
         returnedDraft,
         'The returned custom editor text must be saved as Beta’s draft',
       );
-      assert.deepEqual(calls, [
+      assert.deepEqual(
+        calls.filter(call => !Number.isInteger(call.value?.columns)),
+        [
+          {
+            method: 'respondToDialog',
+            sessionId: 'beta',
+            dialogId: 'beta-editor-open',
+            value: originalDraft,
+          },
+          {
+            method: 'respondToDialog',
+            sessionId: 'beta',
+            dialogId: 'custom-editor-terminal',
+            value: {input: '\r'},
+          },
+          {
+            method: 'respondToDialog',
+            sessionId: 'beta',
+            dialogId: 'beta-editor-open',
+            value: returnedDraft,
+          },
+          {
+            method: 'respondToDialog',
+            sessionId: 'beta',
+            dialogId: 'custom-editor-terminal',
+            value: undefined,
+          },
+        ],
+      );
+    },
+  );
+
+  await run(
+    'direct agent prompts resume retained conversations and isolate drafts cursor pending sends and errors',
+    async () => {
+      await until(
+        () =>
+          document.querySelectorAll('#scene-labels .scene-label').length === 1,
+        'A workspace with one agent must show only its main robot',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          labels: [
+            ...document.querySelectorAll('#scene-labels .scene-label'),
+          ].map(label => ({
+            main: label.classList.contains('parent-label'),
+            selected: label.getAttribute('aria-pressed'),
+            name: label.textContent,
+          })),
+          workspaces: document.querySelectorAll('#parents .parent-card').length,
+          counts: document.getElementById('hub-counts').textContent,
+        })),
         {
-          method: 'respondToDialog',
-          sessionId: 'beta',
-          dialogId: 'beta-editor-open',
-          value: originalDraft,
+          labels: [{main: true, selected: 'true', name: 'Alpha factory'}],
+          workspaces: 2,
+          counts: '2 workspaces · 2 working agents',
         },
-        {
-          method: 'respondToDialog',
-          sessionId: 'beta',
-          dialogId: 'custom-editor-terminal',
-          value: '\r',
-        },
-        {
-          method: 'respondToDialog',
-          sessionId: 'beta',
-          dialogId: 'beta-editor-open',
-          value: returnedDraft,
-        },
-        {
-          method: 'respondToDialog',
-          sessionId: 'beta',
-          dialogId: 'custom-editor-terminal',
-          value: undefined,
-        },
+      );
+      const owner = hub.sessions[0];
+      owner.agents = ['one', 'two', 'disposed'].map((id, index) => ({
+        id,
+        name: `Promptable ${id}`,
+        cwd: `${directory}/${id}`,
+        task: `Task ${id}`,
+        status: index === 1 ? 'failed' : 'cancelled',
+        resumable: id !== 'disposed',
+        autoCleanup: false,
+        model: 'fixture/small',
+        thinkingLevel: 'medium',
+        createdAt: at,
+        startedAt: at,
+        conversation: [],
+      }));
+      owner.totalAgents = owner.agents.length;
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#parents .parent-card').length,
+        ),
+        2,
+      );
+      const choose = async name => {
+        await evaluate(
+          name =>
+            [
+              ...document.querySelectorAll(
+                '#parents button, #active-workers button, #history-workers button',
+              ),
+            ]
+              .find(
+                item =>
+                  item.querySelector(
+                    '.parent-card-name, .worker-card-name, .history-row-name',
+                  )?.textContent === name,
+              )
+              .click(),
+          name,
+        );
+        await settle();
+      };
+      const draft = async (value, start, end) =>
+        evaluate(
+          (value, start, end) => {
+            const editor = document.getElementById('parent-prompt');
+            editor.value = value;
+            editor.dispatchEvent(new Event('input', {bubbles: true}));
+            editor.focus();
+            editor.setSelectionRange(start, end, 'backward');
+            editor.dispatchEvent(new Event('select', {bubbles: true}));
+          },
+          value,
+          start,
+          end,
+        );
+      const editorState = () =>
+        evaluate(() => ({
+          value: document.getElementById('parent-prompt').value,
+          start: document.getElementById('parent-prompt').selectionStart,
+          end: document.getElementById('parent-prompt').selectionEnd,
+          direction:
+            document.getElementById('parent-prompt').selectionDirection,
+          sending: document.getElementById('send-prompt').disabled,
+          error: document.getElementById('prompt-error').hidden
+            ? null
+            : document.getElementById('prompt-error').textContent,
+        }));
+      await draft('Original root draft', 3, 9);
+      await choose('Promptable one');
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector(
+              '#parents [aria-pressed="true"] .parent-card-name',
+            ).textContent,
+        ),
+        'Alpha factory',
+      );
+      await draft('First agent draft', 2, 7);
+      await choose('Promptable two');
+      await draft('Second agent draft', 1, 8);
+      await choose('Promptable one');
+      assert.deepEqual(await editorState(), {
+        value: 'First agent draft',
+        start: 2,
+        end: 7,
+        direction: 'backward',
+        sending: false,
+        error: null,
+      });
+      agentPromptError = 'Agent provider unavailable';
+      agentPromptDelay = 180;
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      assert.equal((await editorState()).sending, true);
+      await choose('Promptable two');
+      assert.equal((await editorState()).sending, false);
+      await new Promise(resolve => setTimeout(resolve, 220));
+      assert.equal((await editorState()).error, null);
+      await choose('Promptable one');
+      assert.match((await editorState()).error, /Agent provider unavailable/);
+      assert.equal((await editorState()).value, 'First agent draft');
+      agentPromptError = undefined;
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      await choose('Promptable two');
+      await new Promise(resolve => setTimeout(resolve, 220));
+      assert.equal((await editorState()).value, 'Second agent draft');
+      await choose('Promptable one');
+      assert.equal((await editorState()).value, '');
+      assert.equal(owner.agents[0].status, 'running');
+      await draft('Steer the first agent', 0, 0);
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('send-prompt').textContent,
+        ),
+        'Steer',
+      );
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Direct steering was not acknowledged',
+      );
+      assert.deepEqual(owner.agents[0].queue.steering, [
+        'Steer the first agent',
       ]);
+      await choose('Promptable two');
+      await evaluate(() =>
+        document.getElementById('prompt-form').requestSubmit(),
+      );
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Failed retained agent did not resume',
+      );
+      assert.equal(owner.agents[1].status, 'running');
+      await draft('Draft survives reload', 4, 11);
+      await choose('Alpha factory');
+      assert.deepEqual(await editorState(), {
+        value: 'Original root draft',
+        start: 3,
+        end: 9,
+        direction: 'backward',
+        sending: false,
+        error: null,
+      });
+      await reloadPage();
+      await choose('Promptable two');
+      assert.deepEqual(await editorState(), {
+        value: 'Draft survives reload',
+        start: 4,
+        end: 11,
+        direction: 'backward',
+        sending: false,
+        error: null,
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await screenshot('direct-agent-composer');
+        window.setContentSize(1100, 760);
+        await settle();
+        await screenshot('direct-agent-composer-compact');
+        window.webContents.setZoomFactor(1.5);
+        await settle();
+        await screenshot('direct-agent-composer-compact-zoom');
+        window.webContents.setZoomFactor(1);
+        window.setContentSize(1600, 1000);
+        await settle();
+      }
+      await choose('Promptable disposed');
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-controls').hidden),
+        true,
+      );
+      assert.equal(calls.filter(call => call.method === 'prompt').length, 0);
+      assert.equal(owner.session.status, 'running');
+      assert.deepEqual(owner.queue, {steering: [], followUp: []});
+      assert.deepEqual(
+        calls
+          .filter(
+            call =>
+              call.method === 'agentSession' &&
+              call.request.action === 'prompt',
+          )
+          .map(call => [
+            call.sessionId,
+            call.request.agentId,
+            call.request.prompt,
+          ]),
+        [
+          ['alpha', 'one', 'First agent draft'],
+          ['alpha', 'one', 'First agent draft'],
+          ['alpha', 'one', 'Steer the first agent'],
+          ['alpha', 'two', 'Second agent draft'],
+        ],
+      );
     },
   );
 
@@ -3834,6 +5423,7 @@ async function main() {
         id,
         name,
         cwd: directory,
+        model: 'fixture/small',
         task: `Task for ${name}`,
         status: 'running',
         activity: `Working on ${name}`,
@@ -3909,14 +5499,14 @@ async function main() {
         })),
         {
           title: 'First agent',
-          recipient: 'Agent conversation · First agent',
+          recipient: 'Agent · First agent',
           messages: ['Task for First agent', 'First agent answer'],
           tool: 'First agent output\n',
           input: "Run command\n\nCommand:\nprintf 'First agent\\n'\npwd",
           open: true,
-          composer: true,
+          composer: false,
           settings: false,
-          context: true,
+          context: false,
           steering: true,
           notifications: true,
           statuses: true,
@@ -3981,7 +5571,7 @@ async function main() {
           output: 'First agent output\nMore streamed output',
           input:
             "Run command\n\nCommand:\nprintf 'First agent\\n'\npwd\ngit status",
-          draft: 'Unsent parent draft',
+          draft: '',
         },
       );
       await evaluate(() => {
@@ -4004,9 +5594,9 @@ async function main() {
       });
       await settle();
       assert.deepEqual(
-        calls,
+        calls.filter(call => call.method !== 'agentSession'),
         [],
-        'Agent view shortcuts cannot act on the parent',
+        'Agent view shortcuts cannot act on another conversation',
       );
       assert.equal(
         await evaluate(
@@ -4175,16 +5765,16 @@ async function main() {
             };
           });
         const parentKind = await inspectKind();
-        assert.equal(parentKind.label, 'Parent session');
-        assert.equal(parentKind.kind, 'parent');
+        assert.equal(parentKind.label, 'Agent');
+        assert.equal(parentKind.kind, 'agent');
         assert.equal(parentKind.title, 'Alpha factory');
         assert.equal(
           parentKind.complete,
           true,
           'Parent session label should be fully visible',
         );
-        assert.equal(parentKind.parentIcon, true);
-        assert.equal(parentKind.agentIcon, false);
+        assert.equal(parentKind.parentIcon, false);
+        assert.equal(parentKind.agentIcon, true);
         const parentBounds = await geometry();
         await evaluate(() =>
           [...document.querySelectorAll('#parents button')]
@@ -4236,7 +5826,7 @@ async function main() {
         await settle();
         const agentBounds = await geometry();
         const agentKind = await inspectKind();
-        assert.equal(agentKind.label, 'Agent conversation');
+        assert.equal(agentKind.label, 'Agent');
         assert.equal(agentKind.kind, 'agent');
         assert.equal(agentKind.title, parent.agents[1].name);
         assert.equal(agentKind.titleHint, parent.agents[1].name);
@@ -4247,13 +5837,14 @@ async function main() {
         );
         assert.equal(agentKind.parentIcon, false);
         assert.equal(agentKind.agentIcon, true);
-        assert.notEqual(
-          agentKind.background,
-          parentKind.background,
-          'Conversation headers should have distinct accents',
-        );
-        for (const selector of Object.keys(parentBounds))
-          for (const dimension of ['x', 'y', 'width', 'height'])
+        assert.equal(agentKind.background, parentKind.background);
+        for (const selector of Object.keys(parentBounds).filter(
+          selector =>
+            !['#panel-conversation', '#composer-slot'].includes(selector),
+        ))
+          for (const dimension of selector === '#scene'
+            ? ['x', 'width']
+            : ['x', 'y', 'width', 'height'])
             assert.ok(
               Math.abs(
                 parentBounds[selector][dimension] -
@@ -4261,31 +5852,44 @@ async function main() {
               ) <= 1,
               `Selection moved ${selector} ${dimension} at ${width}: ${JSON.stringify({parentBounds, agentBounds})}`,
             );
-        assert.equal(
-          await evaluate(
-            () => document.getElementById('agent-task-dock').hidden,
-          ),
-          false,
+        for (const bounds of [parentBounds, agentBounds])
+          assert.ok(
+            bounds['#scene'].height >= 180,
+            `Scene must remain usable at ${width}: ${JSON.stringify(bounds['#scene'])}`,
+          );
+        assert.deepEqual(
+          await evaluate(() => ({
+            model: document.getElementById('factory-model').textContent,
+            effortHidden: document.getElementById('factory-effort').hidden,
+          })),
+          {model: 'fixture/small', effortHidden: true},
+        );
+        assert.ok(agentBounds['#panel-conversation'].height >= 90);
+        assert.ok(
+          agentBounds['#composer-slot'].y +
+            agentBounds['#composer-slot'].height <=
+            agentBounds['#inspector'].y + agentBounds['#inspector'].height,
         );
         assert.equal(
           await evaluate(
-            () => document.getElementById('parent-controls').hidden,
+            () => document.getElementById('agent-task-dock').hidden,
           ),
           true,
         );
         assert.equal(
           await evaluate(
-            () => document.getElementById('agent-task-text').textContent,
+            () => document.getElementById('parent-controls').hidden,
           ),
-          'Task for Second agent',
+          false,
         );
+
         await evaluate(() => document.getElementById('back-to-parent').click());
         await settle();
         const returnedBounds = await geometry();
         const returnedKind = await inspectKind();
-        assert.equal(returnedKind.label, 'Parent session');
-        assert.equal(returnedKind.parentIcon, true);
-        assert.equal(returnedKind.agentIcon, false);
+        assert.equal(returnedKind.label, 'Agent');
+        assert.equal(returnedKind.parentIcon, false);
+        assert.equal(returnedKind.agentIcon, true);
         assert.deepEqual(
           returnedBounds,
           parentBounds,
@@ -4577,7 +6181,7 @@ async function main() {
         scripts: document.querySelectorAll('#context-files script').length,
         preview: document.querySelector('.context-preview pre').textContent,
       }));
-      assert.equal(display.parent, 'Alpha factory · parent session');
+      assert.equal(display.parent, 'Alpha factory');
       assert.equal(display.selectedAgent, 'Alpha factory');
       assert.equal(display.selected, 'true');
       assert.equal(display.focused, 'tab-context');
@@ -4698,7 +6302,7 @@ async function main() {
         await evaluate(
           () => document.getElementById('context-recipient').textContent,
         ),
-        'Beta factory · parent session',
+        'Beta factory',
       );
       featureErrors.set('beta', 'Context loader unavailable');
       await evaluate(() => document.getElementById('refresh-context').click());
@@ -5091,7 +6695,17 @@ async function main() {
           context: '0',
         },
       );
-      assert.deepEqual(calls, [], 'Viewing usage must stay local');
+      assert.deepEqual(
+        calls.filter(
+          call =>
+            !(
+              call.method === 'agentSession' &&
+              call.request.action === 'features'
+            ),
+        ),
+        [],
+        'Viewing usage must not change a conversation',
+      );
     },
   );
 
@@ -5939,16 +7553,17 @@ async function main() {
         })),
         {
           inspector: 'New session agent',
-          startHidden: false,
+          startHidden: true,
           closeHidden: false,
-          start: 'New session',
+          start: 'Reset conversation',
           openFolder: 'Open folder',
         },
-        'Parent actions remain available while an agent is selected',
+        'Replacement action is hidden while a spawned agent is selected',
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('session-menu');
       await evaluate(() => {
+        document.getElementById('back-to-parent').click();
         const action = document.getElementById('start-session');
         action.click();
         action.click();
@@ -6059,7 +7674,7 @@ async function main() {
           disabled: document.getElementById('start-session').disabled,
           label: document.getElementById('start-session').textContent,
         })),
-        {disabled: false, label: 'Retry new session'},
+        {disabled: false, label: 'Retry reset conversation'},
       );
 
       creationDelay = 0;
@@ -6144,7 +7759,7 @@ async function main() {
             .disabled,
           label: document.getElementById('close-session').textContent,
         })),
-        {disabled: false, headingDisabled: false, label: 'Close session'},
+        {disabled: false, headingDisabled: false, label: 'Close workspace'},
       );
 
       closeDelay = 0;
@@ -6188,7 +7803,7 @@ async function main() {
           disabled: document.getElementById('start-session').disabled,
           label: document.getElementById('start-session').textContent,
         })),
-        {hidden: false, disabled: false, label: 'Retry new session'},
+        {hidden: false, disabled: false, label: 'Retry reset conversation'},
       );
       assert.deepEqual(calls.slice(-2), [
         {method: 'closeSession', sessionId: 'beta'},
@@ -6446,6 +8061,7 @@ async function main() {
         const {flushDrafts} = await import('./draft-storage.js');
         flushDrafts();
         document.querySelector('#active-workers button').click();
+        document.getElementById('back-to-parent').click();
         document.getElementById('close-parent-session').click();
       });
       await until(
@@ -6871,6 +8487,762 @@ async function main() {
         sessionId: 'folder-parent',
         request: {prompt: 'Inspect this project'},
       });
+    },
+  );
+
+  await run(
+    'agent templates support global, repository, and personal workspace scopes and create conversations',
+    async () => {
+      const fill = async values =>
+        evaluate(values => {
+          for (const [id, value] of Object.entries(values)) {
+            const element = document.getElementById(id);
+            element.value = value;
+            element.dispatchEvent(new Event('input', {bubbles: true}));
+            if (element.tagName === 'SELECT')
+              element.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+        }, values);
+      const click = id =>
+        evaluate(id => document.getElementById(id).click(), id);
+      await until(
+        () =>
+          document.getElementById('agent-profile-label').textContent ===
+          'Default',
+        'Legacy feature responses did not fall back to Default',
+      );
+      creationIds = ['plain-agent-session'];
+      const plainPromptCount = calls.filter(
+        call => call.method === 'prompt',
+      ).length;
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-template').disabled,
+        'Plain conversation choices did not load',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          values: [
+            ...document.getElementById('new-agent-template').options,
+          ].map(option => option.value),
+          selected: document.getElementById('new-agent-template').value,
+          name: document.getElementById('new-agent-name').value,
+          startDisabled: document.getElementById('new-agent-create').disabled,
+        })),
+        {
+          values: ['build', 'default', 'plan'],
+          selected: 'default',
+          name: '',
+          startDisabled: false,
+        },
+        'A workspace without custom profiles selects the Default agent',
+      );
+      await click('new-agent-create');
+      await until(
+        () => !document.getElementById('new-agent-dialog').open,
+        'Plain conversation did not open',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession').at(-1),
+        {
+          method: 'createSession',
+          input: {cwd: directory, templateId: 'default'},
+        },
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'prompt').length,
+        plainPromptCount,
+      );
+      await until(
+        () =>
+          document.getElementById('agent-profile-label').textContent ===
+          'Default',
+        'Selected Default agent was not shown in conversation controls',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('default-agent-conversation');
+      await click('open-commands');
+      await until(
+        () => document.getElementById('commands-dialog').open,
+        'Session settings did not open',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.getElementById('session-maintenance-agent').textContent,
+        ),
+        'Default',
+      );
+      await click('close-commands');
+      agentTemplates.push(...authoredAgentTemplates());
+      defaultAgentId = 'writer';
+      await click('open-workspace-config');
+      assert.deepEqual(calls.at(-1), {
+        method: 'openWorkspaceConfiguration',
+        cwd: directory,
+      });
+      await click('open-agent-templates');
+      await until(
+        () =>
+          document.querySelectorAll('.agent-template-list-item').length === 15,
+        'Raw agent definitions did not load',
+      );
+      const rawAgentText = await evaluate(
+        () => document.getElementById('agent-template-list').textContent,
+      );
+      for (const label of [
+        'Default',
+        'Build',
+        'Plan',
+        'General',
+        'Explore',
+        'Writer',
+        'Researcher',
+        'Flexible agent',
+        'Commit',
+        'Hidden helper',
+        'Disabled helper',
+        'team/reviewer',
+      ])
+        assert.match(rawAgentText, new RegExp(label));
+      assert.deepEqual(
+        (() => {
+          const effective = listFixtureAgentTemplates(directory).templates.find(
+            item => item.id === 'team/reviewer',
+          );
+          return {
+            name: effective.name,
+            instructions: effective.instructions,
+            mode: effective.mode,
+            context: effective.context,
+            steps: effective.steps,
+            permissions: effective.permissions,
+            scope: effective.scope,
+          };
+        })(),
+        {
+          name: 'Team reviewer',
+          instructions: 'Review changes and report concrete findings.',
+          mode: 'all',
+          context: 'task',
+          steps: 6,
+          permissions: [
+            {action: 'edit', resource: '*', effect: 'deny'},
+            {action: 'read', resource: 'src/**', effect: 'allow'},
+            {action: 'read', resource: 'packages/app/**', effect: 'allow'},
+          ],
+          scope: 'workspace',
+        },
+      );
+      await evaluate(() =>
+        document
+          .querySelector('[data-template-key="repository:team/reviewer"]')
+          .click(),
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          name: document.getElementById('agent-template-name').value,
+          instructions: document.getElementById('agent-template-instructions')
+            .value,
+          mode: document.getElementById('agent-template-mode').value,
+          context: document.getElementById('agent-template-context').value,
+          permissions: JSON.parse(
+            document.getElementById('agent-template-permissions').value,
+          ),
+          contextNote: document
+            .getElementById('agent-template-context-note')
+            .checkVisibility(),
+        })),
+        {
+          name: '',
+          instructions: '',
+          mode: '',
+          context: 'task',
+          permissions: [{action: 'read', resource: 'src/**', effect: 'allow'}],
+          contextNote: true,
+        },
+      );
+      const nestedReviewerPath = join(
+        directory,
+        'packages',
+        'app',
+        '.varisdev',
+        'agents',
+        'team',
+        'reviewer.md',
+      );
+      await evaluate(() =>
+        [
+          ...document.querySelectorAll(
+            '[data-template-key="repository:team/reviewer"]',
+          ),
+        ]
+          .find(button =>
+            button.dataset.templateIdentity.includes('/packages/app/'),
+          )
+          .click(),
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('agent-template-description').value,
+        ),
+        'Applies package review rules.',
+      );
+      await fill({
+        'agent-template-description': 'Updated package review rules.',
+      });
+      await click('agent-template-save');
+      await until(
+        () =>
+          document.getElementById('agent-templates-status').textContent ===
+          'Saved.',
+        'Nested repository definition was not saved',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'saveAgentTemplate').at(-1).input,
+        {
+          scope: 'repository',
+          id: 'team/reviewer',
+          sourcePath: nestedReviewerPath,
+          request: {
+            headers: {'x-fixture-scope': 'package'},
+            body: {temperature: 0.2, metadata: {source: 'fixture'}},
+          },
+          description: 'Updated package review rules.',
+          permissions: [
+            {action: 'read', resource: 'packages/app/**', effect: 'allow'},
+          ],
+        },
+      );
+      await click('agent-template-new');
+      await fill({
+        'agent-template-scope': 'global',
+        'agent-template-id': 'reviewer',
+        'agent-template-name': 'Global reviewer',
+        'agent-template-description': 'Review changes and tests',
+        'agent-template-mode': 'all',
+        'agent-template-context': 'task',
+        'agent-template-model': 'fixture/small',
+        'agent-template-thinking': 'high',
+        'agent-template-color': '#ff6b6b',
+        'agent-template-steps': '8',
+        'agent-template-permissions': '{"action":"read"}',
+        'agent-template-instructions':
+          'Review changes and report concrete findings.',
+      });
+      const saveCalls = calls.filter(
+        call => call.method === 'saveAgentTemplate',
+      ).length;
+      await click('agent-template-save');
+      await until(
+        () =>
+          document
+            .getElementById('agent-templates-error')
+            .textContent.includes('Permissions must be a JSON list'),
+        'Invalid permissions were accepted',
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'saveAgentTemplate').length,
+        saveCalls,
+        'Invalid permissions must not reach the backend',
+      );
+      await fill({
+        'agent-template-permissions': JSON.stringify([
+          {action: 'edit', resource: '*', effect: 'deny'},
+          {action: 'read', resource: 'src/**', effect: 'allow'},
+        ]),
+      });
+      templateError = 'Template write failed';
+      await click('agent-template-save');
+      await until(
+        () =>
+          document
+            .getElementById('agent-templates-error')
+            .textContent.includes('Template write failed'),
+        'Save failure was hidden',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          instructions: document.getElementById('agent-template-instructions')
+            .value,
+          mode: document.getElementById('agent-template-mode').value,
+          context: document.getElementById('agent-template-context').value,
+          color: document.getElementById('agent-template-color').value,
+          steps: document.getElementById('agent-template-steps').value,
+          permissions: JSON.parse(
+            document.getElementById('agent-template-permissions').value,
+          ),
+        })),
+        {
+          instructions: 'Review changes and report concrete findings.',
+          mode: 'all',
+          context: 'task',
+          color: '#ff6b6b',
+          steps: '8',
+          permissions: [
+            {action: 'edit', resource: '*', effect: 'deny'},
+            {action: 'read', resource: 'src/**', effect: 'allow'},
+          ],
+        },
+      );
+      templateError = undefined;
+      await click('agent-template-save');
+      await until(
+        () =>
+          document.getElementById('agent-templates-status').textContent ===
+          'Saved.',
+        'Global template was not saved',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'saveAgentTemplate').at(-1).input,
+        {
+          scope: 'global',
+          id: 'reviewer',
+          name: 'Global reviewer',
+          description: 'Review changes and tests',
+          mode: 'all',
+          context: 'task',
+          model: 'fixture/small',
+          thinkingLevel: 'high',
+          color: '#ff6b6b',
+          steps: 8,
+          instructions: 'Review changes and report concrete findings.',
+          permissions: [
+            {action: 'edit', resource: '*', effect: 'deny'},
+            {action: 'read', resource: 'src/**', effect: 'allow'},
+          ],
+        },
+      );
+      assert.equal(
+        agentTemplates.find(item => item.key === 'global:reviewer').scope,
+        'global',
+      );
+      await click('agent-template-new');
+      await fill({
+        'agent-template-id': 'reviewer',
+        'agent-template-scope': 'repository',
+        'agent-template-name': 'Repository reviewer',
+        'agent-template-instructions':
+          'Use the repository conventions for review.',
+      });
+      await click('agent-template-save');
+      await until(
+        () =>
+          document
+            .getElementById('agent-template-list')
+            .textContent.includes('Customized in repository'),
+        'Repository customization is missing',
+      );
+      assert.equal(agentTemplates.length, 17);
+      assert.match(
+        await evaluate(
+          () => document.getElementById('agent-template-source').textContent,
+        ),
+        /\.varisdev\/agents\/reviewer\.md$/,
+      );
+      await click('agent-template-new');
+      await fill({
+        'agent-template-scope': 'workspace',
+        'agent-template-id': 'reviewer',
+        'agent-template-name': 'Personal reviewer',
+        'agent-template-instructions':
+          'Use my personal workspace review preferences.',
+      });
+      await click('agent-template-save');
+      await until(
+        () =>
+          document.getElementById('agent-templates-status').textContent ===
+          'Saved.',
+        'Workspace configuration was not saved',
+      );
+      assert.equal(agentTemplates.length, 18);
+      assert.match(
+        await evaluate(
+          () => document.getElementById('agent-template-source').textContent,
+        ),
+        /settings\/workspaces\/project\/agents\/reviewer\.md$/,
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('agent-template-list').textContent,
+        ),
+        /Customized in workspace/,
+      );
+      await evaluate(() =>
+        document.querySelector('[data-template-key="global:reviewer"]').click(),
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await screenshot('agent-templates-v2-normal');
+        await evaluate(() => {
+          const body = document.querySelector('.agent-template-editor-body');
+          body.scrollTop = body.scrollHeight;
+        });
+        await settle();
+        await screenshot('agent-templates-v2-permissions');
+        await evaluate(() => {
+          document.querySelector('.agent-template-editor-body').scrollTop = 0;
+        });
+        await settle();
+        const themes = await evaluate(() =>
+          [...document.getElementById('factory-theme').options].map(
+            option => option.value,
+          ),
+        );
+        for (const theme of themes) {
+          await evaluate(theme => {
+            const select = document.getElementById('factory-theme');
+            select.value = theme;
+            select.dispatchEvent(new Event('change'));
+          }, theme);
+          await screenshot(`agent-templates-${theme}`);
+        }
+        await evaluate(() => {
+          const select = document.getElementById('factory-theme');
+          select.value = 'factory';
+          select.dispatchEvent(new Event('change'));
+        });
+      }
+      for (const [width, height, zoom] of [
+        [900, 760, 1.5],
+        [900, 760, 2],
+        [1600, 1000, 2],
+      ]) {
+        window.setContentSize(width, height);
+        window.webContents.setZoomFactor(zoom);
+        await settle();
+        assert.equal(
+          await evaluate(() => {
+            const dialog = document
+              .getElementById('agent-templates-dialog')
+              .getBoundingClientRect();
+            return (
+              dialog.left >= 0 &&
+              dialog.top >= 0 &&
+              dialog.right <= innerWidth &&
+              dialog.bottom <= innerHeight &&
+              [
+                'agent-template-save',
+                'agent-template-delete',
+                'agent-templates-close',
+              ].every(id => {
+                const button = document.getElementById(id);
+                const r = button.getBoundingClientRect();
+                return (
+                  button.checkVisibility() &&
+                  r.top >= dialog.top &&
+                  r.bottom <= dialog.bottom &&
+                  r.right <= dialog.right &&
+                  button.contains(
+                    document.elementFromPoint(
+                      r.left + r.width / 2,
+                      r.top + r.height / 2,
+                    ),
+                  )
+                );
+              })
+            );
+          }),
+          true,
+          'Template actions must remain visible at compact sizes',
+        );
+        if (
+          await evaluate(() =>
+            document.getElementById('agent-template-picker').checkVisibility(),
+          )
+        ) {
+          await fill({
+            'agent-template-picker':
+              'global:/fixture/settings/agents/reviewer.md',
+          });
+          assert.equal(
+            await evaluate(
+              () => document.getElementById('agent-template-scope').value,
+            ),
+            'global',
+          );
+          assert.equal(
+            await evaluate(
+              () =>
+                document.getElementById('agent-template-instructions').value,
+            ),
+            'Review changes and report concrete findings.',
+          );
+          await fill({
+            'agent-template-picker':
+              'workspace:/fixture/settings/workspaces/project/agents/reviewer.md',
+          });
+          assert.equal(
+            await evaluate(
+              () => document.getElementById('agent-template-scope').value,
+            ),
+            'workspace',
+          );
+          assert.ok(
+            await evaluate(
+              () =>
+                document
+                  .querySelector('.agent-template-editor-body')
+                  .getBoundingClientRect().height >= 40,
+            ),
+            'Compact editor must retain space for its fields',
+          );
+        }
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`agent-templates-${width}-${zoom}`);
+      }
+      await click('agent-templates-close');
+      window.setContentSize(1600, 1000);
+      window.webContents.setZoomFactor(1);
+      await settle();
+      await click('open-new-agent');
+      await until(
+        () =>
+          document.querySelectorAll('#new-agent-template option').length === 7,
+        'Effective primary agent choices did not load',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          values: [
+            ...document.getElementById('new-agent-template').options,
+          ].map(option => option.value),
+          selected: document.getElementById('new-agent-template').value,
+          name: document.getElementById('new-agent-name').value,
+        })),
+        {
+          values: [
+            'build',
+            'default',
+            'flex',
+            'plan',
+            'reviewer',
+            'team/reviewer',
+            'writer',
+          ],
+          selected: 'writer',
+          name: '',
+        },
+        'Only visible enabled primary-capable agents are offered and the configured writer is selected',
+      );
+      await fill({
+        'new-agent-template': 'reviewer',
+        'new-agent-task': 'Review the current change.',
+      });
+      assert.equal(
+        await evaluate(() => document.getElementById('new-agent-name').value),
+        'Personal reviewer',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('agent-create-template');
+      creationIds = ['review-session'];
+      creationError = 'Agent creation failed';
+      await click('new-agent-create');
+      await until(
+        () =>
+          document
+            .getElementById('new-agent-error')
+            .textContent.includes('Agent creation failed'),
+        'Creation failure was hidden',
+      );
+      creationError = undefined;
+      await fill({'new-agent-name': 'Interactive reviewer'});
+      await click('new-agent-create');
+      await until(
+        () => !document.getElementById('new-agent-dialog').open,
+        'New agent did not open',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession').at(-1),
+        {
+          method: 'createSession',
+          input: {
+            cwd: directory,
+            name: 'Interactive reviewer',
+            templateId: 'reviewer',
+          },
+        },
+      );
+      assert.deepEqual(
+        hub.sessions.map(item => item.session.id),
+        ['alpha', 'beta', 'plain-agent-session', 'review-session'],
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('inspector-title').textContent,
+        ),
+        'Interactive reviewer',
+      );
+      await until(
+        () =>
+          document.getElementById('agent-profile-label').textContent ===
+          'Personal reviewer',
+        'Selected reviewer profile was not shown',
+      );
+      assert.deepEqual(calls.filter(call => call.method === 'prompt').at(-1), {
+        method: 'prompt',
+        sessionId: 'review-session',
+        request: {prompt: 'Review the current change.'},
+      });
+      assert.equal(
+        calls.some(call => call.method === 'closeSession'),
+        false,
+      );
+      await click('open-agent-templates');
+      await until(
+        () =>
+          document.querySelectorAll('.agent-template-list-item').length === 18,
+        'Saved agent definitions did not return',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('.agent-template-list-item')]
+          .find(item => item.textContent.includes('Personal reviewer'))
+          .click(),
+      );
+      await click('agent-template-delete');
+      await click('agent-template-delete-confirm');
+      await until(
+        () =>
+          document.querySelectorAll('.agent-template-list-item').length === 17,
+        'Personal workspace configuration did not delete',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'deleteAgentTemplate').at(-1)
+          .input,
+        {
+          scope: 'workspace',
+          id: 'reviewer',
+          sourcePath: '/fixture/settings/workspaces/project/agents/reviewer.md',
+        },
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('.agent-template-list-item')]
+          .find(item => item.textContent.includes('Repository reviewer'))
+          .click(),
+      );
+      await click('agent-template-delete');
+      await click('agent-template-delete-confirm');
+      await until(
+        () =>
+          document.querySelectorAll('.agent-template-list-item').length === 16,
+        'Repository template did not delete',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'deleteAgentTemplate').at(-1)
+          .input,
+        {
+          scope: 'repository',
+          id: 'reviewer',
+          sourcePath: join(directory, '.varisdev', 'agents', 'reviewer.md'),
+        },
+      );
+      assert.equal(
+        agentTemplates.find(item => item.key === 'global:reviewer').scope,
+        'global',
+      );
+      await click('agent-templates-close');
+      const promptCount = calls.filter(call => call.method === 'prompt').length;
+      creationIds = ['empty-review'];
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-template').disabled,
+        'Agent choices did not load',
+      );
+      await fill({'new-agent-template': 'reviewer', 'new-agent-name': ''});
+      await click('new-agent-create');
+      await until(
+        () => !document.getElementById('new-agent-dialog').open,
+        'Conversation without an initial message did not open',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession').at(-1),
+        {
+          method: 'createSession',
+          input: {cwd: directory, templateId: 'reviewer'},
+        },
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'prompt').length,
+        promptCount,
+        'Opening a conversation does not require sending a task',
+      );
+      const only = hub.sessions.find(
+        item => item.session.id === 'empty-review',
+      );
+      only.session.name = 'Reviewer';
+      hub.sessions = [only];
+      hub.selectedSessionId = only.session.id;
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#scene-labels button').length,
+        ),
+        1,
+        'One agent has one robot target in the scene',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-controls').hidden),
+        false,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('single-agent-workspace');
+      await click('open-agent-templates');
+      await until(
+        () =>
+          document.querySelectorAll('.agent-template-list-item').length === 16,
+        'Built-in agents were not listed',
+      );
+      await evaluate(() =>
+        document.querySelector('[data-template-key="builtin:commit"]').click(),
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('agent-template-scope').value,
+        ),
+        'workspace',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('agent-template-delete').hidden,
+        ),
+        true,
+      );
+      await fill({
+        'agent-template-name': '',
+        'agent-template-description': '',
+        'agent-template-mode': '',
+        'agent-template-context': '',
+        'agent-template-hidden': '',
+        'agent-template-disabled': '',
+        'agent-template-color': '',
+        'agent-template-steps': '',
+        'agent-template-permissions': '',
+        'agent-template-instructions':
+          'Use my commit conventions, then commit and push.',
+      });
+      await click('agent-template-save');
+      await until(
+        () =>
+          document.querySelectorAll('.agent-template-list-item').length === 17,
+        'Built-in customization was not saved',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'saveAgentTemplate').at(-1).input,
+        {
+          scope: 'workspace',
+          id: 'commit',
+          instructions: 'Use my commit conventions, then commit and push.',
+        },
+        'Empty customization fields inherit the built-in definition',
+      );
+      assert.equal(
+        agentTemplates.find(item => item.key === 'builtin:commit').instructions,
+        'Review, commit, and push the requested changes.',
+      );
+      assert.equal(
+        agentTemplates.find(item => item.key === 'workspace:commit')
+          .instructions,
+        'Use my commit conventions, then commit and push.',
+      );
+      await click('agent-templates-close');
     },
   );
 }

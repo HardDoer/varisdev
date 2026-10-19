@@ -5,12 +5,19 @@ import {
   parseArgs,
   resolveModelScopeWithDiagnostics,
   SessionManager,
-  SettingsManager,
   type CreateAgentSessionOptions,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import {join} from 'node:path';
 import {registerParentModelProviders} from '../agents/model-runtime.ts';
+import {
+  createDefaultAgentProfile,
+  resolveDefaultAgentTemplate,
+  ensureAgentProfilePermissions,
+  type AgentTemplate,
+} from '../agents/templates.ts';
+import {createAgentPolicyExtension} from '../agents/policy.ts';
+import {createAgentResourcePolicy} from '../agents/resources.ts';
 import type {AgentSessionController} from '../agents/team.ts';
 import {registerCommitCommand} from '../commit.ts';
 import {registerAgentTools} from '../tools/agents.ts';
@@ -18,6 +25,7 @@ import {registerProjectTools} from '../tools/index.ts';
 import type {DashboardParent, ParentRequest, StoppedMessages} from './hub.ts';
 import {
   sessionFeatures,
+  agentProfileSummary,
   supportedThinkingLevels,
   type SessionConfiguration,
   type SessionFeatures,
@@ -28,6 +36,7 @@ import type {DashboardState} from './state.ts';
 import type {DesktopStartup} from '../desktop/startup.ts';
 import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
 import {createAppResourceFilter} from './resources.ts';
+import {createWorkspaceConfiguration} from './workspace-config.ts';
 import {projectTrustReloadOptions} from './project-trust.ts';
 import {createDesktopModelRuntime, LLAMA_PROVIDER} from '../llama.ts';
 import {createLlamaExtension} from './llama.ts';
@@ -36,6 +45,7 @@ import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {runSettingsCommand} from './settings-commands.ts';
 import {runSessionCommand} from './session-commands.ts';
 import {runReportCommand} from './report-commands.ts';
+import {runAgentSessionRequest} from './agent-session.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -66,11 +76,90 @@ export async function createDashboardParent(
       : SessionManager.create(request.cwd);
   if (request.resume && sessionManager.getSessionId() !== request.resume.id)
     throw new Error('This saved session is no longer available.');
-  const settingsManager = SettingsManager.create(request.cwd, agentDir, {
-    projectTrusted: false,
-  });
+  const savedProfileEntry = sessionManager
+    .getEntries()
+    .findLast(
+      entry =>
+        entry.type === 'custom' &&
+        entry.customType === 'varisdev.agent-profile',
+    );
+  const savedProfile =
+    savedProfileEntry?.type === 'custom'
+      ? (savedProfileEntry.data as AgentTemplate | undefined)
+      : undefined;
+  const profileSnapshot =
+    savedProfile ??
+    request.agentProfile ??
+    (request.resume || startup
+      ? createDefaultAgentProfile()
+      : await resolveDefaultAgentTemplate(request.cwd, 'primary'));
+  const selectedProfile = await ensureAgentProfilePermissions(
+    request.cwd,
+    profileSnapshot,
+  );
+  if (
+    !request.resume &&
+    !startup &&
+    (selectedProfile.disabled || selectedProfile.mode === 'subagent')
+  )
+    throw new Error(
+      'Choose an enabled agent profile that supports primary use.',
+    );
+  const agentProfile = structuredClone(selectedProfile);
+  if (
+    !savedProfile ||
+    JSON.stringify(savedProfile) !== JSON.stringify(agentProfile)
+  )
+    sessionManager.appendCustomEntry(
+      'varisdev.agent-profile',
+      structuredClone(agentProfile),
+    );
+  const savedContextEntry = sessionManager
+    .getEntries()
+    .findLast(
+      entry =>
+        entry.type === 'custom' &&
+        entry.customType === 'varisdev.agent-context',
+    );
+  const savedContext =
+    savedContextEntry?.type === 'custom'
+      ? (savedContextEntry.data as {scope?: unknown} | undefined)
+      : undefined;
+  const contextScope =
+    savedContext?.scope === 'task' || savedContext?.scope === 'workspace'
+      ? savedContext.scope
+      : (agentProfile?.context ?? 'workspace');
+  if (!savedContextEntry && (agentProfile || (!request.resume && !startup)))
+    sessionManager.appendCustomEntry('varisdev.agent-context', {
+      scope: contextScope,
+    });
+  const savedInstructions = request.resume
+    ? sessionManager
+        .getEntries()
+        .findLast(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.agent-template',
+        )
+    : undefined;
+  const savedData =
+    savedInstructions?.type === 'custom'
+      ? (savedInstructions.data as {instructions?: unknown} | undefined)
+      : undefined;
+  const instructions =
+    request.instructions ??
+    (typeof savedData?.instructions === 'string'
+      ? savedData.instructions
+      : undefined);
+  if (request.instructions && !request.resume && !startup)
+    sessionManager.appendCustomEntry('varisdev.agent-template', {
+      instructions: request.instructions,
+    });
+  const agentResources = createAgentResourcePolicy(agentProfile);
+  const configuration = createWorkspaceConfiguration(request.cwd, agentDir);
+  const settingsManager = configuration.settingsManager;
   const resources = createAppResourceFilter(
-    settingsManager,
+    configuration.resourceSettingsManager,
     request.cwd,
     agentDir,
   );
@@ -106,40 +195,75 @@ export async function createDashboardParent(
       args?.projectTrustOverride,
       report,
     ),
-    resourceLoaderOptions: {
-      ...resourceOptions,
-      additionalExtensionPaths: resources.paths(
-        resourceOptions.additionalExtensionPaths ?? [],
-      ),
-      additionalSkillPaths: resources.paths(
-        resourceOptions.additionalSkillPaths ?? [],
-      ),
-      additionalPromptTemplatePaths: resources.paths(
-        resourceOptions.additionalPromptTemplatePaths ?? [],
-      ),
-      additionalThemePaths: resources.paths(
-        resourceOptions.additionalThemePaths ?? [],
-      ),
-      extensionFactories: [
-        ...createBuiltinExtensions(),
-        {name: LLAMA_PROVIDER, factory: llama.extension, builtin: true},
-        pi => {
-          registerProjectTools(pi);
-          control = registerAgentTools(pi);
-          registerCommitCommand(pi);
-          showCustomMessage = observeDashboardSession(
-            pi,
-            control,
-            (current, ctx) => {
-              state = current;
-              context = ctx;
-            },
-            state,
-          );
-        },
-      ],
-    },
+    resourceLoaderOptions: configuration.resourceOptions(
+      agentResources.resourceOptions({
+        ...resourceOptions,
+        ...(agentProfile?.instructions.trim()
+          ? {systemPrompt: agentProfile.instructions}
+          : {}),
+        ...(instructions
+          ? {
+              appendSystemPrompt: [
+                ...(resourceOptions.appendSystemPrompt ?? []),
+                instructions,
+              ],
+            }
+          : {}),
+        additionalExtensionPaths: resources.paths(
+          resourceOptions.additionalExtensionPaths ?? [],
+        ),
+        additionalSkillPaths: resources.paths(
+          resourceOptions.additionalSkillPaths ?? [],
+        ),
+        additionalPromptTemplatePaths: resources.paths(
+          resourceOptions.additionalPromptTemplatePaths ?? [],
+        ),
+        additionalThemePaths: resources.paths(
+          resourceOptions.additionalThemePaths ?? [],
+        ),
+        extensionFactories: [
+          ...createBuiltinExtensions({mcp: configuration.mcpOptions}),
+          {name: LLAMA_PROVIDER, factory: llama.extension, builtin: true},
+          pi => {
+            pi.events.emit('varisdev:agent-profile-managed', {
+              sessionId: sessionManager.getSessionId(),
+              profile: agentProfile,
+            });
+            registerProjectTools(pi);
+            control = registerAgentTools(pi, undefined, {
+              agentProfile,
+              ui,
+              approval: {hasUI: true, confirm: ui.context.confirm},
+            });
+            registerCommitCommand(pi);
+            showCustomMessage = observeDashboardSession(
+              pi,
+              control,
+              (current, ctx) => {
+                state = current;
+                context = ctx;
+              },
+              state,
+            );
+          },
+          ...(agentProfile.permissions.length ||
+          agentProfile.steps !== undefined
+            ? [
+                createAgentPolicyExtension(agentProfile, {
+                  label: agentProfile.name,
+                  approval: {hasUI: true, confirm: ui.context.confirm},
+                  skills: agentResources.skills,
+                }),
+              ]
+            : []),
+        ],
+      }),
+      contextScope,
+    ),
   });
+  services.resourceLoader = configuration.resourceLoader(
+    services.resourceLoader,
+  );
   const loader = services.resourceLoader;
   // Resource deduplication applies to discovery; the session retains its settings.
   services.settingsManager = settingsManager;
@@ -166,10 +290,40 @@ export async function createDashboardParent(
     ? await resolveModelScopeWithDiagnostics(patterns, modelRuntime)
     : undefined;
   for (const diagnostic of scope?.diagnostics ?? []) report(diagnostic.message);
+  const modelPreference = request.model;
+  const modelParts = modelPreference?.match(/^([^/]+)\/(.+?)(?:#([^#]+))?$/);
+  const requestedModel = modelPreference
+    ? (() => {
+        if (!modelParts)
+          throw new Error('Specify the model as provider/model.');
+        const model = modelRuntime.getModel(modelParts[1], modelParts[2]);
+        if (!model) throw new Error(`Model is unavailable: ${modelPreference}`);
+        return model;
+      })()
+    : undefined;
+  const requestedThinking = request.thinkingLevel ?? modelParts?.[3];
+  const selectedModel =
+    requestedModel ??
+    startupModel ??
+    (!request.resume ? inherited?.model : undefined);
+  if (
+    requestedThinking !== undefined &&
+    !(
+      selectedModel
+        ? supportedThinkingLevels(selectedModel)
+        : ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    ).includes(requestedThinking)
+  )
+    throw new Error(
+      'This thinking level is unavailable for the selected model.',
+    );
   const {session, modelFallbackMessage} = await createAgentSessionFromServices({
     services,
-    model: inherited?.model ?? startupModel,
-    thinkingLevel: inherited?.thinkingLevel ?? startup?.thinkingLevel,
+    model: selectedModel,
+    thinkingLevel:
+      (requestedThinking as CreateAgentSessionOptions['thinkingLevel']) ??
+      startup?.thinkingLevel ??
+      (!request.resume ? inherited?.thinkingLevel : undefined),
     scopedModels: scope?.scopedModels,
     tools: startup?.tools,
     excludeTools: args?.excludeTools,
@@ -242,7 +396,7 @@ export async function createDashboardParent(
     });
     refreshAutocomplete();
     if (!state || !context || !control)
-      throw new Error('Parent session observation did not start.');
+      throw new Error('Main agent observation did not start.');
     state.updateQueue(
       session.getSteeringMessages(),
       session.getFollowUpMessages(),
@@ -335,13 +489,13 @@ export async function createDashboardParent(
     return stopping;
   };
   const requireOpen = () => {
-    if (closed) throw new Error('This parent session has closed.');
-    if (stopping) throw new Error('This parent session is stopping.');
+    if (closed) throw new Error('This workspace has closed.');
+    if (stopping) throw new Error('The main agent is stopping.');
   };
   const requireIdle = () => {
     requireOpen();
     if (activePrompts.size || session.isStreaming || session.isCompacting)
-      throw new Error('This parent session is already working.');
+      throw new Error('The main agent is already working.');
   };
   const configure = async (options: SessionConfiguration) => {
     let model = session.model;
@@ -477,10 +631,12 @@ export async function createDashboardParent(
         signal: AbortSignal.timeout(5000),
       });
       const failure = result.errors.get(LLAMA_PROVIDER);
-      return sessionFeatures(session, loader, settingsManager, [
+      const features = sessionFeatures(session, loader, settingsManager, [
         ...diagnostics,
         ...(failure ? [{message: `llama.cpp: ${failure.message}`}] : []),
       ]);
+      features.agentProfile = agentProfileSummary(agentProfile);
+      return features;
     },
     configure: configurationAction,
     lastAssistantText: () => session.getLastAssistantText(),
@@ -600,7 +756,7 @@ export async function createDashboardParent(
     restartSnapshot() {
       requireIdle();
       if (maintaining || !session.isIdle)
-        throw new Error('This parent session is already working.');
+        throw new Error('The main agent is already working.');
       const manager = session.sessionManager;
       const header = manager.getHeader();
       return structuredClone({
@@ -615,14 +771,26 @@ export async function createDashboardParent(
           : undefined,
         thinkingLevel: session.thinkingLevel,
         tools: session.getActiveToolNames(),
-        argv: [...(startup?.argv ?? [])],
+        argv: [
+          ...(startup?.argv ?? []),
+          ...(instructions ? ['--append-system-prompt', instructions] : []),
+        ],
       });
     },
+    async agentSession(request) {
+      if (closed) throw new Error('This workspace has closed.');
+      if (!control!.snapshot())
+        throw new Error('This session has no agent conversations.');
+      return runAgentSessionRequest(
+        control!.getTeam(context!).getManager(),
+        request,
+      );
+    },
     async cancelAgent(agentId) {
-      if (closed) throw new Error('This parent session has closed.');
+      if (closed) throw new Error('This workspace has closed.');
       if (!control!.snapshot()) {
         if (agentId === 'all') return;
-        throw new Error('This parent session has no agents.');
+        throw new Error('This workspace has no additional agents.');
       }
       const manager = control!.getTeam(context!).getManager();
       if (agentId === 'all') {

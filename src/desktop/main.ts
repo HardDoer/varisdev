@@ -34,12 +34,17 @@ import {
   updateMessage,
   updateRestartCommand,
 } from './updates.ts';
-import {SettingsManager} from '@earendil-works/pi-coding-agent';
+import {createWorkspaceConfiguration} from '../dashboard/workspace-config.ts';
 import type {DesktopStartup} from './startup.ts';
 import {desktopInitialPrompts} from '../dashboard/startup.ts';
 import {fileURLToPath} from 'node:url';
 import {DashboardInputError} from '../dashboard/errors.ts';
-import {DashboardHub, type StoppedMessages} from '../dashboard/hub.ts';
+import {
+  DashboardHub,
+  type StoppedMessages,
+  type AgentSessionRequest,
+  type AgentSessionResult,
+} from '../dashboard/hub.ts';
 import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
@@ -154,6 +159,9 @@ const sessionActions = new Set([
   'pidev:create-session',
   'pidev:close-session',
   'pidev:prompt-session',
+  'pidev:agent-session',
+  'pidev:save-agent-template',
+  'pidev:delete-agent-template',
   'pidev:configure-session',
   'pidev:compact-session',
   'pidev:reload-session',
@@ -163,7 +171,7 @@ const requests = new ExternalSessionRequests(
   request =>
     new Promise<void>((resolve, reject) => {
       if (!process.connected || !process.send) {
-        reject(new Error('The attached parent session disconnected.'));
+        reject(new Error('The attached workspace disconnected.'));
         return;
       }
       process.send(request, error => (error ? reject(error) : resolve()));
@@ -175,6 +183,8 @@ const externalControl = {
     requests.request('prompt', sessionId, prompt),
   abort: (sessionId: string) =>
     requests.request<StoppedMessages>('abort', sessionId),
+  agentSession: (sessionId: string, request: AgentSessionRequest) =>
+    requests.request<AgentSessionResult>('agentSession', sessionId, request),
   cancelAgent: (sessionId: string, agentId: string) =>
     requests.request('cancelAgent', sessionId, agentId),
   features: (sessionId: string) =>
@@ -208,7 +218,7 @@ function trusted(event: IpcMainInvokeEvent): boolean {
 
 function id(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 256) {
-    throw new DashboardInputError('Choose a valid parent session.');
+    throw new DashboardInputError('Choose a valid workspace.');
   }
   return value;
 }
@@ -313,12 +323,17 @@ function installHandlers(): void {
             .deliverySnapshot()
             .sessions.find(item => item.session.id === id(sessionId));
     if (sessionId !== undefined && !selected)
-      throw new DashboardInputError('Choose a valid parent session.');
+      throw new DashboardInputError('Choose a valid workspace.');
     return loadPluginThemes({cwd: selected?.session.cwd ?? launchCwd});
   });
   handle('pidev:get-state', () => hub.deliverySnapshot());
   handle('pidev:recent-projects', () => preferences.recentProjects());
   handle('pidev:list-sessions', cwd => hub.listSessions(cwd));
+  handle('pidev:open-workspace-configuration', async cwd => {
+    const folder = await hub.workspaceConfigurationFolder(cwd);
+    const error = await shell.openPath(folder);
+    if (error) throw new DashboardInputError(error);
+  });
   handle('pidev:create-session', async input => {
     const previousIds = hub
       .deliverySnapshot()
@@ -360,6 +375,16 @@ function installHandlers(): void {
     hub.promptSession(id(sessionId), input),
   );
   handle('pidev:abort-session', sessionId => hub.abortSession(id(sessionId)));
+  handle('pidev:list-agent-templates', cwd => hub.listAgentTemplates(cwd));
+  handle('pidev:save-agent-template', (cwd, input) =>
+    hub.saveAgentTemplate(cwd, input),
+  );
+  handle('pidev:delete-agent-template', (cwd, input) =>
+    hub.deleteAgentTemplate(cwd, input),
+  );
+  handle('pidev:agent-session', (sessionId, request) =>
+    hub.agentSession(id(sessionId), request),
+  );
   handle('pidev:cancel-agent', (sessionId, agentId) =>
     hub.cancelAgent(id(sessionId), agentId),
   );
@@ -389,7 +414,7 @@ function installHandlers(): void {
       .deliverySnapshot()
       .sessions.find(item => item.session.id === parentId);
     if (!selected || closingSessions.has(parentId))
-      throw new DashboardInputError('Choose an open parent session.');
+      throw new DashboardInputError('Choose an open workspace.');
     const terminal = await terminals.open(parentId, selected.session.cwd);
     if (
       closingSessions.has(parentId) ||
@@ -398,7 +423,7 @@ function installHandlers(): void {
         .sessions.some(item => item.session.id === parentId)
     ) {
       terminals.close(parentId);
-      throw new DashboardInputError('This parent session has closed.');
+      throw new DashboardInputError('This workspace has closed.');
     }
     return terminal;
   });
@@ -413,8 +438,7 @@ function installHandlers(): void {
     const selected = hub
       .deliverySnapshot()
       .sessions.find(item => item.session.id === id(sessionId));
-    if (!selected)
-      throw new DashboardInputError('Choose a valid parent session.');
+    if (!selected) throw new DashboardInputError('Choose a valid workspace.');
     return openConversationFile(selected.session.cwd, path, shell.openPath);
   });
   handle('pidev:choose-folder', async () => {
@@ -546,7 +570,7 @@ async function restartForUpdate(selectedSessionId?: unknown): Promise<void> {
     selectedId !== undefined &&
     !snapshot.sessions.some(item => item.session.id === selectedId)
   )
-    throw new DashboardInputError('Choose a valid parent session.');
+    throw new DashboardInputError('Choose a valid workspace.');
   requireUpdateRestart(runtime.status(), snapshot, sessionOperations);
   if (accounts.snapshot().attempt)
     throw new Error('Finish or cancel account setup before restarting.');
@@ -770,7 +794,7 @@ process.on('message', (message: unknown) => {
     const nextId =
       payload.controllable === true ? payload.snapshot.session.id : undefined;
     if (attachedSessionId !== nextId)
-      requests.disconnect('The attached parent session changed.');
+      requests.disconnect('The attached workspace changed.');
     attachedSessionId = nextId;
     hub.updateExternal(payload.snapshot, false);
     hub.setExternalControl(nextId ? externalControl : undefined);
@@ -779,7 +803,7 @@ process.on('message', (message: unknown) => {
     payload.sessionId === attachedSessionId
   ) {
     attachedSessionId = undefined;
-    requests.disconnect('The attached parent session changed.');
+    requests.disconnect('The attached workspace changed.');
     hub.closeExternal();
   } else if (payload.type === 'show') {
     showWindow();
@@ -815,7 +839,7 @@ async function shutdown(): Promise<void> {
           hub.cancelAgent(attachedSessionId, 'all'),
         ]);
       } catch (error) {
-        console.error('Could not stop the attached parent session:', error);
+        console.error('Could not stop the attached workspace:', error);
       }
     }
     await hub.close();
@@ -858,7 +882,9 @@ if (!primaryInstance) {
           startup,
         );
         try {
-          const settings = SettingsManager.create(startup.cwd);
+          const settings = createWorkspaceConfiguration(
+            startup.cwd,
+          ).settingsManager;
           const prompts = await desktopInitialPrompts(
             startup.argv,
             settings.getImageAutoResize(),

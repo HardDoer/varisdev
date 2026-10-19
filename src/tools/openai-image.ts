@@ -198,7 +198,10 @@ function stripAtPath(rawPath: string): string {
   return rawPath.startsWith('@') ? rawPath.slice(1) : rawPath;
 }
 
-function resolveInputImagePath(cwd: string, inputImagePath: string): string {
+export function resolveInputImagePath(
+  cwd: string,
+  inputImagePath: string,
+): string {
   const trimmedPath = inputImagePath.trim();
   if (!trimmedPath) throw new Error('Input image path cannot be empty.');
   return resolve(cwd, stripAtPath(trimmedPath));
@@ -286,7 +289,7 @@ async function readInputImagePayloads(
   );
 }
 
-function resolveOutputDir(cwd: string, outputDir?: string): string {
+export function resolveOutputDir(cwd: string, outputDir?: string): string {
   return resolve(
     cwd,
     stripAtPath(

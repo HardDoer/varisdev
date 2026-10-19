@@ -236,7 +236,7 @@ main > .welcome {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: clamp(116px, 16vh, 158px);
+  max-height: clamp(112px, 15vh, 154px);
 }
 .overview .section-heading {
   align-items: center;
@@ -253,9 +253,20 @@ main > .welcome {
   white-space: nowrap;
 }
 .overview-counts {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--muted);
   font-size: 0.75rem;
   text-align: right;
+}
+.overview #open-new-agent {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
 }
 .parent-grid {
   display: grid;
@@ -1670,10 +1681,6 @@ dialog::backdrop {
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
-#composer-slot.agent-selected {
-  height: var(--agent-dock-height, 290px);
-  max-height: max(90px, calc(var(--inspector-space, 720px) - 210px));
-}
 .agent-task-dock {
   height: 100%;
   padding: 16px 22px;
@@ -1800,6 +1807,35 @@ dialog::backdrop {
 #prompt-recipient {
   font-weight: 650;
   color: var(--message-assistant);
+}
+.agent-profile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(180px, 32vw);
+  margin-left: 7px;
+  padding: 1px 7px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  vertical-align: text-bottom;
+}
+.agent-profile-label::before {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--text) 60%, transparent);
+  border-radius: 50%;
+  background: var(--agent-profile-color, var(--action-agent));
+  content: '';
+}
+#session-maintenance-profile strong {
+  color: var(--text);
 }
 .mission-editor.editor-expanded {
   position: fixed;
@@ -2381,11 +2417,29 @@ dialog::backdrop {
   margin: 0;
 }
 #extension-dialog.terminal-dialog {
+  box-sizing: border-box;
   width: min(980px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
-  overflow: auto;
+  height: min(720px, calc(100vh - 32px));
+  padding: clamp(14px, 2.5vw, 28px);
+  overflow: hidden;
+}
+#extension-dialog.terminal-dialog #extension-dialog-form {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+#extension-dialog.terminal-dialog .dialog-heading {
+  flex: none;
+  margin-bottom: 12px;
+}
+#extension-dialog.terminal-dialog .dialog-footer {
+  flex: none;
+  margin-top: 12px;
 }
 #extension-dialog-terminal {
+  min-height: 0;
+  flex: 1 1 auto;
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2393,7 +2447,40 @@ dialog::backdrop {
   overflow: auto;
 }
 #extension-dialog-terminal .xterm {
-  min-width: 780px;
+  min-width: 0;
+}
+#extension-dialog-terminal[data-appearance='light'] .xterm-viewport {
+  background-color: #fafafa;
+}
+#extension-dialog-terminal[data-appearance='dark'] .xterm-viewport {
+  background-color: #10171d;
+}
+@media (max-height: 600px) {
+  #extension-dialog.terminal-dialog {
+    height: calc(100vh - 16px);
+    padding: 10px;
+  }
+  #extension-dialog.terminal-dialog .dialog-heading {
+    margin-bottom: 5px;
+  }
+  #extension-dialog.terminal-dialog .dialog-heading h2 {
+    margin-top: 0;
+    font-size: 1.25rem;
+  }
+  #extension-dialog.terminal-dialog #extension-dialog-tabs {
+    margin: 4px 0;
+  }
+  #extension-dialog.terminal-dialog #extension-dialog-tabs [role='tab'] {
+    padding: 5px 10px;
+  }
+  #extension-dialog.terminal-dialog .dialog-footer {
+    margin-top: 5px;
+  }
+  #extension-dialog.terminal-dialog .dialog-footer button {
+    padding: 4px 7px;
+    font-size: 0.75rem;
+    line-height: 1.2;
+  }
 }
 select:focus-visible {
   outline: 2px solid var(--focus, var(--accent));

@@ -182,7 +182,7 @@ export class DashboardState {
     kind: DashboardEvent['kind'],
     message: string,
     sourceId = 'parent',
-    sourceName = 'Parent session',
+    sourceName = 'Main agent',
     context: EventContext = {},
   ): void {
     const details: Record<string, string> = {};
@@ -318,7 +318,7 @@ export class DashboardState {
       if (!this.seenMessages.has(message.id)) {
         this.append(
           'message',
-          `To parent session: ${message.message}`,
+          `To main agent: ${message.message}`,
           message.from.id,
           message.from.name,
         );
