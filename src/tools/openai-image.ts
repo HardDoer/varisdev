@@ -29,7 +29,7 @@ const openAIImageSchema = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        'Image model chosen by the user. Otherwise uses OPENAI_IMAGE_MODEL or the saved choice; asks on first GUI use.',
+        'Image model chosen by the user. Otherwise uses OPENAI_IMAGE_MODEL or the saved choice; offers presets on first GUI use; defaults to gpt-image-2.5-flare without a UI.',
     }),
   ),
   prompt: Type.String({
@@ -64,7 +64,7 @@ const openAIImageSchema = Type.Object({
         Type.Literal('max'),
       ],
       {
-        description: `Image quality. Use low for quick drafts; choose higher settings from the user's requested detail, latency, and cost preferences. Defaults to ${DEFAULT_IMAGE_QUALITY}.`,
+        description: `Image quality. xhigh and max require GPT Image 2.5. Use low for quick drafts; choose higher settings from the user's requested detail, latency, and cost preferences. Defaults to ${DEFAULT_IMAGE_QUALITY}.`,
         default: DEFAULT_IMAGE_QUALITY,
       },
     ),
@@ -476,7 +476,7 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
       'Create or edit images with the OpenAI Images API and save them to project files.',
     promptGuidelines: [
       'Use openai_image when the user asks to generate, edit, transform, restyle, or use input images with OpenAI.',
-      'Use the image model selected by the user. If none is configured, the first GUI use asks for one. Never invent a model choice.',
+      'Use the configured image model unless the user requests an override. First GUI use offers presets; headless use defaults to gpt-image-2.5-flare.',
       'openai_image uses the saved OpenAI account or OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.',
       'When the user wants to use existing local images, pass their paths as inputImagePaths. Do not pass raw base64; the tool reads each path and builds the base64-backed OpenAI edit payloads internally.',
       'openai_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.',

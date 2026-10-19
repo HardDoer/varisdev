@@ -45,19 +45,6 @@ export interface AgentPermissionRule {
   effect: AgentPermissionEffect;
 }
 
-export type AgentRequestJsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | AgentRequestJsonValue[]
-  | {[key: string]: AgentRequestJsonValue};
-
-export interface AgentRequest {
-  headers?: Record<string, string>;
-  body?: Record<string, AgentRequestJsonValue>;
-}
-
 /** One Markdown file as authored in a particular scope. */
 export interface AgentTemplateDefinition {
   id: string;
@@ -75,8 +62,6 @@ export interface AgentTemplateDefinition {
   color?: string;
   steps?: number;
   permissions?: AgentPermissionRule[];
-  /** Inert provider request metadata retained in profile snapshots. */
-  request?: AgentRequest;
   scope: AgentTemplateScope;
   sourcePath: string;
 }
@@ -99,8 +84,6 @@ export interface AgentTemplate {
   permissions: AgentPermissionRule[];
   /** Marks shared settings permissions as already prepended to this snapshot. */
   permissionsVersion?: 1;
-  /** Inert provider request metadata. It is retained but never sent. */
-  request?: AgentRequest;
   scope: AgentTemplateScope;
   sourcePath: string;
 }
@@ -144,7 +127,6 @@ export interface SaveAgentTemplateInput {
   color?: string;
   steps?: number;
   permissions?: AgentPermissionRule[];
-  request?: AgentRequest;
   /** Exact existing raw definition to replace. */
   sourcePath?: string;
 }
@@ -168,7 +150,6 @@ interface TemplateFrontmatter extends Record<string, unknown> {
   color?: unknown;
   steps?: unknown;
   permissions?: unknown;
-  request?: unknown;
 }
 
 const scopes: AgentTemplateScope[] = [
@@ -205,7 +186,6 @@ const frontmatterKeys = new Set([
   'color',
   'steps',
   'permissions',
-  'request',
 ]);
 const inputKeys = new Set([
   'scope',
@@ -215,7 +195,6 @@ const inputKeys = new Set([
   'sourcePath',
 ]);
 const permissionKeys = new Set(['action', 'resource', 'effect']);
-const requestKeys = new Set(['headers', 'body']);
 const maxFileBytes = 100_000;
 const idSegmentPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const preparedTemplateGet = Symbol('varisdev.agent-template-get');
@@ -408,73 +387,6 @@ function validatePermissions(
   });
 }
 
-function validateJsonValue(
-  value: unknown,
-  label: string,
-): AgentRequestJsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean')
-    return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value))
-    return value.map((item, index) =>
-      validateJsonValue(item, `${label}[${index}]`),
-    );
-  if (typeof value === 'object') {
-    const result: Record<string, AgentRequestJsonValue> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>))
-      Object.defineProperty(result, key, {
-        value: validateJsonValue(item, `${label}.${key}`),
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    return result;
-  }
-  throw new Error(`Agent template ${label} must contain only JSON values.`);
-}
-
-function validateRequest(value: unknown): AgentRequest | undefined {
-  if (value === undefined || value === null) return undefined;
-  const candidate = inputFields(value, requestKeys);
-  let headers: Record<string, string> | undefined;
-  if (candidate.headers !== undefined) {
-    if (
-      !candidate.headers ||
-      typeof candidate.headers !== 'object' ||
-      Array.isArray(candidate.headers)
-    )
-      throw new Error('Agent template request.headers must be an object.');
-    headers = {};
-    for (const [key, item] of Object.entries(candidate.headers)) {
-      if (typeof item !== 'string')
-        throw new Error(`Agent template request.headers.${key} must be text.`);
-      Object.defineProperty(headers, key, {
-        value: item,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-  }
-  let body: Record<string, AgentRequestJsonValue> | undefined;
-  if (candidate.body !== undefined) {
-    if (
-      !candidate.body ||
-      typeof candidate.body !== 'object' ||
-      Array.isArray(candidate.body)
-    )
-      throw new Error('Agent template request.body must be an object.');
-    body = validateJsonValue(candidate.body, 'request.body') as Record<
-      string,
-      AgentRequestJsonValue
-    >;
-  }
-  return {
-    ...(headers !== undefined ? {headers} : {}),
-    ...(body !== undefined ? {body} : {}),
-  };
-}
-
 function normalizeInput(value: unknown): SaveAgentTemplateInput {
   const input = inputFields(value, inputKeys);
   const scope = validateWritableScope(input.scope);
@@ -501,7 +413,6 @@ function normalizeInput(value: unknown): SaveAgentTemplateInput {
   const color = validateColor(input.color);
   const steps = validateSteps(input.steps);
   const permissions = validatePermissions(input.permissions);
-  const request = validateRequest(input.request);
   const sourcePath = optionalText(input.sourcePath, 'sourcePath', 4096);
   if (sourcePath !== undefined && !isAbsolute(sourcePath))
     throw new Error('Agent template sourcePath must be absolute.');
@@ -520,7 +431,6 @@ function normalizeInput(value: unknown): SaveAgentTemplateInput {
     ...(color !== undefined ? {color} : {}),
     ...(steps !== undefined ? {steps} : {}),
     ...(permissions !== undefined ? {permissions} : {}),
-    ...(request !== undefined ? {request} : {}),
     ...(sourcePath !== undefined ? {sourcePath} : {}),
   };
 }
@@ -566,7 +476,6 @@ function templateFromContent(
   const color = validateColor(parsed.frontmatter.color);
   const steps = validateSteps(parsed.frontmatter.steps);
   const permissions = validatePermissions(parsed.frontmatter.permissions);
-  const request = validateRequest(parsed.frontmatter.request);
   if (parsed.body.length > 64_000)
     throw new Error(
       'Agent template instructions must contain at most 64000 characters.',
@@ -586,7 +495,6 @@ function templateFromContent(
     ...(color !== undefined ? {color} : {}),
     ...(steps !== undefined ? {steps} : {}),
     ...(permissions !== undefined ? {permissions} : {}),
-    ...(request !== undefined ? {request} : {}),
     scope,
     sourcePath,
   };
@@ -625,9 +533,6 @@ function serializeTemplate(input: SaveAgentTemplateInput): string {
             ]),
           ]
         : ['permissions: []']
-      : []),
-    ...(input.request !== undefined
-      ? [`request: ${JSON.stringify(input.request)}`]
       : []),
   ];
   const header = fields.length ? `${fields.join('\n')}\n` : '';
@@ -920,49 +825,6 @@ function loadSharedPermissions(
   };
 }
 
-function isJsonRecord(
-  value: AgentRequestJsonValue,
-): value is Record<string, AgentRequestJsonValue> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function mergeRequestBody(
-  base: Record<string, AgentRequestJsonValue> | undefined,
-  overrides: Record<string, AgentRequestJsonValue> | undefined,
-): Record<string, AgentRequestJsonValue> | undefined {
-  if (!base && !overrides) return undefined;
-  const result = structuredClone(base ?? {});
-  for (const [key, value] of Object.entries(overrides ?? {})) {
-    const inherited = result[key];
-    Object.defineProperty(result, key, {
-      value:
-        inherited !== undefined &&
-        isJsonRecord(inherited) &&
-        isJsonRecord(value)
-          ? mergeRequestBody(inherited, value)!
-          : structuredClone(value),
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return result;
-}
-
-function mergeRequests(
-  base: AgentRequest | undefined,
-  overrides: AgentRequest,
-): AgentRequest {
-  const headers = {...(base?.headers ?? {}), ...(overrides.headers ?? {})};
-  const body = mergeRequestBody(base?.body, overrides.body);
-  return {
-    ...(base?.headers !== undefined || overrides.headers !== undefined
-      ? {headers}
-      : {}),
-    ...(body !== undefined ? {body} : {}),
-  };
-}
-
 function mergeDefinitions(
   id: string,
   definitions: AgentTemplateDefinition[],
@@ -983,7 +845,6 @@ function mergeDefinitions(
   let disabled: boolean | undefined;
   let color: string | undefined;
   let steps: number | undefined;
-  let request: AgentRequest | undefined;
   const permissions: AgentPermissionRule[] = sharedPermissions.map(rule => ({
     ...rule,
   }));
@@ -1005,8 +866,6 @@ function mergeDefinitions(
     if (definition.color !== undefined) color = definition.color;
     if (definition.steps !== undefined) steps = definition.steps;
     if (definition.permissions) permissions.push(...definition.permissions);
-    if (definition.request)
-      request = mergeRequests(request, definition.request);
   }
   return {
     id,
@@ -1019,7 +878,6 @@ function mergeDefinitions(
     disabled: disabled ?? false,
     permissions,
     ...(permissionsValid ? {permissionsVersion: 1 as const} : {}),
-    ...(request !== undefined ? {request} : {}),
     ...(description !== undefined ? {description} : {}),
     ...(model !== undefined ? {model} : {}),
     ...(thinkingLevel !== undefined ? {thinkingLevel} : {}),
@@ -1294,14 +1152,18 @@ export async function ensureAgentProfilePermissions(
   cwd: string,
   snapshot: AgentTemplate,
 ): Promise<AgentTemplate> {
-  if (snapshot.permissionsVersion === 1) return structuredClone(snapshot);
+  const profile = structuredClone(snapshot) as AgentTemplate & {
+    request?: unknown;
+  };
+  delete profile.request;
+  if (profile.permissionsVersion === 1) return profile;
   const loaded = await loadTemplateLayers(cwd);
   if (loaded.sharedPermissionsError) throw loaded.sharedPermissionsError;
   return {
-    ...structuredClone(snapshot),
+    ...profile,
     permissions: [
       ...structuredClone(loaded.sharedPermissions),
-      ...structuredClone(snapshot.permissions ?? []),
+      ...structuredClone(profile.permissions ?? []),
     ],
     permissionsVersion: 1,
   };

@@ -35,7 +35,8 @@ import {
   type AgentContextScope,
   type AgentTemplate,
 } from './templates.ts';
-import {createAgentPolicyExtension} from './policy.ts';
+import {createAgentPolicyExtension, type AgentPolicyOptions} from './policy.ts';
+import {showAgentApprovals} from './approval-ui.ts';
 import {createAgentResourcePolicy} from './resources.ts';
 import {
   sessionFeatures,
@@ -58,10 +59,8 @@ export interface WorkerOptions {
   instructions?: string;
   context?: AgentContextScope;
   agentProfile?: AgentTemplate;
-  approval?: {
-    hasUI: boolean;
-    confirm: ExtensionContext['ui']['confirm'];
-  };
+  approval?: AgentPolicyOptions['approval'];
+  approvalUI?: ExtensionContext['ui'];
   model: NonNullable<CreateAgentSessionOptions['model']>;
   modelRegistry: ExtensionContext['modelRegistry'];
   thinkingLevel: CreateAgentSessionOptions['thinkingLevel'];
@@ -82,6 +81,7 @@ export function sessionWorker(
   profile: AgentTemplate = createDefaultAgentProfile(),
   promptState: WorkerPromptState = {},
   ui?: DesktopExtensionUI,
+  approvalUI?: ExtensionContext['ui'],
 ): AgentWorker {
   const agentProfile = structuredClone(profile);
   if (
@@ -123,9 +123,9 @@ export function sessionWorker(
       mode: agentProfile.mode,
       ...(agentProfile.color ? {color: agentProfile.color} : {}),
     };
-    const {
-      agents: {allowedModels},
-    } = await readToolSettings();
+    const allowedModels = agentProfile.model
+      ? [agentProfile.model]
+      : (await readToolSettings()).agents.allowedModels;
     if (allowedModels !== null) {
       const allowed = (model: {provider: string; id: string}) =>
         allowedModels.includes(`${model.provider}/${model.id}`);
@@ -150,6 +150,16 @@ export function sessionWorker(
       restoreUsage();
       return usage.snapshot();
     },
+    get context() {
+      const context = session.getContextUsage?.();
+      return context
+        ? {
+            tokens: context.tokens,
+            window: context.contextWindow,
+            percent: context.percent,
+          }
+        : undefined;
+    },
     get conversation() {
       return conversation.snapshot();
     },
@@ -162,7 +172,11 @@ export function sessionWorker(
         if (!provider || !id) throw new Error('Specify a provider and model.');
         model = session.extensionRunner.getModelRegistry().find(provider, id);
         if (!model) throw new Error(`Model is unavailable: ${provider}/${id}`);
-        await assertAgentModelAllowed(`${provider}/${id}`);
+        await assertAgentModelAllowed(
+          `${provider}/${id}`,
+          undefined,
+          agentProfile.model,
+        );
       }
       const levels = model
         ? supportedThinkingLevels(model)
@@ -185,27 +199,43 @@ export function sessionWorker(
       const parsed = parseSlashCommand(command);
       if (
         !parsed ||
-        !['model', 'thinking', 'settings', 'scoped-models', 'session'].includes(
-          parsed.name,
-        )
+        ![
+          'model',
+          'thinking',
+          'settings',
+          'scoped-models',
+          'session',
+          'approvals',
+        ].includes(parsed.name)
       )
         throw new Error(
           `Native command is unavailable in worker conversations: ${command}`,
         );
-      if (!ui) throw new Error('Worker native commands require a desktop UI.');
+      if (!ui && !(parsed.name === 'approvals' && approvalUI))
+        throw new Error('Worker native commands require an interactive UI.');
       const controller = new AbortController();
       commandController = controller;
       try {
-        if (parsed.name === 'session')
+        if (parsed.name === 'approvals') {
+          if (parsed.args) throw new Error('Usage: /approvals');
+          await showAgentApprovals(
+            {
+              ...session.extensionRunner.createContext(),
+              hasUI: true,
+              ui: ui?.forCommand(controller.signal).context ?? approvalUI!,
+            },
+            {signal: controller.signal},
+          );
+        } else if (parsed.name === 'session')
           await runSessionCommand(parsed.name, parsed.args, {
             session,
-            ui: ui.forCommand(controller.signal),
+            ui: ui!.forCommand(controller.signal),
             signal: controller.signal,
           });
         else
           await runSettingsCommand(parsed.name, parsed.args, {
             session,
-            ui: ui.forCommand(controller.signal),
+            ui: ui!.forCommand(controller.signal),
             signal: controller.signal,
             configure: async input => {
               await worker.configure!(input);
@@ -246,6 +276,17 @@ export function sessionWorker(
         } finally {
           signal.removeEventListener('abort', stopCommand);
         }
+      }
+      if (agentProfile.model) {
+        const activeModel = session.model
+          ? `${session.model.provider}/${session.model.id}`
+          : '';
+        await assertAgentModelAllowed(
+          activeModel,
+          undefined,
+          agentProfile.model,
+        );
+        signal.throwIfAborted();
       }
       promptState.signal = signal;
       promptState.blocked = undefined;
@@ -400,6 +441,24 @@ export async function createSessionWorker(
     options.cwd,
     selectedProfile,
   );
+  let selectedModel = options.model;
+  if (agentProfile.model) {
+    await assertAgentModelAllowed(
+      agentProfile.model,
+      undefined,
+      agentProfile.model,
+    );
+    const separator = agentProfile.model.indexOf('/');
+    const pinnedModel = options.modelRegistry.find(
+      agentProfile.model.slice(0, separator),
+      agentProfile.model.slice(separator + 1),
+    );
+    if (!pinnedModel)
+      throw new Error(
+        `Configured agent model is unavailable: ${agentProfile.model}`,
+      );
+    selectedModel = pinnedModel;
+  }
   const profileResources = createAgentResourcePolicy(agentProfile);
   const promptState: WorkerPromptState = {};
   const contextScope = options.context ?? agentProfile?.context ?? 'workspace';
@@ -498,20 +557,20 @@ export async function createSessionWorker(
     modelRuntime,
   );
   if (
-    options.model.api !== 'pi-virtual' &&
-    !providers.includes(options.model.provider)
+    selectedModel.api !== 'pi-virtual' &&
+    !providers.includes(selectedModel.provider)
   )
     throw new Error(
-      `Current agent model provider is unavailable: ${options.model.provider}`,
+      `Current agent model provider is unavailable: ${selectedModel.provider}`,
     );
   if (providers.length)
     await modelRuntime.refresh({allowNetwork: false, providers});
   if (
-    options.model.api === 'pi-virtual' &&
-    !modelRuntime.getModel(options.model.provider, options.model.id)
+    selectedModel.api === 'pi-virtual' &&
+    !modelRuntime.getModel(selectedModel.provider, selectedModel.id)
   )
     throw new Error(
-      `Virtual model ${options.model.provider}/${options.model.id} is not registered in this worker. Load its extension in the worker's project or global settings.`,
+      `Virtual model ${selectedModel.provider}/${selectedModel.id} is not registered in this worker. Load its extension in the worker's project or global settings.`,
     );
   const patterns = settingsManager.getEnabledModels();
   const scope = patterns?.length
@@ -520,7 +579,7 @@ export async function createSessionWorker(
   const {session} = await createAgentSessionFromServices({
     services,
     scopedModels: scope?.scopedModels,
-    model: options.model,
+    model: selectedModel,
     thinkingLevel: options.thinkingLevel,
     sessionManager,
   });
@@ -530,9 +589,15 @@ export async function createSessionWorker(
     agentProfile,
     promptState,
     options.ui,
+    options.approvalUI,
   );
   try {
-    await session.bindExtensions({mode: 'rpc'});
+    await session.bindExtensions({
+      mode: 'rpc',
+      ...((options.ui?.context ?? options.approvalUI)
+        ? {uiContext: options.ui?.context ?? options.approvalUI}
+        : {}),
+    });
     return worker;
   } catch (error) {
     await worker.dispose();

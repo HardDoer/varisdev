@@ -29,7 +29,7 @@ export interface DashboardSession {
   prompt?: string;
   response?: string;
   error?: string;
-  context?: {tokens: number | null; window: number; percent: number | null};
+  context?: AgentRecord['context'];
 }
 
 export interface DashboardEvent {
@@ -105,6 +105,7 @@ function projectAgent(
   return {
     ...agent,
     ...conversation,
+    context: agent.context ? {...agent.context} : undefined,
     usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
     task: preview(agent.task),
     activity: preview(agent.activity, 2000),
@@ -387,6 +388,7 @@ export class DashboardState {
       },
       agents: this.agents.map(agent => ({
         ...agent,
+        context: agent.context ? {...agent.context} : undefined,
         conversation: agent.conversation.map(message => ({...message})),
         usage: agent.usage ? copyModelUsage(agent.usage) : undefined,
       })),

@@ -14,9 +14,17 @@ export interface AgentSpec {
   task: string;
   cwd: string;
   model: string;
+  pinnedModel?: string;
+  agentMode?: 'primary' | 'subagent' | 'all';
   timeoutMs?: number;
   autoCleanup?: boolean;
   thinkingLevel?: string;
+}
+
+export interface AgentContextUsage {
+  tokens: number | null;
+  window: number;
+  percent: number | null;
 }
 
 export interface AgentRecord extends AgentSpec {
@@ -33,12 +41,14 @@ export interface AgentRecord extends AgentSpec {
   sessionFile?: string;
   resultFile?: string;
   usage?: ModelUsage;
+  context?: AgentContextUsage;
 }
 
 export interface AgentWorker {
   sessionFile?: string;
   resultFile?: string;
   readonly usage?: ModelUsage;
+  readonly context?: AgentContextUsage;
   readonly conversation?: ConversationSnapshot;
   run(
     message: string,
@@ -90,6 +100,7 @@ function copyRecord(record: AgentRecord): AgentRecord {
   return {
     ...record,
     usage: record.usage ? copyModelUsage(record.usage) : undefined,
+    context: record.context ? {...record.context} : undefined,
   };
 }
 
@@ -222,6 +233,7 @@ export class AgentOrchestrator {
         job.record.sessionFile = worker.sessionFile;
         job.record.resultFile = worker.resultFile;
         this.captureUsage(job);
+        this.captureContext(job);
         this.captureConversation(job);
         return worker;
       })
@@ -349,6 +361,7 @@ export class AgentOrchestrator {
         return await action(await this.prepare(job));
       } finally {
         this.captureUsage(job);
+        this.captureContext(job);
         this.captureConversation(job);
         job.maintaining = false;
         this.pump();
@@ -357,8 +370,11 @@ export class AgentOrchestrator {
     });
   }
 
-  configure(id: string, input: SessionConfiguration): Promise<AgentRecord> {
-    return this.maintain(id, async worker => {
+  async configure(
+    id: string,
+    input: SessionConfiguration,
+  ): Promise<AgentRecord> {
+    await this.maintain(id, async worker => {
       if (!worker.configure)
         throw new Error('Agent configuration is unavailable.');
       const features = await worker.configure(input);
@@ -366,12 +382,12 @@ export class AgentOrchestrator {
       if (features.model)
         record.model = `${features.model.provider}/${features.model.id}`;
       record.thinkingLevel = features.thinkingLevel;
-      return this.get(id);
     });
+    return this.get(id);
   }
 
-  command(id: string, command: string): Promise<AgentRecord> {
-    return this.maintain(id, async worker => {
+  async command(id: string, command: string): Promise<AgentRecord> {
+    await this.maintain(id, async worker => {
       if (!worker.command)
         throw new Error('Agent native commands are unavailable.');
       const features = await worker.command(command);
@@ -379,8 +395,8 @@ export class AgentOrchestrator {
       if (features.model)
         record.model = `${features.model.provider}/${features.model.id}`;
       record.thinkingLevel = features.thinkingLevel;
-      return this.get(id);
     });
+    return this.get(id);
   }
 
   compact(id: string, instructions?: string): Promise<void> {
@@ -434,6 +450,18 @@ export class AgentOrchestrator {
     if (usage) job.record.usage = copyModelUsage(usage);
   }
 
+  private captureContext(job: Job): boolean {
+    if (!job.worker) return false;
+    const context = job.worker.context;
+    const previous = job.record.context;
+    job.record.context = context ? {...context} : undefined;
+    return (
+      previous?.tokens !== context?.tokens ||
+      previous?.window !== context?.window ||
+      previous?.percent !== context?.percent
+    );
+  }
+
   private captureConversation(
     job: Job,
     snapshot = job.worker?.conversation,
@@ -451,6 +479,7 @@ export class AgentOrchestrator {
 
   private dispose(job: Job): Promise<void> {
     this.captureUsage(job);
+    this.captureContext(job);
     this.captureConversation(job);
     const worker = job.worker;
     job.worker = undefined;
@@ -573,16 +602,20 @@ export class AgentOrchestrator {
         job.input,
         signal,
         activity => {
-          if (signal.aborted || job.record.activity === activity) return;
+          if (signal.aborted) return;
+          const contextChanged = this.captureContext(job);
+          if (job.record.activity === activity && !contextChanged) return;
           job.record.activity = activity;
           this.changed();
         },
         usage => {
           // Cancellation does not erase tokens the provider has already reported.
           job.record.usage = copyModelUsage(usage);
+          this.captureContext(job);
           this.changed();
         },
         conversation => {
+          this.captureContext(job);
           this.captureConversation(job, conversation);
           this.changed();
         },
@@ -605,6 +638,7 @@ export class AgentOrchestrator {
     } finally {
       clearTimeout(timer);
       this.captureUsage(job);
+      this.captureContext(job);
       this.captureConversation(job);
       if (this.closed || job.record.autoCleanup || !job.record.resumable) {
         await this.dispose(job);

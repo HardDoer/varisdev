@@ -39,12 +39,13 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     opened: false,
     prompted: false,
     submission: undefined,
-    autoName: undefined,
     defaultAgentId: undefined,
   };
   const templateState = {
     cwd: '',
     data: undefined,
+    toolSettings: undefined,
+    modelFailure: '',
     busy: false,
     loading: false,
     choosing: false,
@@ -129,6 +130,8 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       working || created || !api?.chooseFolder;
     $('new-agent-template').disabled = working || created;
     $('new-agent-name').disabled = createState.busy || created;
+    $('new-agent-name').placeholder =
+      createState.cwd.split(/[\\/]/).filter(Boolean).at(-1) || createState.cwd;
     $('new-agent-task').disabled = createState.busy || created;
     $('new-agent-close').disabled = createState.busy;
     $('new-agent-cancel').disabled = createState.busy;
@@ -172,7 +175,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     createState.opened = false;
     createState.prompted = false;
     createState.submission = undefined;
-    createState.autoName = undefined;
     createState.defaultAgentId = undefined;
     $('new-agent-form').reset();
     $('new-agent-template').replaceChildren();
@@ -180,18 +182,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   }
   function templateName(template) {
     return template.name || template.id;
-  }
-  function applyTemplateName() {
-    const selectedTemplate = createState.templates.find(
-      template => template.id === $('new-agent-template').value,
-    );
-    const field = $('new-agent-name');
-    if (!field.value.trim() || field.value === createState.autoName) {
-      field.value = selectedTemplate ? templateName(selectedTemplate) : '';
-      createState.autoName = selectedTemplate
-        ? templateName(selectedTemplate)
-        : undefined;
-    } else createState.autoName = undefined;
   }
   function populateCreateTemplates(templates) {
     const selectedTemplate = $('new-agent-template').value;
@@ -214,8 +204,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
           ? 'default'
           : templates[0]?.id || '';
     $('new-agent-template').value = selectedId;
-    if (preservingSelection) applyTemplateName();
-    else createState.autoName = undefined;
   }
   async function loadCreateTemplates() {
     if (!createState.cwd || disposed) {
@@ -287,9 +275,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       const cwd = await api.chooseFolder();
       if (disposed || !newDialog.open || !cwd) return;
       createState.cwd = cwd;
-      if ($('new-agent-name').value === createState.autoName)
-        $('new-agent-name').value = '';
-      createState.autoName = undefined;
       populateCreateTemplates([]);
       changed = true;
     } catch (error) {
@@ -410,19 +395,31 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       : draft;
   }
   function renderModelOptions() {
-    const values = new Set(
-      allTemplates()
-        .map(template => template.model)
-        .filter(Boolean),
+    const settings = templateState.toolSettings;
+    const models = new Map(
+      (settings?.models || []).map(model => [
+        `${model.provider}/${model.id}`,
+        model,
+      ]),
     );
-    const model = selected?.()?.session?.model;
-    if (typeof model === 'string') values.add(model);
-    else if (model?.provider && model?.id)
-      values.add(`${model.provider}/${model.id}`);
-    $('agent-template-model-options').replaceChildren(
+    const saved = templateState.draft?.model;
+    const values = new Set(models.keys());
+    if (saved) values.add(saved);
+    const inherit = document.createElement('option');
+    inherit.value = '';
+    inherit.textContent = settings?.settings.agents.allowedModels?.length
+      ? 'Use tool model settings'
+      : 'Inherit';
+    $('agent-template-model').replaceChildren(
+      inherit,
       ...[...values].sort().map(value => {
+        const model = models.get(value);
         const option = document.createElement('option');
+        const reason = settings && !model ? ' (unavailable)' : '';
         option.value = value;
+        option.textContent =
+          (model ? `${model.name} (${value})` : value) + reason;
+        option.disabled = !model;
         return option;
       }),
     );
@@ -629,6 +626,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       'agent-template-permissions',
     ])
       $(id).disabled = working;
+    $('agent-template-model').disabled = working || !templateState.toolSettings;
     $('agent-template-save').disabled = working || !templateState.cwd;
     $('agent-template-delete').hidden =
       !existing || templateState.deleteConfirmation;
@@ -670,7 +668,12 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     else if (!templateState.cwd)
       status = 'Choose a folder to load agent configurations.';
     $('agent-templates-status').textContent = status;
-    setError($('agent-templates-error'), templateState.failure);
+    setError(
+      $('agent-templates-error'),
+      [templateState.failure, templateState.modelFailure]
+        .filter(Boolean)
+        .join('\n'),
+    );
     renderDiagnostics();
     renderTemplateList();
     renderModelOptions();
@@ -680,6 +683,8 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     templateState.request++;
     templateState.cwd = '';
     templateState.data = undefined;
+    templateState.toolSettings = undefined;
+    templateState.modelFailure = '';
     templateState.busy = false;
     templateState.loading = false;
     templateState.choosing = false;
@@ -700,11 +705,23 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     templateState.loading = true;
     templateState.failure = '';
     templateState.message = '';
+    templateState.toolSettings = undefined;
+    templateState.modelFailure = '';
     renderTemplates();
     try {
-      const data = await api.listAgentTemplates(templateState.cwd);
+      const [data, models] = await Promise.all([
+        api.listAgentTemplates(templateState.cwd),
+        api.getToolSettings(selected?.()?.session?.id).then(
+          value => ({value}),
+          error => ({error: errorText(error)}),
+        ),
+      ]);
       if (disposed || request !== templateState.request) return;
       templateState.data = data;
+      templateState.toolSettings = models.value;
+      templateState.modelFailure = models.error
+        ? `Could not load agent models: ${models.error}`
+        : '';
       if (templateState.selectedKey) {
         const updated = selectedTemplate();
         if (updated) templateState.draft = editableDraft(updated);
@@ -908,9 +925,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
         scope: draft.scope,
         id,
         ...(sourcePath ? {sourcePath} : {}),
-        ...(selected && Object.hasOwn(selected, 'request')
-          ? {request: selected.request}
-          : {}),
         ...(draft.name.trim() ? {name: draft.name.trim()} : {}),
         ...(draft.description.trim()
           ? {description: draft.description.trim()}
@@ -1009,11 +1023,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
 
   listen(newButton, 'click', () => void openCreate());
   if (menuNewButton) listen(menuNewButton, 'click', () => void openCreate());
-  listen($('new-agent-template'), 'change', applyTemplateName);
-  listen($('new-agent-name'), 'input', () => {
-    if ($('new-agent-name').value !== createState.autoName)
-      createState.autoName = undefined;
-  });
   listen($('new-agent-close'), 'click', () => {
     if (!createState.busy) closeDialog(newDialog);
   });
@@ -1023,7 +1032,9 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   listen(newDialog, 'cancel', event => {
     if (createState.busy) event.preventDefault();
   });
-  listen(newDialog, 'close', resetCreate);
+  listen(newDialog, 'close', () => {
+    if (!newDialog.open) resetCreate();
+  });
   listen(
     $('new-agent-choose-folder'),
     'click',
@@ -1038,7 +1049,9 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   listen(templatesDialog, 'cancel', event => {
     if (templateState.busy) event.preventDefault();
   });
-  listen(templatesDialog, 'close', resetTemplates);
+  listen(templatesDialog, 'close', () => {
+    if (!templatesDialog.open) resetTemplates();
+  });
   listen(
     $('agent-templates-choose-folder'),
     'click',

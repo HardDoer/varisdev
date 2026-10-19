@@ -8,7 +8,7 @@ This page covers VarisDev's additions. See [Pi's documentation](https://github.c
 
 Each agent has its own conversation and shares its workspace directory. It inherits the current agent's model and thinking level unless explicitly configured. Without a current model, `agent_spawn` requires a model choice.
 
-The **Agent models** section in **Menu → Tool models** controls which models `agent_spawn` may use. The restriction also applies to inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-models) and [agent configurations](agents.md).
+The **Agent models** section in **Menu → Tool models** controls model choices for configurations without a model pin, including inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-models) and [agent configurations](agents.md).
 
 | Tool              | Purpose                                                                          |
 | ----------------- | -------------------------------------------------------------------------------- |
@@ -21,7 +21,9 @@ The **Agent models** section in **Menu → Tool models** controls which models `
 | `agent_cancel`    | Cancel an agent and its queued messages.                                         |
 | `agent_templates` | List, read, save, or delete scoped Markdown agent configurations.                |
 
-`agent_spawn` requires `task`. It automatically selects Default when `template` is omitted; `name` is optional. A spawned configuration must use `subagent` or `all` mode. Hidden configurations can be referenced directly; disabled configurations cannot be launched. Optional fields include `instructions`, `context` (`workspace` or `task`), `cwd`, `model` (`provider/model`), `thinkingLevel`, `timeoutMs`, and `autoCleanup`. Explicit spawn values refine the resolved configuration, while omitted model and thinking values inherit from the calling agent when the configuration does not set them.
+`agent_spawn` requires `task`. It automatically selects Default when `template` is omitted; `name` is optional. A spawned configuration must use `subagent` or `all` mode. Hidden configurations can be referenced directly; disabled configurations cannot be launched. Optional fields include `instructions`, `context` (`workspace` or `task`), `cwd`, `model` (`provider/model`), `thinkingLevel`, `timeoutMs`, and `autoCleanup`. A configuration's model pin takes precedence over `model`. Other explicit spawn values refine the resolved configuration, while omitted model and thinking values inherit from the calling agent when the configuration does not set them.
+
+In the main conversation, start a message with `@configuration-id task` to launch that configuration directly, for example `@review Check the changes in src/`. For a nested configuration ID, use `@agent:quality/review task`. Typing `@` offers visible, enabled `subagent` and `all` configurations allowed by the parent. The launch uses the current working directory and the same configuration model pins, permissions, and approval rules as `agent_spawn`. Each mention creates a new delegated conversation; retained subagents receive follow-up work through the parent agent. Only a leading, known configuration ID followed by a task invokes an agent; file mentions, email addresses, and unknown IDs remain ordinary input.
 
 Agent configurations are optional. `agent_templates` is available through Pi's `tool_search`; listing uses `offset` and `limit` with a default of 20 entries and returns `nextOffset` when more remain. Configuration bodies are returned only by `get`.
 
@@ -45,7 +47,7 @@ Each workspace factory has a stable, theme-aware color and architectural variati
 
 ## Commit and push
 
-`/commit [instructions]` delegates committing and pushing to the effective `commit` agent configuration. Workspace, repository, and global `commit` configurations override the built-in configuration. **Menu → Tool models → Commit** supplies defaults for the built-in configuration; custom configurations take precedence. The selected model must be allowed in **Agent models**.
+`/commit [instructions]` delegates committing and pushing to the effective `commit` agent configuration. Workspace, repository, and global `commit` configurations override the built-in configuration. **Menu → Tool models → Commit** supplies defaults for the built-in configuration; custom configurations take precedence. An explicit model in the agent configuration is pinned. Inherited and legacy Commit models must be allowed in **Agent models**.
 
 The command uses the active Pi `commit` skill when configured and falls back to VarisDev's bundled skill. `/skill:commit` also invokes it explicitly. The bundled skill and agent instructions stay out of ordinary prompts; they are loaded for the commit request. The delegated agent inspects the changes, runs checks, and reports the result.
 
@@ -76,9 +78,9 @@ The query tools accept paths or globs. JSON fields support dotted paths and RFC 
 
 ## Images
 
-`openai_image` generates or edits images through the OpenAI Images API. It uses the OpenAI account connected in **Accounts**, or `OPENAI_API_KEY`, and requires a user-selected image model.
+`openai_image` generates or edits images through the OpenAI Images API. It uses the OpenAI account connected in **Accounts** or `OPENAI_API_KEY`.
 
-Choose the model on first GUI use or in **Accounts → Image and audio models**. The `model` parameter and `OPENAI_IMAGE_MODEL` can override the saved choice.
+Choose from six image presets on first GUI use or in **Menu → Tool models → OpenAI images**. The `model` parameter and `OPENAI_IMAGE_MODEL` override the saved choice. Headless use defaults to `gpt-image-2.5-flare` when no model is configured.
 
 - `prompt`: generation or editing instructions.
 - `inputImagePaths`: local reference images for editing.
@@ -87,20 +89,4 @@ Choose the model on first GUI use or in **Accounts → Image and audio models**.
 
 Images are saved under `generated-images/` unless configured otherwise. Results appear in the conversation.
 
-See [OpenAI's image API reference](https://platform.openai.com/docs/api-reference/images).
-
-## Audio
-
-`elevenlabs` requires `ELEVENLABS_API_KEY` and supports:
-
-- `list_voices`: find voices by search and pagination.
-- `text_to_speech`: generate speech using `voiceId` and `text`.
-- `sound_effects`: generate audio from a description in `text`.
-
-Speech and effects have separate user-selected models. Choose them on first GUI use or in **Accounts → Image and audio models**. `modelId` overrides the saved choice for one request.
-
-Optional controls include `voiceSettings`, `languageCode`, `seed`, `durationSeconds`, `loop`, `promptInfluence`, and `outputFormat`, depending on the action and model. The current sound-effects endpoint accepts `eleven_text_to_sound_v2`.
-
-Audio is saved under `generated-audio/` unless `outputDir` is set.
-
-See ElevenLabs' [speech](https://elevenlabs.io/docs/api-reference/text-to-speech/convert), [sound effects](https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert), and [voices](https://elevenlabs.io/docs/api-reference/voices/search) references.
+See [OpenAI's image generation guide](https://developers.openai.com/api/docs/guides/image-generation).

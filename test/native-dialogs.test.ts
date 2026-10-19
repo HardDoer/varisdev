@@ -6,14 +6,17 @@ import {
   parseSlashCommand,
 } from '../assets/dashboard/command-catalog.js';
 
-void test('native command catalog covers every Pi builtin with one explicit route', async () => {
+void test('native command catalog covers Pi builtins and approval management with one explicit route', async () => {
   const sdk = import.meta.resolve('@earendil-works/pi-coding-agent');
   const {BUILTIN_SLASH_COMMANDS} = await import(
     new URL('./core/slash-commands.js', sdk).href
   );
   assert.deepEqual(
     nativeCommands.map(item => item.name).sort(),
-    BUILTIN_SLASH_COMMANDS.map((item: {name: string}) => item.name).sort(),
+    [
+      ...BUILTIN_SLASH_COMMANDS.map((item: {name: string}) => item.name),
+      'approvals',
+    ].sort(),
   );
   assert.equal(
     new Set(nativeCommands.map(item => item.name)).size,

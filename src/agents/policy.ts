@@ -13,7 +13,16 @@ import {
   resolveInputImagePath,
   resolveOutputDir as resolveImageOutputDir,
 } from '../tools/openai-image.ts';
-import {resolveAudioOutputDir} from '../tools/elevenlabs.ts';
+import {
+  canonicalApprovalWorkspace,
+  defaultAgentApprovalStore,
+  snapshotApprovalOperation,
+  type AgentApprovalChoice,
+  type AgentApprovalDecision,
+  type AgentApprovalScope,
+  type AgentApprovalStore,
+} from './approvals.ts';
+import {requestAgentApproval} from './approval-ui.ts';
 
 const {resolveReadPath, resolveToCwd} = (await import(
   new URL(
@@ -32,6 +41,7 @@ export interface AgentPermissionRule {
   effect: AgentPermissionEffect;
 }
 export interface AgentPolicyProfile {
+  id?: string;
   permissions?: readonly AgentPermissionRule[];
   steps?: number;
 }
@@ -44,8 +54,13 @@ export interface AgentApprovalRequest extends AgentPermissionRequest {
   toolName: string;
   input: Readonly<Record<string, unknown>>;
   signal?: AbortSignal;
+  agentId?: string;
+  conversationId?: string;
+  workspace: string;
+  choices: readonly AgentApprovalChoice[];
 }
 export interface AgentPolicyOptions {
+  approvals?: AgentApprovalStore;
   skills?: () => readonly {name: string; filePath: string; baseDir?: string}[];
   signal?: () => AbortSignal | undefined;
   onInputBlocked?: (reason: string) => void;
@@ -53,10 +68,14 @@ export interface AgentPolicyOptions {
     | ((
         request: AgentApprovalRequest,
         ctx: ExtensionContext,
-      ) => Promise<boolean>)
+      ) => Promise<AgentApprovalDecision>)
     | {
         hasUI: boolean;
         confirm: ExtensionContext['ui']['confirm'];
+        select?: (
+          request: AgentApprovalRequest,
+          ctx: ExtensionContext,
+        ) => Promise<AgentApprovalDecision>;
       };
   label?: string;
 }
@@ -382,22 +401,6 @@ export function agentToolPermissions(
       ];
       break;
     }
-    case 'elevenlabs':
-      requests =
-        input.action === 'list_voices'
-          ? [request('read', 'elevenlabs:voices')]
-          : [
-              request(
-                'edit',
-                `${resolveAudioOutputDir(
-                  cwd ?? process.cwd(),
-                  typeof input.outputDir === 'string'
-                    ? input.outputDir
-                    : undefined,
-                )}/**`,
-              ),
-            ];
-      break;
     default:
       requests = [
         request(
@@ -428,12 +431,7 @@ export function agentToolPermissions(
     else if (toolName === 'image_preview')
       path = resolveImagePath(path, cwd) ?? path;
     else if (
-      ![
-        'agent_templates',
-        'apply_patch',
-        'openai_image',
-        'elevenlabs',
-      ].includes(toolName)
+      !['agent_templates', 'apply_patch', 'openai_image'].includes(toolName)
     )
       path = path.trim().replace(/^@/, '');
     entry.resource = canonicalPath(path, cwd);
@@ -456,7 +454,7 @@ export function agentToolPermissions(
 function mandatoryActions(toolName: string): string[] {
   // These tools have both read and write operations, so no single denied action
   // makes their entire declaration unavailable.
-  if (toolName === 'agent_templates' || toolName === 'elevenlabs') return [];
+  if (toolName === 'agent_templates') return [];
   if (toolName === 'openai_image') return ['edit'];
   return agentToolPermissions(toolName, {}).map(request => request.action);
 }
@@ -553,8 +551,27 @@ export async function checkAgentPermissions(
       block: true,
       reason: `Agent permission denied: ${denied.action} ${denied.resource}`,
     };
-  for (const request of decisions.filter(request => request.effect === 'ask')) {
+  const asked = decisions.filter(request => request.effect === 'ask');
+  if (!asked.length) return undefined;
+  const workspace = canonicalApprovalWorkspace(ctx.cwd);
+  const conversationId = ctx.sessionManager?.getSessionId?.();
+  const scope: AgentApprovalScope | undefined =
+    profile.id && conversationId
+      ? {agentId: profile.id, conversationId, workspace}
+      : undefined;
+  const store = options.approvals ?? defaultAgentApprovalStore();
+  for (const request of asked) {
     try {
+      signal?.throwIfAborted();
+      const operation = snapshotApprovalOperation({
+        toolName,
+        input,
+        ...request,
+      });
+      if (scope && (await store.allows(scope, operation, signal))) {
+        signal?.throwIfAborted();
+        continue;
+      }
       signal?.throwIfAborted();
       const relay = options.approval;
       if (typeof relay !== 'function' && !(relay?.hasUI ?? ctx.hasUI))
@@ -565,23 +582,52 @@ export async function checkAgentPermissions(
       const title = options.label
         ? `Agent permission: ${options.label}`
         : 'Agent permission';
+      const approvalRequest: AgentApprovalRequest = {
+        ...snapshotApprovalOperation(operation),
+        signal,
+        workspace,
+        agentId: scope?.agentId,
+        conversationId: scope?.conversationId,
+        choices: scope
+          ? ['once', 'conversation', 'agent', 'deny']
+          : ['once', 'deny'],
+      };
       const approved = await withAbort(
         () =>
           typeof relay === 'function'
-            ? relay({...request, toolName, input, signal}, ctx)
-            : (relay?.confirm ?? ctx.ui.confirm)(
-                title,
-                `${toolName}: ${request.action} ${request.resource}`,
-                {signal},
-              ),
+            ? relay(approvalRequest, ctx)
+            : relay?.select
+              ? relay.select(approvalRequest, ctx)
+              : relay
+                ? relay.confirm(
+                    title,
+                    `${toolName}: ${request.action} ${request.resource}`,
+                    {signal},
+                  )
+                : requestAgentApproval(approvalRequest, ctx),
         signal,
       );
       signal?.throwIfAborted();
-      if (!approved)
+      if (
+        approved !== true &&
+        approved !== 'once' &&
+        approved !== 'conversation' &&
+        approved !== 'agent'
+      )
         return {
           block: true,
           reason: `Agent permission approval declined: ${request.action} ${request.resource}`,
         };
+      if (approved === 'conversation' || approved === 'agent') {
+        if (!scope)
+          return {
+            block: true,
+            reason:
+              'Remembered approval requires agent and conversation identities.',
+          };
+        await store.remember(scope, operation, approved, signal);
+      }
+      signal?.throwIfAborted();
     } catch (error) {
       return {
         block: true,
@@ -603,6 +649,7 @@ export function createAgentPolicyExtension(
   )
     throw new Error('Agent steps must be a positive integer.');
   const snapshot: AgentPolicyProfile = Object.freeze({
+    id: profile.id,
     steps: profile.steps,
     permissions: Object.freeze(
       (profile.permissions ?? []).map(rule => Object.freeze({...rule})),

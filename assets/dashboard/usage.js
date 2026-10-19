@@ -57,11 +57,14 @@ export function renderUsage(snapshot) {
   selector.value = worker?.id || 'parent';
   const data = worker
     ? {
-        session: {id: `${snapshot.session.id}/${worker.id}`, name: worker.name},
+        session: {
+          id: `${snapshot.session.id}/${worker.id}`,
+          name: worker.name,
+          context: worker.context,
+        },
         usage: worker.usage,
       }
     : snapshot;
-  $('usage-context-section').hidden = !!worker;
   const changedSession = current?.session.id !== data.session.id;
   current = data;
   const usage = data.usage || {};

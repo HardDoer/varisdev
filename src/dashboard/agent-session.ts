@@ -12,9 +12,13 @@ export async function runAgentSessionRequest(
   input: AgentSessionRequest,
 ): Promise<AgentSessionResult> {
   const request = agentSessionRequest(input);
-  manager.get(request.agentId);
+  const agent = manager.get(request.agentId);
   switch (request.action) {
     case 'prompt': {
+      if (agent.agentMode === 'subagent')
+        throw new Error(
+          'Subagents receive prompts through their parent agent.',
+        );
       const command = parseSlashCommand(request.prompt);
       if (command && nativeCommand(command.name))
         await manager.command(request.agentId, request.prompt);

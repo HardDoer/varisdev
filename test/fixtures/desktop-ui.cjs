@@ -2,7 +2,7 @@
    NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
-const {join, resolve} = require('node:path');
+const {basename, join, resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 
@@ -37,6 +37,9 @@ let dialogErrors;
 let agentTemplates;
 let defaultAgentId;
 let templateError;
+let toolSettings;
+let toolSettingsError;
+let imageModel = '';
 
 function terminalMenuOutput(title, options, selection = 0) {
   return `\u001bc${title}\r\n${options
@@ -44,8 +47,22 @@ function terminalMenuOutput(title, options, selection = 0) {
     .join('\r\n')}\r\n\r\n↑/↓ move · Enter select · Esc cancel`;
 }
 
+function fixtureToolSettings(allowedModels = null) {
+  return {
+    settings: {agents: {allowedModels}},
+    models: [
+      {provider: 'fixture', id: 'small', name: 'Fixture small'},
+      {provider: 'fixture-other', id: 'large', name: 'Fixture large'},
+    ],
+  };
+}
+
 function features(agentProfile) {
   return {
+    agentMentions: [
+      {id: 'review', name: 'Review', description: 'Review changes'},
+      {id: 'team/review', name: 'Team review', mention: '@agent:team/review'},
+    ],
     commands: [
       {
         name: 'skill:inspect',
@@ -370,6 +387,7 @@ function listFixtureAgentTemplates(cwd) {
 }
 
 function reset() {
+  imageModel = '';
   hub = {
     launchCwd: directory,
     selectedSessionId: 'alpha',
@@ -397,6 +415,8 @@ function reset() {
   agentTemplates = initialAgentTemplates();
   defaultAgentId = 'default';
   templateError = undefined;
+  toolSettings = fixtureToolSettings();
+  toolSettingsError = undefined;
   archivedSessions = new Map();
   savedSessions = [
     {
@@ -637,6 +657,29 @@ ipcMain.handle('fixture:open-workspace-configuration', (_event, cwd) => {
 ipcMain.handle('fixture:list-agent-templates', (_event, cwd) =>
   listFixtureAgentTemplates(cwd),
 );
+ipcMain.handle('fixture:tool-models', async () => {
+  const {OPENAI_IMAGE_PRESETS, DEFAULT_IMAGE_MODEL} = await import(
+    pathToFileURL(resolve('src/tools/model-selection.ts')).href
+  );
+  return [
+    {
+      id: 'openai-image',
+      label: 'OpenAI images',
+      model: imageModel,
+      presets: OPENAI_IMAGE_PRESETS,
+      defaultModel: DEFAULT_IMAGE_MODEL,
+    },
+  ];
+});
+ipcMain.handle('fixture:save-tool-model', (_event, tool, model) => {
+  calls.push({method: 'saveToolModel', tool, model});
+  imageModel = model;
+});
+ipcMain.handle('fixture:tool-settings', (_event, sessionId) => {
+  calls.push({method: 'getToolSettings', sessionId});
+  if (toolSettingsError) throw new Error(toolSettingsError);
+  return structuredClone(toolSettings);
+});
 ipcMain.handle('fixture:save-agent-template', (_event, cwd, input) => {
   calls.push({method: 'saveAgentTemplate', cwd, input});
   if (templateError) throw new Error(templateError);
@@ -3747,7 +3790,7 @@ async function main() {
   );
 
   await run(
-    'skill palette and slash autocomplete insert commands before sending arguments',
+    'skill palette, slash commands and agent mentions insert before sending arguments',
     async () => {
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
@@ -3989,6 +4032,75 @@ async function main() {
           );
         }
       }
+      for (const [typed, inserted] of [
+        ['@rev', '@review'],
+        ['@agent:team', '@agent:team/review'],
+      ]) {
+        const promptCount = calls.filter(
+          call => call.method === 'prompt',
+        ).length;
+        await evaluate(value => {
+          const editor = document.getElementById('parent-prompt');
+          editor.value = value;
+          editor.focus();
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+        }, typed);
+        await until(
+          () => !document.getElementById('command-suggestions').hidden,
+          'Agent mention suggestions did not appear',
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR && typed === '@rev') {
+          await screenshot('agent-mention-normal');
+          window.setContentSize(900, 760);
+          window.webContents.setZoomFactor(1.5);
+          await settle();
+          await screenshot('agent-mention-compact');
+          window.setContentSize(1600, 1000);
+          window.webContents.setZoomFactor(1);
+          await settle();
+        }
+        await press('Tab');
+        assert.equal(
+          await evaluate(() => document.getElementById('parent-prompt').value),
+          `${inserted} `,
+        );
+        assert.equal(
+          calls.filter(call => call.method === 'prompt').length,
+          promptCount,
+          'Selecting a mention must only edit the draft',
+        );
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          editor.value += 'Inspect the changed files';
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+        });
+        await press('Return');
+        await until(
+          () => document.getElementById('parent-prompt').value === '',
+          'The manual subagent task did not submit',
+        );
+        assert.deepEqual(
+          calls.filter(call => call.method === 'prompt').at(-1),
+          {
+            method: 'prompt',
+            sessionId: 'alpha',
+            request: {prompt: `${inserted} Inspect the changed files`},
+          },
+        );
+      }
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '@src/index.ts';
+        editor.focus();
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('command-suggestions').hidden,
+        ),
+        true,
+        'File mentions are not agent suggestions',
+      );
     },
   );
 
@@ -5392,6 +5504,96 @@ async function main() {
       assert.equal(calls.filter(call => call.method === 'prompt').length, 0);
       assert.equal(owner.session.status, 'running');
       assert.deepEqual(owner.queue, {steering: [], followUp: []});
+
+      owner.agents.push({
+        id: 'delegated',
+        name: 'Delegated only',
+        cwd: `${directory}/delegated`,
+        task: 'Task delegated',
+        status: 'running',
+        resumable: true,
+        agentMode: 'subagent',
+        autoCleanup: false,
+        model: 'fixture/small',
+        thinkingLevel: 'medium',
+        createdAt: at,
+        startedAt: at,
+        conversation: [],
+      });
+      owner.totalAgents = owner.agents.length;
+      agentPromptDelay = 0;
+      await publish();
+      await choose('Delegated only');
+      assert.deepEqual(
+        await evaluate(() => ({
+          composerHidden: document.getElementById('parent-controls').hidden,
+          sendDisabled: document.getElementById('send-prompt').disabled,
+          taskDockHidden: document.getElementById('agent-task-dock').hidden,
+          task: document.getElementById('agent-task-text').textContent,
+          cancelHidden: document.getElementById('cancel-agent').hidden,
+          cancelDisabled: document.getElementById('cancel-agent').disabled,
+          detailsHidden: document.getElementById('tab-details').hidden,
+          contextHidden: document.getElementById('tab-context').hidden,
+        })),
+        {
+          composerHidden: true,
+          sendDisabled: true,
+          taskDockHidden: false,
+          task: 'Task delegated',
+          cancelHidden: false,
+          cancelDisabled: false,
+          detailsHidden: false,
+          contextHidden: false,
+        },
+        'Subagent workers retain task, stop, details, and context controls',
+      );
+      await evaluate(() => document.getElementById('tab-details').click());
+      assert.equal(
+        await evaluate(() => document.getElementById('panel-details').hidden),
+        false,
+      );
+      await evaluate(() => document.getElementById('tab-context').click());
+      assert.equal(
+        await evaluate(() => document.getElementById('panel-context').hidden),
+        false,
+      );
+      await evaluate(() => document.getElementById('tab-conversation').click());
+      const directPrompts = calls.filter(
+        call =>
+          call.method === 'agentSession' && call.request.action === 'prompt',
+      ).length;
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Prompt delegated worker directly';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        editor.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+      await settle();
+      assert.equal(
+        calls.filter(
+          call =>
+            call.method === 'agentSession' && call.request.action === 'prompt',
+        ).length,
+        directPrompts,
+        'Enter must not send a direct prompt to a subagent worker',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          composerHidden: document.getElementById('parent-controls').hidden,
+          draft: document.getElementById('parent-prompt').value,
+        })),
+        {
+          composerHidden: true,
+          draft: 'Prompt delegated worker directly',
+        },
+      );
       assert.deepEqual(
         calls
           .filter(
@@ -5419,9 +5621,10 @@ async function main() {
     async () => {
       const parent = hub.sessions[0];
       parent.conversation[2].id = 'shared-tool';
-      const agent = (id, name) => ({
+      const agent = (id, name, agentMode) => ({
         id,
         name,
+        ...(agentMode ? {agentMode} : {}),
         cwd: directory,
         model: 'fixture/small',
         task: `Task for ${name}`,
@@ -5453,16 +5656,158 @@ async function main() {
         ],
       });
       parent.agents = [
-        agent('agent-one', 'First agent'),
-        agent('agent-two', 'Second agent'),
+        agent('agent-one', 'First agent', 'primary'),
+        agent('agent-two', 'Second agent', 'all'),
+        agent('agent-subagent', 'Delegated agent', 'subagent'),
+        agent('agent-legacy', 'Legacy agent'),
       ];
-      parent.totalAgents = 2;
+      parent.totalAgents = parent.agents.length;
       parent.queue.steering = ['Parent steering'];
       parent.ui = {
         notifications: [{id: 'notice', type: 'info', message: 'Parent notice'}],
         statuses: [{key: 'parent', text: 'Parent status'}],
       };
       await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          selected: (() => {
+            const glyph = document.getElementById('selected-conversation-mark');
+            const crown = glyph.querySelector('.robot-crown');
+            return {
+              kind: glyph.dataset.agentKind,
+              main: glyph.classList.contains('robot-main'),
+              primary: glyph.classList.contains('robot-primary'),
+              subagent: glyph.classList.contains('robot-subagent'),
+              crown: getComputedStyle(crown).display !== 'none',
+              crownHidden: crown.getAttribute('aria-hidden'),
+              role: glyph.getAttribute('role'),
+              label: glyph.getAttribute('aria-label'),
+            };
+          })(),
+          parents: [...document.querySelectorAll('#parents .parent-card')].map(
+            card => {
+              const glyph = card.querySelector('.robot-glyph');
+              return {
+                kind: glyph.dataset.agentKind,
+                main: glyph.classList.contains('robot-main'),
+                crown:
+                  getComputedStyle(glyph.querySelector('.robot-crown'))
+                    .display !== 'none',
+                role: glyph.getAttribute('role'),
+                label: glyph.getAttribute('aria-label'),
+              };
+            },
+          ),
+          subagentSmaller: (() => {
+            const main = document
+              .querySelector('#parents .robot-main')
+              .getBoundingClientRect();
+            const primary = document
+              .querySelector('#active-workers .robot-primary')
+              .getBoundingClientRect();
+            const subagent = document
+              .querySelector('#active-workers .robot-subagent')
+              .getBoundingClientRect();
+            return (
+              subagent.width < primary.width &&
+              subagent.height < primary.height &&
+              subagent.width < main.width &&
+              subagent.height < main.height
+            );
+          })(),
+          workers: Object.fromEntries(
+            [...document.querySelectorAll('#active-workers .worker-card')].map(
+              card => {
+                const name =
+                  card.querySelector('.worker-card-name').textContent;
+                const glyph = card.querySelector('.robot-glyph');
+                return [
+                  name,
+                  {
+                    kind: card.dataset.agentKind,
+                    glyphKind: glyph.dataset.agentKind,
+                    primary: glyph.classList.contains('robot-primary'),
+                    subagent: glyph.classList.contains('robot-subagent'),
+                    crown:
+                      getComputedStyle(glyph.querySelector('.robot-crown'))
+                        .display !== 'none',
+                    role: glyph.getAttribute('role'),
+                    label: glyph.getAttribute('aria-label'),
+                  },
+                ];
+              },
+            ),
+          ),
+        })),
+        {
+          selected: {
+            kind: 'main',
+            main: true,
+            primary: false,
+            subagent: false,
+            crown: false,
+            crownHidden: 'true',
+            role: 'img',
+            label: 'Main agent',
+          },
+          parents: [
+            {
+              kind: 'main',
+              main: true,
+              crown: false,
+              role: 'img',
+              label: 'Main agent',
+            },
+            {
+              kind: 'main',
+              main: true,
+              crown: false,
+              role: 'img',
+              label: 'Main agent',
+            },
+          ],
+          subagentSmaller: true,
+          workers: {
+            'First agent': {
+              kind: 'primary',
+              glyphKind: 'primary',
+              primary: true,
+              subagent: false,
+              crown: true,
+              role: 'img',
+              label: 'Primary agent',
+            },
+            'Second agent': {
+              kind: 'primary',
+              glyphKind: 'primary',
+              primary: true,
+              subagent: false,
+              crown: true,
+              role: 'img',
+              label: 'Primary agent',
+            },
+            'Delegated agent': {
+              kind: 'subagent',
+              glyphKind: 'subagent',
+              primary: false,
+              subagent: true,
+              crown: false,
+              role: 'img',
+              label: 'Subagent',
+            },
+            'Legacy agent': {
+              kind: 'primary',
+              glyphKind: 'primary',
+              primary: true,
+              subagent: false,
+              crown: true,
+              role: 'img',
+              label: 'Primary agent',
+            },
+          },
+        },
+        'Workspace and worker cards show their agent type markers',
+      );
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Unsent parent draft';
@@ -5475,6 +5820,20 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           title: document.getElementById('inspector-title').textContent,
+          kind: document.getElementById('inspector').dataset.conversationKind,
+          kindLabel: document.getElementById('conversation-kind-label')
+            .textContent,
+          selectedMark: (() => {
+            const glyph = document.getElementById('selected-conversation-mark');
+            return {
+              kind: glyph.dataset.agentKind,
+              primary: glyph.classList.contains('robot-primary'),
+              crown:
+                getComputedStyle(glyph.querySelector('.robot-crown'))
+                  .display !== 'none',
+              label: glyph.getAttribute('aria-label'),
+            };
+          })(),
           recipient: document.getElementById('conversation-recipient')
             .textContent,
           messages: [
@@ -5499,6 +5858,14 @@ async function main() {
         })),
         {
           title: 'First agent',
+          kind: 'primary',
+          kindLabel: 'Primary agent',
+          selectedMark: {
+            kind: 'primary',
+            primary: true,
+            crown: true,
+            label: 'Primary agent',
+          },
           recipient: 'Agent · First agent',
           messages: ['Task for First agent', 'First agent answer'],
           tool: 'First agent output\n',
@@ -5670,6 +6037,29 @@ async function main() {
         ),
         /Standard output:\nAgent output\nDetails/,
       );
+      assert.deepEqual(
+        await evaluate(() => {
+          const row = [...document.querySelectorAll('.history-row')].find(
+            item => item.textContent.includes('First agent'),
+          );
+          const glyph = row.querySelector('.robot-glyph');
+          return {
+            rowKind: row.dataset.agentKind,
+            glyphKind: glyph.dataset.agentKind,
+            crown:
+              getComputedStyle(glyph.querySelector('.robot-crown')).display !==
+              'none',
+            label: glyph.getAttribute('aria-label'),
+          };
+        }),
+        {
+          rowKind: 'primary',
+          glyphKind: 'primary',
+          crown: true,
+          label: 'Primary agent',
+        },
+        'Primary agent history rows retain their crown marker',
+      );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
         await evaluate(() => {
           document.querySelector('#conversation details summary').click();
@@ -5749,6 +6139,8 @@ async function main() {
             const slotBounds = label.parentElement.getBoundingClientRect();
             return {
               kind: inspector.dataset.conversationKind,
+              marker:
+                document.querySelector('.conversation-kind').dataset.agentKind,
               label: label.textContent,
               title: document.getElementById('inspector-title').textContent,
               titleHint: document.getElementById('inspector-title').title,
@@ -5756,25 +6148,30 @@ async function main() {
               background: getComputedStyle(
                 document.querySelector('.inspector-heading'),
               ).backgroundImage,
-              parentIcon:
-                getComputedStyle(document.querySelector('.kind-parent-icon'))
+              mainIcon:
+                getComputedStyle(document.querySelector('.kind-main-icon'))
                   .display !== 'none',
-              agentIcon:
-                getComputedStyle(document.querySelector('.kind-agent-icon'))
+              primaryIcon:
+                getComputedStyle(document.querySelector('.kind-primary-icon'))
+                  .display !== 'none',
+              subagentIcon:
+                getComputedStyle(document.querySelector('.kind-subagent-icon'))
                   .display !== 'none',
             };
           });
         const parentKind = await inspectKind();
-        assert.equal(parentKind.label, 'Agent');
-        assert.equal(parentKind.kind, 'agent');
+        assert.equal(parentKind.label, 'Main agent');
+        assert.equal(parentKind.kind, 'main');
+        assert.equal(parentKind.marker, 'main');
         assert.equal(parentKind.title, 'Alpha factory');
         assert.equal(
           parentKind.complete,
           true,
           'Parent session label should be fully visible',
         );
-        assert.equal(parentKind.parentIcon, false);
-        assert.equal(parentKind.agentIcon, true);
+        assert.equal(parentKind.mainIcon, true);
+        assert.equal(parentKind.primaryIcon, false);
+        assert.equal(parentKind.subagentIcon, false);
         const parentBounds = await geometry();
         await evaluate(() =>
           [...document.querySelectorAll('#parents button')]
@@ -5826,8 +6223,9 @@ async function main() {
         await settle();
         const agentBounds = await geometry();
         const agentKind = await inspectKind();
-        assert.equal(agentKind.label, 'Agent');
-        assert.equal(agentKind.kind, 'agent');
+        assert.equal(agentKind.label, 'Primary agent');
+        assert.equal(agentKind.kind, 'primary');
+        assert.equal(agentKind.marker, 'primary');
         assert.equal(agentKind.title, parent.agents[1].name);
         assert.equal(agentKind.titleHint, parent.agents[1].name);
         assert.equal(
@@ -5835,9 +6233,14 @@ async function main() {
           true,
           'Agent conversation label should be fully visible',
         );
-        assert.equal(agentKind.parentIcon, false);
-        assert.equal(agentKind.agentIcon, true);
-        assert.equal(agentKind.background, parentKind.background);
+        assert.equal(agentKind.mainIcon, false);
+        assert.equal(agentKind.primaryIcon, true);
+        assert.equal(agentKind.subagentIcon, false);
+        assert.notEqual(
+          agentKind.background,
+          parentKind.background,
+          'Main and primary conversations use distinct heading accents',
+        );
         for (const selector of Object.keys(parentBounds).filter(
           selector =>
             !['#panel-conversation', '#composer-slot'].includes(selector),
@@ -5887,14 +6290,117 @@ async function main() {
         await settle();
         const returnedBounds = await geometry();
         const returnedKind = await inspectKind();
-        assert.equal(returnedKind.label, 'Agent');
-        assert.equal(returnedKind.parentIcon, false);
-        assert.equal(returnedKind.agentIcon, true);
+        assert.equal(returnedKind.label, 'Main agent');
+        assert.equal(returnedKind.kind, 'main');
+        assert.equal(returnedKind.marker, 'main');
+        assert.equal(returnedKind.mainIcon, true);
+        assert.equal(returnedKind.primaryIcon, false);
+        assert.equal(returnedKind.subagentIcon, false);
         assert.deepEqual(
           returnedBounds,
           parentBounds,
           `Returning to parent must preserve geometry at ${width}`,
         );
+      }
+
+      await evaluate(() =>
+        [...document.querySelectorAll('#active-workers .worker-card')]
+          .find(card => card.textContent.includes('Delegated agent'))
+          .click(),
+      );
+      await settle();
+      assert.deepEqual(
+        await evaluate(() => {
+          const card = [
+            ...document.querySelectorAll('#active-workers .worker-card'),
+          ].find(item => item.textContent.includes('Delegated agent'));
+          const glyph = card.querySelector('.robot-glyph');
+          return {
+            inspectorKind:
+              document.getElementById('inspector').dataset.conversationKind,
+            marker:
+              document.querySelector('.conversation-kind').dataset.agentKind,
+            label: document.getElementById('conversation-kind-label')
+              .textContent,
+            selectedMark: (() => {
+              const mark = document.getElementById(
+                'selected-conversation-mark',
+              );
+              return {
+                kind: mark.dataset.agentKind,
+                subagent: mark.classList.contains('robot-subagent'),
+                crown:
+                  getComputedStyle(mark.querySelector('.robot-crown'))
+                    .display !== 'none',
+                label: mark.getAttribute('aria-label'),
+              };
+            })(),
+            mainIcon:
+              getComputedStyle(document.querySelector('.kind-main-icon'))
+                .display !== 'none',
+            primaryIcon:
+              getComputedStyle(document.querySelector('.kind-primary-icon'))
+                .display !== 'none',
+            subagentIcon:
+              getComputedStyle(document.querySelector('.kind-subagent-icon'))
+                .display !== 'none',
+            cardKind: card.dataset.agentKind,
+            glyphKind: glyph.dataset.agentKind,
+            glyphClass: glyph.classList.contains('robot-subagent'),
+            crown:
+              getComputedStyle(glyph.querySelector('.robot-crown')).display !==
+              'none',
+            glyphLabel: glyph.getAttribute('aria-label'),
+          };
+        }),
+        {
+          inspectorKind: 'subagent',
+          marker: 'subagent',
+          label: 'Subagent',
+          selectedMark: {
+            kind: 'subagent',
+            subagent: true,
+            crown: false,
+            label: 'Subagent',
+          },
+          mainIcon: false,
+          primaryIcon: false,
+          subagentIcon: true,
+          cardKind: 'subagent',
+          glyphKind: 'subagent',
+          glyphClass: true,
+          crown: false,
+          glyphLabel: 'Subagent',
+        },
+        'Explicit subagents use the subagent marker in cards and the inspector',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await screenshot('conversation-agent-types');
+        const themes = await evaluate(() =>
+          [...document.getElementById('factory-theme').options].map(
+            option => option.value,
+          ),
+        );
+        for (const theme of themes) {
+          await evaluate(theme => {
+            const select = document.getElementById('factory-theme');
+            select.value = theme;
+            select.dispatchEvent(new Event('change'));
+          }, theme);
+          await screenshot(`conversation-agent-types-${theme}`);
+        }
+        await evaluate(() => {
+          const select = document.getElementById('factory-theme');
+          select.value = 'factory';
+          select.dispatchEvent(new Event('change'));
+        });
+        window.setContentSize(1100, 760);
+        window.webContents.setZoomFactor(1.5);
+        await settle();
+        await screenshot('conversation-agent-types-compact-zoom');
+        window.webContents.setZoomFactor(1);
+        window.setContentSize(1600, 1000);
+        await settle();
       }
     },
   );
@@ -6468,7 +6974,7 @@ async function main() {
   );
 
   await run(
-    'Tokens shows measured input output cache cost zero usage and context usage',
+    'Tokens shows measured input output cache cost and parent and worker context usage',
     async () => {
       hub.sessions[0].session.context = {
         tokens: 3200,
@@ -6510,6 +7016,7 @@ async function main() {
           startedAt: at,
           finishedAt: at,
           model: 'fixture/worker',
+          context: {tokens: 8000, window: 32000, percent: 25},
           activity: 'Completed fixture task',
           output: 'Fixture result',
           autoCleanup: false,
@@ -6540,8 +7047,35 @@ async function main() {
             ],
           },
         },
+        {
+          id: 'worker-2',
+          name: 'Other worker',
+          task: 'Do not show this worker usage',
+          cwd: directory,
+          status: 'completed',
+          createdAt: at,
+          startedAt: at,
+          finishedAt: at,
+          model: 'fixture/other-worker',
+          context: {tokens: 12345, window: 50000, percent: 24.69},
+          activity: 'Completed another task',
+          output: 'Other result',
+          autoCleanup: false,
+          taskTruncated: false,
+          outputTruncated: false,
+          usage: {
+            input: 9000,
+            output: 500,
+            cacheRead: 250,
+            cacheWrite: 126,
+            totalTokens: 9876,
+            cost: 0.0456,
+            truncated: false,
+            calls: [],
+          },
+        },
       ];
-      hub.sessions[0].totalAgents = 1;
+      hub.sessions[0].totalAgents = 2;
       await publish();
       await evaluate(() => document.getElementById('tab-tokens').click());
       const counts = await evaluate(() => {
@@ -6600,8 +7134,24 @@ async function main() {
             item => item.value,
           ),
         ),
-        ['parent', 'worker-1'],
+        ['parent', 'worker-1', 'worker-2'],
       );
+      await evaluate(() =>
+        [...document.querySelectorAll('#history-workers button')]
+          .find(button => button.textContent.includes('Fixture worker'))
+          .click(),
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          text: document
+            .getElementById('context-meter')
+            .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
+          hidden: document.getElementById('context-meter').hidden,
+        })),
+        {text: '25%·8000/32000tokens', hidden: false},
+        'The selected worker header shows its context usage',
+      );
+      await evaluate(() => document.getElementById('tab-tokens').click());
       await evaluate(() => {
         const selector = document.getElementById('usage-unit');
         selector.value = 'worker-1';
@@ -6610,6 +7160,9 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           recipient: document.getElementById('usage-recipient').textContent,
+          header: document
+            .getElementById('context-meter')
+            .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
           totals: ['input', 'output', 'cache-read', 'cache-write', 'total'].map(
             id =>
               Number(
@@ -6619,16 +7172,36 @@ async function main() {
               ),
           ),
           cost: document.getElementById('usage-cost').textContent,
-          contextHidden: document.getElementById('usage-context-section')
-            .hidden,
+          context: document
+            .getElementById('usage-context')
+            .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
+          contextNow: document
+            .getElementById('context-budget-meter')
+            .getAttribute('aria-valuenow'),
+          contextLimit: document
+            .getElementById('context-budget-meter')
+            .getAttribute('aria-valuemax'),
+          contextHidden: document.getElementById('context-budget-meter').hidden,
+          otherWorkerVisible: [
+            document.getElementById('usage-total').textContent,
+            document.getElementById('usage-context').textContent,
+          ].some(text => {
+            const digits = text.replace(/\D/g, '');
+            return digits.includes('9876') || digits.includes('12345');
+          }),
           call: document.querySelector('#usage-calls .usage-call-link')
             .textContent,
         })),
         {
           recipient: 'Model usage for Fixture worker',
+          header: '25%·8000/32000tokens',
           totals: [3000, 100, 150, 50, 3300],
           cost: '$0.0123',
-          contextHidden: true,
+          context: '8000/32000tokens',
+          contextNow: '8000',
+          contextLimit: '32000',
+          contextHidden: false,
+          otherWorkerVisible: false,
           call: 'Requested read',
         },
       );
@@ -6637,8 +7210,117 @@ async function main() {
         2000,
         'Worker usage must not replace parent accounting',
       );
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('tokens-worker-1600x1000');
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        for (const [width, height, zoom, name] of [
+          [1600, 1000, 1, 'normal'],
+          [900, 760, 1.5, 'compact-zoom'],
+        ]) {
+          window.setContentSize(width, height);
+          window.webContents.setZoomFactor(zoom);
+          await settle();
+          const showWorkerContext = () =>
+            evaluate(() => {
+              document.activeElement?.blur();
+              const panel = document.getElementById('panel-tokens');
+              const section = document.getElementById('usage-context-section');
+              const viewport = panel.getBoundingClientRect();
+              const bounds = section.getBoundingClientRect();
+              panel.scrollTop += bounds.top - viewport.top - 12;
+              const context = document
+                .getElementById('usage-context')
+                .getBoundingClientRect();
+              return {
+                visible:
+                  document.getElementById('usage-context').checkVisibility() &&
+                  context.top >= viewport.top &&
+                  context.bottom <= viewport.bottom,
+                scrollTop: panel.scrollTop,
+                context: {top: context.top, bottom: context.bottom},
+                viewport: {top: viewport.top, bottom: viewport.bottom},
+              };
+            });
+          await showWorkerContext();
+          await settle();
+          const geometry = await showWorkerContext();
+          assert.equal(
+            geometry.visible,
+            true,
+            `Worker context must be visible before capture: ${JSON.stringify(geometry)}`,
+          );
+          await screenshot(`tokens-worker-context-${name}`);
+        }
+        window.setContentSize(1600, 1000);
+        window.webContents.setZoomFactor(1);
+        await settle();
+      }
+
+      hub.sessions[0].agents[0].context = {
+        tokens: 0,
+        window: 32000,
+        percent: 0,
+      };
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          header: document
+            .getElementById('context-meter')
+            .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
+          panel: document
+            .getElementById('usage-context')
+            .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
+          hidden: document.getElementById('context-budget-meter').hidden,
+          now: document
+            .getElementById('context-budget-meter')
+            .getAttribute('aria-valuenow'),
+        })),
+        {
+          header: '0%·0/32000tokens',
+          panel: '0/32000tokens',
+          hidden: false,
+          now: '0',
+        },
+        'Zero worker context remains a measured value',
+      );
+      hub.sessions[0].agents[0].context = {
+        tokens: null,
+        window: 32000,
+        percent: null,
+      };
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          header: document
+            .getElementById('context-meter')
+            .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
+          headerHidden: document.getElementById('context-meter').hidden,
+          panel: document.getElementById('usage-context').textContent,
+          meterHidden: document.getElementById('context-budget-meter').hidden,
+        })),
+        {
+          header: '—·—/32000tokens',
+          headerHidden: false,
+          panel: 'Available after the next response',
+          meterHidden: true,
+        },
+        'Null worker context is shown as unknown',
+      );
+      hub.sessions[0].agents[0].context = undefined;
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          header: document.getElementById('context-meter').textContent,
+          headerHidden: document.getElementById('context-meter').hidden,
+          panel: document.getElementById('usage-context').textContent,
+          meterHidden: document.getElementById('context-budget-meter').hidden,
+        })),
+        {
+          header: '—',
+          headerHidden: true,
+          panel: 'Available after the next response',
+          meterHidden: true,
+        },
+        'Missing worker context is shown as unknown',
+      );
       await evaluate(() => {
         const selector = document.getElementById('usage-unit');
         selector.value = 'parent';
@@ -8491,6 +9173,263 @@ async function main() {
   );
 
   await run(
+    'agent template model dropdown loads tool settings and preserves pins',
+    async () => {
+      const click = id =>
+        evaluate(id => document.getElementById(id).click(), id);
+      const fill = values =>
+        evaluate(values => {
+          for (const [id, value] of Object.entries(values)) {
+            const element = document.getElementById(id);
+            element.value = value;
+            element.dispatchEvent(new Event('input', {bubbles: true}));
+            if (element.tagName === 'SELECT')
+              element.dispatchEvent(new Event('change', {bubbles: true}));
+          }
+        }, values);
+      const modelControls = () =>
+        evaluate(() => {
+          const select = document.getElementById('agent-template-model');
+          return {
+            value: select.value,
+            disabled: select.disabled,
+            options: [...select.options].map(option => ({
+              value: option.value,
+              text: option.textContent,
+              disabled: option.disabled,
+            })),
+          };
+        });
+      const availableOptions = inherit => [
+        {value: '', text: inherit, disabled: false},
+        {
+          value: 'fixture-other/large',
+          text: 'Fixture large (fixture-other/large)',
+          disabled: false,
+        },
+        {
+          value: 'fixture/small',
+          text: 'Fixture small (fixture/small)',
+          disabled: false,
+        },
+      ];
+      const openTemplates = async () => {
+        await click('open-agent-templates');
+        await until(
+          () => !document.getElementById('agent-template-new').disabled,
+          'Agent configurations did not load',
+        );
+      };
+      const selectSaved = async () => {
+        await evaluate(() =>
+          document
+            .querySelector('[data-template-key="workspace:model-agent"]')
+            .click(),
+        );
+      };
+
+      toolSettings = fixtureToolSettings(['fixture/small']);
+      await openTemplates();
+      assert.deepEqual(
+        calls.filter(call => call.method === 'getToolSettings'),
+        [{method: 'getToolSettings', sessionId: 'alpha'}],
+      );
+      await click('agent-template-new');
+      assert.deepEqual(await modelControls(), {
+        value: '',
+        disabled: false,
+        options: availableOptions('Use tool model settings'),
+      });
+      await fill({
+        'agent-template-id': 'model-agent',
+        'agent-template-name': 'Model agent',
+        'agent-template-model': 'fixture-other/large',
+        'agent-template-instructions': 'Use the configured model.',
+      });
+      await click('agent-template-save');
+      await until(
+        () =>
+          document.getElementById('agent-templates-status').textContent ===
+          'Saved.',
+        'Agent model pin was not saved',
+      );
+      let saved = calls
+        .filter(call => call.method === 'saveAgentTemplate')
+        .at(-1).input;
+      assert.equal(saved.model, 'fixture-other/large');
+
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        const showModelField = async () => {
+          const centerModelField = () =>
+            evaluate(() => {
+              const body = document.querySelector(
+                '.agent-template-editor-body',
+              );
+              const field = document.getElementById('agent-template-model');
+              if (document.activeElement !== field) {
+                document.activeElement?.blur();
+                field.focus({preventScroll: true});
+              }
+              const viewport = body.getBoundingClientRect();
+              const bounds = field.getBoundingClientRect();
+              body.scrollTop +=
+                bounds.top -
+                viewport.top -
+                (body.clientHeight - bounds.height) / 2;
+              const positioned = field.getBoundingClientRect();
+              return {
+                visible:
+                  field.checkVisibility() &&
+                  positioned.top >= viewport.top &&
+                  positioned.bottom <= viewport.bottom,
+                scrollTop: body.scrollTop,
+                field: {
+                  top: positioned.top,
+                  bottom: positioned.bottom,
+                },
+                viewport: {top: viewport.top, bottom: viewport.bottom},
+              };
+            });
+          await centerModelField();
+          await settle();
+          const geometry = await centerModelField();
+          assert.equal(
+            geometry.visible,
+            true,
+            `Model dropdown must be visible in its editor before capture: ${JSON.stringify(geometry)}`,
+          );
+        };
+        await showModelField();
+        await screenshot('agent-template-model-normal');
+        window.setContentSize(900, 760);
+        window.webContents.setZoomFactor(1.5);
+        await settle();
+        await showModelField();
+        await screenshot('agent-template-model-compact-zoom');
+        window.setContentSize(1600, 1000);
+        window.webContents.setZoomFactor(1);
+        await settle();
+      }
+      await click('agent-templates-close');
+
+      toolSettings = fixtureToolSettings(['fixture/small']);
+      await openTemplates();
+      await selectSaved();
+      let controls = await modelControls();
+      assert.equal(controls.value, 'fixture-other/large');
+      assert.deepEqual(
+        controls.options.find(option => option.value === 'fixture-other/large'),
+        {
+          value: 'fixture-other/large',
+          text: 'Fixture large (fixture-other/large)',
+          disabled: false,
+        },
+        'A saved available pin remains enabled outside the allowlist',
+      );
+      assert.equal(
+        controls.options.find(option => option.value === '').text,
+        'Use tool model settings',
+      );
+      await fill({'agent-template-description': 'Keep this unrelated edit.'});
+      await click('agent-template-save');
+      await until(
+        () =>
+          document.getElementById('agent-templates-status').textContent ===
+          'Saved.',
+        'Saved model pin was not preserved',
+      );
+      saved = calls
+        .filter(call => call.method === 'saveAgentTemplate')
+        .at(-1).input;
+      assert.equal(saved.model, 'fixture-other/large');
+
+      toolSettings = fixtureToolSettings([]);
+      chosenFolder = join(directory, 'empty-model-list');
+      await click('agent-templates-choose-folder');
+      await until(
+        () => !document.getElementById('agent-template-new').disabled,
+        'Folder change did not reload empty model settings',
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'getToolSettings').length,
+        3,
+        'Folder change must reload model settings',
+      );
+      await click('agent-template-new');
+      assert.deepEqual(await modelControls(), {
+        value: '',
+        disabled: false,
+        options: availableOptions('Inherit'),
+      });
+      await click('agent-templates-close');
+
+      toolSettings = fixtureToolSettings(null);
+      await openTemplates();
+      await click('agent-template-new');
+      assert.deepEqual(await modelControls(), {
+        value: '',
+        disabled: false,
+        options: availableOptions('Inherit'),
+      });
+      await click('agent-templates-close');
+
+      toolSettings = fixtureToolSettings(['fixture/small']);
+      toolSettings.models = toolSettings.models.filter(
+        model => model.id !== 'large',
+      );
+      await openTemplates();
+      await selectSaved();
+      controls = await modelControls();
+      assert.equal(controls.value, 'fixture-other/large');
+      assert.deepEqual(
+        controls.options.find(option => option.value === 'fixture-other/large'),
+        {
+          value: 'fixture-other/large',
+          text: 'fixture-other/large (unavailable)',
+          disabled: true,
+        },
+        'An unavailable saved pin remains visible',
+      );
+      await click('agent-templates-close');
+
+      toolSettingsError = 'Model settings failed';
+      await openTemplates();
+      await until(
+        () =>
+          document
+            .getElementById('agent-templates-error')
+            .textContent.includes('Model settings failed'),
+        'Model settings failure was not shown',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('.agent-template-list-item').length,
+        ),
+        7,
+        'Agent configurations must still load when models fail',
+      );
+      await selectSaved();
+      controls = await modelControls();
+      assert.equal(controls.disabled, true);
+      assert.equal(controls.value, 'fixture-other/large');
+      assert.ok(
+        controls.options.some(
+          option => option.value === 'fixture-other/large' && option.disabled,
+        ),
+        'The saved model remains selected while model settings are unavailable',
+      );
+      assert.deepEqual(
+        calls
+          .filter(call => call.method === 'getToolSettings')
+          .map(call => call.sessionId),
+        ['alpha', 'alpha', 'alpha', 'alpha', 'alpha', 'alpha'],
+        'Opening and changing folders reloads settings for the selected session',
+      );
+      await click('agent-templates-close');
+    },
+  );
+
+  await run(
     'agent templates support global, repository, and personal workspace scopes and create conversations',
     async () => {
       const fill = async values =>
@@ -8527,12 +9466,15 @@ async function main() {
           ].map(option => option.value),
           selected: document.getElementById('new-agent-template').value,
           name: document.getElementById('new-agent-name').value,
+          namePlaceholder:
+            document.getElementById('new-agent-name').placeholder,
           startDisabled: document.getElementById('new-agent-create').disabled,
         })),
         {
           values: ['build', 'default', 'plan'],
           selected: 'default',
           name: '',
+          namePlaceholder: basename(directory),
           startDisabled: false,
         },
         'A workspace without custom profiles selects the Default agent',
@@ -8704,10 +9646,6 @@ async function main() {
           scope: 'repository',
           id: 'team/reviewer',
           sourcePath: nestedReviewerPath,
-          request: {
-            headers: {'x-fixture-scope': 'package'},
-            body: {temperature: 0.2, metadata: {source: 'fixture'}},
-          },
           description: 'Updated package review rules.',
           permissions: [
             {action: 'read', resource: 'packages/app/**', effect: 'allow'},
@@ -9027,9 +9965,13 @@ async function main() {
         'new-agent-template': 'reviewer',
         'new-agent-task': 'Review the current change.',
       });
-      assert.equal(
-        await evaluate(() => document.getElementById('new-agent-name').value),
-        'Personal reviewer',
+      assert.deepEqual(
+        await evaluate(() => ({
+          name: document.getElementById('new-agent-name').value,
+          placeholder: document.getElementById('new-agent-name').placeholder,
+        })),
+        {name: '', placeholder: basename(directory)},
+        'Selecting an agent keeps the optional name blank',
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('agent-create-template');

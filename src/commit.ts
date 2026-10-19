@@ -80,7 +80,7 @@ export function registerCommitCommand(
         throw new Error(
           `Commit model is unavailable: ${selectedModel}. Update the commit agent configuration or Menu → Tool models → Commit.`,
         );
-      await assertAgentModelAllowed(selectedModel, settings);
+      await assertAgentModelAllowed(selectedModel, settings, template.model);
       const thinkingLevel =
         template.thinkingLevel ??
         legacy?.thinkingLevel ??

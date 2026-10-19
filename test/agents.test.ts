@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {
@@ -19,6 +19,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {
   AgentOrchestrator,
+  type AgentContextUsage,
   type AgentRecord,
   type AgentSpec,
   type AgentWorker,
@@ -29,6 +30,7 @@ import {
 } from '../src/agents/session.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
+import {saveAgentTemplate} from '../src/agents/templates.ts';
 import type {SessionFeatures} from '../src/dashboard/features.ts';
 
 type AgentEventHandler = (
@@ -68,6 +70,9 @@ function controlledWorker(cooperative = true, directory = '') {
     signal: AbortSignal;
     finish: (output: string) => void;
     fail: (error: unknown) => void;
+    onActivity: Parameters<AgentWorker['run']>[2];
+    onUsage: Parameters<AgentWorker['run']>[3];
+    onConversation: Parameters<AgentWorker['run']>[4];
   }> = [];
   let disposed = 0;
   const steering: string[] = [];
@@ -78,11 +83,19 @@ function controlledWorker(cooperative = true, directory = '') {
       steering.push(message);
       return true;
     },
-    async run(message, signal, onActivity) {
+    async run(message, signal, onActivity, onUsage, onConversation) {
       const result = deferred<string>();
       const abort = () => result.reject(signal.reason);
       if (cooperative) signal.addEventListener('abort', abort, {once: true});
-      runs.push({message, signal, finish: result.resolve, fail: result.reject});
+      runs.push({
+        message,
+        signal,
+        finish: result.resolve,
+        fail: result.reject,
+        onActivity,
+        onUsage,
+        onConversation,
+      });
       onActivity('Using read');
       try {
         signal.throwIfAborted();
@@ -683,20 +696,27 @@ void test('agent tools select registered models and effort without adding parent
       name: 'Review',
       task: 'Review code',
     });
-    const id = (spawned.details as {agents: Array<{id: string}>}).agents[0].id;
+    const spawnedRecord = (spawned.details as {agents: AgentRecord[]})
+      .agents[0];
+    const id = spawnedRecord.id;
+    assert.equal(spawnedRecord.agentMode, 'all');
     await until(() => controlled.runs.length === 1);
     t.mock.timers.tick(3600001);
     await nextTick();
     assert.equal(controlled.runs[0].signal.aborted, false);
-    const {agentToolsExtension, ...workerOptions} = optionsSeen[0];
+    const {agentToolsExtension, agentProfile, ...workerOptions} =
+      optionsSeen[0];
     assert.equal(typeof agentToolsExtension, 'function');
+    assert.equal(agentProfile?.id, 'default');
+    assert.equal(agentProfile?.model, undefined);
     assert.deepEqual(workerOptions, {
       cwd: ctx.cwd,
       projectTrustOverride: false,
       name: 'Review',
       instructions: undefined,
-      agentProfile: undefined,
       approval: undefined,
+      approvalUI: undefined,
+      ui: undefined,
       context: 'workspace',
       model: selectedModel,
       modelRegistry: ctx.modelRegistry,
@@ -1107,6 +1127,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
 function agentParent(
   sessionId: string,
   createWorker: typeof createSessionWorker,
+  cwd = process.cwd(),
 ) {
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, AgentEventHandler>();
@@ -1134,7 +1155,7 @@ function agentParent(
   } as unknown as ExtensionAPI;
   const model = {provider: 'openai-codex', id: 'gpt-5.6-sol'};
   const ctx = {
-    cwd: process.cwd(),
+    cwd,
     hasUI: true,
     ui: {setStatus: (_key: string, status?: string) => statuses.push(status)},
     isIdle: () => idle,
@@ -1198,6 +1219,7 @@ function teamWorkers() {
       registerTool(tool: ToolDefinition) {
         tools.set(tool.name, tool);
       },
+      getThinkingLevel: () => options.thinkingLevel,
     } as unknown as ExtensionAPI);
     const worker = {
       options,
@@ -1209,6 +1231,11 @@ function teamWorkers() {
           undefined,
           undefined,
           toolContext({
+            cwd: options.cwd,
+            hasUI: false,
+            model: options.model,
+            modelRegistry: options.modelRegistry,
+            isProjectTrusted: () => false,
             sessionManager: {getSessionId: () => options.id},
           } as unknown as ExtensionContext),
         ),
@@ -1615,6 +1642,7 @@ async function isolateToolSettings(
   });
   if (allowedModels !== undefined)
     await saveToolSettings('agents', {allowedModels});
+  return directory;
 }
 
 void test('agent tools enforce live allowed models and refresh schemas between turns without a new prompt', async t => {
@@ -1634,7 +1662,8 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   );
   assert.equal(
     Check(parent.tools.get('agent_spawn')!.parameters, params),
-    false,
+    true,
+    'Runtime policy validates inherited choices without blocking pinned overrides',
   );
   assert.equal(
     Check(parent.tools.get('agent_spawn')!.parameters, {
@@ -1688,8 +1717,9 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   await parent.emit('turn_end');
   assert.equal(
     Check(parent.tools.get('agent_spawn')!.parameters, params),
-    false,
+    true,
   );
+  await assert.rejects(parent.execute('agent_spawn', params), /not allowed/);
   await saveToolSettings('agents', {allowedModels: null});
   await parent.emit('turn_end');
   assert.match(
@@ -1751,6 +1781,178 @@ void test('model policy is checked when queued workers start, including initiali
   assert.equal(workers.byId.has(uninitialized), false);
   assert.equal(workers.byId.get(initialized)!.controlled.runs.length, 0);
   assert.equal(workers.byId.get(resumed)!.controlled.runs.length, 1);
+});
+
+void test('pinned model snapshots survive queueing, initialization, cancellation, and resume after policy and configuration changes', async t => {
+  const model = 'openai-codex/gpt-5.6-sol';
+  const directory = await isolateToolSettings(t, [model]);
+  const cwd = join(directory, 'project');
+  await mkdir(cwd);
+  const profile = {id: 'pinned', scope: 'workspace', mode: 'subagent'};
+  await saveAgentTemplate(cwd, {...profile, model});
+  const workers = teamWorkers();
+  const parent = agentParent('pinned-queue', workers.create, cwd);
+  t.after(() => parent.shutdown());
+  const spawnPinned = async (name: string) => {
+    const result = await parent.execute('agent_spawn', {
+      name,
+      template: 'pinned',
+      task: name,
+      model: 'other/ignored',
+    });
+    const record = result.details.agents[0];
+    assert.equal(record.model, model);
+    assert.equal(record.pinnedModel, model);
+    assert.equal(record.agentMode, 'subagent');
+    return record.id;
+  };
+  const resumed = await spawnPinned('Retained pinned worker');
+  await untilPolicy(
+    () => workers.byId.get(resumed)?.controlled.runs.length === 1,
+  );
+  workers.byId.get(resumed)!.controlled.runs[0].finish('Initial result');
+  await parent.execute('agent_wait', {ids: [resumed]});
+  const busy: string[] = [];
+  for (let index = 0; index < 6; index++)
+    busy.push(await parent.spawn(`Busy ${index}`));
+  await untilPolicy(() =>
+    busy.every(id => workers.byId.get(id)?.controlled.runs.length === 1),
+  );
+  const uninitialized = await spawnPinned('Uninitialized pin');
+  const initialized = await spawnPinned('Initialized pin');
+  const cancelled = await spawnPinned('Cancelled pin');
+  await parent.execute('agent_send', {
+    id: initialized,
+    message: 'Initialize while queued',
+  });
+  await parent.execute('agent_cancel', {id: cancelled});
+  assert.equal(workers.byId.has(uninitialized), false);
+  assert.equal(workers.byId.has(cancelled), false);
+  await saveAgentTemplate(cwd, {
+    ...profile,
+    model: 'other/changed',
+    mode: 'all',
+  });
+  await saveToolSettings('agents', {allowedModels: []});
+  for (const id of [resumed, cancelled])
+    await parent.execute('agent_send', {
+      id,
+      message: 'Resume with the saved pin',
+    });
+  for (const id of busy)
+    workers.byId.get(id)!.controlled.runs[0].finish('Done');
+  const ids = [uninitialized, initialized, cancelled, resumed];
+  await untilPolicy(() =>
+    ids.every(
+      id =>
+        workers.byId.get(id)?.controlled.runs.length ===
+        (id === resumed ? 2 : 1),
+    ),
+  );
+  for (const id of ids) {
+    const worker = workers.byId.get(id)!;
+    assert.equal(worker.options.agentProfile?.model, model);
+    assert.equal(
+      `${worker.options.model.provider}/${worker.options.model.id}`,
+      model,
+    );
+    worker.controlled.runs.at(-1)!.finish('Pinned result');
+  }
+  const result = await parent.execute('agent_wait', {ids});
+  assert.ok(
+    result.details.agents.every(
+      record =>
+        record.status === 'completed' &&
+        record.model === model &&
+        record.pinnedModel === model &&
+        record.agentMode === 'subagent',
+    ),
+  );
+});
+
+void test('nested launches and peer resume checks use the recipient configuration pin', async t => {
+  const model = 'openai-codex/gpt-5.6-sol';
+  const directory = await isolateToolSettings(t, [model]);
+  const cwd = join(directory, 'project');
+  await mkdir(cwd);
+  await saveAgentTemplate(cwd, {
+    id: 'pinned',
+    scope: 'workspace',
+    mode: 'subagent',
+    model,
+  });
+  const workers = teamWorkers();
+  const parent = agentParent('pinned-peers', workers.create, cwd);
+  t.after(() => parent.shutdown());
+  const sender = await parent.spawn('Inherited sender');
+  const inherited = await parent.spawn('Inherited recipient');
+  const pinnedSender = (
+    await parent.execute('agent_spawn', {
+      template: 'pinned',
+      task: 'Coordinate peers',
+    })
+  ).details.agents[0].id;
+  await untilPolicy(
+    () => workers.byId.get(pinnedSender)?.controlled.runs.length === 1,
+  );
+  const nested = await workers.byId.get(sender)!.execute('agent_spawn', {
+    template: 'pinned',
+    task: 'Use the child configuration pin',
+    model: 'other/ignored',
+  });
+  const recipient = (nested.details as {agents: AgentRecord[]}).agents[0];
+  assert.equal(recipient.pinnedModel, model);
+  assert.equal(recipient.agentMode, 'subagent');
+  await untilPolicy(
+    () => workers.byId.get(recipient.id)?.controlled.runs.length === 1,
+  );
+  for (const id of [inherited, recipient.id])
+    workers.byId.get(id)!.controlled.runs[0].finish('Initial result');
+  await parent.execute('agent_wait', {ids: [inherited, recipient.id]});
+  await saveToolSettings('agents', {allowedModels: []});
+  await parent.execute('agent_send', {
+    id: recipient.id,
+    message: 'Parent resumes pin',
+  });
+  await untilPolicy(
+    () => workers.byId.get(recipient.id)!.controlled.runs.length === 2,
+  );
+  workers.byId.get(recipient.id)!.controlled.runs[1].finish('Parent result');
+  await parent.execute('agent_wait', {ids: [recipient.id]});
+  await workers.byId.get(sender)!.execute('agent_send', {
+    id: recipient.id,
+    message: 'Inherited peer resumes pin',
+  });
+  await untilPolicy(
+    () => workers.byId.get(recipient.id)!.controlled.runs.length === 3,
+  );
+  for (const id of [sender, pinnedSender])
+    await assert.rejects(
+      workers.byId
+        .get(id)!
+        .execute('agent_send', {id: inherited, message: 'Denied resume'}),
+      /No agent models selected/,
+    );
+  await assert.rejects(
+    workers.byId
+      .get(pinnedSender)!
+      .execute('agent_spawn', {task: 'Inherited child is restricted'}),
+    /No agent models selected/,
+  );
+  const pinnedChild = await workers.byId
+    .get(pinnedSender)!
+    .execute('agent_spawn', {
+      template: 'pinned',
+      task: 'Pinned child is allowed',
+      model: 'other/ignored',
+    });
+  const child = (pinnedChild.details as {agents: AgentRecord[]}).agents[0];
+  await untilPolicy(
+    () => workers.byId.get(child.id)?.controlled.runs.length === 1,
+  );
+  assert.equal(child.model, model);
+  assert.equal(child.pinnedModel, model);
+  assert.equal(workers.byId.get(child.id)!.options.agentProfile?.model, model);
 });
 
 void test('parent and peer messages cannot resume completed agents with disallowed models', async t => {
@@ -1825,13 +2027,13 @@ void test('fresh and cleared agent policies deny explicit and inherited models w
   await assertEmptyPolicy();
   await saveToolSettings('agents', {allowedModels: [model]});
   await parent.emit('turn_end');
-  assert.deepEqual(
+  assert.match(
     (
       parent.tools.get('agent_spawn')!.parameters as {
-        properties: {model: {enum: string[]}};
+        properties: {model: {description: string}};
       }
-    ).properties.model.enum,
-    [model],
+    ).properties.model.description,
+    /Allowed when inheriting: openai-codex\/gpt-5\.6-sol/,
   );
   await saveToolSettings('agents', {allowedModels: []});
   await parent.emit('turn_end');
@@ -2127,6 +2329,127 @@ void test('abort recovers and clears queued messages while preserving a worker f
   await manager.wait([id]);
 });
 
+void test('worker context updates through run callbacks, clears unavailable data, and retains isolated snapshots after disposal', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  const busy = controlledWorker();
+  const controlled = controlledWorker();
+  let context: AgentContextUsage | undefined = {
+    tokens: 100,
+    window: 1000,
+    percent: 10,
+  };
+  manager.spawn(spec, async () => busy.worker);
+  const {id} = manager.spawn({...spec, autoCleanup: true}, async () => ({
+    ...controlled.worker,
+    get context() {
+      return context;
+    },
+    dispose() {
+      context = undefined;
+      return controlled.worker.dispose();
+    },
+  }));
+  await until(() => busy.runs.length === 1);
+  const prepared = await manager.send(id, 'Initialize before a slot opens');
+  assert.deepEqual(prepared.context, {tokens: 100, window: 1000, percent: 10});
+  context.tokens = 200;
+  assert.equal(
+    manager.get(id).context?.tokens,
+    100,
+    'Copy context from the worker getter',
+  );
+  busy.runs[0].finish('Done');
+  await until(() => controlled.runs.length === 1);
+  assert.equal(manager.get(id).context?.tokens, 200);
+  const run = controlled.runs[0];
+  let updates = 0;
+  manager.subscribe(() => updates++);
+  context = {tokens: 300, window: 1000, percent: 30};
+  run.onActivity('Using read');
+  assert.equal(updates, 1, 'Repeated activity still publishes changed context');
+  assert.deepEqual(manager.get(id).context, context);
+  manager.get(id).context!.tokens = 999;
+  manager.list().find(record => record.id === id)!.context!.window = 999;
+  assert.deepEqual(manager.get(id).context, context);
+  context = {tokens: 400, window: 1000, percent: 40};
+  run.onConversation!({conversation: [], conversationTruncated: false});
+  assert.deepEqual(manager.get(id).context, context);
+  context = {tokens: null, window: 1000, percent: null};
+  run.onUsage!({
+    source: 'provider',
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: 0,
+    calls: [],
+    truncated: false,
+  });
+  assert.deepEqual(manager.get(id).context, {
+    tokens: null,
+    window: 1000,
+    percent: null,
+  });
+  context = undefined;
+  run.onActivity('Using read');
+  assert.equal(
+    manager.get(id).context,
+    undefined,
+    'Unavailable live context clears the prior estimate',
+  );
+  const final = {tokens: 500, window: 1000, percent: 50};
+  context = final;
+  run.finish('Finished');
+  const [completed] = await manager.wait([id]);
+  assert.equal(controlled.disposed, 1);
+  assert.deepEqual(completed.context, final);
+  completed.context!.percent = 99;
+  assert.deepEqual(manager.get(id).context, final);
+  await manager.close();
+  assert.deepEqual(
+    manager.get(id).context,
+    final,
+    'Disposal preserves the last captured context',
+  );
+});
+
+void test('agent tool wrappers forward live worker context into isolated team snapshots', async t => {
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
+  const controlled = controlledWorker();
+  let context: AgentContextUsage | undefined = {
+    tokens: 1000,
+    window: 10000,
+    percent: 10,
+  };
+  const parent = agentParent('worker-context', async () => ({
+    ...controlled.worker,
+    get context() {
+      return context;
+    },
+  }));
+  t.after(() => parent.shutdown());
+  const id = await parent.spawn('Context worker');
+  await until(() => controlled.runs.length === 1);
+  const original = parent.control.snapshot()!;
+  assert.deepEqual(original.agents[0].context, context);
+  context = {tokens: 2500, window: 10000, percent: 25};
+  controlled.runs[0].onConversation!({
+    conversation: [],
+    conversationTruncated: false,
+  });
+  const current = parent.control.snapshot()!;
+  assert.deepEqual(current.agents[0].context, context);
+  assert.equal(original.agents[0].context?.tokens, 1000);
+  current.agents[0].context!.tokens = 9999;
+  const status = await parent.execute('agent_status', {id});
+  assert.deepEqual(status.details.agents[0].context, context);
+  context = undefined;
+  controlled.runs[0].onActivity('Using read');
+  assert.equal(parent.control.snapshot()!.agents[0].context, undefined);
+});
+
 void test('worker configuration updates records and serializes queued maintenance before a prompt starts', async t => {
   const manager = new AgentOrchestrator(1);
   t.after(() => manager.close());
@@ -2134,6 +2457,11 @@ void test('worker configuration updates records and serializes queued maintenanc
   const controlled = controlledWorker();
   const configuration = deferred<void>();
   const actions: string[] = [];
+  let context: AgentContextUsage | undefined = {
+    tokens: 3000,
+    window: 10000,
+    percent: 30,
+  };
   const features: SessionFeatures = {
     commands: [],
     models: [{provider: 'test', id: 'updated', name: 'Updated'}],
@@ -2147,18 +2475,27 @@ void test('worker configuration updates records and serializes queued maintenanc
   controlled.worker.configure = async input => {
     actions.push(JSON.stringify(input));
     await configuration.promise;
+    context = {tokens: 3000, window: 20000, percent: 15};
     return structuredClone(features);
   };
   controlled.worker.compact = async instructions => {
     actions.push(`compact:${instructions}`);
+    context = {tokens: 1000, window: 20000, percent: 5};
   };
   controlled.worker.reload = async () => {
     actions.push('reload');
+    context = undefined;
   };
   manager.spawn(spec, async () => busy.worker);
-  const {id} = manager.spawn(spec, async () => controlled.worker);
+  const {id} = manager.spawn(spec, async () => ({
+    ...controlled.worker,
+    get context() {
+      return context;
+    },
+  }));
   await until(() => busy.runs.length === 1);
   assert.deepEqual(await manager.features(id), features);
+  assert.deepEqual(manager.get(id).context, context);
   const changing = manager.configure(id, {
     provider: 'test',
     modelId: 'updated',
@@ -2173,11 +2510,23 @@ void test('worker configuration updates records and serializes queued maintenanc
   const record = await changing;
   assert.equal(record.model, 'test/updated');
   assert.equal(record.thinkingLevel, 'high');
+  assert.deepEqual(record.context, {tokens: 3000, window: 20000, percent: 15});
   await until(() => controlled.runs.length === 1);
   controlled.runs[0].finish('Configured result');
   await manager.wait([id]);
   await manager.compact(id, 'Keep findings');
+  assert.deepEqual(manager.get(id).context, {
+    tokens: 1000,
+    window: 20000,
+    percent: 5,
+  });
+  assert.equal(
+    record.context?.tokens,
+    3000,
+    'Older snapshots keep their context',
+  );
   await manager.reload(id);
+  assert.equal(manager.get(id).context, undefined);
   assert.deepEqual(actions.slice(1), ['compact:Keep findings', 'reload']);
   await manager.close();
   await assert.rejects(manager.features(id), /closed/);

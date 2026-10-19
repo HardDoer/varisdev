@@ -405,6 +405,74 @@ main > .welcome {
   right: 5px;
   top: 9px;
 }
+.robot-crown {
+  display: none;
+  pointer-events: none;
+}
+.robot-glyph.robot-primary {
+  width: 30px;
+  height: 24px;
+  border-radius: 9px 9px 6px 6px;
+  box-shadow:
+    -7px 7px 0 -3px var(--robot-outline, #5f8190),
+    7px 7px 0 -3px var(--robot-outline, #5f8190);
+}
+.robot-glyph.robot-primary::before {
+  display: none;
+}
+.robot-glyph.robot-primary::after {
+  inset: 6px 2px 5px;
+}
+.robot-glyph.robot-primary i {
+  left: 5px;
+  right: 5px;
+  top: 10px;
+}
+.robot-glyph.robot-primary .robot-crown {
+  display: block;
+  position: absolute;
+  z-index: 2;
+  top: -11px;
+  left: 1px;
+  width: 24px;
+  height: 11px;
+  background:
+    radial-gradient(circle at 25% 68%, var(--rose) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 75% 68%, var(--violet) 0 1px, transparent 1.5px),
+    linear-gradient(#fff3, transparent), var(--amber);
+  clip-path: polygon(
+    0 100%,
+    0 18%,
+    25% 58%,
+    50% 0,
+    75% 58%,
+    100% 18%,
+    100% 100%
+  );
+  filter: drop-shadow(0 1px 0 var(--robot-outline, #5f8190));
+}
+.robot-glyph.robot-subagent {
+  width: 22px;
+  height: 18px;
+  border-radius: 50% 50% 5px 5px;
+  box-shadow:
+    -5px 5px 0 -3px var(--robot-outline, #5f8190),
+    5px 5px 0 -3px var(--robot-outline, #5f8190);
+}
+.robot-glyph.robot-subagent::before {
+  left: 8px;
+  height: 3px;
+  top: -4px;
+}
+.robot-glyph.robot-subagent::after {
+  inset: 4px 2px;
+}
+.robot-glyph.robot-subagent i {
+  left: 4px;
+  right: 4px;
+  top: 7px;
+  height: 2px;
+}
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -765,7 +833,7 @@ main > .welcome {
   font-size: 0.75rem;
 }
 .worker-card .robot-glyph {
-  display: none;
+  align-self: center;
 }
 .worker-card-activity {
   display: block;
@@ -803,10 +871,13 @@ main > .welcome {
   display: flex;
   gap: 10px;
   text-align: left;
-  align-items: start;
+  align-items: center;
   padding: 8px;
   background: #14222e;
   min-width: 0;
+}
+.history-row .robot-glyph {
+  margin-inline: 2px;
 }
 .history-row-info {
   flex: 1;
@@ -856,10 +927,13 @@ main > .welcome {
   color: #bed3de;
   overflow-wrap: anywhere;
 }
-#inspector[data-conversation-kind='parent'] {
+#inspector[data-conversation-kind='main'] {
   --conversation-accent: var(--message-user);
 }
-#inspector[data-conversation-kind='agent'] {
+#inspector[data-conversation-kind='primary'] {
+  --conversation-accent: var(--amber);
+}
+#inspector[data-conversation-kind='subagent'] {
   --conversation-accent: var(--action-agent);
 }
 #inspector[data-conversation-kind] .inspector-heading {
@@ -883,18 +957,45 @@ main > .welcome {
   white-space: nowrap;
 }
 .conversation-kind-icon {
-  flex: 0 0 14px;
-  width: 14px;
-  height: 14px;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-#inspector[data-conversation-kind='parent'] .kind-agent-icon,
-#inspector[data-conversation-kind='agent'] .kind-parent-icon {
+.conversation-kind-icon .kind-shell {
+  fill: var(--robot-shell);
+  stroke: var(--robot-outline);
+}
+.conversation-kind-icon .kind-screen {
+  fill: var(--robot-screen);
+  stroke: var(--robot-outline);
+  stroke-width: 1;
+}
+.conversation-kind-icon .kind-eyes {
+  stroke: var(--robot-eyes);
+  stroke-width: 2;
+}
+.conversation-kind-icon .kind-antenna {
+  stroke: var(--robot-outline);
+}
+.conversation-kind-icon .kind-crown {
+  fill: var(--amber);
+  stroke: var(--robot-outline);
+  stroke-width: 1;
+}
+.kind-main-icon,
+.kind-primary-icon,
+.kind-subagent-icon {
   display: none;
+}
+#inspector[data-conversation-kind='main'] .kind-main-icon,
+#inspector[data-conversation-kind='primary'] .kind-primary-icon,
+#inspector[data-conversation-kind='subagent'] .kind-subagent-icon {
+  display: inline;
 }
 .inspector-tabs {
   display: flex;
@@ -1344,9 +1445,17 @@ main > .welcome {
   gap: 8px;
   overflow: auto;
 }
-.compact-scene .fallback-station .robot-glyph,
 .compact-scene .fallback-station p {
   display: none;
+}
+.compact-scene .fallback-station.agent .robot-glyph {
+  display: block;
+  position: absolute;
+  top: 6px;
+  left: 7px;
+  margin: 0;
+  transform: scale(0.68);
+  transform-origin: top left;
 }
 .compact-scene .fallback-station.parent-session .robot-glyph {
   display: block;
@@ -1682,9 +1791,15 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
 }
 .agent-task-dock {
-  height: 100%;
-  padding: 16px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(220px, 28vh);
+  padding: 12px 22px;
   overflow: hidden;
+}
+.agent-task-dock .agent-task-heading {
+  flex: 0 0 auto;
 }
 .agent-task-dock h3 {
   margin: 0 0 12px;
@@ -1692,7 +1807,9 @@ dialog::backdrop {
   color: var(--muted);
 }
 #agent-task-text {
+  min-height: 0;
   margin: 0;
+  overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

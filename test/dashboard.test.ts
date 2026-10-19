@@ -829,6 +829,7 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
     cwd: '/project',
     model: 'test/model',
     task: 'x'.repeat(20000),
+    context: {tokens: 32000, window: 128000, percent: 25},
     createdAt: new Date().toISOString(),
     status: 'queued',
     activity: 'Queued',
@@ -855,6 +856,11 @@ void test('dashboard snapshots keep transitions, cap history and never mutate so
   assert.equal(snapshot.agents[0].taskTruncated, true);
   assert.equal(snapshot.agents[0].outputTruncated, true);
   assert.equal(snapshot.agents[0].resultFile, '/project/result.txt');
+  assert.deepEqual(snapshot.agents[0].context, record.context);
+  snapshot.agents[0].context!.tokens = 1;
+  record.context!.tokens = 2;
+  view.touch();
+  assert.equal(view.snapshot().agents[0].context?.tokens, 32000);
   snapshot.agents[0].name = 'Mutated';
   snapshot.session.name = 'Mutated';
   assert.equal(view.snapshot().agents[0].name, 'Agent');

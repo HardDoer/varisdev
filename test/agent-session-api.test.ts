@@ -307,6 +307,92 @@ void test(
 );
 
 void test(
+  'subagents accept parent work but reject direct user prompts while primary and all agents remain promptable',
+  {timeout: 10000},
+  async t => {
+    const entry = owner('mode-owner');
+    const hub = new DashboardHub(undefined, async () => entry.parent);
+    hub.adoptSession(entry.parent);
+    let release: (() => void) | undefined;
+    t.after(async () => {
+      release?.();
+      await hub.close();
+    });
+    for (const agentMode of ['primary', 'all', 'subagent'] as const) {
+      const prompts: string[] = [];
+      const steering: string[] = [];
+      const started = Promise.withResolvers<void>();
+      const record = entry.manager.spawn(
+        {
+          name: agentMode,
+          agentMode,
+          task: 'initial',
+          cwd: process.cwd(),
+          model: 'fixture/model',
+        },
+        async () => ({
+          async run(message) {
+            prompts.push(message);
+            if (message === 'hold') {
+              started.resolve();
+              await new Promise<void>(resolve => {
+                release = resolve;
+              });
+            }
+            return message;
+          },
+          async steer(message) {
+            steering.push(message);
+            return true;
+          },
+          features: async () => features(),
+          dispose() {},
+        }),
+      );
+      await entry.manager.wait([record.id]);
+      const direct = (prompt: string) =>
+        hub.agentSession('mode-owner', {
+          agentId: record.id,
+          action: 'prompt',
+          prompt,
+        });
+      if (agentMode !== 'subagent') {
+        await direct('continue');
+        await entry.manager.wait([record.id]);
+        assert.deepEqual(prompts, ['initial', 'continue']);
+        continue;
+      }
+      await assert.rejects(direct('continue'), /through their parent agent/);
+      await assert.rejects(direct('/model'), /through their parent agent/);
+      assert.deepEqual(
+        await hub.agentSession('mode-owner', {
+          agentId: record.id,
+          action: 'features',
+        }),
+        features(),
+      );
+      await entry.manager.send(record.id, 'hold', {
+        kind: 'parent',
+        id: 'mode-owner',
+      });
+      await started.promise;
+      await assert.rejects(
+        direct('steer directly'),
+        /through their parent agent/,
+      );
+      await entry.manager.send(record.id, 'parent guidance', {
+        kind: 'parent',
+        id: 'mode-owner',
+      });
+      assert.deepEqual(steering, ['parent guidance']);
+      release?.();
+      await entry.manager.wait([record.id]);
+      assert.deepEqual(prompts, ['initial', 'hold']);
+    }
+  },
+);
+
+void test(
   'hub templates validate folders, resolve scoped defaults and pass independent instance settings to creation',
   {timeout: 10000},
   async t => {
@@ -377,7 +463,7 @@ void test(
     await hub.createSession({cwd, templateId: 'reviewer'});
     assert.deepEqual(created[0], {
       cwd: await realpath(cwd),
-      name: 'Personal reviewer',
+      name: undefined,
       agentProfile: listed.templates.find(item => item.id === 'reviewer'),
     });
     assert.notEqual(
@@ -415,7 +501,11 @@ void test(
     await writeFile(settingsPath, JSON.stringify({default_agent: 'reviewer'}));
     await hub.createSession({cwd});
     assert.equal(created[2].agentProfile?.id, 'reviewer');
-    assert.equal(created[2].name, 'Global reviewer');
+    assert.equal(
+      created[2].name,
+      undefined,
+      'configured default agents keep automatic folder naming',
+    );
     await hub.saveAgentTemplate(cwd, {
       scope: 'global',
       id: 'hidden-primary',

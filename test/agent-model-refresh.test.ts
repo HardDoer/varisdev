@@ -17,6 +17,7 @@ import {
 import type {AgentWorker} from '../src/agents/orchestrator.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
+import {saveAgentTemplate} from '../src/agents/templates.ts';
 
 interface ProviderTool {
   function: {
@@ -82,7 +83,7 @@ function spawnDeclaration(request: ProviderRequest): ProviderTool['function'] {
 }
 
 void test(
-  'real SDK refreshes the agent model schema between turns of one run',
+  'real SDK refreshes inherited model choices and accepts overrides for pinned configurations',
   {timeout: 15000},
   async t => {
     const root = await mkdtemp(join(tmpdir(), 'varisdev-agent-refresh-'));
@@ -112,24 +113,24 @@ void test(
         requests.push(input);
         const step = requests.length;
         if (step === 1) {
-          const declaration = JSON.stringify(spawnDeclaration(input));
-          assert.match(declaration, new RegExp(initialModel));
-          assert.doesNotMatch(declaration, new RegExp(updatedModel));
-          assert.deepEqual(
-            spawnDeclaration(input).parameters?.properties?.model?.enum,
-            [initialModel],
+          const model = spawnDeclaration(input).parameters?.properties?.model;
+          assert.match(String(model?.description), new RegExp(initialModel));
+          assert.doesNotMatch(
+            String(model?.description),
+            new RegExp(updatedModel),
           );
+          assert.equal(model?.enum, undefined);
           firstRequest.resolve();
           await releaseFirstResponse.promise;
           reply(response, {name: 'agent_list', arguments: {}});
         } else if (step === 2) {
-          const declaration = JSON.stringify(spawnDeclaration(input));
-          assert.match(declaration, new RegExp(updatedModel));
-          assert.doesNotMatch(declaration, new RegExp(initialModel));
-          assert.deepEqual(
-            spawnDeclaration(input).parameters?.properties?.model?.enum,
-            [updatedModel],
+          const model = spawnDeclaration(input).parameters?.properties?.model;
+          assert.match(String(model?.description), new RegExp(updatedModel));
+          assert.doesNotMatch(
+            String(model?.description),
+            new RegExp(initialModel),
           );
+          assert.equal(model?.enum, undefined);
           reply(response, {
             name: 'agent_spawn',
             arguments: {
@@ -143,11 +144,22 @@ void test(
           reply(response, {
             name: 'agent_spawn',
             arguments: {
+              template: 'pinned',
+              name: 'Pinned worker',
+              task: 'Use the configured model.',
+              model: `${providerId}/ignored-override`,
+            },
+          });
+        } else if (step === 4) {
+          assert.match(JSON.stringify(input.messages), /Pinned worker/);
+          reply(response, {
+            name: 'agent_spawn',
+            arguments: {
               name: 'Denied inherited worker',
               task: 'This worker must not start.',
             },
           });
-        } else if (step === 4) {
+        } else if (step === 5) {
           const transcript = JSON.stringify(input.messages);
           assert.match(transcript, /Agent model .*gpt-5\.6-sol.*not allowed/);
           assert.match(transcript, /Allowed models: .*gpt-6\.1-sol/);
@@ -215,6 +227,12 @@ void test(
       ],
     });
     await saveToolSettings('agents', {allowedModels: [initialModel]});
+    await saveAgentTemplate(cwd, {
+      id: 'pinned',
+      scope: 'workspace',
+      mode: 'subagent',
+      model: initialModel,
+    });
 
     const loader = new DefaultResourceLoader({
       cwd,
@@ -262,7 +280,7 @@ void test(
     assert.deepEqual(serverErrors, []);
     assert.equal(
       requests.length,
-      4,
+      5,
       'Only the natural tool continuations call the model',
     );
     const originalPrompts = requests[0].messages.filter(
@@ -281,7 +299,7 @@ void test(
       false,
       'Policy refresh must not inject custom chat messages',
     );
-    assert.deepEqual(createdModels, [updatedModel]);
+    assert.deepEqual(createdModels, [updatedModel, initialModel]);
     assert.equal(session.getLastAssistantText(), 'Policy refresh observed.');
   },
 );

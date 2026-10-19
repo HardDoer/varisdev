@@ -59,6 +59,28 @@ void test('desktop extension dialogs preserve FIFO order and validate responses'
   adapter.dispose();
 });
 
+void test('multiline native dialog titles keep the outer heading compact and preserve Pi content', async t => {
+  const adapter = new DesktopExtensionUI(() => {});
+  t.after(() => adapter.dispose());
+  const selection = adapter.context.select(
+    'Reviewer: bash\nWorkspace: /workspace/project\nConversation: session-42\nInput: {"command":"git status --short"}',
+    ['Revoke approval', 'Back'],
+  );
+  assert.equal(adapter.snapshot().dialogs[0].title, 'Reviewer: bash');
+  await waitFor(
+    () =>
+      adapter
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('git status --short') === true,
+  );
+  const current = adapter.snapshot().dialogs[0];
+  assert.ok(current.terminal!.output.includes('session-42'));
+  adapter.respond(current.id, {columns: 67, rows: 6});
+  assert.equal(adapter.snapshot().dialogs[0].terminal!.rows, 6);
+  adapter.respond(current.id, 'Back');
+  assert.equal(await selection, 'Back');
+});
+
 void test('cancellation, timeout and disposal settle active and queued dialogs', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   const adapter = new DesktopExtensionUI(() => {});

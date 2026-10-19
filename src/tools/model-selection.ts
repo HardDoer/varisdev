@@ -7,16 +7,29 @@ import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {dirname, join} from 'node:path';
 
+export const OPENAI_IMAGE_PRESETS = [
+  {
+    id: 'gpt-image-2.5-sunburst',
+    label: 'GPT Image 2.5 Sunburst',
+    description: 'Best editing precision',
+  },
+  {
+    id: 'gpt-image-2.5-flare',
+    label: 'GPT Image 2.5 Flare',
+    description: 'Fast, high-quality everyday images',
+  },
+  {id: 'gpt-image-2', label: 'GPT Image 2', description: ''},
+  {id: 'gpt-image-1.5', label: 'GPT Image 1.5', description: ''},
+  {id: 'gpt-image-1', label: 'GPT Image 1', description: ''},
+  {
+    id: 'gpt-image-1-mini',
+    label: 'GPT Image 1 Mini',
+    description: 'Lower cost',
+  },
+] as const;
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-flare';
 const tools = {
   'openai-image': {label: 'OpenAI images', environment: 'OPENAI_IMAGE_MODEL'},
-  'elevenlabs-speech': {
-    label: 'ElevenLabs speech',
-    environment: 'ELEVENLABS_SPEECH_MODEL',
-  },
-  'elevenlabs-effects': {
-    label: 'ElevenLabs sound effects',
-    environment: 'ELEVENLABS_EFFECTS_MODEL',
-  },
 };
 type ToolModel = keyof typeof tools;
 
@@ -26,7 +39,9 @@ function modelPath(tool: ToolModel): string {
 function validate(model: string): string {
   model = model.trim();
   if (model.length > 256 || /\s/.test(model))
-    throw new Error('Enter a model ID without spaces, up to 256 characters.');
+    throw new Error(
+      'Model IDs must have no spaces and at most 256 characters.',
+    );
   return model;
 }
 async function readModel(path: string): Promise<string> {
@@ -67,6 +82,8 @@ export async function getToolModels() {
       id,
       label: info.label,
       model: await readModel(modelPath(id as ToolModel)),
+      presets: OPENAI_IMAGE_PRESETS,
+      defaultModel: DEFAULT_IMAGE_MODEL,
       environment: process.env[info.environment]?.trim()
         ? info.environment
         : undefined,
@@ -85,6 +102,8 @@ export async function saveToolModel(
   )
     throw new Error('Choose a valid tool and model.');
   const model = validate(value);
+  if (model && !OPENAI_IMAGE_PRESETS.some(preset => preset.id === model))
+    throw new Error('Choose an OpenAI image model from the presets.');
   const path = modelPath(tool as ToolModel);
   await withFileMutationQueue(path, () => writeModel(path, model));
 }
@@ -105,19 +124,23 @@ export async function selectToolModel(
     signal?.throwIfAborted();
     const saved = await readModel(path);
     if (saved) return saved;
-    if (!ctx.hasUI)
-      throw new Error(
-        `${label} needs a model choice before its first use. Set it in Accounts → Image and audio models, specify it in the request, or set ${environment}.`,
-      );
-    const choice = await ctx.ui.input(
-      `${label} needs its own model. Choose one now; it will be saved for future requests.`,
-      'Model ID',
+    if (!ctx.hasUI) return DEFAULT_IMAGE_MODEL;
+    const labels = OPENAI_IMAGE_PRESETS.map(
+      preset =>
+        `${preset.label}${preset.description ? ` — ${preset.description}` : ''}`,
+    );
+    const choice = await ctx.ui.select(
+      'Choose an OpenAI image model. Saved in Menu → Tool models.',
+      labels,
       {signal},
     );
     signal?.throwIfAborted();
-    if (!choice?.trim())
+    if (!choice)
       throw new Error(`${label} setup cancelled. No request was sent.`);
-    const model = validate(choice);
+    const preset = OPENAI_IMAGE_PRESETS[labels.indexOf(choice)];
+    if (!preset)
+      throw new Error('Choose an OpenAI image model from the presets.');
+    const model = preset.id;
     await writeModel(path, model, signal);
     return model;
   });

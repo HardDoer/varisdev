@@ -13,7 +13,7 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 - Context files, Markdown editing, and image previews.
 - Loads Pi packages and extension commands. Terminal-specific plugin rendering and shortcuts have compatibility limitations.
 - Has its own theming system that you can extend as you wish.
-- Additional tools for browsing, structured data, images, and audio.
+- Additional tools for browsing, structured data, and images.
 
 ## Install
 

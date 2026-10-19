@@ -214,9 +214,15 @@ void test(
     );
     await until(() => !!parent.ui.snapshot().dialogs.length);
     const confirmation = parent.ui.snapshot().dialogs[0];
-    assert.equal(confirmation.kind, 'confirm');
-    assert.match(confirmation.title, /Custom primary/);
-    parent.ui.respond(confirmation.id, true);
+    assert.equal(confirmation.kind, 'select');
+    assert.match(confirmation.title, /custom-primary/);
+    assert.deepEqual(confirmation.options, [
+      'Allow once',
+      'Allow this conversation',
+      'Allow this agent in this workspace',
+      'Deny',
+    ]);
+    parent.ui.respond(confirmation.id, 'Allow once');
     await prompt;
     assert.deepEqual(errors, []);
     assert.equal(

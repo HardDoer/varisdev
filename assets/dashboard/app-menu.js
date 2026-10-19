@@ -6,6 +6,7 @@ export function initAppMenu() {
   const panel = document.getElementById('app-menu-panel');
   const openFolder = document.getElementById('new-session');
   const settings = document.getElementById('open-session-settings');
+  const approvals = document.getElementById('open-approvals');
   const resume = document.getElementById('resume-session');
   const start = document.getElementById('start-session');
   const closeSession = document.getElementById('close-session');
@@ -63,6 +64,7 @@ export function initAppMenu() {
   panel.addEventListener('toggle', sync);
   openFolder.addEventListener('click', close);
   settings.addEventListener('click', close);
+  approvals.addEventListener('click', close);
   resume.addEventListener('click', close);
   start.addEventListener('click', close);
   closeSession.addEventListener('click', close);
@@ -84,6 +86,7 @@ export function initAppMenu() {
       panel.removeEventListener('toggle', sync);
       openFolder.removeEventListener('click', close);
       settings.removeEventListener('click', close);
+      approvals.removeEventListener('click', close);
       resume.removeEventListener('click', close);
       start.removeEventListener('click', close);
       closeSession.removeEventListener('click', close);

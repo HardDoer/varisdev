@@ -219,14 +219,14 @@ void test(
       '/skill:approved-skill Decline this invocation.',
     );
     await until(() =>
-      parent.ui.snapshot().dialogs.some(dialog => dialog.kind === 'confirm'),
+      parent.ui.snapshot().dialogs.some(dialog => dialog.kind === 'select'),
     );
     assert.equal(
       requests.length,
       beforeDenied,
       'skill input waits for its approval',
     );
-    parent.ui.respond(parent.ui.snapshot().dialogs[0].id, false);
+    parent.ui.respond(parent.ui.snapshot().dialogs[0].id, 'Deny');
     await declined.catch(error => {
       assert.match(String(error), /declined|permission/i);
     });
@@ -235,26 +235,37 @@ void test(
       '/skill:approved-skill Approve this invocation.',
     );
     await until(() =>
-      parent.ui.snapshot().dialogs.some(dialog => dialog.kind === 'confirm'),
+      parent.ui.snapshot().dialogs.some(dialog => dialog.kind === 'select'),
     );
-    parent.ui.respond(parent.ui.snapshot().dialogs[0].id, true);
+    parent.ui.respond(
+      parent.ui.snapshot().dialogs[0].id,
+      'Allow this conversation',
+    );
     await approved;
     assert.equal(requests.length, beforeDenied + 1);
     const expanded = JSON.stringify(requests.at(-1)!.messages);
     assert.equal(expanded.split('APPROVED SKILL BODY MARKER').length - 1, 1);
     assert.doesNotMatch(expanded, /DENIED SKILL BODY MARKER/);
+    const beforeRemembered = requests.length;
+    await parent.prompt(
+      '/skill:approved-skill Reuse this conversation approval.',
+    );
+    assert.equal(requests.length, beforeRemembered + 1);
+    assert.equal(parent.ui.snapshot().dialogs.length, 0);
 
     const readApproved = parent.prompt(
       'read-approved-skill with the read tool.',
     );
     await until(() =>
-      parent.ui.snapshot().dialogs.some(dialog => dialog.kind === 'confirm'),
+      parent.ui.snapshot().dialogs.some(dialog => dialog.kind === 'select'),
     );
-    assert.match(
-      JSON.stringify(parent.ui.snapshot().dialogs[0]),
-      /approved-skill/,
+    await until(
+      () =>
+        parent.ui
+          .snapshot()
+          .dialogs[0]?.terminal?.output.includes('approved-skill') === true,
     );
-    parent.ui.respond(parent.ui.snapshot().dialogs[0].id, true);
+    parent.ui.respond(parent.ui.snapshot().dialogs[0].id, 'Allow once');
     await readApproved;
     assert.match(
       JSON.stringify(
@@ -387,18 +398,21 @@ void test(
       '/skill:approved-skill Decline native skill.',
     );
     await until(() =>
-      nativeUi.snapshot().dialogs.some(dialog => dialog.kind === 'confirm'),
+      nativeUi.snapshot().dialogs.some(dialog => dialog.kind === 'select'),
     );
-    nativeUi.respond(nativeUi.snapshot().dialogs[0].id, false);
+    nativeUi.respond(nativeUi.snapshot().dialogs[0].id, 'Deny');
     await nativeDeclined;
     assert.equal(requests.length, beforeNativeDenied);
     const nativeApproved = native.prompt(
       '/skill:approved-skill Approve native skill.',
     );
     await until(() =>
-      nativeUi.snapshot().dialogs.some(dialog => dialog.kind === 'confirm'),
+      nativeUi.snapshot().dialogs.some(dialog => dialog.kind === 'select'),
     );
-    nativeUi.respond(nativeUi.snapshot().dialogs[0].id, true);
+    nativeUi.respond(
+      nativeUi.snapshot().dialogs[0].id,
+      'Allow this agent in this workspace',
+    );
     await nativeApproved;
     assert.equal(requests.length, beforeNativeDenied + 1);
     const nativePayload = JSON.stringify(requests.at(-1)!.messages);
@@ -439,14 +453,11 @@ void test(
         ).length,
       1,
     );
-    const nativeReloaded = native.prompt(
-      '/skill:approved-skill Approve after native reload.',
+    const beforeNativeReloaded = requests.length;
+    await native.prompt(
+      '/skill:approved-skill Reuse approval after native reload.',
     );
-    await until(() =>
-      nativeUi.snapshot().dialogs.some(dialog => dialog.kind === 'confirm'),
-    );
-    nativeUi.respond(nativeUi.snapshot().dialogs[0].id, true);
-    await nativeReloaded;
+    assert.equal(requests.length, beforeNativeReloaded + 1);
     assert.equal(nativeUi.snapshot().dialogs.length, 0);
 
     const explicitSkill = join(directory, 'explicit-native-skill');

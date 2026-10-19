@@ -4,7 +4,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {stat} from 'node:fs/promises';
 import {resolve} from 'node:path';
-import {Type} from 'typebox';
+import {Type, type Static} from 'typebox';
 import {
   type AgentOrchestrator,
   isAgentFinished,
@@ -21,7 +21,18 @@ import {
   deleteAgentTemplate,
   type AgentTemplate,
 } from '../agents/templates.ts';
-import {agentCatalogAllows} from '../agents/policy.ts';
+import {
+  agentCatalogAllows,
+  agentToolPermissions,
+  checkAgentPermissions,
+  type AgentPolicyOptions,
+} from '../agents/policy.ts';
+import {createAgentApprovalRelay} from '../agents/approval-ui.ts';
+import {
+  agentMentionAutocomplete,
+  discoverAgentMentions,
+  parseAgentMention,
+} from '../agents/mentions.ts';
 import {assertAgentModelAllowed, readToolSettings} from './settings.ts';
 import {observeFileChanges} from '../dashboard/changes.ts';
 import type {DesktopExtensionUI} from '../dashboard/extension-ui.ts';
@@ -89,7 +100,7 @@ const spawnSchema = Type.Object({
     Type.String({
       pattern: '^[^/]+/.+$',
       description:
-        'Provider/model; defaults to the template model or current agent model.',
+        'Provider/model for configurations that inherit. An explicit configuration model always takes precedence.',
     }),
   ),
   thinkingLevel: Type.Optional(
@@ -346,7 +357,11 @@ function registerAgentSendTool(
       }
       const recipient = current.get(params.id);
       if (isAgentFinished(recipient.status))
-        await assertAgentModelAllowed(recipient.model);
+        await assertAgentModelAllowed(
+          recipient.model,
+          undefined,
+          recipient.pinnedModel,
+        );
       return toolResult(
         [await current.send(params.id, message, identity)],
         'ack',
@@ -396,18 +411,6 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
             'Exact existing definition path for get, save, or delete.',
         }),
       ),
-      request: Type.Optional(
-        Type.Object(
-          {
-            headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-            body: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-          },
-          {
-            description:
-              'Stored request metadata; not sent to model providers.',
-          },
-        ),
-      ),
       name: Type.Optional(Type.String({maxLength: 120})),
       description: Type.Optional(Type.String({maxLength: 500})),
       mode: Type.Optional(
@@ -431,7 +434,13 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
         ),
       ),
       instructions: Type.Optional(Type.String({maxLength: 64000})),
-      model: Type.Optional(Type.String({maxLength: 512})),
+      model: Type.Optional(
+        Type.String({
+          maxLength: 512,
+          description:
+            'Pinned delegated model as provider/model, overriding launch arguments and Tool models. Omit to inherit.',
+        }),
+      ),
       thinkingLevel: Type.Optional(
         Type.Union(allowedEfforts.map(value => Type.Literal(value))),
       ),
@@ -488,7 +497,6 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
           id: params.id,
           scope: params.scope,
           sourcePath: params.sourcePath,
-          request: params.request,
           name: params.name,
           description: params.description,
           instructions: params.instructions,
@@ -528,7 +536,9 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
 export interface AgentToolsOptions {
   agentProfile?: AgentTemplate;
   ui?: DesktopExtensionUI;
-  approval?: {hasUI: boolean; confirm: ExtensionContext['ui']['confirm']};
+  approval?: AgentPolicyOptions['approval'];
+  approvalUI?: ExtensionContext['ui'];
+  signal?: AgentPolicyOptions['signal'];
   control?: AgentSessionController;
   team?: ReturnType<AgentSessionController['getTeam']>;
   id?: string;
@@ -539,26 +549,236 @@ export function registerAgentTools(
   createWorker = createSessionWorker,
   shared?: AgentToolsOptions,
 ): AgentSessionController {
+  if (!shared?.id) {
+    pi.on('session_start', (_event, ctx) => {
+      if (!ctx.hasUI || !ctx.ui.addAutocompleteProvider) return;
+      ctx.ui.addAutocompleteProvider(current =>
+        agentMentionAutocomplete(current, () =>
+          discoverAgentMentions(ctx.cwd, shared?.agentProfile),
+        ),
+      );
+    });
+  }
   const control = shared?.control ?? new AgentSessionController(pi);
   const getTeam = (ctx: ExtensionContext) =>
     shared?.team ?? control.getTeam(ctx);
   const getManager = (ctx: ExtensionContext) => getTeam(ctx).getManager();
   registerAgentTemplateTool(pi);
 
+  const launchAgent = async (
+    params: Static<typeof spawnSchema>,
+    signal: AbortSignal | undefined,
+    ctx: ExtensionContext,
+  ) => {
+    signal?.throwIfAborted();
+    const team = getTeam(ctx);
+    const cwd = resolve(ctx.cwd, params.cwd ?? '.');
+    if (!(await stat(cwd)).isDirectory())
+      throw new Error(`Agent cwd is not a directory: ${cwd}`);
+    const template = params.template
+      ? await resolveAgentTemplate(cwd, params.template)
+      : await resolveDefaultAgentTemplate(cwd, 'subagent');
+    if (!template)
+      throw new Error(`Unknown agent configuration: ${params.template}`);
+    if (template.disabled)
+      throw new Error(`Agent configuration is disabled: ${template.id}`);
+    if (template.mode === 'primary')
+      throw new Error(
+        `Agent configuration ${template.id} only supports primary conversations.`,
+      );
+    if (!agentCatalogAllows(shared?.agentProfile ?? {}, template.id))
+      throw new Error(
+        'This agent configuration does not allow launching the requested agent.',
+      );
+    const name = params.name ?? template.name;
+    if (!name?.trim())
+      throw new Error('Choose an agent name or a saved configuration.');
+    const agentProfile = structuredClone(template);
+    const approval = shared?.approval ?? createAgentApprovalRelay(ctx);
+    const instructions = params.instructions || undefined;
+    const inheritedModel = ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
+    const pinnedModel = agentProfile.model;
+    const selectedModel = pinnedModel ?? params.model ?? inheritedModel;
+    if (selectedModel === undefined)
+      throw new Error(
+        'Choose a model or specify the agent model as provider/model.',
+      );
+    await assertAgentModelAllowed(selectedModel, undefined, pinnedModel);
+    const separator = selectedModel.indexOf('/');
+    const model =
+      selectedModel === inheritedModel
+        ? ctx.model
+        : ctx.modelRegistry.find(
+            selectedModel.slice(0, separator),
+            selectedModel.slice(separator + 1),
+          );
+    if (!model || `${model.provider}/${model.id}` !== selectedModel)
+      throw new Error(`Agent model is unavailable: ${selectedModel}.`);
+    const thinkingLevel =
+      params.thinkingLevel ?? template?.thinkingLevel ?? pi.getThinkingLevel();
+    if (!allowedEfforts.some(effort => effort === thinkingLevel))
+      throw new Error(
+        'Agent thinkingLevel must be off, minimal, low, medium, high, xhigh, or max.',
+      );
+    const workerOptions = {
+      cwd,
+      projectTrustOverride:
+        cwd === resolve(ctx.cwd) ? ctx.isProjectTrusted() : undefined,
+      name,
+      instructions,
+      agentProfile,
+      approval,
+      approvalUI: shared?.approvalUI ?? (ctx.hasUI ? ctx.ui : undefined),
+      ui: shared?.ui,
+      context: params.context ?? agentProfile?.context ?? 'workspace',
+      model,
+      modelRegistry: ctx.modelRegistry,
+      thinkingLevel,
+    };
+    signal?.throwIfAborted();
+    const current = getManager(ctx);
+    const record = current.spawn(
+      {
+        name,
+        task: params.task,
+        cwd,
+        model: `${model.provider}/${model.id}`,
+        pinnedModel,
+        agentMode: agentProfile.mode,
+        thinkingLevel,
+        timeoutMs: params.timeoutMs,
+        autoCleanup: params.autoCleanup,
+      },
+      async id => {
+        await assertAgentModelAllowed(selectedModel, undefined, pinnedModel);
+        const worker = await createWorker({
+          ...workerOptions,
+          parentSessionId: team.sessionId,
+          id,
+          agentToolsExtension(workerPi) {
+            observeFileChanges(workerPi, change =>
+              team.storeChange({
+                ...change,
+                unitId: id,
+                unitName: name,
+              }),
+            );
+            registerAgentTools(workerPi, createWorker, {
+              control,
+              team,
+              id,
+              agentProfile,
+              approval,
+              approvalUI: workerOptions.approvalUI,
+              ui: shared?.ui,
+            });
+          },
+        });
+        return {
+          ...worker,
+          get usage() {
+            return worker.usage;
+          },
+          get context() {
+            return worker.context;
+          },
+          get conversation() {
+            return worker.conversation;
+          },
+          steer: (message, starting) => worker.steer(message, starting),
+          dispose: () => worker.dispose(),
+          async run(...args) {
+            const record = current.get(id);
+            await assertAgentModelAllowed(
+              record.model,
+              undefined,
+              record.pinnedModel,
+            );
+            args[1].throwIfAborted();
+            return worker.run(...args);
+          },
+        };
+      },
+    );
+    return toolResult([record], 'ack');
+  };
+
+  // Only main user input invokes configurations. Retained workers continue to
+  // receive tasks through the parent's agent tools.
+  if (!shared?.id) {
+    pi.on('input', async (event, ctx) => {
+      if (
+        event.source === 'extension' ||
+        shared?.agentProfile?.mode === 'subagent'
+      )
+        return {action: 'continue' as const};
+      const mention = parseAgentMention(event.text);
+      if (!mention) return {action: 'continue' as const};
+      try {
+        const parentSignal = shared?.signal?.();
+        const signal =
+          parentSignal && ctx.signal
+            ? AbortSignal.any([parentSignal, ctx.signal])
+            : (parentSignal ?? ctx.signal);
+        const template = await resolveAgentTemplate(ctx.cwd, mention.id);
+        if (!template) return {action: 'continue' as const};
+        if (mention.task.length > 64000)
+          throw new Error('Agent tasks cannot exceed 64000 characters.');
+        if (event.images?.length)
+          throw new Error(
+            'Agent mentions accept text tasks. Reference image files in the task.',
+          );
+        const params = {template: mention.id, task: mention.task};
+        const denied = await checkAgentPermissions(
+          shared?.agentProfile ?? {id: 'default'},
+          'agent_spawn',
+          params,
+          agentToolPermissions('agent_spawn', params, ctx.cwd),
+          ctx,
+          {
+            approval: shared?.approval ?? createAgentApprovalRelay(ctx),
+            signal: () => signal,
+          },
+        );
+        if (denied) throw new Error(denied.reason);
+        const result = await launchAgent(params, signal, ctx);
+        pi.sendMessage({
+          customType: 'varisdev.agent-mention',
+          content: `${event.text}\n\n${result.content[0].text}`,
+          details: result.details,
+          display: true,
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        ctx.ui.notify(reason, 'error');
+        pi.sendMessage({
+          customType: 'varisdev.agent-mention',
+          content: `${event.text}\n\n${reason}`,
+          details: {error: reason},
+          display: true,
+        });
+      }
+      return {action: 'handled' as const};
+    });
+  }
+
   const registerSpawn = (
     allowedModels: string[] | null,
-    catalog: Array<Pick<AgentTemplate, 'id' | 'name' | 'description'>> = [],
+    catalog: Array<
+      Pick<AgentTemplate, 'id' | 'name' | 'description' | 'model'>
+    > = [],
   ) =>
     pi.registerTool({
       name: 'agent_spawn',
       label: 'Spawn agent',
       description:
         'Start an agent with its own promptable conversation, using Default or a specified configuration; returns an ID immediately. Six run concurrently, others queue. ' +
+        'An explicit configuration model is pinned and overrides the model argument and Tool models. ' +
         (allowedModels === null
-          ? 'Accepts any model from the current model registry. '
+          ? 'Inheriting configurations accept any model from the current model registry. '
           : allowedModels.length === 0
-            ? 'No models enabled; configure Menu → Tool models first. '
-            : 'Model choices are restricted by Menu → Tool models. ') +
+            ? 'No models enabled for inheriting configurations; configure Menu → Tool models first. '
+            : 'Inheriting configurations use models allowed by Menu → Tool models. ') +
         'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not start another turn.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',
@@ -576,7 +796,7 @@ export function registerAgentTools(
                     .slice(0, 16)
                     .map(
                       profile =>
-                        `${profile.id}: ${(profile.description || profile.name).slice(0, 120)}`,
+                        `${profile.id}: ${(profile.description || profile.name).slice(0, 120)}${profile.model ? ` (pinned model: ${profile.model})` : ''}`,
                     )
                     .join('; ') +
                   '. '
@@ -585,138 +805,18 @@ export function registerAgentTools(
           },
           model: {
             ...spawnSchema.properties.model,
-            ...(allowedModels?.length ? {enum: allowedModels} : {}),
             description:
-              'Provider/model; defaults to the template model or current agent model. The chosen model must be allowed.',
+              'Provider/model for configurations that inherit; defaults to the current agent model. An explicit configuration model always takes precedence. ' +
+              (allowedModels === null
+                ? 'Any registered model is allowed when inheriting.'
+                : allowedModels.length
+                  ? `Allowed when inheriting: ${allowedModels.join(', ')}.`
+                  : 'Inheriting configurations have no allowed models.'),
           },
         },
       },
-      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-        signal?.throwIfAborted();
-        const team = getTeam(ctx);
-        const cwd = resolve(ctx.cwd, params.cwd ?? '.');
-        if (!(await stat(cwd)).isDirectory())
-          throw new Error(`Agent cwd is not a directory: ${cwd}`);
-        const template = params.template
-          ? await resolveAgentTemplate(cwd, params.template)
-          : await resolveDefaultAgentTemplate(cwd, 'subagent');
-        if (!template)
-          throw new Error(`Unknown agent configuration: ${params.template}`);
-        if (template.disabled)
-          throw new Error(`Agent configuration is disabled: ${template.id}`);
-        if (template.mode === 'primary')
-          throw new Error(
-            `Agent configuration ${template.id} only supports primary conversations.`,
-          );
-        if (!agentCatalogAllows(shared?.agentProfile ?? {}, template.id))
-          throw new Error(
-            'This agent configuration does not allow launching the requested agent.',
-          );
-        const name = params.name ?? template.name;
-        if (!name?.trim())
-          throw new Error('Choose an agent name or a saved configuration.');
-        const agentProfile = structuredClone(template);
-        const approval =
-          shared?.approval ??
-          (ctx.hasUI && ctx.ui?.confirm
-            ? {hasUI: true, confirm: ctx.ui.confirm.bind(ctx.ui)}
-            : undefined);
-        const instructions = params.instructions || undefined;
-        const inheritedModel =
-          ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
-        const selectedModel = params.model ?? template?.model ?? inheritedModel;
-        if (selectedModel === undefined)
-          throw new Error(
-            'Choose a model or specify the agent model as provider/model.',
-          );
-        await assertAgentModelAllowed(selectedModel);
-        const separator = selectedModel.indexOf('/');
-        const model =
-          selectedModel === inheritedModel
-            ? ctx.model
-            : ctx.modelRegistry.find(
-                selectedModel.slice(0, separator),
-                selectedModel.slice(separator + 1),
-              );
-        if (!model || `${model.provider}/${model.id}` !== selectedModel)
-          throw new Error(`Agent model is unavailable: ${selectedModel}.`);
-        const thinkingLevel =
-          params.thinkingLevel ??
-          template?.thinkingLevel ??
-          pi.getThinkingLevel();
-        if (!allowedEfforts.some(effort => effort === thinkingLevel))
-          throw new Error(
-            'Agent thinkingLevel must be off, minimal, low, medium, high, xhigh, or max.',
-          );
-        const workerOptions = {
-          cwd,
-          projectTrustOverride:
-            cwd === resolve(ctx.cwd) ? ctx.isProjectTrusted() : undefined,
-          name,
-          instructions,
-          agentProfile,
-          approval,
-          ui: shared?.ui,
-          context: params.context ?? agentProfile?.context ?? 'workspace',
-          model,
-          modelRegistry: ctx.modelRegistry,
-          thinkingLevel,
-        };
-        signal?.throwIfAborted();
-        const current = getManager(ctx);
-        const record = current.spawn(
-          {
-            name,
-            task: params.task,
-            cwd,
-            model: `${model.provider}/${model.id}`,
-            thinkingLevel,
-            timeoutMs: params.timeoutMs,
-            autoCleanup: params.autoCleanup,
-          },
-          async id => {
-            await assertAgentModelAllowed(selectedModel);
-            const worker = await createWorker({
-              ...workerOptions,
-              parentSessionId: team.sessionId,
-              id,
-              agentToolsExtension(workerPi) {
-                observeFileChanges(workerPi, change =>
-                  team.storeChange({
-                    ...change,
-                    unitId: id,
-                    unitName: name,
-                  }),
-                );
-                registerAgentTools(workerPi, createWorker, {
-                  control,
-                  team,
-                  id,
-                  agentProfile,
-                  approval,
-                  ui: shared?.ui,
-                });
-              },
-            });
-            return {
-              ...worker,
-              get usage() {
-                return worker.usage;
-              },
-              get conversation() {
-                return worker.conversation;
-              },
-              steer: (message, starting) => worker.steer(message, starting),
-              dispose: () => worker.dispose(),
-              async run(...args) {
-                await assertAgentModelAllowed(current.get(id).model);
-                args[1].throwIfAborted();
-                return worker.run(...args);
-              },
-            };
-          },
-        );
-        return toolResult([record], 'ack');
+      execute(_toolCallId, params, signal, _onUpdate, ctx) {
+        return launchAgent(params, signal, ctx);
       },
     });
 
@@ -736,7 +836,12 @@ export function registerAgentTools(
           profile.mode !== 'primary' &&
           agentCatalogAllows(shared?.agentProfile ?? {}, profile.id),
       )
-      .map(({id, name, description}) => ({id, name, description}));
+      .map(({id, name, description, model}) => ({
+        id,
+        name,
+        description,
+        model,
+      }));
     const policy = JSON.stringify({allowedModels, catalog});
     if (policy === spawnPolicy) return;
     registerSpawn(allowedModels, catalog);

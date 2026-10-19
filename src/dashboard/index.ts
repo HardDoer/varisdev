@@ -1,3 +1,4 @@
+import {discoverAgentMentions} from '../agents/mentions.ts';
 import {
   sessionEntryToContextMessages,
   type BuildSystemPromptOptions,
@@ -8,6 +9,10 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type {AgentSessionController} from '../agents/team.ts';
 import type {AgentToolsOptions} from '../tools/agents.ts';
+import {
+  createAgentApprovalRelay,
+  showAgentApprovals,
+} from '../agents/approval-ui.ts';
 import {
   createAgentPolicyExtension,
   decideAgentPermission,
@@ -72,6 +77,7 @@ export function registerFactory(
   let binding: FactoryBinding | undefined;
   let generation = 0;
   let cancelBeforeStart = false;
+  let approvalController = new AbortController();
   const managedProfiles = new Map<string, AgentTemplate>();
   let nativeSkills: {sessionId: string; skills: readonly Skill[]} | undefined;
   const applyNativePrompt = (
@@ -175,7 +181,14 @@ export function registerFactory(
     shared.agentProfile = structuredClone(profile);
     for (const release of nativePolicyCleanup.splice(0)) release();
     if (managedProfiles.has(sessionId)) return;
-    shared.approval = {hasUI: ctx.hasUI, confirm: ctx.ui.confirm};
+    approvalController.abort();
+    approvalController = new AbortController();
+    shared.approval = createAgentApprovalRelay(
+      ctx,
+      () => approvalController.signal,
+    );
+    shared.signal = () => approvalController.signal;
+    shared.approvalUI = ctx.hasUI ? ctx.ui : undefined;
     if (!profile.permissions.length && profile.steps === undefined) return;
     type Handler = (event: unknown, context: ExtensionContext) => unknown;
     const register = pi.on as unknown as (
@@ -199,6 +212,8 @@ export function registerFactory(
     };
     await createAgentPolicyExtension(profile, {
       label: profile.name,
+      approval: shared.approval,
+      signal: () => approvalController.signal,
       skills: () => {
         const retained =
           nativeSkills?.sessionId === sessionId ? nativeSkills.skills : [];
@@ -283,6 +298,7 @@ export function registerFactory(
           );
           return {
             agentProfile: sessionAgentProfile(ctx.sessionManager),
+            agentMentions: await discoverAgentMentions(ctx.cwd, profile),
             ...(contextFiles ? {contextFiles} : {}),
             commands,
             models: ctx.modelRegistry.getAvailable().map(model => ({
@@ -413,6 +429,15 @@ export function registerFactory(
               'This session is updating. Try again when it is idle.',
             );
           if (native) {
+            if (parsed!.name === 'approvals') {
+              if (parsed!.args) throw new Error('Usage: /approvals');
+              if (approvalController.signal.aborted)
+                approvalController = new AbortController();
+              await showAgentApprovals(ctx, {
+                signal: approvalController.signal,
+              });
+              return;
+            }
             if (parsed!.name === 'model' && parsed!.args.includes('/')) {
               const separator = parsed!.args.indexOf('/');
               await current.control.configure({
@@ -500,6 +525,7 @@ export function registerFactory(
           current.epoch++;
           current.stopping = true;
           cancelBeforeStart = true;
+          approvalController.abort();
           state.record('session', 'Stopping');
           const queued = state.deliverySnapshot().queue ?? {
             steering: [],
@@ -543,8 +569,11 @@ export function registerFactory(
       binding.systemPromptOptions = event.systemPromptOptions;
   });
   pi.on('input', event => {
-    if (event.source === 'interactive' || event.source === 'rpc')
+    if (event.source === 'interactive' || event.source === 'rpc') {
       cancelBeforeStart = false;
+      if (approvalController.signal.aborted)
+        approvalController = new AbortController();
+    }
   });
   pi.on('agent_start', (_event, ctx) => {
     if (
@@ -558,6 +587,8 @@ export function registerFactory(
     }
   });
   pi.on('session_shutdown', event => {
+    approvalController.abort();
+    for (const release of nativePolicyCleanup.splice(0)) release();
     generation++;
     const current = binding;
     binding = undefined;

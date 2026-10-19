@@ -11,7 +11,7 @@ import {promisify} from 'node:util';
 void test(
   'actual Pi SDK terminal widgets render in Electron',
   {
-    timeout: 60_000,
+    timeout: 120_000,
     skip:
       process.platform === 'linux' &&
       !process.env.DISPLAY &&
@@ -36,7 +36,7 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeout: 50_000, maxBuffer: 2 * 1024 * 1024},
+        {env, timeout: 100_000, maxBuffer: 2 * 1024 * 1024},
       );
     } catch (error) {
       launchError = error;
@@ -53,6 +53,9 @@ void test(
       'actual stock Settings selector renders, searches, resizes and opens its submenu',
       'actual stock worker Model selector renders many models with light appearance',
       'actual stock long Fork selector remains accessible at compact zoom',
+      'worker approval choices enforce once, conversation, agent, deny and cancellation scopes',
+      'worker menu reviews and revokes real remembered approvals with light native UI',
+      'actual native image model chooser renders six presets and cleans up selection and cancellation',
     ]);
   },
 );

@@ -1,6 +1,13 @@
 /** Native slash commands. Shared by discovery, desktop routing and SDK dispatch. */
 export const nativeCommands = [
   {
+    name: 'approvals',
+    description:
+      'Review and revoke remembered conversation and agent approvals.',
+    target: 'session',
+    live: true,
+  },
+  {
     name: 'settings',
     description: 'Open session settings.',
     target: 'session',

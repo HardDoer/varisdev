@@ -586,9 +586,7 @@ export class DashboardHub {
       );
     return this.startSession({
       cwd,
-      name:
-        name ??
-        (!explicit && template.id === 'default' ? undefined : template.name),
+      name,
       agentProfile: structuredClone(template),
     });
   }

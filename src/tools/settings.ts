@@ -151,8 +151,16 @@ export async function saveToolSettings(
 export async function assertAgentModelAllowed(
   model: string,
   settings?: ToolSettings,
+  pinnedModel?: string,
 ): Promise<void> {
   modelId(model);
+  if (pinnedModel) {
+    if (model !== pinnedModel)
+      throw new Error(
+        `This agent configuration requires model ${pinnedModel}.`,
+      );
+    return;
+  }
   const {allowedModels} = (settings ?? (await readToolSettings())).agents;
   if (allowedModels?.length === 0)
     throw new Error(

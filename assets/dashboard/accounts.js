@@ -246,58 +246,6 @@ export function initAccounts(api) {
       'click',
       () => void run(() => api.startAccount(provider.value, method)),
     );
-  let toolsBusy = false;
-  async function toolModels(operation) {
-    if (toolsBusy || !api.getToolModels) return;
-    toolsBusy = true;
-    $('tool-models-save').disabled = true;
-    $('tool-models-error').hidden = true;
-    $('tool-models-status').textContent = '';
-    try {
-      await operation();
-    } catch (error) {
-      $('tool-models-error').textContent = error.message || String(error);
-      $('tool-models-error').hidden = false;
-    } finally {
-      toolsBusy = false;
-      $('tool-models-save').disabled = false;
-    }
-  }
-  listen('tool-models', 'toggle', () => {
-    if (!$('tool-models').open) return;
-    void toolModels(async () => {
-      const models = await api.getToolModels();
-      $('tool-models-fields').replaceChildren(
-        ...models.map(model => {
-          const label = document.createElement('label');
-          label.textContent = model.label;
-          const field = document.createElement('input');
-          field.type = 'text';
-          field.dataset.tool = model.id;
-          field.value = model.model;
-          field.maxLength = 256;
-          field.placeholder = model.environment || 'Choose on first use';
-          label.append(field);
-          if (model.environment) {
-            const note = document.createElement('small');
-            note.textContent = `Using ${model.environment}`;
-            label.append(note);
-          }
-          return label;
-        }),
-      );
-    });
-  });
-  listen('tool-models-form', 'submit', event => {
-    event.preventDefault();
-    void toolModels(async () => {
-      const values = [...$('tool-models-fields').querySelectorAll('input')].map(
-        field => [field.dataset.tool, field.value],
-      );
-      for (const [tool, model] of values) await api.saveToolModel(tool, model);
-      $('tool-models-status').textContent = 'Saved.';
-    });
-  });
   const unsubscribe = api.onAccounts(receive);
   const cleanup = () => {
     disposed = true;

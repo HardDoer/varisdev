@@ -223,15 +223,9 @@
                 <label for="agent-template-model"
                   >Model <span class="muted">(optional)</span></label
                 >
-                <input
-                  id="agent-template-model"
-                  type="text"
-                  maxlength="512"
-                  placeholder="provider/model#variant"
-                  list="agent-template-model-options"
-                  spellcheck="false"
-                />
-                <datalist id="agent-template-model-options"></datalist>
+                <select id="agent-template-model">
+                  <option value="">Inherit</option>
+                </select>
                 <label for="agent-template-thinking"
                   >Thinking level <span class="muted">(optional)</span></label
                 >
@@ -468,17 +462,6 @@
       <button id="accounts-cancel" class="quiet-button" type="button" hidden>
         Cancel sign-in
       </button>
-      <details id="tool-models">
-        <summary>Image and audio models</summary>
-        <form id="tool-models-form">
-          <div id="tool-models-fields"></div>
-          <button id="tool-models-save" class="quiet-button" type="submit">
-            Save models
-          </button>
-        </form>
-        <p id="tool-models-status" role="status"></p>
-        <p id="tool-models-error" class="form-error" role="alert" hidden></p>
-      </details>
     </dialog>
     <dialog
       id="tool-settings-dialog"
@@ -497,73 +480,97 @@
             Close
           </button>
         </div>
-        <p id="tool-settings-description">
-          These settings apply across projects.
-        </p>
-        <p id="tool-settings-loading" role="status">Loading models from Pi…</p>
-        <div id="tool-settings-content" hidden>
-          <section
-            id="agent-model-settings"
-            class="tool-settings-card"
-            role="region"
-            aria-labelledby="agent-model-settings-title"
-          >
-            <h3 id="agent-model-settings-title">Agent models</h3>
-            <label for="tool-settings-search">Search models</label>
-            <input
-              id="tool-settings-search"
-              type="search"
-              placeholder="Model name, provider or ID"
-              autocomplete="off"
-            />
-            <p id="tool-settings-selection" class="muted" role="status"></p>
-            <div
-              id="tool-settings-models"
-              role="group"
-              aria-label="Allowed agent models"
-            ></div>
-            <p id="tool-settings-empty" class="muted" hidden></p>
-          </section>
-          <section
-            id="commit-model-settings"
-            class="tool-settings-card"
-            role="region"
-            aria-labelledby="commit-model-settings-title"
-            aria-describedby="commit-model-settings-note"
-          >
-            <h3 id="commit-model-settings-title">Commit</h3>
-            <p id="commit-model-settings-note" class="tool-settings-card-note">
-              Custom commit configurations take precedence over these defaults.
-            </p>
-            <div class="commit-settings-fields">
-              <div>
-                <label for="commit-model">Model</label>
-                <select id="commit-model">
-                  <option value="">Inherit current model</option>
-                </select>
+        <div class="tool-settings-body">
+          <p id="tool-settings-description">
+            These settings apply across projects.
+          </p>
+          <p id="tool-settings-loading" role="status">
+            Loading models from Pi…
+          </p>
+          <div id="tool-settings-content" hidden>
+            <section
+              id="agent-model-settings"
+              class="tool-settings-card"
+              role="region"
+              aria-labelledby="agent-model-settings-title"
+            >
+              <h3 id="agent-model-settings-title">Agent models</h3>
+              <label for="tool-settings-search">Search models</label>
+              <input
+                id="tool-settings-search"
+                type="search"
+                placeholder="Model name, provider or ID"
+                autocomplete="off"
+              />
+              <p id="tool-settings-selection" class="muted" role="status"></p>
+              <div
+                id="tool-settings-models"
+                role="group"
+                aria-label="Allowed agent models"
+              ></div>
+              <p id="tool-settings-empty" class="muted" hidden></p>
+            </section>
+            <section
+              id="commit-model-settings"
+              class="tool-settings-card"
+              role="region"
+              aria-labelledby="commit-model-settings-title"
+              aria-describedby="commit-model-settings-note"
+            >
+              <h3 id="commit-model-settings-title">Commit</h3>
+              <p
+                id="commit-model-settings-note"
+                class="tool-settings-card-note"
+              >
+                Custom commit configurations take precedence over these
+                defaults.
+              </p>
+              <div class="commit-settings-fields">
+                <div>
+                  <label for="commit-model">Model</label>
+                  <select id="commit-model">
+                    <option value="">Inherit current model</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="commit-thinking">Thinking level</label>
+                  <select id="commit-thinking">
+                    <option value="">Inherit current thinking level</option>
+                    <option value="off">Off</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="xhigh">Extra high</option>
+                    <option value="max">Max</option>
+                  </select>
+                </div>
               </div>
-              <div>
-                <label for="commit-thinking">Thinking level</label>
-                <select id="commit-thinking">
-                  <option value="">Inherit current thinking level</option>
-                  <option value="off">Off</option>
-                  <option value="minimal">Minimal</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="xhigh">Extra high</option>
-                  <option value="max">Max</option>
-                </select>
-              </div>
-            </div>
-            <p
-              id="tool-settings-validation"
-              class="form-error"
-              role="status"
-            ></p>
-          </section>
+              <p
+                id="tool-settings-validation"
+                class="form-error"
+                role="status"
+              ></p>
+            </section>
+            <section
+              id="image-model-settings"
+              class="tool-settings-card"
+              role="region"
+              aria-labelledby="image-model-settings-title"
+            >
+              <h3 id="image-model-settings-title">OpenAI images</h3>
+              <label for="image-model">Image model</label>
+              <select id="image-model"></select>
+              <p id="image-model-environment" class="muted" hidden></p>
+            </section>
+          </div>
+          <p
+            id="tool-settings-error"
+            class="form-error"
+            role="alert"
+            hidden
+          ></p>
         </div>
-        <p id="tool-settings-error" class="form-error" role="alert" hidden></p>
         <div class="dialog-footer">
           <button
             id="tool-settings-retry"
@@ -835,6 +842,16 @@
                       Model &amp; thinking
                     </button>
                     <button
+                      id="open-approvals"
+                      class="quiet-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-controls="extension-dialog"
+                      disabled
+                    >
+                      Approvals
+                    </button>
+                    <button
                       id="open-model-settings"
                       class="quiet-button"
                       type="button"
@@ -885,7 +902,7 @@
           </div>
         </div>
         <div class="welcome-machine" aria-hidden="true">
-          <span class="robot-glyph parent-session"><i></i></span
+          <span class="robot-glyph robot-main parent-session"><i></i></span
           ><span class="orbit orbit-one"></span
           ><span class="orbit orbit-two"></span>
         </div>
@@ -1043,7 +1060,14 @@
               aria-label="Agents"
             ></div>
             <div class="parent-summary">
-              <span class="robot-glyph" aria-hidden="true"><i></i></span>
+              <span
+                id="selected-conversation-mark"
+                class="robot-glyph robot-main"
+                data-agent-kind="main"
+                role="img"
+                aria-label="Main agent"
+                ><i></i><span class="robot-crown" aria-hidden="true"></span
+              ></span>
               <div>
                 <p id="parent-activity"></p>
               </div>
@@ -1130,20 +1154,41 @@
               <span class="conversation-kind">
                 <svg
                   class="conversation-kind-icon"
-                  viewBox="0 0 16 16"
+                  viewBox="0 0 18 18"
                   aria-hidden="true"
                 >
-                  <g class="kind-parent-icon">
-                    <path d="M8 5v4M3 11V9h10v2" />
-                    <circle cx="8" cy="3" r="2" />
-                    <circle cx="3" cy="13" r="2" />
-                    <circle cx="13" cy="13" r="2" />
+                  <g class="kind-main-icon">
+                    <path class="kind-antenna" d="M9 5V2.5" />
+                    <path
+                      class="kind-shell"
+                      d="M4 5.5h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z"
+                    />
+                    <path class="kind-screen" d="M4.5 8h9v4.5h-9z" />
+                    <path class="kind-eyes" d="M6.5 10.25h1m3 0h1" />
                   </g>
-                  <g class="kind-agent-icon">
-                    <path d="M3 2v7a3 3 0 0 0 3 3h7M10 8l4 4-4 4" />
+                  <g class="kind-primary-icon">
+                    <path
+                      class="kind-crown"
+                      d="m3 6-.5-4 4 2 2.5-3 2.5 3 4-2-.5 4Z"
+                    />
+                    <path
+                      class="kind-shell"
+                      d="M4 6h10a2 2 0 0 1 2 2v5.5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"
+                    />
+                    <path class="kind-screen" d="M4.5 8.5h9V13h-9z" />
+                    <path class="kind-eyes" d="M6.5 10.75h1m3 0h1" />
+                  </g>
+                  <g class="kind-subagent-icon">
+                    <path class="kind-antenna" d="M9 7V4.5" />
+                    <path
+                      class="kind-shell"
+                      d="M5 7h8a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"
+                    />
+                    <path class="kind-screen" d="M5 9h8v3.5H5z" />
+                    <path class="kind-eyes" d="M6.5 10.75h1m3 0h1" />
                   </g>
                 </svg>
-                <span id="conversation-kind-label">Agent</span>
+                <span id="conversation-kind-label">Main agent</span>
               </span>
               <p id="inspector-activity"></p>
               <span
@@ -1497,8 +1542,8 @@
               <p class="muted">
                 Counts use recorded model usage. Providers do not report exact
                 tokens for each file, skill, or tool result. Cost uses
-                configured model rates; image and audio service billing is
-                separate. Select an agent above to see its usage.
+                configured model rates; image service billing is separate.
+                Select an agent above to see its usage.
               </p>
             </section>
           </div>
@@ -1553,7 +1598,7 @@
               id="command-suggestions"
               class="command-suggestions"
               role="listbox"
-              aria-label="Commands"
+              aria-label="Commands and agents"
               hidden
             ></div>
             <section

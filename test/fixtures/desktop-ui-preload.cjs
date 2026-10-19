@@ -5,6 +5,11 @@ contextBridge.exposeInMainWorld('pidev', {
   getZoom: () => webFrame.getZoomFactor(),
   setZoom: factor => webFrame.setZoomFactor(factor),
   getState: () => ipcRenderer.invoke('fixture:state'),
+  getToolSettings: sessionId =>
+    ipcRenderer.invoke('fixture:tool-settings', sessionId),
+  getToolModels: () => ipcRenderer.invoke('fixture:tool-models'),
+  saveToolModel: (tool, model) =>
+    ipcRenderer.invoke('fixture:save-tool-model', tool, model),
   onSnapshot: callback => {
     const listener = (_event, snapshot) => callback(snapshot);
     ipcRenderer.on('fixture:snapshot', listener);

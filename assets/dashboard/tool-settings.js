@@ -10,6 +10,8 @@ export function initToolSettings({api, selectedSessionId}) {
   let sessionId;
   let state;
   let draft;
+  let imageState;
+  let imageModel;
   let busy = false;
   let failure = '';
   let request = 0;
@@ -133,6 +135,35 @@ export function initToolSettings({api, selectedSessionId}) {
     );
     $('commit-model').value = draft.commit.model ?? '';
   }
+  function renderImageModels() {
+    const select = $('image-model');
+    const firstUse = document.createElement('option');
+    firstUse.value = '';
+    firstUse.textContent = 'Ask on first use';
+    const options = imageState.presets.map(preset => {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = `${preset.label}${preset.description ? ` — ${preset.description}` : ''}`;
+      return option;
+    });
+    if (
+      imageModel &&
+      !imageState.presets.some(preset => preset.id === imageModel)
+    ) {
+      const legacy = document.createElement('option');
+      legacy.value = imageModel;
+      legacy.textContent = `${imageModel} (saved)`;
+      legacy.disabled = true;
+      options.push(legacy);
+    }
+    select.replaceChildren(firstUse, ...options);
+    select.value = imageModel;
+    select.disabled = busy;
+    $('image-model-environment').textContent = imageState.environment
+      ? `${imageState.environment} overrides this saved choice.`
+      : '';
+    $('image-model-environment').hidden = !imageState.environment;
+  }
   function renderControls() {
     const loaded = Boolean(state && draft);
     $('tool-settings-content').hidden = !loaded;
@@ -151,6 +182,7 @@ export function initToolSettings({api, selectedSessionId}) {
     $('commit-model').disabled = busy;
     $('commit-thinking').disabled = busy;
     renderCommitModels();
+    renderImageModels();
     $('commit-thinking').value = draft.commit.thinkingLevel ?? '';
     const invalid = !commitValid();
     $('tool-settings-validation').textContent = invalid
@@ -172,8 +204,16 @@ export function initToolSettings({api, selectedSessionId}) {
     failure = '';
     render();
     try {
-      const next = await api.getToolSettings(sessionId);
+      const [next, media] = await Promise.all([
+        api.getToolSettings(sessionId),
+        api.getToolModels(),
+      ]);
+      const image = media.find(model => model.id === 'openai-image');
+      if (!image)
+        throw new Error('OpenAI image model settings are unavailable.');
       if (disposed || version !== request) return;
+      imageState = image;
+      imageModel = image.model;
       state = next;
       draft = structuredClone(next.settings);
       draft.agents.allowedModels ??= [];
@@ -206,6 +246,10 @@ export function initToolSettings({api, selectedSessionId}) {
     render();
     try {
       await api.saveToolSettings('all', structuredClone(draft), sessionId);
+      if (imageModel !== imageState.model) {
+        await api.saveToolModel('openai-image', imageModel);
+        imageState.model = imageModel;
+      }
       if (!disposed) dialog.close();
     } catch (error) {
       failure = errorText(error);
@@ -352,7 +396,10 @@ export function initToolSettings({api, selectedSessionId}) {
   }
 
   $('open-model-settings').disabled =
-    !api?.getToolSettings || !api?.saveToolSettings;
+    !api?.getToolSettings ||
+    !api?.saveToolSettings ||
+    !api?.getToolModels ||
+    !api?.saveToolModel;
   listen($('open-model-settings'), 'click', () => void open());
   listen($('tool-settings-form'), 'submit', save);
   listen($('tool-settings-close'), 'click', () => {
@@ -363,6 +410,11 @@ export function initToolSettings({api, selectedSessionId}) {
   });
   listen($('tool-settings-retry'), 'click', () => void load());
   listen($('tool-settings-search'), 'input', renderModels);
+  listen($('image-model'), 'change', event => {
+    imageModel = event.target.value;
+    failure = '';
+    renderControls();
+  });
   listen($('commit-model'), 'change', event => {
     draft.commit.model = event.target.value || null;
     failure = '';

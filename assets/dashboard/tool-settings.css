@@ -8,11 +8,29 @@
   border-color: var(--line);
 }
 #tool-settings-dialog {
+  --tool-settings-padding: clamp(16px, 4vw, 28px);
   width: min(960px, calc(100vw - 32px));
+  padding: 0;
+  overflow: hidden;
+}
+#tool-settings-form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 36px);
+}
+.tool-settings-body {
+  min-height: 0;
+  padding: 0 var(--tool-settings-padding);
+  overflow: auto;
+}
+#tool-settings-dialog .dialog-footer {
+  margin: 0;
+  padding: 16px var(--tool-settings-padding);
 }
 #tool-settings-dialog .dialog-heading {
   gap: 16px;
-  margin-bottom: 12px;
+  margin: 0;
+  padding: var(--tool-settings-padding);
 }
 #tool-settings-dialog .dialog-heading h2,
 #agent-notice-dialog h2,
@@ -29,6 +47,7 @@
   margin-top: 18px;
 }
 #tool-settings-content {
+  margin-top: 12px;
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   align-items: start;
@@ -47,17 +66,23 @@
   );
 }
 #agent-model-settings {
+  grid-row: span 2;
   --tool-settings-card-accent: var(--action-agent);
+}
+#image-model-settings {
+  --tool-settings-card-accent: var(--action-media);
+  padding: 16px;
 }
 #commit-model-settings {
   --tool-settings-card-accent: var(--action-command);
+  padding: 16px;
 }
 #tool-settings-content h3 {
   display: flex;
   align-items: stretch;
   gap: 10px;
-  margin: 0 0 16px;
-  padding-bottom: 10px;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--tool-settings-card-accent);
   color: var(--tool-settings-card-accent);
   font-size: 1.125rem;
@@ -71,9 +96,10 @@
   content: '';
 }
 #agent-model-settings > label,
+#image-model-settings > label,
 .commit-settings-fields label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   color: var(--text);
   font-weight: 650;
 }
@@ -81,21 +107,25 @@
   margin: 10px 0;
 }
 .tool-settings-card-note {
-  margin: 0 0 18px;
+  margin: 0 0 12px;
   font-size: 0.875rem;
   line-height: 1.5;
 }
 .commit-settings-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
+  gap: 12px;
 }
 #tool-settings-search,
 #commit-model,
-#commit-thinking {
+#commit-thinking,
+#image-model {
   width: 100%;
   min-width: 0;
   min-height: 42px;
+}
+#image-model {
+  border-color: var(--action-media);
 }
 #tool-settings-search,
 #tool-settings-models {
@@ -112,7 +142,8 @@
   border-radius: 8px;
   background: var(--input, var(--panel));
 }
-#tool-settings-models:empty {
+#tool-settings-models:empty,
+#tool-settings-validation:empty {
   display: none;
 }
 .tool-model-option {
@@ -155,6 +186,9 @@
 @media (max-width: 760px) {
   #tool-settings-content {
     grid-template-columns: minmax(0, 1fr);
+  }
+  #agent-model-settings {
+    grid-row: auto;
   }
 }
 @media (max-width: 520px) {

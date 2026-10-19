@@ -8,21 +8,22 @@ Commands, accounts, models, settings, skills, prompts, and packages work as in P
 
 Type `/` in the conversation composer or open **Commands**. Built-in commands are handled by VarisDev, not sent to the model as prompts. Extensions retain their Pi command handlers and arguments; their supported UI requests use the same desktop dialog wrapper.
 
-| Commands                                        | Desktop behavior                                                                                                                                                    |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/thinking [level]`, `/model [model or search]` | Open Pi's selector, or apply an exact match to this session.                                                                                                        |
-| `/settings`                                     | Open session settings with current values and selectors.                                                                                                            |
-| `/scoped-models`                                | Configure the session's model selection scope, not the background-agent model allowlist.                                                                            |
-| `/login [provider]`, `/logout`                  | Open Pi's native authentication or sign-out selector in the terminal wrapper.                                                                                        |
-| `/new`                                         | Open the desktop conversation creation workflow.                                                                                                                     |
-| `/resume`                                      | Open Pi's native session selector, including search, rename, and delete controls.                                                                                     |
-| `/name [name]`, `/session`                      | Rename the session or show its information in a dialog.                                                                                                             |
-| `/tree`, `/fork`, `/clone`, `/import [path]`    | Navigate conversation branches, fork or duplicate a conversation, or import a saved JSONL session.                                                                  |
-| `/compact [instructions]`, `/reload`            | Compact context or reload resources.                                                                                                                                |
-| `/copy`, `/export [path]`                       | Copy the last assistant message or export HTML/JSONL.                                                                                                               |
-| `/share`, `/bug [description]`                  | Run Pi's native sharing or bug-report flow. `/share` publishes the session using Pi's configured destination.                                                          |
-| `/trust`                                        | Save project trust for future sessions.                                                                                                                             |
-| `/hotkeys`, `/changelog`, `/quit`               | Show desktop shortcuts, read the bundled Pi changelog, or confirm application exit.                                                                                 |
+| Commands                                        | Desktop behavior                                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `/thinking [level]`, `/model [model or search]` | Open Pi's selector, or apply an exact match to this session.                                                  |
+| `/settings`                                     | Open session settings with current values and selectors.                                                      |
+| `/scoped-models`                                | Configure the session's model selection scope, not the background-agent model allowlist.                      |
+| `/login [provider]`, `/logout`                  | Open Pi's native authentication or sign-out selector in the terminal wrapper.                                 |
+| `/new`                                          | Open the desktop conversation creation workflow.                                                              |
+| `/resume`                                       | Open Pi's native session selector, including search, rename, and delete controls.                             |
+| `/name [name]`, `/session`                      | Rename the session or show its information in a dialog.                                                       |
+| `/tree`, `/fork`, `/clone`, `/import [path]`    | Navigate conversation branches, fork or duplicate a conversation, or import a saved JSONL session.            |
+| `/compact [instructions]`, `/reload`            | Compact context or reload resources.                                                                          |
+| `/copy`, `/export [path]`                       | Copy the last assistant message or export HTML/JSONL.                                                         |
+| `/share`, `/bug [description]`                  | Run Pi's native sharing or bug-report flow. `/share` publishes the session using Pi's configured destination. |
+| `/trust`                                        | Save project trust for future sessions.                                                                       |
+| `/approvals`                                    | Review and revoke remembered approvals for this agent.                                                        |
+| `/hotkeys`, `/changelog`, `/quit`               | Show desktop shortcuts, read the bundled Pi changelog, or confirm application exit.                           |
 
 Pi screens use Pi's terminal components inside the desktop dialog, following the Model/Thinking menu. Their rendering, keyboard controls, and options come from Pi; the wrapper connects them to the current session. This applies to `/settings`, the other Pi selectors, and additional agents' model controls.
 
@@ -61,27 +62,23 @@ For sessions attached from a terminal, open picker dialogs in that terminal. Exa
 
 ### Agent models
 
-The **Agent models** section in **Menu → Tool models** controls which models background agents may use. Fresh settings start with none selected.
+The **Agent models** section in **Menu → Tool models** controls which models background agents may use when their configuration has no explicit model. Fresh settings start with none selected.
 
 **Agent models** and **Commit** use the selected workspace's Pi scoped models, or the saved global scope when no workspace is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
 
-Agents inherit the current agent's model and reasoning level unless explicitly configured. The inherited model must also be allowed. Restrictions apply across projects, including queued and resumed agents. Changes refresh the agent tool's advertised choices before the next turn, including during an ongoing run; no new conversation is needed. Running agents keep their current model.
+Agents inherit the current agent's model and reasoning level unless explicitly configured. The inherited or launch-selected model must be allowed. An explicit model in an agent configuration pins that agent type to the model, overriding this list and launch arguments. Both restrictions and pins apply across projects, including queued and resumed agents. Changes refresh the agent tool's advertised choices before the next turn, including during an ongoing run; no new conversation is needed. Running agents keep their current model.
 
 For virtual models, the router's extension must also be loaded from the worker's project or global configuration.
 
 ### Commit
 
-**Menu → Tool models → Commit** selects the default model and reasoning level for VarisDev's bundled [`/commit` agent](reference.md#commit-and-push), or lets them inherit from the current agent. A custom `commit` agent configuration in workspace, repository, or global scope takes precedence over these defaults. Its model must be allowed in **Agent models**.
+**Menu → Tool models → Commit** selects the default model and reasoning level for VarisDev's bundled [`/commit` agent](reference.md#commit-and-push), or lets them inherit from the current agent. A custom `commit` agent configuration in workspace, repository, or global scope takes precedence over these defaults. An explicit configuration model is pinned; inherited and legacy Commit models must be allowed in **Agent models**.
 
-### Image and audio models
+### Image model
 
-Image and audio tools require separate model choices. The GUI asks on first use; change them in **Menu → Accounts → Image and audio models**.
+Choose an OpenAI image preset on first GUI use or in **Menu → Tool models → OpenAI images**. The choice is saved for future requests. Presets include GPT Image 2.5 Sunburst, GPT Image 2.5 Flare, GPT Image 2, GPT Image 1.5, GPT Image 1, and GPT Image 1 Mini. Sunburst prioritizes editing precision; Flare is suited to fast, high-quality everyday images.
 
-Request parameters or these environment variables override saved choices:
-
-- `OPENAI_IMAGE_MODEL`
-- `ELEVENLABS_SPEECH_MODEL`
-- `ELEVENLABS_EFFECTS_MODEL`
+The `model` request parameter and `OPENAI_IMAGE_MODEL` override the saved choice. Existing model IDs in requests, the environment, and saved settings remain supported. Without an interactive UI or a configured choice, the tool uses `gpt-image-2.5-flare`.
 
 ## Desktop storage
 

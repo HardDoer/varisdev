@@ -61,6 +61,20 @@ void test('tool settings default to no allowed models and persist independent se
   assert.equal((await readToolSettings()).commit.thinkingLevel, 'high');
 });
 
+void test('configuration model pins override global selections only for that exact model', async t => {
+  await isolate(t);
+  for (const allowedModels of [[], ['p/allowed'], null]) {
+    await saveToolSettings('agents', {allowedModels});
+    await assertAgentModelAllowed('p/pinned', undefined, 'p/pinned');
+    await assert.rejects(
+      assertAgentModelAllowed('p/allowed', undefined, 'p/pinned'),
+      /configuration requires model p\/pinned/,
+    );
+    if (allowedModels !== null)
+      await assert.rejects(assertAgentModelAllowed('p/pinned'));
+  }
+});
+
 void test('concurrent saves preserve both sections, copy queued input, and leave only the atomic destination', async t => {
   const path = await isolate(t);
   const allowedModels = ['provider/a', 'provider/b'];

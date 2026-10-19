@@ -213,10 +213,31 @@ function text(item, value) {
     value === undefined || value === null || value === '' ? '—' : String(value);
   if (item.textContent !== next) item.textContent = next;
 }
-function robot(agent = false) {
-  const item = node('span', `robot-glyph${agent ? ' agent' : ''}`);
-  item.setAttribute('aria-hidden', 'true');
-  item.append(node('i'));
+function conversationKind(unit, parent = false) {
+  return parent
+    ? 'main'
+    : unit?.agentMode === 'subagent'
+      ? 'subagent'
+      : 'primary';
+}
+function conversationKindLabel(kind) {
+  return kind === 'main'
+    ? 'Main agent'
+    : kind === 'subagent'
+      ? 'Subagent'
+      : 'Primary agent';
+}
+function updateRobot(item, kind) {
+  item.className = `robot-glyph${kind === 'main' ? '' : ' agent'} robot-${kind}`;
+  item.dataset.agentKind = kind;
+  item.setAttribute('role', 'img');
+  item.setAttribute('aria-label', conversationKindLabel(kind));
+}
+function robot(kind = 'main') {
+  const item = node('span');
+  updateRobot(item, kind);
+  item.append(node('i'), node('span', 'robot-crown'));
+  item.lastChild.setAttribute('aria-hidden', 'true');
   return item;
 }
 function statusName(status) {
@@ -304,6 +325,12 @@ function conversationControllable(data = snapshot(), unit = selectedUnit()) {
       : agentResumable(unit) && !!api?.agentSession)
   );
 }
+function conversationPromptable(data = snapshot(), unit = selectedUnit()) {
+  return (
+    conversationControllable(data, unit) &&
+    (state.unitId === 'parent' || unit.agentMode !== 'subagent')
+  );
+}
 function conversationHasWork(data = snapshot(), unit = selectedUnit()) {
   return state.unitId === 'parent'
     ? parentHasWork(data)
@@ -337,6 +364,10 @@ const conversationApi = {
     ),
   promptSession: (id, request) =>
     featureRequest(id, 'prompt', request, () => api.promptSession(id, request)),
+  commandSession: (id, command) =>
+    featureRequest(id, 'command', {command}, () =>
+      api.promptSession(id, {prompt: command}),
+    ),
   compactSession: (id, instructions) =>
     featureRequest(id, 'compact', {instructions}, () =>
       api.compactSession(id, instructions),
@@ -775,26 +806,30 @@ function renderFallback(data) {
     unit => {
       const element = node('button');
       element.type = 'button';
+      const mark = robot(conversationKind(unit, unit.id === 'parent'));
       const status = node('span');
       const name = node('strong');
       const task = node('p');
       const activity = node('p', 'muted');
-      element.append(robot(unit.id !== 'parent'), status, name, task, activity);
+      element.append(mark, status, name, task, activity);
       element.addEventListener('click', () => selectUnit(unit.id));
-      return {element, status, name, task, activity};
+      return {element, mark, status, name, task, activity};
     },
     (entry, unit) => {
       entry.element.dataset.unitId = unit.id;
       const parent = unit.id === 'parent';
+      const kind = conversationKind(unit, parent);
       const task = parent ? unit.prompt || 'Main agent prompt' : unit.task;
       const activity = unit.activity || statusName(unit.status);
       entry.element.className = `fallback-station ${parent ? 'parent-session' : 'agent'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
+      entry.element.dataset.agentKind = kind;
+      updateRobot(entry.mark, kind);
       entry.element.classList.toggle('selected', state.unitId === unit.id);
       entry.element.setAttribute(
         'aria-pressed',
         String(state.unitId === unit.id),
       );
-      entry.element.title = `${unit.name}\n${task}\n${activity}`;
+      entry.element.title = `${conversationKindLabel(kind)} · ${unit.name}\n${task}\n${activity}`;
       badge(entry.status, unit.status);
       text(entry.name, unit.name);
       text(entry.task, task);
@@ -890,6 +925,10 @@ function renderFactory() {
   if (stopEffectSession && stopEffectSession !== session.id) clearStopEffect();
   const tally = counts(data);
   const selected = selectedUnit() || session;
+  updateRobot(
+    $('selected-conversation-mark'),
+    conversationKind(selected, state.unitId === 'parent'),
+  );
   text($('factory-title'), selected.name);
   $('factory-title').title = selected.name;
   text($('factory-model'), selected.model);
@@ -935,9 +974,10 @@ function createWorkerCard(agent) {
   const element = node('button', 'worker-card');
   element.type = 'button';
   const header = node('span', 'worker-card-header');
+  const mark = robot(conversationKind(agent));
   const name = node('span', 'worker-card-name');
   const status = node('span');
-  header.append(robot(true), name, status);
+  header.append(mark, name, status);
   const task = node('span', 'worker-card-task');
   const activity = node('span', 'worker-card-activity');
   const meta = node('span', 'worker-card-meta');
@@ -946,19 +986,20 @@ function createWorkerCard(agent) {
   meta.append(model, time);
   element.append(header, task, activity, meta);
   element.addEventListener('click', () => selectUnit(agent.id));
-  return {element, name, status, task, activity, model, time};
+  return {element, mark, name, status, task, activity, model, time};
 }
 function createHistoryRow(agent) {
   const element = node('button', 'history-row');
   element.type = 'button';
+  const mark = robot(conversationKind(agent));
   const info = node('span', 'history-row-info');
   const name = node('span', 'history-row-name');
   const task = node('span', 'history-row-task');
   const status = node('span');
   info.append(name, task);
-  element.append(info, status);
+  element.append(mark, info, status);
   element.addEventListener('click', () => selectUnit(agent.id));
-  return {element, name, task, status};
+  return {element, mark, name, task, status};
 }
 function renderWorkers() {
   const data = snapshot();
@@ -973,19 +1014,22 @@ function renderWorkers() {
     item => item.id,
     createWorkerCard,
     (entry, agent) => {
+      const kind = conversationKind(agent);
       entry.element.classList.toggle('selected', state.unitId === agent.id);
       entry.element.setAttribute(
         'aria-pressed',
         String(state.unitId === agent.id),
       );
       entry.element.dataset.status = agent.status;
+      entry.element.dataset.agentKind = kind;
+      updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
       badge(entry.status, agent.status);
       text(entry.task, agent.task);
       text(entry.activity, agent.activity || 'Waiting for activity');
       text(entry.model, agent.model);
       text(entry.time, duration(agent));
-      entry.element.title = `${agent.name}\n${agent.task}\n${agent.activity || ''}\n${agent.model}`;
+      entry.element.title = `${conversationKindLabel(kind)} · ${agent.name}\n${agent.task}\n${agent.activity || ''}\n${agent.model}`;
     },
   );
   $('no-workers').hidden = active.length > 0;
@@ -1003,15 +1047,18 @@ function renderWorkers() {
     item => item.id,
     createHistoryRow,
     (entry, agent) => {
+      const kind = conversationKind(agent);
       entry.element.classList.toggle('selected', state.unitId === agent.id);
       entry.element.setAttribute(
         'aria-pressed',
         String(state.unitId === agent.id),
       );
+      entry.element.dataset.agentKind = kind;
+      updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
       text(entry.task, agent.task);
       badge(entry.status, agent.status);
-      entry.element.title = `${agent.name}\n${agent.task}`;
+      entry.element.title = `${conversationKindLabel(kind)} · ${agent.name}\n${agent.task}`;
     },
   );
   text($('active-count'), active.length);
@@ -1392,7 +1439,7 @@ function toolAction(name = '') {
   if (name === 'read') return ['read', 'Read file'];
   if (name.startsWith('agent_')) return ['agent', 'Agent'];
   if (['browse', 'download'].includes(name)) return ['web', 'Web'];
-  if (['openai_image', 'elevenlabs', 'image_preview'].includes(name))
+  if (['openai_image', 'image_preview'].includes(name))
     return ['media', 'Media'];
   if (name.endsWith('_query')) return ['read', 'Inspect data'];
   return ['tool', 'Tool'];
@@ -1658,8 +1705,10 @@ function renderInspector() {
   const unit = selectedUnit();
   if (!data || !unit) return;
   const parent = state.unitId === 'parent';
-  $('inspector').dataset.conversationKind = 'agent';
-  text($('conversation-kind-label'), 'Agent');
+  const kind = conversationKind(unit, parent);
+  $('inspector').dataset.conversationKind = kind;
+  document.querySelector('.conversation-kind').dataset.agentKind = kind;
+  text($('conversation-kind-label'), conversationKindLabel(kind));
   const key = `${state.sessionId}:${state.unitId}`;
   if (inspectorKey !== key) {
     for (const tab of ['details', 'feed', 'changes', 'tokens'])
@@ -1758,21 +1807,24 @@ function renderInspectorPanel(data, unit, parent) {
 function renderComposer(data, unit, parent) {
   const id = conversationId();
   const controllable = conversationControllable(data, unit);
-  if (!controllable && expandedEditor?.textarea === $('parent-prompt'))
+  const promptable = conversationPromptable(data, unit);
+  if (!promptable && expandedEditor?.textarea === $('parent-prompt'))
     collapseEditor(false);
   $('composer-slot').hidden = false;
   $('composer-slot').classList.remove('agent-selected');
   agentControls.render();
-  $('agent-task-dock').hidden = true;
-  $('parent-controls').hidden = !controllable;
-  $('inspector').classList.toggle('has-composer', controllable);
+  $('agent-task-dock').hidden = parent || unit.agentMode !== 'subagent';
+  text($('agent-task-text'), unit.task);
+  $('parent-controls').hidden = !promptable;
+  $('inspector').classList.toggle('has-composer', promptable);
+  if (!promptable) $('command-suggestions').hidden = true;
   text($('prompt-recipient'), unit.name);
   $('attached-note').hidden = !parent || data.session.owned;
   text(
     $('attached-note'),
     canControl(data.session) ? 'Connected agent' : 'Disconnected agent',
   );
-  if (pendingDraftPosition?.id === id && controllable) {
+  if (pendingDraftPosition?.id === id && promptable) {
     restorePosition($('parent-prompt'), pendingDraftPosition.position);
     pendingDraftPosition = null;
   }
@@ -1785,7 +1837,7 @@ function renderComposer(data, unit, parent) {
     closing;
   text($('abort-parent'), stopping.has(id) ? 'Stopping…' : 'Stop · Esc');
   $('send-prompt').disabled =
-    !controllable || sending.has(id) || stopping.has(id) || closing;
+    !promptable || sending.has(id) || stopping.has(id) || closing;
   const steering = ['running', 'queued'].includes(unit.status);
   text($('prompt-action'), steering ? 'Steer' : 'Message');
   text(
@@ -1797,7 +1849,9 @@ function renderComposer(data, unit, parent) {
     : 'Send a message';
   $('parent-prompt').placeholder = steering
     ? 'Guide the current task…'
-    : 'Describe the next task…';
+    : parent
+      ? 'Describe the next task, or @agent task…'
+      : 'Describe the next task…';
 }
 function renderWorkspace() {
   const available = selectedUnit()?.cwd === snapshot()?.session.cwd;
@@ -2151,7 +2205,7 @@ async function sendPrompt(event) {
   if (
     !api ||
     !session ||
-    !conversationControllable() ||
+    !conversationPromptable() ||
     sending.has(id) ||
     stopping.has(id) ||
     closingSessions.has(id) ||

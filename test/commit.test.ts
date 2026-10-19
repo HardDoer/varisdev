@@ -311,7 +311,7 @@ void test('/commit preserves supported max reasoning from the current agent and 
   assert.equal(fixture.configuration().thinkingLevel, 'max');
 });
 
-void test('/commit rejects unavailable or disallowed configuration models and stale legacy choices without dispatch', async t => {
+void test('/commit honors pinned configuration models while rejecting unavailable models and disallowed inherited or legacy choices', async t => {
   const fixture = await setup(t);
   await fixture.save('global', {model: 'missing/model'});
   await assert.rejects(
@@ -326,8 +326,10 @@ void test('/commit rejects unavailable or disallowed configuration models and st
     fixture.run(),
     /not allowed.*custom\/organization\/model/,
   );
+  assert.equal(fixture.messages.length, 0);
   await fixture.save('global', {model: 'p/simple', thinkingLevel: 'off'});
-  await assert.rejects(fixture.run(), /not allowed/);
+  await fixture.run();
+  assert.equal(fixture.configuration().model, 'p/simple');
   // An externally edited file can contain an obsolete explicit choice.
   await writeFile(
     join(fixture.agentDirectory, 'varisdev', 'tool-settings.json'),
@@ -338,7 +340,7 @@ void test('/commit rejects unavailable or disallowed configuration models and st
   );
   await deleteAgentTemplate(fixture.ctx.cwd, {scope: 'global', id: 'commit'});
   await assert.rejects(fixture.run(), /not allowed/);
-  assert.equal(fixture.messages.length, 0);
+  assert.equal(fixture.messages.length, 1);
 });
 
 void test('/commit surfaces SDK effort limits and missing current model before dispatch', async t => {

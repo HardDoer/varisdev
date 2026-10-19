@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {test} from 'node:test';
+import {dirname, join} from 'node:path';
+import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import {
+  DEFAULT_IMAGE_MODEL,
   getToolModels,
+  OPENAI_IMAGE_PRESETS,
   saveToolModel,
   selectToolModel,
 } from '../src/tools/model-selection.ts';
 
-void test('first-use model setup explains the choice, saves it, and supports GUI edits and overrides', async t => {
+async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'tool-models-'));
   const previous = process.env.PI_CODING_AGENT_DIR;
   const previousImage = process.env.OPENAI_IMAGE_MODEL;
@@ -26,49 +28,121 @@ void test('first-use model setup explains the choice, saves it, and supports GUI
     else process.env.OPENAI_IMAGE_MODEL = previousImage;
     await rm(directory, {recursive: true, force: true});
   });
-  const ctx = {hasUI: true, ui: ui.context};
+  async function dialog() {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const current = ui.snapshot().dialogs[0];
+      if (current) return current;
+      await delay(5);
+    }
+    throw new Error('Image preset chooser did not open');
+  }
+  return {
+    directory,
+    ui,
+    dialog,
+    ctx: {hasUI: true, ui: ui.context},
+    path: join(directory, 'varisdev', 'tool-models', 'openai-image.json'),
+  };
+}
+
+void test('first GUI use hosts native Pi presets and shares its saved choice with Tool models', async t => {
+  const {ctx, ui, dialog} = await fixture(t);
   const choice = selectToolModel('openai-image', undefined, ctx);
-  while (!ui.snapshot().dialogs.length) await delay(5);
-  const dialog = ui.snapshot().dialogs[0];
-  assert.match(dialog.title, /needs its own model.*saved for future requests/);
-  ui.respond(dialog.id, 'user-image-model');
-  assert.equal(await choice, 'user-image-model');
+  const pending = await dialog();
+  assert.equal(pending.kind, 'select');
+  assert.ok(pending.terminal);
+  assert.match(
+    pending.title,
+    /Choose an OpenAI image model.*Menu → Tool models/,
+  );
+  assert.match(pending.terminal!.output, /GPT Image 2.5 Sunburst/);
+  assert.ok(pending.options?.every(option => !option.includes('(gpt-image-')));
+  ui.respond(pending.id, {input: '\x1b[B\r'});
+  assert.equal(await choice, 'gpt-image-2.5-flare');
   assert.equal(
     await selectToolModel('openai-image', undefined, ctx),
-    'user-image-model',
+    DEFAULT_IMAGE_MODEL,
   );
   assert.equal(ui.snapshot().dialogs.length, 0);
-  assert.equal(
-    await selectToolModel('openai-image', 'request-model', ctx),
-    'request-model',
+  const [settings] = await getToolModels();
+  assert.equal(settings.model, DEFAULT_IMAGE_MODEL);
+  assert.equal(settings.defaultModel, DEFAULT_IMAGE_MODEL);
+  assert.deepEqual(
+    settings.presets.map(preset => preset.id),
+    [
+      'gpt-image-2.5-sunburst',
+      'gpt-image-2.5-flare',
+      'gpt-image-2',
+      'gpt-image-1.5',
+      'gpt-image-1',
+      'gpt-image-1-mini',
+    ],
   );
-  assert.equal(
-    (await getToolModels()).find(item => item.id === 'openai-image')?.model,
-    'user-image-model',
-  );
-  await saveToolModel('openai-image', 'new-user-model');
+  await saveToolModel('openai-image', 'gpt-image-1-mini');
   assert.equal(
     await selectToolModel('openai-image', undefined, ctx),
-    'new-user-model',
+    'gpt-image-1-mini',
   );
-  process.env.OPENAI_IMAGE_MODEL = 'environment-model';
+  await assert.rejects(
+    saveToolModel('openai-image', 'manual-model'),
+    /presets/,
+  );
+  await assert.rejects(
+    saveToolModel('../outside', DEFAULT_IMAGE_MODEL),
+    /valid tool/,
+  );
+  assert.equal(OPENAI_IMAGE_PRESETS.length, 6);
+});
+
+void test('legacy saved models and explicit/environment overrides remain compatible', async t => {
+  const {ctx, path, ui} = await fixture(t);
+  await mkdir(dirname(path), {recursive: true});
+  await writeFile(path, JSON.stringify({model: 'legacy-model'}));
+  assert.equal(
+    await selectToolModel('openai-image', undefined, ctx),
+    'legacy-model',
+  );
+  process.env.OPENAI_IMAGE_MODEL = ' environment-model ';
   assert.equal(
     await selectToolModel('openai-image', undefined, ctx),
     'environment-model',
   );
-  delete process.env.OPENAI_IMAGE_MODEL;
-  await saveToolModel('openai-image', '');
-  const cancelled = selectToolModel('openai-image', undefined, ctx);
-  while (!ui.snapshot().dialogs.length) await delay(5);
-  ui.respond(ui.snapshot().dialogs[0].id);
-  await assert.rejects(cancelled, /setup cancelled.*No request was sent/);
   assert.equal(
-    (await getToolModels()).find(item => item.id === 'openai-image')?.model,
-    '',
+    await selectToolModel('openai-image', 'request-model', ctx),
+    'request-model',
   );
-  await assert.rejects(
-    selectToolModel('openai-image', undefined, {...ctx, hasUI: false}),
-    /needs a model choice before its first use/,
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).model, 'legacy-model');
+  assert.equal(ui.snapshot().dialogs.length, 0);
+});
+
+void test('headless fallback leaves first GUI setup available and cancellation saves nothing', async t => {
+  const {ctx, ui, dialog, path} = await fixture(t);
+  assert.equal(
+    await selectToolModel('openai-image', undefined, {...ctx, hasUI: false}),
+    DEFAULT_IMAGE_MODEL,
   );
-  await assert.rejects(saveToolModel('../outside', 'model'), /valid tool/);
+  await assert.rejects(readFile(path), {code: 'ENOENT'});
+  const cancelled = selectToolModel('openai-image', undefined, ctx);
+  ui.respond((await dialog()).id);
+  await assert.rejects(cancelled, /setup cancelled.*No request was sent/);
+  assert.equal((await getToolModels())[0].model, '');
+  const abort = new AbortController();
+  const aborted = selectToolModel('openai-image', undefined, ctx, abort.signal);
+  await dialog();
+  abort.abort();
+  await assert.rejects(aborted, {name: 'AbortError'});
+  assert.equal(ui.snapshot().dialogs.length, 0);
+  await assert.rejects(readFile(path), {code: 'ENOENT'});
+});
+
+void test('concurrent first uses share a single chooser and choice', async t => {
+  const {ctx, ui, dialog} = await fixture(t);
+  const first = selectToolModel('openai-image', undefined, ctx);
+  const second = selectToolModel('openai-image', undefined, ctx);
+  ui.respond((await dialog()).id, {input: '\r'});
+  assert.deepEqual(await Promise.all([first, second]), [
+    'gpt-image-2.5-sunburst',
+    'gpt-image-2.5-sunburst',
+  ]);
+  assert.equal(ui.snapshot().dialogs.length, 0);
 });

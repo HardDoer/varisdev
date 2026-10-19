@@ -22,6 +22,7 @@ import {
 } from '../src/builtin-assets.ts';
 import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
 import {
+  type AgentTemplate,
   createDefaultAgentProfile,
   deleteAgentTemplate,
   ensureAgentProfilePermissions,
@@ -228,14 +229,6 @@ void test('merges partial definitions and keeps raw scoped entries for editing',
       '  - action: shell',
       '    resource: "*"',
       '    effect: ask',
-      'request:',
-      '  headers:',
-      '    x-shared: global',
-      '  body:',
-      '    options:',
-      '      retries: 1',
-      '      mode: safe',
-      '    shared: true',
       '---',
       'Use the shared review checklist.',
       '',
@@ -251,20 +244,13 @@ void test('merges partial definitions and keeps raw scoped entries for editing',
       '  - action: shell',
       '    resource: git status',
       '    effect: allow',
-      'request:',
-      '  headers:',
-      '    x-repository: repo',
-      '  body:',
-      '    options:',
-      '      retries: 2',
-      '    repository: true',
       '---',
       '',
     ].join('\n'),
   );
   await writeFile(
     join(paths.workspaceDirectory, 'reviewer.md'),
-    '---\nhidden: true\nrequest:\n  headers:\n    x-shared: workspace\n---\n',
+    '---\nhidden: true\n---\n',
   );
 
   const result = await listAgentTemplates(paths.cwd);
@@ -290,14 +276,6 @@ void test('merges partial definitions and keeps raw scoped entries for editing',
       {action: 'shell', resource: 'git status', effect: 'allow'},
     ],
     permissionsVersion: 1,
-    request: {
-      headers: {'x-shared': 'workspace', 'x-repository': 'repo'},
-      body: {
-        options: {retries: 2, mode: 'safe'},
-        shared: true,
-        repository: true,
-      },
-    },
     scope: 'workspace',
     sourcePath: join(paths.workspaceDirectory, 'reviewer.md'),
   });
@@ -700,11 +678,15 @@ void test('composes shared permissions into a legacy snapshot only once', async 
       permissions: [{action: 'shell', resource: '*', effect: 'ask'}],
     }),
   );
-  const legacy = createDefaultAgentProfile();
+  const legacy = {
+    ...createDefaultAgentProfile(),
+    request: {headers: {'x-legacy': 'ignored'}},
+  };
   assert.equal(legacy.permissionsVersion, undefined);
   const upgraded = await ensureAgentProfilePermissions(paths.cwd, legacy);
   assert.equal(upgraded.instructions, '');
   assert.equal(upgraded.permissionsVersion, 1);
+  assert.equal(Object.hasOwn(upgraded, 'request'), false);
   assert.deepEqual(upgraded.permissions, [
     {action: 'shell', resource: '*', effect: 'ask'},
   ]);
@@ -715,10 +697,15 @@ void test('composes shared permissions into a legacy snapshot only once', async 
       permissions: [{action: 'shell', resource: '*', effect: 'deny'}],
     }),
   );
+  const currentSnapshot = {
+    ...upgraded,
+    request: {body: {legacy: true}},
+  } as unknown as AgentTemplate;
   assert.deepEqual(
-    await ensureAgentProfilePermissions(paths.cwd, upgraded),
+    await ensureAgentProfilePermissions(paths.cwd, currentSnapshot),
     upgraded,
   );
+  assert.equal(Object.hasOwn(currentSnapshot, 'request'), true);
 });
 
 void test('diagnoses invalid shared settings permissions', async t => {
@@ -830,7 +817,7 @@ void test('reports malformed files without hiding valid templates', async t => {
   );
   await writeFile(
     join(paths.repositoryDirectory, 'unknown.md'),
-    '---\nname: Unknown\ntemperature: 1\n---\nInstructions.\n',
+    '---\nname: Unknown\nrequest:\n  headers:\n    x-old: ignored\n---\nInstructions.\n',
   );
   await mkdir(join(paths.repositoryDirectory, 'directory.md'));
 
@@ -853,7 +840,7 @@ void test('reports malformed files without hiding valid templates', async t => {
   assert.match(
     result.diagnostics.find(item => item.sourcePath.endsWith('unknown.md'))!
       .message,
-    /Unknown frontmatter field: temperature/,
+    /Unknown frontmatter field: request/,
   );
   assert.match(
     result.diagnostics.find(item => item.sourcePath.endsWith('directory.md'))!
@@ -872,10 +859,6 @@ void test('saves editable frontmatter atomically in each scope and deletes exact
     instructions: 'Inspect tests and packaging.\nReport blockers.',
     model: 'openai/gpt-5',
     thinkingLevel: 'xhigh',
-    request: {
-      headers: {authorization: 'Bearer profile-token'},
-      body: {temperature: 0.2, metadata: {source: 'profile'}},
-    },
   });
   const repository = await saveAgentTemplate(paths.cwd, {
     scope: 'repository',
@@ -905,14 +888,6 @@ void test('saves editable frontmatter atomically in each scope and deletes exact
   assert.match(
     await readFile(global.sourcePath, 'utf8'),
     /^---\nname: "Release \\"review\\""/,
-  );
-  assert.deepEqual(global.request, {
-    headers: {authorization: 'Bearer profile-token'},
-    body: {temperature: 0.2, metadata: {source: 'profile'}},
-  });
-  assert.deepEqual(
-    (await resolveAgentTemplate(paths.cwd, 'release-review'))?.request,
-    global.request,
   );
   assert.deepEqual(
     (await listAgentTemplates(paths.cwd)).templates.map(
@@ -993,10 +968,7 @@ void test('refuses invalid input and will not replace or delete unexpected files
     {...base, color: '#abc'},
     {...base, steps: 0},
     {...base, permissions: [{action: 'read', resource: '*', effect: 'maybe'}]},
-    {...base, request: {extra: true}},
-    {...base, request: {headers: {authorization: 3}}},
-    {...base, request: {body: []}},
-    {...base, request: {body: {invalid: undefined}}},
+    {...base, request: {}},
     {...base, sourcePath: 'relative/safe.md'},
     {...base, scope: 'machine' as 'global'},
     {...base, scope: 'builtin' as 'global'},

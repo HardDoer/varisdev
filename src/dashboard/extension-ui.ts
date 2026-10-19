@@ -1147,6 +1147,7 @@ export class DesktopExtensionUI {
       return Promise.resolve(cancelled);
     const invalid = this.dialogError(data, native);
     if (invalid) return Promise.reject(invalid);
+    const title = data.title.split(/\r?\n/, 1)[0];
     return this.openCustom<DialogValue>(
       (screen, _theme, keys, done) => {
         const cancel = () => done(cancelled);
@@ -1197,8 +1198,12 @@ export class DesktopExtensionUI {
         );
       },
       undefined,
-      data.title,
-      {signal: opts?.signal, timeout: opts?.timeout, dialog: data},
+      title,
+      {
+        signal: opts?.signal,
+        timeout: opts?.timeout,
+        dialog: {...data, title},
+      },
     );
   }
 

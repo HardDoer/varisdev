@@ -6,6 +6,7 @@ import {
   type McpExtensionOptions,
 } from '@earendil-works/pi-coding-agent';
 import {LLAMA_PROVIDER, officialLlamaExtension} from './llama.ts';
+import {registerApprovalCommand} from './agents/approval-ui.ts';
 
 /** Match Pi's built-in identities so settings and replacements still apply. */
 export function createBuiltinExtensions(
@@ -14,6 +15,11 @@ export function createBuiltinExtensions(
   } = {},
 ): InlineExtension[] {
   return [
+    {
+      name: 'varisdev-approvals',
+      factory: registerApprovalCommand,
+      builtin: true,
+    },
     {
       name: LLAMA_PROVIDER,
       factory: officialLlamaExtension,

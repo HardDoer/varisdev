@@ -1,4 +1,4 @@
-/* global process, __dirname, document, Event, localStorage, setTimeout, innerHeight */
+/* global process, __dirname, document, window, Event, localStorage, setTimeout, innerHeight, innerWidth, requestAnimationFrame */
 const assert = require('node:assert/strict');
 const {existsSync, mkdirSync, readFileSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -49,6 +49,9 @@ async function main() {
   );
   const {getToolModels, saveToolModel} = await import(
     pathToFileURL(join(root, 'desktop/build/src/tools/model-selection.js')).href
+  );
+  const {DesktopToolSettings} = await import(
+    pathToFileURL(join(root, 'desktop/build/src/desktop/tool-settings.js')).href
   );
   const {ModelRuntime} = await import(
     pathToFileURL(
@@ -130,6 +133,14 @@ async function main() {
   handle('pidev:recent-projects', () => []);
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('varisdev:get-update-status', () => ({phase: 'idle'}));
+  const toolSettings = new DesktopToolSettings({
+    createRuntime: async () => runtime,
+    sessionFeatures: async () => ({models: []}),
+  });
+  handle('varisdev:get-tool-settings', id => toolSettings.getToolSettings(id));
+  handle('varisdev:save-tool-settings', (section, value, id) =>
+    toolSettings.saveToolSettings(section, value, id),
+  );
   handle('varisdev:get-tool-models', getToolModels);
   handle('varisdev:save-tool-model', saveToolModel);
   handle('varisdev:get-accounts', () => accounts.get());
@@ -384,31 +395,105 @@ async function main() {
   );
   assert.equal(
     await evaluate(() =>
-      document.querySelector('#tool-models > summary').textContent.trim(),
+      document.querySelector('#accounts-dialog #tool-models'),
     ),
-    'Image and audio models',
+    null,
   );
   await evaluate(() => {
-    document.getElementById('tool-models').open = true;
+    document.getElementById('accounts-close').click();
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-model-settings').click();
   });
   await waitFor(
-    () => document.querySelectorAll('#tool-models-fields input').length === 3,
+    () => document.getElementById('image-model').options.length === 7,
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('image-model').tagName),
+    'SELECT',
+  );
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('image-model').options[0].textContent,
+    ),
+    'Ask on first use',
+  );
+  assert.deepEqual(
+    await evaluate(() =>
+      [...document.getElementById('image-model').options]
+        .slice(1)
+        .map(option => option.value),
+    ),
+    [
+      'gpt-image-2.5-sunburst',
+      'gpt-image-2.5-flare',
+      'gpt-image-2',
+      'gpt-image-1.5',
+      'gpt-image-1',
+      'gpt-image-1-mini',
+    ],
   );
   await evaluate(() => {
-    document.querySelector('[data-tool="openai-image"]').value =
-      'user-image-model';
-    document.getElementById('tool-models-form').requestSubmit();
+    const field = document.getElementById('image-model');
+    field.value = 'gpt-image-2.5-flare';
+    field.dispatchEvent(new Event('change', {bubbles: true}));
+    document.getElementById('tool-settings-form').requestSubmit();
+  });
+  await waitFor(() => !document.getElementById('tool-settings-dialog').open);
+  assert.equal(
+    (await getToolModels()).find(item => item.id === 'openai-image').model,
+    'gpt-image-2.5-flare',
+  );
+  await evaluate(() => {
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-model-settings').click();
   });
   await waitFor(
     () =>
-      document.getElementById('tool-models-status').textContent === 'Saved.',
+      !document.getElementById('tool-settings-content').hidden &&
+      !document.getElementById('tool-settings-close').disabled &&
+      document.getElementById('image-model').value === 'gpt-image-2.5-flare',
   );
-  assert.equal(
-    (await getToolModels()).find(item => item.id === 'openai-image').model,
-    'user-image-model',
-  );
+  for (const [width, height, zoom] of [
+    [1100, 760, 1],
+    [680, 540, 1.25],
+  ]) {
+    browser.setSize(width, height);
+    await browser.webContents.executeJavaScript(
+      `window.pidev.setZoom(${zoom})`,
+    );
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const imageControl = await evaluate(() => {
+      document.getElementById('image-model').scrollIntoView({block: 'center'});
+      const rect = document
+        .getElementById('image-model')
+        .getBoundingClientRect();
+      return {left: rect.left, right: rect.right, width: innerWidth};
+    });
+    assert.ok(
+      imageControl.left >= 0 && imageControl.right <= imageControl.width,
+    );
+    await evaluate(
+      () =>
+        new Promise(resolve =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const screenshot = await browser.webContents.capturePage();
+    writeFileSync(
+      join(directory, `tool-models-${width}.png`),
+      screenshot.toPNG(),
+    );
+  }
+  await evaluate(() => {
+    document.getElementById('tool-settings-close').click();
+    window.pidev.setZoom(1);
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-accounts').click();
+  });
+  browser.setSize(1100, 760);
+  await waitFor(() => document.getElementById('accounts-dialog').open);
   report.cases.push(
-    'Image and audio model choices are clearly labelled, editable and saved through the GUI',
+    'OpenAI preset choices live in Tool models, persist, and remain reachable in compact layouts',
   );
   runtime.registerNativeProvider({
     ...runtime.getProvider('openai'),

@@ -1,3 +1,4 @@
+import {discoverAgentMentions, parseAgentMention} from '../agents/mentions.ts';
 import {
   createAgentSessionServices,
   createAgentSessionFromServices,
@@ -17,6 +18,10 @@ import {
   type AgentTemplate,
 } from '../agents/templates.ts';
 import {createAgentPolicyExtension} from '../agents/policy.ts';
+import {
+  createAgentApprovalRelay,
+  showAgentApprovals,
+} from '../agents/approval-ui.ts';
 import {createAgentResourcePolicy} from '../agents/resources.ts';
 import type {AgentSessionController} from '../agents/team.ts';
 import {registerCommitCommand} from '../commit.ts';
@@ -167,6 +172,13 @@ export async function createDashboardParent(
     args ? desktopResourceOptions(args) : {};
   let state: DashboardState | undefined;
   const ui = new DesktopExtensionUI(() => state?.touch());
+  const approval = createAgentApprovalRelay({hasUI: true, ui: ui.context});
+  const approvalSignal = () => {
+    const signals = [...activePrompts]
+      .filter(prompt => prompt.countsAsRun)
+      .map(prompt => prompt.controller.signal);
+    return signals.length ? AbortSignal.any(signals) : undefined;
+  };
   let context: ExtensionContext | undefined;
   let control: AgentSessionController | undefined;
   let showCustomMessage: ReturnType<typeof observeDashboardSession> | undefined;
@@ -233,9 +245,17 @@ export async function createDashboardParent(
             control = registerAgentTools(pi, undefined, {
               agentProfile,
               ui,
-              approval: {hasUI: true, confirm: ui.context.confirm},
+              approval,
+              signal: approvalSignal,
             });
-            registerCommitCommand(pi);
+            registerCommitCommand(
+              pi,
+              (...args) => pi.sendUserMessage(...args),
+              {
+                approval,
+                signal: approvalSignal,
+              },
+            );
             showCustomMessage = observeDashboardSession(
               pi,
               control,
@@ -251,7 +271,8 @@ export async function createDashboardParent(
             ? [
                 createAgentPolicyExtension(agentProfile, {
                   label: agentProfile.name,
-                  approval: {hasUI: true, confirm: ui.context.confirm},
+                  approval,
+                  signal: approvalSignal,
                   skills: agentResources.skills,
                 }),
               ]
@@ -548,6 +569,18 @@ export async function createDashboardParent(
         if (!signal.aborted) await configurationAction(options);
       },
     };
+    if (name === 'approvals') {
+      if (args) throw new Error('Usage: /approvals');
+      await showAgentApprovals(
+        {
+          ...session.extensionRunner.createContext(),
+          hasUI: true,
+          ui: commandUI.context,
+        },
+        {signal},
+      );
+      return;
+    }
     if (name === 'compact') {
       await session.compact(args || undefined);
       return;
@@ -636,6 +669,10 @@ export async function createDashboardParent(
         ...(failure ? [{message: `llama.cpp: ${failure.message}`}] : []),
       ]);
       features.agentProfile = agentProfileSummary(agentProfile);
+      features.agentMentions = await discoverAgentMentions(
+        sessionManager.getCwd(),
+        agentProfile,
+      );
       return features;
     },
     configure: configurationAction,
@@ -687,7 +724,7 @@ export async function createDashboardParent(
               await localCommand(name!, args, running.controller.signal);
               return;
             }
-            if (!session.model && !extension)
+            if (!session.model && !extension && !parseAgentMention(text))
               throw new Error(
                 'Choose a model in Menu → Model before sending a prompt.',
               );

@@ -29,10 +29,12 @@ import {
   type AgentWorker,
 } from '../src/agents/orchestrator.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
+import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import type {ModelUsage} from '../src/usage.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
 import {
+  createDefaultAgentProfile,
   saveAgentTemplate,
   type AgentTemplate,
 } from '../src/agents/templates.ts';
@@ -211,6 +213,16 @@ void test(
           headers: {'x-parent-model': 'model-config'},
           compat: {supportsReasoningEffort: true},
         },
+        {
+          id: 'small-context-model',
+          name: 'Small context model',
+          reasoning: true,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 64000,
+          maxTokens: 1000,
+          compat: {supportsReasoningEffort: true},
+        },
       ],
     });
     await modelRuntime.setRuntimeApiKey(
@@ -293,6 +305,14 @@ void test(
     assert.equal(selectedDefault.thinkingLevel, undefined);
     assert.equal(worker.usage?.calls.length, 2);
     assert.equal(worker.usage?.totalTokens, 220);
+    const responseContext = worker.context;
+    assert.ok(responseContext);
+    assert.equal(responseContext.window, 128000);
+    assert.ok(responseContext.tokens !== null && responseContext.tokens > 0);
+    assert.equal(
+      responseContext.percent,
+      (responseContext.tokens / responseContext.window) * 100,
+    );
     assert.deepEqual(
       worker.usage?.calls.map(call => call.toolNames),
       [['read'], []],
@@ -309,7 +329,6 @@ void test(
       'write',
       'browse',
       'download',
-      'elevenlabs',
       'gamemaker_query',
       'image_query',
       'json_query',
@@ -511,6 +530,191 @@ void test(
     assert.ok(
       worker.usage!.calls.filter(call => call.kind === 'compaction').length >=
         2,
+    );
+    assert.deepEqual(worker.context, {
+      tokens: null,
+      window: 128000,
+      percent: null,
+    });
+    await saveToolSettings('agents', {
+      allowedModels: [
+        'varisdev-agent-test/worker-model',
+        'varisdev-agent-test/small-context-model',
+      ],
+    });
+    await worker.configure!({
+      provider: 'varisdev-agent-test',
+      modelId: 'small-context-model',
+      persist: false,
+    });
+    assert.deepEqual(worker.context, {
+      tokens: null,
+      window: 64000,
+      percent: null,
+    });
+  },
+);
+
+void test(
+  'pinned worker profiles override factory models and remain fixed across global policy changes',
+  {timeout: 15000},
+  async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-pin-'));
+    const agentDir = join(directory, 'config');
+    const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await mkdir(cwd, {recursive: true});
+    await mkdir(agentDir, {recursive: true});
+    const providerId = 'worker-pin-test';
+    const pinnedId = 'pinned-model';
+    const inheritedId = 'inherited-model';
+    const pinnedReference = `${providerId}/${pinnedId}`;
+    const inheritedReference = `${providerId}/${inheritedId}`;
+    const registry = new ModelRegistry(
+      await ModelRuntime.create({
+        authPath: join(agentDir, 'auth.json'),
+        modelsPath: null,
+        refreshOnCreate: false,
+      }),
+    );
+    const workers: AgentWorker[] = [];
+    t.after(async () => {
+      await Promise.all(workers.map(worker => worker.dispose()));
+      registry.unregisterProvider(providerId);
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    registry.registerProvider(providerId, {
+      api: 'openai-completions',
+      baseUrl: 'https://worker-pin.invalid/v1',
+      apiKey: 'fixture-key',
+      models: [
+        {
+          id: pinnedId,
+          name: 'Pinned worker model',
+          reasoning: true,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+          compat: {supportsReasoningEffort: true},
+        },
+        {
+          id: inheritedId,
+          name: 'Inherited worker model',
+          reasoning: true,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
+          compat: {supportsReasoningEffort: true},
+        },
+      ],
+    });
+    await saveToolSettings('agents', {allowedModels: [inheritedReference]});
+    const profile: AgentTemplate = {
+      ...createDefaultAgentProfile(),
+      id: 'pinned',
+      key: 'workspace:pinned',
+      name: 'Pinned worker',
+      model: pinnedReference,
+      permissionsVersion: 1,
+      scope: 'workspace',
+      sourcePath: join(cwd, '.pi', 'agents', 'pinned.md'),
+    };
+    const ui = new DesktopExtensionUI(() => {});
+    const creatingPinned = createSessionWorker({
+      id: 'pinned-worker',
+      parentSessionId: 'pin-parent',
+      cwd,
+      name: 'Pinned worker',
+      model: registry.find(providerId, inheritedId)!,
+      modelRegistry: registry,
+      thinkingLevel: 'off',
+      agentProfile: profile,
+      ui,
+      agentToolsExtension: () => {},
+    });
+    profile.model = inheritedReference;
+    const pinned = await creatingPinned;
+    workers.push(pinned);
+
+    const initial = await pinned.features!();
+    assert.deepEqual(initial.model, {provider: providerId, id: pinnedId});
+    assert.deepEqual(
+      initial.models.map(model => `${model.provider}/${model.id}`),
+      [pinnedReference],
+      'the pin remains visible even when the global policy allows another model',
+    );
+    await saveToolSettings('agents', {allowedModels: []});
+    assert.deepEqual(
+      (await pinned.features!()).models.map(
+        model => `${model.provider}/${model.id}`,
+      ),
+      [pinnedReference],
+    );
+    await pinned.configure!({provider: providerId, modelId: pinnedId});
+    const thinkingLevel = initial.thinkingLevels.find(level => level !== 'off');
+    assert.ok(thinkingLevel);
+    await pinned.command!(`/thinking ${thinkingLevel}`);
+    assert.equal((await pinned.features!()).thinkingLevel, thinkingLevel);
+    await assert.rejects(
+      pinned.command!(`/model ${inheritedReference}`),
+      /configuration requires model worker-pin-test\/pinned-model/,
+    );
+    await assert.rejects(
+      pinned.configure!({
+        provider: providerId,
+        modelId: inheritedId,
+        thinkingLevel: 'off',
+      }),
+      /configuration requires model worker-pin-test\/pinned-model/,
+    );
+    const unchanged = await pinned.features!();
+    assert.deepEqual(unchanged.model, {provider: providerId, id: pinnedId});
+    assert.equal(unchanged.thinkingLevel, thinkingLevel);
+
+    const inherited = await createSessionWorker({
+      id: 'inherited-worker',
+      parentSessionId: 'pin-parent',
+      cwd,
+      name: 'Inherited worker',
+      model: registry.find(providerId, inheritedId)!,
+      modelRegistry: registry,
+      thinkingLevel: 'off',
+      agentToolsExtension: () => {},
+    });
+    workers.push(inherited);
+    assert.deepEqual((await inherited.features!()).models, []);
+    await assert.rejects(
+      inherited.configure!({provider: providerId, modelId: inheritedId}),
+      /No agent models selected/,
+    );
+    await saveToolSettings('agents', {allowedModels: [inheritedReference]});
+    assert.deepEqual(
+      (await inherited.features!()).models.map(
+        model => `${model.provider}/${model.id}`,
+      ),
+      [inheritedReference],
+    );
+    await inherited.configure!({provider: providerId, modelId: inheritedId});
+
+    await assert.rejects(
+      createSessionWorker({
+        id: 'missing-pin-worker',
+        parentSessionId: 'pin-parent',
+        cwd,
+        name: 'Missing pin worker',
+        model: registry.find(providerId, inheritedId)!,
+        modelRegistry: registry,
+        thinkingLevel: 'off',
+        agentProfile: {...profile, model: `${providerId}/missing`},
+        agentToolsExtension: () => {},
+      }),
+      /Configured agent model is unavailable: worker-pin-test\/missing/,
     );
   },
 );

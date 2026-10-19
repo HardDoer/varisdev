@@ -1,3 +1,4 @@
+import type {AgentMentionCandidate} from '../agents/mentions.ts';
 import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
 import {
   createDefaultAgentProfile,
@@ -21,6 +22,7 @@ export function supportedThinkingLevels(
 }
 
 export interface SessionFeatures {
+  agentMentions?: AgentMentionCandidate[];
   agentProfile?: Pick<AgentTemplate, 'id' | 'name' | 'mode' | 'color'>;
   contextFiles?: Array<{
     path: string;

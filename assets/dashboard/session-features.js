@@ -21,6 +21,7 @@ const sourceName = {
   prompt: 'Template',
   extension: 'Extension',
   builtin: 'Command',
+  agent: 'Agent',
 };
 let api;
 let selected;
@@ -312,7 +313,9 @@ function commands(query = '') {
     ...builtinCommands.filter(
       command =>
         !current?.agentId ||
-        ['model', 'thinking', 'compact', 'reload'].includes(command.name),
+        ['model', 'thinking', 'compact', 'reload', 'approvals'].includes(
+          command.name,
+        ),
     ),
     ...(features()?.commands || []).filter(
       command => !builtinCommands.some(local => local.name === command.name),
@@ -323,12 +326,17 @@ function commands(query = '') {
       .includes(needle),
   );
 }
+function suggestionPrefix(command) {
+  return command.source === 'agent'
+    ? `@${command.name}`
+    : `/${command.name.replace(/^\//, '')}`;
+}
 function insertCommand(command) {
   const editor = $('parent-prompt');
-  const prefix = `/${command.name.replace(/^\//, '')}`;
+  const prefix = suggestionPrefix(command);
   const existing = editor.value;
-  const rest = existing.startsWith('/')
-    ? existing.replace(/^\/\S*\s*/, '')
+  const rest = /^[/@]/.test(existing)
+    ? existing.replace(/^[/@]\S*\s*/, '')
     : existing;
   editor.value = `${prefix} ${rest}`;
   editor.focus({preventScroll: true});
@@ -383,20 +391,40 @@ function renderCatalog() {
 }
 function renderSuggestions() {
   const value = $('parent-prompt').value;
-  const match = value.match(/^\/([^\s]*)$/);
+  const match = value.match(/^([/@])([^\s]*)$/);
   const container = $('command-suggestions');
   if (!match || document.activeElement !== $('parent-prompt')) {
     container.hidden = true;
     return;
   }
-  const needle = match[1].toLocaleLowerCase();
+  const mentioning = match[1] === '@';
+  if (
+    mentioning &&
+    (current?.agentId || features()?.agentProfile?.mode === 'subagent')
+  ) {
+    container.hidden = true;
+    return;
+  }
+  const needle = match[2].toLocaleLowerCase();
   const rank = command => {
     const name = command.name.toLocaleLowerCase();
     return name.startsWith(needle) ? 0 : name.includes(needle) ? 1 : 2;
   };
-  suggestions = commands(needle)
-    .sort((a, b) => rank(a) - rank(b))
-    .slice(0, 8);
+  const candidates = mentioning
+    ? (features()?.agentMentions || [])
+        .filter(agent =>
+          (agent.mention || `@${agent.id}`)
+            .slice(1)
+            .toLocaleLowerCase()
+            .startsWith(needle),
+        )
+        .map(agent => ({
+          name: (agent.mention || `@${agent.id}`).slice(1),
+          description: agent.description || agent.name,
+          source: 'agent',
+        }))
+    : commands(needle);
+  suggestions = candidates.sort((a, b) => rank(a) - rank(b)).slice(0, 8);
   suggestionIndex = Math.min(
     suggestionIndex,
     Math.max(0, suggestions.length - 1),
@@ -408,7 +436,7 @@ function renderSuggestions() {
       button.setAttribute('role', 'option');
       button.setAttribute('aria-selected', String(index === suggestionIndex));
       button.append(
-        node('strong', '', `/${command.name.replace(/^\//, '')}`),
+        node('strong', '', suggestionPrefix(command)),
         node('span', '', command.description || sourceName[command.source]),
       );
       button.addEventListener('mousedown', event => event.preventDefault());
@@ -434,15 +462,19 @@ function renderSettingsControls() {
     settingsBusy.has(current?.session.id) || !canRunCommand('compact');
   $('reload-session').disabled =
     settingsBusy.has(current?.session.id) || !canRunCommand('reload');
+  $('open-approvals').disabled =
+    settingsBusy.has(current?.session.id) || !canRunCommand('approvals');
 }
 async function runSessionCommand(name, args = '') {
   if (settingsBusy.has(current?.session.id) || !canRunCommand(name)) return;
   const id = current.session.id;
   settingsBusy.add(id);
   $('session-settings-error').hidden = true;
+  if (name === 'approvals') $('app-error').hidden = true;
   renderSettingsControls();
   try {
-    if (current.agentId && name === 'compact')
+    if (name === 'approvals') await api.commandSession(id, '/approvals');
+    else if (current.agentId && name === 'compact')
       await api.compactSession(id, args);
     else if (current.agentId && name === 'reload') await api.reloadSession(id);
     else
@@ -451,7 +483,11 @@ async function runSessionCommand(name, args = '') {
       });
     await load(true, id);
   } catch (cause) {
-    if (current?.session.id === id) error($('session-settings-error'), cause);
+    if (current?.session.id === id)
+      error(
+        $(name === 'approvals' ? 'app-error' : 'session-settings-error'),
+        cause,
+      );
   } finally {
     settingsBusy.delete(id);
     renderSettingsControls();
@@ -786,6 +822,10 @@ export function initSessionFeatures(options) {
     'click',
     () => void runSessionCommand('reload'),
   );
+  $('open-approvals').addEventListener(
+    'click',
+    () => void runSessionCommand('approvals'),
+  );
   $('parent-prompt').addEventListener('input', () => {
     suggestionIndex = 0;
     renderSuggestions();
@@ -806,8 +846,9 @@ export function initSessionFeatures(options) {
         return;
       if (
         event.key === 'Enter' &&
+        suggestions[suggestionIndex].source !== 'agent' &&
         $('parent-prompt').value ===
-          `/${suggestions[suggestionIndex].name.replace(/^\//, '')}`
+          suggestionPrefix(suggestions[suggestionIndex])
       ) {
         $('command-suggestions').hidden = true;
         return;

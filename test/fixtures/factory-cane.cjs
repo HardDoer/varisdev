@@ -16,9 +16,9 @@ app.setPath('sessionData', join(directory, 'session'));
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
-function evaluate(method) {
+function evaluate(method, ...args) {
   return browser.webContents.executeJavaScript(
-    `window.fixture[${JSON.stringify(method)}]()`,
+    `window.fixture[${JSON.stringify(method)}](...${JSON.stringify(args)})`,
   );
 }
 
@@ -84,6 +84,7 @@ async function main() {
         }
       };
       const {createFactoryScene} = await import(moduleUrl);
+      const {THEMES} = await import(new URL('./themes.js', moduleUrl));
       const {createFactoryCane} = await import(
         new URL('./factory-cane.js', moduleUrl)
       );
@@ -92,6 +93,7 @@ async function main() {
       );
       const root = document.querySelector('#root');
       let screenshotFixture;
+      let agentFixture;
 
       function advance(frames = 1) {
         for (let index = 0; index < frames; index++) {
@@ -180,8 +182,10 @@ async function main() {
           return bufferSubData(target, offset, data);
         };
         const selections = [];
+        let layout = [];
         const scene = createFactoryScene(canvas, {
           onSelect: id => selections.push(id),
+          onLayout: value => {layout = value;},
         });
         if (!scene) throw new Error('Factory scene failed GPU initialization');
         scene.update(
@@ -208,6 +212,8 @@ async function main() {
           hits,
           selections,
           dynamicHash: () => hashFloats(dynamic),
+          geometry: () => dynamic,
+          layout: () => layout,
           dispose() {
             cane.dispose();
             scene.dispose();
@@ -343,6 +349,76 @@ async function main() {
       }
 
       window.fixture = {
+        agentTypes() {
+          agentFixture = createWebGL();
+          const {scene, canvas, selections} = agentFixture;
+          scene.setMotion(false);
+          const theme = THEMES.find(item => item.id === 'factory');
+          function snapshot(mode) {
+            const worker = {id: 'typed-worker', status: 'completed'};
+            if (mode) worker.agentMode = mode;
+            scene.update({session: {id: 'agent-type-session', status: 'idle'}, agents: [worker]}, worker.id);
+            scene.setPalette(theme.scenePalette);
+            const data = agentFixture.geometry();
+            const parent = [];
+            const workerPoints = [];
+            let crown = 0, eyes = 0, status = 0;
+            const matches = (offset, color) => color.every((value, axis) => Math.abs(data[offset + 6 + axis] - value) < 0.00001);
+            for (let i = 0; i < data.length; i += 10) {
+              if (data[i] < -3.6 && Math.abs(data[i + 2]) < 2.3 && data[i + 1] > 0.41)
+                parent.push(...data.subarray(i, i + 10));
+              if (data[i] < -3.3 || data[i] > -0.4 || data[i + 2] < -4.5 || data[i + 2] > -1.7 || data[i + 1] < 0.4) continue;
+              workerPoints.push([data[i], data[i + 1], data[i + 2]]);
+              if (matches(i, theme.scenePalette.cyan) && data[i + 1] > 2) crown++;
+              if (matches(i, theme.scenePalette.eyes)) eyes++;
+              if (matches(i, theme.scenePalette.completed)) status++;
+            }
+            const spans = [0, 1, 2].map(axis => Math.max(...workerPoints.map(p => p[axis])) - Math.min(...workerPoints.map(p => p[axis])));
+            const target = targetById(scene, worker.id);
+            // Selection still includes the existing 38px region around the body.
+            clickTarget(canvas, {...target, x: target.x + 32});
+            return {hash: agentFixture.dynamicHash(), parent: hashFloats(new Float32Array(parent)), spans, crown, eyes, status, radius: target.radius, selected: selections.at(-1), visible: agentFixture.layout().every(item => item.visible)};
+          }
+          const primary = snapshot('primary');
+          const all = snapshot('all');
+          const legacy = snapshot();
+          const subagent = snapshot('subagent');
+          scene.setMotion(true);
+          scene.update({session: {id: 'agent-type-session', status: 'running'}, agents: [{id: 'typed-worker', agentMode: 'subagent', status: 'running'}]}, 'typed-worker');
+          advance(4);
+          const before = agentFixture.dynamicHash();
+          advance(4);
+          return {primary, all, legacy, subagent, animated: before !== agentFixture.dynamicHash(), themes: THEMES.map(theme => theme.id)};
+        },
+        agentTheme(themeId, width, height) {
+          const {scene, canvas, host} = agentFixture;
+          const theme = THEMES.find(item => item.id === themeId);
+          host.style.width = canvas.style.width = width + 'px';
+          host.style.height = canvas.style.height = height + 'px';
+          document.body.style.background = theme.colors.scene;
+          window.dispatchEvent(new Event('resize'));
+          scene.setMotion(false);
+          scene.update({session: {id: 'agent-types-themes', status: 'running', activity: 'Thinking'}, agents: [
+            {id: 'primary-running', agentMode: 'primary', status: 'running'},
+            {id: 'subagent-running', agentMode: 'subagent', status: 'running'},
+            {id: 'all-running', agentMode: 'all', status: 'running'},
+            {id: 'legacy-cancelling', status: 'cancelling'},
+            {id: 'primary-queued', agentMode: 'primary', status: 'queued'},
+            {id: 'subagent-queued', agentMode: 'subagent', status: 'queued'},
+            {id: 'all-completed', agentMode: 'all', status: 'completed'},
+            {id: 'subagent-failed', agentMode: 'subagent', status: 'failed'},
+          ]}, 'all-completed');
+          scene.setPalette(theme.scenePalette);
+          scene.setMotion(true);
+          advance(8);
+          scene.setMotion(false);
+          const targets = scene.caneTargets();
+          for (const target of targets) {
+            if (target.id !== 'parent') clickTarget(canvas, target);
+          }
+          return {targets: targets.length, selections: agentFixture.selections.slice(-8), visible: agentFixture.layout().every(item => item.visible), rect: {x: 0, y: 0, width, height}};
+        },
+        agentCleanup() {agentFixture?.dispose(); agentFixture = null; document.body.style.background = '';},
         visitorWebGL() {return visitorSetup('WebGL');},
         visitorFallback() {return visitorSetup('Fallback');},
         visitorSnapshot() {
@@ -1035,6 +1111,93 @@ async function main() {
       ).href,
     )})`,
   );
+
+  await run(
+    'additional worker types preserve crowns, proportions, faces, animation, and targets',
+    async () => {
+      try {
+        const result = await evaluate('agentTypes');
+        report.agentTypes = result;
+        assert.equal(result.primary.hash, result.all.hash);
+        assert.equal(result.primary.hash, result.legacy.hash);
+        assert.ok(
+          result.primary.crown > 0,
+          'Primary workers must render crown accents',
+        );
+        assert.equal(
+          result.subagent.crown,
+          0,
+          'Explicit subagents have no crown',
+        );
+        assert.equal(
+          result.primary.parent,
+          result.subagent.parent,
+          'Main robot geometry must remain unchanged',
+        );
+        assert.ok(result.subagent.spans[0] < result.primary.spans[0] * 0.8);
+        assert.ok(result.subagent.spans[2] < result.primary.spans[2] * 0.8);
+        assert.ok(
+          result.subagent.radius >= result.primary.radius / 1.18,
+          'Small workers retain the existing hit region after perspective projection',
+        );
+        for (const state of [
+          result.primary,
+          result.all,
+          result.legacy,
+          result.subagent,
+        ]) {
+          assert.ok(
+            state.eyes > 0 && state.status > 0,
+            'Eyes and status lights must reach WebGL',
+          );
+          assert.equal(state.selected, 'typed-worker');
+          assert.equal(state.visible, true);
+        }
+        assert.equal(result.animated, true);
+        if (process.env.FACTORY_AGENT_SCREENSHOT_DIR) {
+          const output = resolve(process.env.FACTORY_AGENT_SCREENSHOT_DIR);
+          mkdirSync(output, {recursive: true});
+          report.agentScreenshots = [];
+          for (const theme of result.themes) {
+            for (const [width, height] of [
+              [800, 520],
+              [480, 320],
+            ]) {
+              const state = await evaluate('agentTheme', theme, width, height);
+              assert.equal(
+                state.targets,
+                9,
+                theme + ': all robots remain hittable',
+              );
+              assert.equal(
+                new Set(state.selections).size,
+                8,
+                theme + ': all workers remain selectable',
+              );
+              assert.equal(
+                state.visible,
+                true,
+                theme + ': labels remain in frame',
+              );
+              await delay(50);
+              const path = join(
+                output,
+                'factory-agents-' + theme + '-' + width + 'x' + height + '.png',
+              );
+              writeFileSync(
+                path,
+                (await browser.webContents.capturePage(state.rect)).toPNG(),
+              );
+              report.agentScreenshots.push(path);
+            }
+          }
+        }
+      } finally {
+        await evaluate('agentCleanup');
+      }
+    },
+  );
+  if (process.env.FACTORY_AGENT_ONLY) return;
 
   await run(
     'pick up and return preserve intentional scene selection',

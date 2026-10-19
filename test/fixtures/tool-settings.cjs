@@ -2,10 +2,14 @@
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
+const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
 const screenshotDirectory = process.env.VARISDEV_TOOL_MODELS_SCREENSHOTS;
 const report = {cases: []};
+process.env.VARISDEV_CODING_AGENT_DIR = join(directory, 'agent');
+process.env.PI_CODING_AGENT_DIR = join(directory, 'agent');
+delete process.env.OPENAI_IMAGE_MODEL;
 let browser;
 const reads = [];
 const writes = [];
@@ -61,6 +65,7 @@ function agent() {
   return {
     id: 'worker',
     name: 'Review agent',
+    agentMode: 'subagent',
     task: 'Review project',
     cwd: directory,
     model: 'alpha/small',
@@ -143,7 +148,11 @@ async function open() {
 async function assertCombinedVisible() {
   const structure = await evaluate(() => ({
     title: document.getElementById('tool-settings-title').textContent.trim(),
-    sections: ['agent-model-settings', 'commit-model-settings'].map(id => {
+    sections: [
+      'agent-model-settings',
+      'commit-model-settings',
+      'image-model-settings',
+    ].map(id => {
       const element = document.getElementById(id);
       return {
         heading: document
@@ -158,6 +167,7 @@ async function assertCombinedVisible() {
     sections: [
       {heading: 'Agent models', visible: true},
       {heading: 'Commit', visible: true},
+      {heading: 'OpenAI images', visible: true},
     ],
   });
 }
@@ -225,8 +235,10 @@ async function auditThemeContrast() {
         theme,
         agents: card('agent-model-settings'),
         commit: card('commit-model-settings'),
+        image: card('image-model-settings'),
         search: control('tool-settings-search', 'agent-model-settings'),
         commitModel: control('commit-model', 'commit-model-settings'),
+        imageModel: control('image-model', 'image-model-settings'),
       };
     });
     root.dataset.theme = original;
@@ -317,6 +329,11 @@ async function reload() {
   await waitFor(() => !document.getElementById('factory-workspace').hidden);
 }
 async function main() {
+  const {getToolModels, saveToolModel} = await import(
+    pathToFileURL(
+      resolve(__dirname, '../../desktop/build/src/tools/model-selection.js'),
+    ).href
+  );
   await app.whenReady();
   browser = new BrowserWindow({
     show: true,
@@ -351,7 +368,7 @@ async function main() {
     restartRequired: false,
   }));
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
-  handle('pidev:session-features', () => ({
+  const features = () => ({
     commands: [
       {name: 'commit', description: 'Commit and push', source: 'extension'},
     ],
@@ -360,7 +377,14 @@ async function main() {
     diagnostics: [],
     thinkingLevel: 'off',
     thinkingLevels: ['off'],
-  }));
+  });
+  handle('pidev:session-features', features);
+  handle('pidev:agent-session', (_id, request) => {
+    assert.equal(request.action, 'features');
+    return features();
+  });
+  handle('varisdev:get-tool-models', getToolModels);
+  handle('varisdev:save-tool-model', saveToolModel);
   handle('varisdev:get-tool-settings', id => {
     reads.push(id);
     if (loadError) throw new Error(loadError);
@@ -433,18 +457,28 @@ async function main() {
       'commit-model-settings',
       'commit-model',
       'commit-thinking',
+      'image-model',
+      'tool-settings-save',
     ];
     const rects = ids.map(id =>
       document.getElementById(id).getBoundingClientRect(),
     );
     return {
       beside: rects[0].right < rects[1].left,
+      imageInsideBody:
+        rects[4].bottom <=
+        document.querySelector('.tool-settings-body').getBoundingClientRect()
+          .bottom,
       visibleTogether: rects.every(
         rect => rect.top >= 0 && rect.bottom <= window.innerHeight,
       ),
     };
   });
-  assert.deepEqual(desktopLayout, {beside: true, visibleTogether: true});
+  assert.deepEqual(desktopLayout, {
+    beside: true,
+    imageInsideBody: true,
+    visibleTogether: true,
+  });
   const themeContrast = await auditThemeContrast();
   for (const result of themeContrast) {
     assert.notEqual(
@@ -455,6 +489,7 @@ async function main() {
     for (const [section, values] of [
       ['Agent models', result.agents],
       ['Commit', result.commit],
+      ['OpenAI images', result.image],
     ]) {
       assert.ok(
         values.heading >= 4.5,
@@ -468,6 +503,7 @@ async function main() {
     for (const [control, values] of [
       ['Agent search', result.search],
       ['Commit model', result.commitModel],
+      ['Image model', result.imageModel],
     ]) {
       assert.ok(
         values.text >= 4.5,
@@ -722,7 +758,8 @@ async function main() {
   );
   await waitFor(
     () =>
-      document.getElementById('inspector').dataset.conversationKind === 'agent',
+      document.getElementById('inspector').dataset.conversationKind ===
+      'subagent',
   );
   settings.agents.allowedModels = ['alpha/small'];
   settings.commit = {model: 'beta/large', thinkingLevel: 'medium'};

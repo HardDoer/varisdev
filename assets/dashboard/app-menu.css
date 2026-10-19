@@ -151,9 +151,9 @@
   pointer-events: none;
 }
 .inspector-session-actions .status-badge {
-  flex: 0 0 86px;
-  width: 86px;
-  text-align: center;
+  flex: 0 0 112px;
+  width: 112px;
+  justify-content: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -172,6 +172,13 @@
   text-overflow: ellipsis;
 }
 @media (max-width: 950px) {
+  .conversation-kind {
+    flex-basis: 108px;
+    width: 108px;
+  }
+  .inspector-heading > .inspector-activity-row {
+    gap: 6px;
+  }
   .inspector-heading > .inspector-title-row {
     gap: 6px;
   }

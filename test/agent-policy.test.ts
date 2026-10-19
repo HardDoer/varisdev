@@ -70,6 +70,10 @@ function harness(
         confirmations++;
         return true;
       },
+      async select() {
+        confirmations++;
+        return 'Allow once';
+      },
     },
     abort() {},
   } as unknown as ExtensionContext;
@@ -301,14 +305,6 @@ void test('tool mappings include VarisDev mutators, patch destinations, and actu
       .action,
     'read',
   );
-  assert.equal(
-    agentToolPermissions('elevenlabs', {action: 'list_voices'})[0].action,
-    'read',
-  );
-  assert.equal(
-    agentToolPermissions('elevenlabs', {action: 'sound_effects'})[0].action,
-    'edit',
-  );
   assert.deepEqual(
     agentToolPermissions(
       'openai_image',
@@ -378,16 +374,12 @@ void test('media permissions use actual trimmed and environment-resolved paths w
     }),
   );
   protectedGuard.ctx.cwd = cwd;
-  for (const tool of ['openai_image', 'elevenlabs']) {
-    for (const outputDir of ['protected \t', 'literal /.']) {
-      const denied = await protectedGuard.call(tool, {
-        prompt: 'Fixture',
-        action: 'sound_effects',
-        text: 'Fixture',
-        outputDir,
-      });
-      assert.match(denied.reason!, /permission denied: edit/);
-    }
+  for (const outputDir of ['protected \t', 'literal /.']) {
+    const denied = await protectedGuard.call('openai_image', {
+      prompt: 'Fixture',
+      outputDir,
+    });
+    assert.match(denied.reason!, /permission denied: edit/);
   }
   const outsideImage = join(outside, 'source.png');
   await writeFile(outsideImage, 'Fixture bytes.');

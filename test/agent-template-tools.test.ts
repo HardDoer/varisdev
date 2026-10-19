@@ -128,6 +128,12 @@ void test(
     assert.match(catalogFor(), /default:/);
     assert.match(catalogFor(), /explore:/);
     assert.match(catalogFor(), /general:/);
+    const templateParameters = tools.get('agent_templates')!
+      .parameters as unknown as {properties: Record<string, unknown>};
+    assert.equal(
+      Object.hasOwn(templateParameters.properties, 'request'),
+      false,
+    );
     const save = (scope: string, instructions: string, model: string) =>
       execute('agent_templates', {
         action: 'save',
@@ -138,7 +144,6 @@ void test(
         instructions,
         model,
         thinkingLevel: 'high',
-        request: {headers: {'x-agent': 'reviewer'}, body: {temperature: 0.2}},
       });
     const acknowledgement = await save(
       'global',
@@ -166,7 +171,6 @@ void test(
     assert.equal(reviewer.scope, 'workspace');
     assert.equal(reviewer.instructions, undefined);
     assert.equal(reviewer.sourcePath, undefined);
-    assert.equal(reviewer.request, undefined);
     const pageIds: string[] = [];
     let offset: number | undefined = 0;
     do {
@@ -194,10 +198,7 @@ void test(
       (saved.details as {instructions: string}).instructions,
       'Review global conventions.',
     );
-    assert.deepEqual((saved.details as {request: unknown}).request, {
-      headers: {'x-agent': 'reviewer'},
-      body: {temperature: 0.2},
-    });
+    assert.equal((saved.details as {model: string}).model, 'fixture/default');
     const approvedGet = {action: 'get', id: 'reviewer', scope: 'global'};
     await prepareAgentTemplateGet(cwd, approvedGet);
     await save('global', 'Changed after approval.', 'fixture/default');
@@ -221,15 +222,22 @@ void test(
       }),
       /sourcePath/,
     );
+    await saveToolSettings('agents', {allowedModels: ['fixture/default']});
+    for (const listener of listeners.get(tools)?.get('turn_end') ?? [])
+      await listener({}, ctx);
+    assert.match(catalogFor(), /reviewer:.*pinned model: fixture\/review/);
     const result = await execute('agent_spawn', {
       template: 'reviewer',
       task: 'Review this change.',
       instructions: 'Focus on errors.',
+      model: 'fixture/default',
     });
     const record = (result.details as {agents: AgentRecord[]}).agents[0];
     const manager = control.getTeam(ctx).getManager();
     await manager.wait([record.id], {timeoutMs: 2000});
     assert.equal(seen[0].name, 'Reviewer');
+    assert.equal(record.pinnedModel, 'fixture/review');
+    assert.equal(record.model, 'fixture/review');
     assert.equal(seen[0].model, models[1]);
     assert.equal(seen[0].thinkingLevel, 'high');
     assert.equal(seen[0].instructions, 'Focus on errors.');
@@ -242,6 +250,7 @@ void test(
       [...workerTools.get(record.id)!.keys()].sort(),
       [...tools.keys()].sort(),
     );
+    await saveToolSettings('agents', {allowedModels: []});
     const nested = await execute(
       'agent_spawn',
       {
@@ -256,7 +265,8 @@ void test(
     const nestedRecord = (nested.details as {agents: AgentRecord[]}).agents[0];
     await manager.wait([nestedRecord.id], {timeoutMs: 2000});
     assert.equal(seen[1].name, 'Second reviewer');
-    assert.equal(seen[1].model, models[0]);
+    assert.equal(nestedRecord.pinnedModel, 'fixture/review');
+    assert.equal(seen[1].model, models[1]);
     assert.equal(seen[1].thinkingLevel, 'low');
     assert.equal(
       manager.list().length,
@@ -309,6 +319,7 @@ void test(
       execute('agent_spawn', {template: 'missing', task: 'Work'}),
       /Unknown agent configuration: missing/,
     );
+    await saveToolSettings('agents', {allowedModels: ['fixture/default']});
     const defaultLaunch = await execute('agent_spawn', {task: 'Work'});
     const defaultRecord = (defaultLaunch.details as {agents: AgentRecord[]})
       .agents[0];

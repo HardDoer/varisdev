@@ -55,6 +55,64 @@ const BAYS = [
 ];
 const QUEUE_SLOTS = [6, 7, 3, 4, 5, 0, 1, 2];
 const WORKING = new Set(['running', 'cancelling']);
+// A pointed prism gives crowns a readable silhouette from either camera side.
+const CROWN_POINT = [
+  [
+    [-1, 0, 0],
+    [
+      [-0.5, 0, -0.5],
+      [-0.5, 0, 0.5],
+      [-0.5, 1, 0],
+    ],
+  ],
+  [
+    [1, 0, 0],
+    [
+      [0.5, 0, 0.5],
+      [0.5, 0, -0.5],
+      [0.5, 1, 0],
+    ],
+  ],
+  [
+    [0, -1, 0],
+    [
+      [-0.5, 0, -0.5],
+      [0.5, 0, -0.5],
+      [0.5, 0, 0.5],
+      [-0.5, 0, 0.5],
+    ],
+  ],
+  [
+    [0, 0.447214, -0.894427],
+    [
+      [-0.5, 0, -0.5],
+      [-0.5, 1, 0],
+      [0.5, 1, 0],
+      [0.5, 0, -0.5],
+    ],
+  ],
+  [
+    [0, 0.447214, 0.894427],
+    [
+      [-0.5, 0, 0.5],
+      [0.5, 0, 0.5],
+      [0.5, 1, 0],
+      [-0.5, 1, 0],
+    ],
+  ],
+].flatMap(([normal, points]) =>
+  (points.length === 3 ? [0, 1, 2] : [0, 1, 2, 0, 2, 3]).flatMap(i => [
+    ...points[i],
+    ...normal,
+  ]),
+);
+
+function scaleRobotGeometry(geometry, center, scale) {
+  const d = geometry.data;
+  for (let i = 0; i < geometry.length; i += 10)
+    for (let axis = 0; axis < 3; axis++)
+      d[i + axis] = center[axis] + (d[i + axis] - center[axis]) * scale;
+}
 
 function normalize(v) {
   const l = Math.hypot(...v) || 1;
@@ -552,6 +610,65 @@ export function createFactoryScene(
     if (status === 'cancelled') return C.cancelled;
     return C.dim;
   }
+  function drawCrown(g, [x, y, z], width, depth, height) {
+    const luminance = color => {
+      const linear = color.map(v =>
+        v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4,
+      );
+      return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+    };
+    const accent = luminance(C.cyan);
+    const contrast = color => {
+      const value = luminance(color);
+      return (
+        (Math.max(accent, value) + 0.05) / (Math.min(accent, value) + 0.05)
+      );
+    };
+    const outline = contrast(C.screen) >= contrast(C.eyes) ? C.screen : C.eyes;
+    // A hollow band leaves the top status light visible through the crown.
+    for (const side of [-1, 1]) {
+      g.box(
+        [x + side * width * 0.44, y, z],
+        [width * 0.16, height * 0.26, depth],
+        outline,
+      );
+      g.box(
+        [x + side * width * 0.525, y, z],
+        [width * 0.025, height * 0.12, depth * 0.91],
+        C.cyan,
+        0.35,
+      );
+      g.box(
+        [x, y, z + side * depth * 0.44],
+        [width, height * 0.26, depth * 0.16],
+        outline,
+      );
+      g.box(
+        [x, y, z + side * depth * 0.525],
+        [width * 0.91, height * 0.12, depth * 0.025],
+        C.cyan,
+        0.35,
+      );
+      for (const point of [-1, 0, 1]) {
+        const h = height * (point === 0 ? 1 : 0.72);
+        const p = [
+          x + side * width * 0.44,
+          y + height * 0.08,
+          z + point * depth * 0.33,
+        ];
+        g.shape(CROWN_POINT, p, [width * 0.16, h, depth * 0.3], outline);
+        for (const face of [-1, 1])
+          g.shape(
+            CROWN_POINT,
+            [p[0] + face * width * 0.03, p[1] + height * 0.07, p[2]],
+            [width * 0.13, h - height * 0.19, depth * 0.2],
+            C.cyan,
+            0.5,
+          );
+      }
+    }
+  }
+
   function positionFor(unit) {
     const [x, z] = BAYS[slots.get(unit.id) ?? 0];
     return [x + ((slots.get(unit.id) ?? 0) < 6 ? -0.35 : 0), 1.63, z];
@@ -1259,7 +1376,11 @@ export function createFactoryScene(
 
   function drawAgent(unit, sceneGeometry, sceneEffects, index) {
     const g = temporaryGeometry(),
-      fx = temporaryGeometry();
+      fx = temporaryGeometry(),
+      work = temporaryGeometry(),
+      workEffects = temporaryGeometry();
+    const crowned = unit.agentMode !== 'subagent';
+    const scale = crowned ? 1.16 : 0.9;
     const damagePose = damage.pose(unit.id);
     const home = damageHomes.get(unit.id);
     const slot = slots.get(unit.id),
@@ -1339,6 +1460,12 @@ export function createFactoryScene(
         C.eyes,
         corpse ? 0 : 1,
       );
+    g.box(
+      [x + 0.6, y - 0.105, bodyZ],
+      [0.027, 0.035, 0.52],
+      color,
+      corpse ? 0 : 0.85,
+    );
     g.box([x, y + 0.36, bodyZ], [0.44, 0.04, 0.22], C.screen);
     g.box([x, y + 0.385, bodyZ], [0.32, 0.018, 0.1], color, corpse ? 0 : 0.9);
     for (const side of [-1, 1]) {
@@ -1386,15 +1513,18 @@ export function createFactoryScene(
         );
       }
     }
-    g.rod(
-      [x - 0.32, y + 0.32, bodyZ - 0.28],
-      [x - 0.38, y + 0.64, bodyZ - 0.28],
-      0.024,
-      C.metal,
-    );
-    g.octagon([x - 0.38, y + 0.67, bodyZ - 0.28], [0.15, 0.11, 0.15], C.screen);
+    if (crowned) drawCrown(g, [x, y + 0.43, bodyZ], 0.87, 0.87, 0.44);
+    const antenna = crowned
+      ? [x - 0.49, y + 0.91, bodyZ - 0.49]
+      : [x - 0.38, y + 0.64, bodyZ - 0.28];
+    g.rod([x - 0.32, y + 0.32, bodyZ - 0.28], antenna, 0.024, C.metal);
     g.octagon(
-      [x - 0.38, y + 0.74, bodyZ - 0.28],
+      [antenna[0], antenna[1] + 0.03, antenna[2]],
+      [0.15, 0.11, 0.15],
+      C.screen,
+    );
+    g.octagon(
+      [antenna[0], antenna[1] + 0.1, antenna[2]],
       [0.09, 0.055, 0.09],
       color,
       corpse ? 0 : 0.85,
@@ -1422,11 +1552,19 @@ export function createFactoryScene(
       const welding = unit.status === 'running';
       if (welding) {
         const beltPosition = ((t * 0.35) % 1) * 1.4 - 0.7;
-        g.box([bx + 1, 1.08, z + beltPosition], [0.31, 0.16, 0.25], C.metal);
-        g.box([bx + 1, 1.17, z + beltPosition], [0.2, 0.025, 0.15], color, 0.9);
-        g.rod(hand, target, 0.022, C.cyan, 1);
-        fx.rod(hand, target, 0.085, C.cyan, 0.22);
-        g.octagon(target, [0.12, 0.09, 0.12], C.white, 1);
+        work.box([bx + 1, 1.08, z + beltPosition], [0.31, 0.16, 0.25], C.metal);
+        work.box(
+          [bx + 1, 1.17, z + beltPosition],
+          [0.2, 0.025, 0.15],
+          color,
+          0.9,
+        );
+        const scaledHand = hand.map(
+          (n, axis) => [x, y, bodyZ][axis] + (n - [x, y, bodyZ][axis]) * scale,
+        );
+        work.rod(scaledHand, target, 0.022, C.cyan, 1);
+        workEffects.rod(scaledHand, target, 0.085, C.cyan, 0.22);
+        work.octagon(target, [0.12, 0.09, 0.12], C.white, 1);
         // Deliberate welding sparks derive from an actually running agent.
         for (let j = 0; j < 7; j++) {
           const cycle = (t * 1.8 + j / 7) % 1,
@@ -1436,7 +1574,7 @@ export function createFactoryScene(
             target[1] + Math.sin(cycle * Math.PI) * 0.45,
             target[2] + Math.sin(a) * cycle * 0.55,
           ];
-          fx.rod(
+          workEffects.rod(
             p,
             [
               p[0] + Math.cos(a) * 0.06,
@@ -1449,7 +1587,7 @@ export function createFactoryScene(
           );
         }
       }
-      g.box(
+      work.box(
         [bx + 1.5, 1.3, z + (z < 0 ? -1.12 : 1.12)],
         [0.2, 0.18, 0.21],
         color,
@@ -1492,6 +1630,8 @@ export function createFactoryScene(
       sceneGeometry.ring([baseX, 0.27, z], 1.12, 0.075, C.selection, 1, 40);
     }
     drawDamageScars(g, [x, y, bodyZ], damagePose.damage);
+    scaleRobotGeometry(g, [x, y, bodyZ], scale);
+    scaleRobotGeometry(fx, [x, y, bodyZ], scale);
     const pivot = [baseX, baseY, z];
     const floor = damagePose.phase === 'replacing' ? 0.36 : -Infinity;
     const support = damagePose.cleanup
@@ -1501,6 +1641,8 @@ export function createFactoryScene(
     const exit = damagePose.cleanup ? 10.4 : Infinity;
     sceneGeometry.appendBody(g, pivot, bodyPose, floor, exit);
     sceneEffects.appendBody(fx, pivot, bodyPose, floor, exit);
+    sceneGeometry.appendBody(work, pivot, bodyPose, floor, exit);
+    sceneEffects.appendBody(workEffects, pivot, bodyPose, floor, exit);
     const anchor = p =>
       tumble(
         p.map((n, a) => n - pivot[a]),
@@ -1510,9 +1652,9 @@ export function createFactoryScene(
           n + pivot[a] + bodyPose.offset[a] + (a === 1 ? bodyPose.lift : 0),
       );
     return {
-      p: anchor([x, y + 1.02, bodyZ]),
+      p: anchor([x, y + (crowned ? 1.25 * scale : 1.02), bodyZ]),
       body: anchor([x, y, bodyZ]),
-      radius: 0.82,
+      radius: 0.82 * Math.max(1, scale),
       targetable: damagePose.phase === 'alive',
     };
   }

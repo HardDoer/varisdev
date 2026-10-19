@@ -8,7 +8,6 @@ module.exports = [
       'node_modules/',
       '.pi/',
       'generated-images/',
-      'generated-audio/',
     ],
   },
   ...require('gts'),

@@ -1,4 +1,4 @@
-/* global process, __dirname, document, window, Event, requestAnimationFrame, innerWidth, innerHeight */
+/* global process, __dirname, document, window, Event, requestAnimationFrame, innerWidth, innerHeight, AbortController, setTimeout */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {writeFile} = require('node:fs/promises');
@@ -7,6 +7,9 @@ const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 
 const [directory, reportPath] = process.argv.slice(2);
+process.env.PI_CODING_AGENT_DIR = join(directory, 'pi-agent');
+process.env.VARISDEV_CODING_AGENT_DIR = join(directory, 'pi-agent');
+delete process.env.OPENAI_IMAGE_MODEL;
 const report = {cases: []};
 const responses = [];
 const errors = [];
@@ -26,15 +29,34 @@ let settings;
 let authKind;
 let runSettingsCommand;
 let UserMessageSelectorComponent;
+let AgentApprovalStore;
+let canonicalApprovalWorkspace;
+let checkAgentPermissions;
+let showAgentApprovals;
+let selectToolModel;
+let saveToolModel;
+let imagePresets;
+let approvalStore;
+let approvalController;
+let approvalTask;
+let imageController;
+let imageTask;
+const approvalRoutes = [];
 
 app.setPath('userData', join(directory, 'profile'));
 app.setPath('sessionData', join(directory, 'session'));
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
-const evaluate = (fn, arg) =>
-  browser.webContents.executeJavaScript(
-    `(${fn.toString()})(${JSON.stringify(arg)})`,
+async function evaluate(fn, arg) {
+  const result = await browser.webContents.executeJavaScript(
+    `Promise.resolve().then(() => (${fn.toString()})(${JSON.stringify(arg)}))` +
+      '.then(value => ({ok: true, value}), error => ({' +
+      'ok: false, error: error?.stack || String(error)}))',
   );
+  if (!result.ok)
+    throw new Error(`Renderer evaluation failed: ${result.error}`);
+  return result.value;
+}
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor(check, message) {
   for (let attempt = 0; attempt < 300; attempt++) {
@@ -217,6 +239,56 @@ function startFork() {
       forkTask = undefined;
     });
 }
+function approvalScope(conversationId = 'sdk-worker-conversation') {
+  return {
+    agentId: 'worker-profile',
+    conversationId,
+    workspace: directory,
+  };
+}
+function approvalContext(signal, conversationId = 'sdk-worker-conversation') {
+  return {
+    cwd: directory,
+    hasUI: true,
+    signal,
+    ui: ui.context,
+    sessionManager: {
+      getSessionId: () => conversationId,
+      getBranch: () => [],
+    },
+  };
+}
+function askWorkerApproval(
+  resource,
+  {signal, conversationId = 'sdk-worker-conversation'} = {},
+) {
+  return checkAgentPermissions(
+    {
+      id: 'worker-profile',
+      permissions: [{action: 'shell', resource: '*', effect: 'ask'}],
+    },
+    'bash',
+    {command: resource},
+    [{action: 'shell', resource}],
+    approvalContext(signal, conversationId),
+    {approvals: approvalStore},
+  );
+}
+function startApprovals() {
+  if (approvalTask) return approvalTask;
+  approvalController = new AbortController();
+  approvalTask = showAgentApprovals(
+    approvalContext(approvalController.signal),
+    {
+      scope: approvalScope(),
+      store: approvalStore,
+      signal: approvalController.signal,
+    },
+  ).finally(() => {
+    approvalTask = undefined;
+  });
+  return approvalTask;
+}
 async function submit(prompt) {
   await evaluate(prompt => {
     const editor = document.getElementById('parent-prompt');
@@ -264,6 +336,13 @@ async function terminalState() {
                 ?.translateToString(true) || '',
           )
         : [];
+      let cellHeight;
+      try {
+        cellHeight =
+          terminal?._core?._renderService?.dimensions?.css?.cell?.height;
+      } catch {
+        // xterm's disposed render service can briefly remain on the window.
+      }
       return {
         title: document.getElementById('extension-dialog-title').textContent,
         open: document.getElementById('extension-dialog').open,
@@ -278,8 +357,7 @@ async function terminalState() {
         proposedRows: Number(panel.dataset.proposedRows),
         fittedColumns: Number(panel.dataset.terminalColumns),
         fittedRows: Number(panel.dataset.terminalRows),
-        cellHeight:
-          terminal?._core?._renderService?.dimensions?.css?.cell?.height,
+        cellHeight,
         innerWidth,
         innerHeight,
         devicePixelRatio: window.devicePixelRatio,
@@ -310,6 +388,37 @@ async function screenshot(name) {
       2,
     ),
   );
+}
+async function captureDesktopThemes(name, marker) {
+  const themes = await evaluate(() =>
+    [...document.getElementById('factory-theme').options].map(
+      option => option.value,
+    ),
+  );
+  assert.equal(themes.length, 12, 'Expected every shipped desktop theme');
+  for (const theme of themes) {
+    await evaluate(theme => {
+      const select = document.getElementById('factory-theme');
+      select.value = theme;
+      select.dispatchEvent(new Event('change', {bubbles: true}));
+    }, theme);
+    await waitFor(
+      () =>
+        evaluate(
+          theme => document.documentElement.dataset.theme === theme,
+          theme,
+        ),
+      `Desktop theme ${theme} did not apply`,
+    );
+    await waitForTerminal(marker);
+    await screenshot(`${name}-${theme}`);
+  }
+  await evaluate(() => {
+    const select = document.getElementById('factory-theme');
+    select.value = 'factory';
+    select.dispatchEvent(new Event('change', {bubbles: true}));
+  });
+  await settle();
 }
 async function waitForTerminal(marker) {
   let state;
@@ -368,11 +477,9 @@ async function proveCompactPageUp(
   browser.webContents.setZoomFactor(1);
   await settle();
 }
-async function assertCompact(name, marker) {
-  for (const [width, height, zoom] of [
-    [900, 760, 1.5],
-    [900, 760, 2],
-  ]) {
+async function assertCompact(name, marker, zooms = [1.5, 2]) {
+  for (const zoom of zooms) {
+    const [width, height] = [900, 760];
     const resizeCount = responses.filter(response =>
       Number.isInteger(response.value?.columns),
     ).length;
@@ -384,17 +491,15 @@ async function assertCompact(name, marker) {
           .length > resizeCount,
       `${name} did not report its compact viewport`,
     );
-    const frame = ui.snapshot().dialogs[0].terminal;
-    await waitFor(
-      () =>
-        evaluate(
-          frame =>
-            window.actualSDKTerminal?.cols === frame.columns &&
-            window.actualSDKTerminal?.rows === frame.rows,
-          frame,
-        ),
-      `${name} did not apply its compact viewport`,
-    );
+    await waitFor(() => {
+      const frame = ui.snapshot().dialogs[0].terminal;
+      return evaluate(
+        frame =>
+          window.actualSDKTerminal?.cols === frame.columns &&
+          window.actualSDKTerminal?.rows === frame.rows,
+        frame,
+      );
+    }, `${name} did not apply its compact viewport`);
     await waitForTerminal(marker);
     assert.deepEqual(
       await evaluate(() => {
@@ -445,13 +550,33 @@ async function assertCompact(name, marker) {
 }
 async function main() {
   await app.whenReady();
-  const [{DesktopExtensionUI}, settingsCommands, sdk] = await Promise.all([
+  const [
+    {DesktopExtensionUI},
+    settingsCommands,
+    sdk,
+    approvalUI,
+    approvalPolicy,
+    approvalStorage,
+    modelSelection,
+  ] = await Promise.all([
     import(pathToFileURL(resolve('src/dashboard/extension-ui.ts')).href),
     import(pathToFileURL(resolve('src/dashboard/settings-commands.ts')).href),
     import('@earendil-works/pi-coding-agent'),
+    import(pathToFileURL(resolve('src/agents/approval-ui.ts')).href),
+    import(pathToFileURL(resolve('src/agents/policy.ts')).href),
+    import(pathToFileURL(resolve('src/agents/approvals.ts')).href),
+    import(pathToFileURL(resolve('src/tools/model-selection.ts')).href),
   ]);
   runSettingsCommand = settingsCommands.runSettingsCommand;
   UserMessageSelectorComponent = sdk.UserMessageSelectorComponent;
+  showAgentApprovals = approvalUI.showAgentApprovals;
+  checkAgentPermissions = approvalPolicy.checkAgentPermissions;
+  AgentApprovalStore = approvalStorage.AgentApprovalStore;
+  canonicalApprovalWorkspace = approvalStorage.canonicalApprovalWorkspace;
+  approvalStore = new AgentApprovalStore(join(directory, 'approvals.json'));
+  selectToolModel = modelSelection.selectToolModel;
+  saveToolModel = modelSelection.saveToolModel;
+  imagePresets = modelSelection.OPENAI_IMAGE_PRESETS;
   settings = sdk.SettingsManager.inMemory();
   settings.setTheme('dark');
   const modelsPath = join(directory, 'models.json');
@@ -530,7 +655,7 @@ async function main() {
     message: '',
   }));
   handle('pidev:session-features', () => features());
-  handle('pidev:agent-session', (_id, request) => {
+  handle('pidev:agent-session', (id, request) => {
     if (request.action === 'features')
       return features({
         id: 'worker-profile',
@@ -541,11 +666,16 @@ async function main() {
       startModel();
       return;
     }
+    if (request.action === 'command' && request.command === '/approvals') {
+      approvalRoutes.push({id, ...request});
+      return startApprovals();
+    }
     throw new Error(`Unsupported worker action: ${request.action}`);
   });
   handle('pidev:prompt-session', (_id, input) => {
     if (input.prompt === '/settings') startSettings();
     else if (input.prompt === '/fork') startFork();
+    else if (input.prompt === '/approvals') return startApprovals();
     else throw new Error(`Unexpected prompt: ${input.prompt}`);
   });
   handle('pidev:respond-to-dialog', (_id, dialogId, value) => {
@@ -661,10 +791,16 @@ async function main() {
   browser.setContentSize(1600, 1000);
   browser.webContents.setZoomFactor(1);
   assert.equal(ui.context.setTheme('light').success, true);
-  await evaluate(() =>
-    [...document.querySelectorAll('#active-workers button')]
-      .find(button => button.textContent.includes('SDK model worker'))
-      .click(),
+  assert.equal(
+    await evaluate(() => {
+      const button = [
+        ...document.querySelectorAll('#active-workers button'),
+      ].find(item => item.textContent.includes('SDK model worker'));
+      button?.click();
+      return Boolean(button);
+    }),
+    true,
+    'SDK worker button was unavailable for model selection',
   );
   await waitFor(
     () =>
@@ -774,6 +910,253 @@ async function main() {
     'actual stock long Fork selector remains accessible at compact zoom',
   );
 
+  assert.equal(
+    await evaluate(() => {
+      const button = [
+        ...document.querySelectorAll('#active-workers button'),
+      ].find(item => item.textContent.includes('SDK model worker'));
+      button?.click();
+      return Boolean(button);
+    }),
+    true,
+    'SDK worker button was unavailable for approval',
+  );
+  await waitFor(
+    () =>
+      evaluate(
+        () => document.getElementById('prompt-recipient').textContent,
+      ).then(value => value === 'SDK model worker'),
+    'Worker conversation was not selected for approval',
+  );
+  assert.equal(ui.context.setTheme('dark').success, true);
+
+  const onceResource = 'git push origin approval-once';
+  let policyTask = askWorkerApproval(onceResource);
+  await waitForTerminal('Allow this agent in this workspace');
+  assert.deepEqual(ui.snapshot().dialogs[0].options, [
+    'Allow once',
+    'Allow this conversation',
+    'Allow this agent in this workspace',
+    'Deny',
+  ]);
+  assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'dark');
+  await captureDesktopThemes('approval-choice-dark', 'Allow once');
+  await assertCompact('approval-choice-dark', 'Allow once');
+  await press('Return');
+  assert.equal(await policyTask, undefined);
+  assert.deepEqual(await approvalStore.list(), []);
+
+  const onceCancellation = new AbortController();
+  policyTask = askWorkerApproval(onceResource, {
+    signal: onceCancellation.signal,
+  });
+  await waitForTerminal('Allow once');
+  onceCancellation.abort(new Error('fixture cancelled'));
+  const cancelled = await policyTask;
+  assert.equal(cancelled.block, true);
+  assert.match(cancelled.reason, /cancelled/i);
+  await waitFor(
+    () => ui.snapshot().dialogs.length === 0,
+    'Cancelled approval choice remained open',
+  );
+
+  const conversationResource =
+    'git push origin approval-conversation:' +
+    'nested/review-target/'.repeat(10);
+  policyTask = askWorkerApproval(conversationResource);
+  await waitForTerminal('Allow this conversation');
+  await press('Down');
+  await press('Return');
+  assert.equal(await policyTask, undefined);
+  assert.equal(await askWorkerApproval(conversationResource), undefined);
+  assert.equal(
+    ui.snapshot().dialogs.length,
+    0,
+    'Remembered conversation approval prompted again in its owning scope',
+  );
+
+  policyTask = askWorkerApproval(conversationResource, {
+    conversationId: 'other-worker-conversation',
+  });
+  await waitForTerminal('Deny');
+  await press('Down');
+  await press('Down');
+  await press('Down');
+  await press('Return');
+  const denied = await policyTask;
+  assert.equal(denied.block, true);
+  assert.match(denied.reason, /declined/i);
+
+  const agentResource = 'git push origin approval-agent';
+  policyTask = askWorkerApproval(agentResource);
+  await waitForTerminal('Allow this agent in this workspace');
+  await press('Down');
+  await press('Down');
+  await press('Return');
+  assert.equal(await policyTask, undefined);
+  assert.equal(
+    await askWorkerApproval(agentResource, {
+      conversationId: 'other-worker-conversation',
+    }),
+    undefined,
+  );
+  assert.equal(
+    ui.snapshot().dialogs.length,
+    0,
+    'Remembered agent approval prompted again in the same workspace',
+  );
+  assert.deepEqual(
+    (await approvalStore.list()).map(grant => ({
+      scope: grant.scope,
+      agentId: grant.agentId,
+      conversationId: grant.conversationId,
+      workspace: grant.workspace,
+      toolName: grant.operation.toolName,
+      resource: grant.operation.resource,
+      input: grant.operation.input,
+    })),
+    [
+      {
+        scope: 'conversation',
+        agentId: 'worker-profile',
+        conversationId: 'sdk-worker-conversation',
+        workspace: canonicalApprovalWorkspace(directory),
+        toolName: 'bash',
+        resource: conversationResource,
+        input: {command: conversationResource},
+      },
+      {
+        scope: 'agent',
+        agentId: 'worker-profile',
+        conversationId: undefined,
+        workspace: canonicalApprovalWorkspace(directory),
+        toolName: 'bash',
+        resource: agentResource,
+        input: {command: agentResource},
+      },
+    ],
+  );
+  report.cases.push(
+    'worker approval choices enforce once, conversation, agent, deny and cancellation scopes',
+  );
+
+  assert.equal(ui.context.setTheme('light').success, true);
+  await waitFor(
+    () => evaluate(() => !document.getElementById('open-approvals').disabled),
+    'Approvals application menu action was disabled for the worker',
+  );
+  await evaluate(() => {
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-approvals').click();
+  });
+  await waitForTerminal('This agent in this workspace');
+  assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'light');
+  assert.deepEqual(approvalRoutes, [
+    {
+      id: 'actual-sdk',
+      agentId: 'sdk-worker',
+      action: 'command',
+      command: '/approvals',
+    },
+  ]);
+
+  await press('Return');
+  await waitForTerminal('approval-conversation');
+  await press('Return');
+  await waitForTerminal('Revoke approval');
+  await screenshot('approval-management-conversation-light');
+  await assertCompact('approval-management-light', 'Revoke approval');
+  await press('Return');
+  await waitFor(
+    async () => (await approvalStore.list()).length === 1,
+    'Conversation approval was not revoked',
+  );
+  await waitForTerminal('This agent in this workspace');
+
+  await press('Down');
+  await press('Return');
+  await waitForTerminal(agentResource);
+  await press('Return');
+  await waitForTerminal('Revoke approval');
+  await screenshot('approval-management-agent-light');
+  await press('Return');
+  await waitFor(
+    async () => (await approvalStore.list()).length === 0,
+    'Agent approval was not revoked',
+  );
+  await waitForTerminal('This conversation');
+  assert.equal(
+    ui
+      .snapshot()
+      .notifications.filter(item => item.message === 'Approval revoked.')
+      .length,
+    2,
+  );
+  const managementTask = approvalTask;
+  approvalController.abort(new Error('fixture management cancelled'));
+  await managementTask;
+  await waitFor(
+    () => ui.snapshot().dialogs.length === 0,
+    'Cancelled approval management remained open',
+  );
+  await waitFor(
+    () => evaluate(() => !document.getElementById('open-approvals').disabled),
+    'Worker approval command did not finish after cancellation',
+  );
+  report.cases.push(
+    'worker menu reviews and revokes real remembered approvals with light native UI',
+  );
+
+  const imageLabels = imagePresets.map(
+    preset =>
+      `${preset.label}${preset.description ? ` — ${preset.description}` : ''}`,
+  );
+  imageController = new AbortController();
+  imageTask = selectToolModel(
+    'openai-image',
+    undefined,
+    {hasUI: true, ui: ui.context},
+    imageController.signal,
+  );
+  await waitForTerminal('GPT Image 2.5 Sunburst');
+  assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'light');
+  assert.deepEqual(ui.snapshot().dialogs[0].options, imageLabels);
+  assert.equal(imageLabels.length, 6);
+  await screenshot('native-image-model-light');
+  imageController.abort(new Error('fixture image setup cancelled'));
+  await assert.rejects(imageTask, /fixture image setup cancelled/);
+  imageTask = undefined;
+  await waitFor(
+    () => ui.snapshot().dialogs.length === 0,
+    'Cancelled image model selector remained open',
+  );
+
+  imageController = new AbortController();
+  imageTask = selectToolModel(
+    'openai-image',
+    undefined,
+    {hasUI: true, ui: ui.context},
+    imageController.signal,
+  );
+  await waitForTerminal('GPT Image 2.5 Sunburst');
+  await assertCompact(
+    'native-image-model-light',
+    'GPT Image 2.5 Sunburst',
+    [2],
+  );
+  await press('Down');
+  await press('Return');
+  assert.equal(await imageTask, 'gpt-image-2.5-flare');
+  imageTask = undefined;
+  await waitFor(
+    () => ui.snapshot().dialogs.length === 0,
+    'Selected image model selector remained open',
+  );
+  await saveToolModel('openai-image', '');
+  report.cases.push(
+    'actual native image model chooser renders six presets and cleans up selection and cancellation',
+  );
+
   assert.deepEqual(errors, []);
 }
 
@@ -783,8 +1166,12 @@ main()
     settingsController?.abort();
     modelController?.abort();
     forkController?.abort();
+    approvalController?.abort();
+    imageController?.abort();
     await Promise.allSettled(
-      [settingsTask, modelTask, forkTask].filter(Boolean),
+      [settingsTask, modelTask, forkTask, approvalTask, imageTask].filter(
+        Boolean,
+      ),
     );
     ui?.dispose();
     runtime?.dispose?.();
@@ -797,8 +1184,12 @@ main()
     settingsController?.abort();
     modelController?.abort();
     forkController?.abort();
+    approvalController?.abort();
+    imageController?.abort();
     await Promise.allSettled(
-      [settingsTask, modelTask, forkTask].filter(Boolean),
+      [settingsTask, modelTask, forkTask, approvalTask, imageTask].filter(
+        Boolean,
+      ),
     );
     ui?.dispose();
     runtime?.dispose?.();
