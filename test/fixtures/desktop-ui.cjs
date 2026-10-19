@@ -9620,7 +9620,9 @@ async function main() {
           ),
         ]
           .find(button =>
-            button.dataset.templateIdentity.includes('/packages/app/'),
+            button.dataset.templateIdentity
+              .replaceAll('\\', '/')
+              .includes('/packages/app/'),
           )
           .click(),
       );
@@ -9776,7 +9778,7 @@ async function main() {
         await evaluate(
           () => document.getElementById('agent-template-source').textContent,
         ),
-        /\.varisdev\/agents\/reviewer\.md$/,
+        /\.varisdev[/\\]agents[/\\]reviewer\.md$/,
       );
       await click('agent-template-new');
       await fill({

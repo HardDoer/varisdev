@@ -26,7 +26,7 @@ void test(
     const cwd = join(root, 'project');
     const previous = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = join(root, 'settings');
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     const models = [
       {provider: 'fixture', id: 'default'},
       {provider: 'fixture', id: 'review'},

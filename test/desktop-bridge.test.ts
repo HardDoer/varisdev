@@ -3,7 +3,7 @@ import type {ChildProcess} from 'node:child_process';
 import {EventEmitter} from 'node:events';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {test} from 'node:test';
 import {setImmediate as tick} from 'node:timers/promises';
 import type {
@@ -265,7 +265,12 @@ function extensionFixture(
   let thinkingLevel = 'off';
   const compacted: Array<string | undefined> = [];
   const models = [
-    {provider: 'fixture', id: 'model', name: 'Fixture model', reasoning: true},
+    {
+      provider: 'fixture',
+      id: 'model',
+      name: 'Fixture model',
+      reasoning: true,
+    },
     {provider: 'fixture', id: 'other', name: 'Other model', reasoning: false},
   ];
   const worker = {id: 'worker', status: 'running'};
@@ -282,6 +287,7 @@ function extensionFixture(
     getTeam: () => ({getManager: () => manager}),
   };
   const confirmations: Array<{title: string; message: string}> = [];
+  const selections: Array<{title: string; options: string[]}> = [];
   const events = new EventEmitter();
   let activeTools = ['fixture_tool'];
   const entries: ReturnType<ExtensionContext['sessionManager']['getEntries']> =
@@ -337,7 +343,7 @@ function extensionFixture(
         name: 'skill:fixture',
         description: 'Fixture skill',
         source: 'skill',
-        sourceInfo: {path: '/fixture/SKILL.md'},
+        sourceInfo: {path: resolve('/fixture/SKILL.md')},
       },
       {
         name: 'template',
@@ -388,6 +394,10 @@ function extensionFixture(
       aborts++;
     },
     ui: {
+      async select(title: string, options: string[]) {
+        selections.push({title, options: [...options]});
+        return options.includes('Allow once') ? 'Allow once' : undefined;
+      },
       async confirm(title: string, message: string) {
         confirmations.push({title, message});
         return true;
@@ -423,6 +433,7 @@ function extensionFixture(
     compacted,
     notifications,
     confirmations,
+    selections,
     worker,
     control,
     get aborts() {
@@ -502,11 +513,11 @@ void test('attached context reads live command options and resource metadata thr
     'ATTACHED INSTRUCTIONS',
   );
   assert.equal(
-    files.find(file => file.path === '/fixture/SKILL.md')?.status,
+    files.find(file => file.path === resolve('/fixture/SKILL.md'))?.status,
     'available',
   );
   assert.equal(
-    files.find(file => file.path === '/fixture/SKILL.md')?.content,
+    files.find(file => file.path === resolve('/fixture/SKILL.md'))?.content,
     undefined,
   );
   assert.equal(
@@ -734,7 +745,10 @@ void test('delayed extension input cannot clear Stop before a cancelled GUI prom
   for (const inputSource of ['interactive', 'rpc']) {
     await desktop.callbacks.abort();
     const abortsBeforeInput: number = source.aborts;
-    await source.emit('input', {source: inputSource, text: 'A new user task'});
+    await source.emit('input', {
+      source: inputSource,
+      text: 'A new user task',
+    });
     source.setIdle(false);
     await source.emit('agent_start');
     assert.equal(
@@ -965,7 +979,11 @@ void test('native attached sessions persist neutral selection and compose shared
     model: 'fixture/saved-model',
     thinkingLevel: 'off' as const,
     permissions: [
-      {action: 'shell', resource: 'allowed-command', effect: 'allow'} as const,
+      {
+        action: 'shell',
+        resource: 'allowed-command',
+        effect: 'allow',
+      } as const,
     ],
   };
   explicit.pi.appendEntry('varisdev.agent-profile', saved);
@@ -991,7 +1009,7 @@ void test('native attached policies enforce shared rules and respect session-sco
   const agentDir = join(directory, 'settings');
   const cwd = join(directory, 'project');
   await mkdir(agentDir);
-  await mkdir(cwd);
+  await mkdir(join(cwd, '.git'), {recursive: true});
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
   t.after(async () => {
@@ -1043,7 +1061,7 @@ void test('native attached policies enforce shared rules and respect session-sco
   );
   const read = await source.emit('tool_call', {
     toolName: 'read',
-    input: {path: '/fixture/SKILL.md'},
+    input: {path: resolve('/fixture/SKILL.md')},
   });
   assert.ok(
     read.some(result =>
@@ -1067,14 +1085,20 @@ void test('native attached policies enforce shared rules and respect session-sco
     toolName: 'bash',
     input: {command: 'approved-native-command'},
   });
-  assert.equal(source.confirmations.length, 1);
+  assert.equal(source.selections.length, 1);
+  assert.deepEqual(source.selections[0].options, [
+    'Allow once',
+    'Allow this conversation',
+    'Allow this agent in this workspace',
+    'Deny',
+  ]);
   await source.emit('session_start');
   await source.emit('tool_call', {
     toolName: 'bash',
     input: {command: 'approved-native-command'},
   });
   assert.equal(
-    source.confirmations.length,
+    source.selections.length,
     2,
     'repeated session start installs one policy',
   );
@@ -1114,7 +1138,7 @@ void test('native attached policies enforce shared rules and respect session-sco
     input: {command: 'approved-native-command'},
   });
   assert.equal(
-    managed.confirmations.length,
+    managed.selections.length,
     0,
     'the host owns permission approvals',
   );
@@ -1129,5 +1153,5 @@ void test('native attached policies enforce shared rules and respect session-sco
   assert.ok(
     input.every(result => !JSON.stringify(result)?.includes('handled')),
   );
-  assert.equal(neutral.confirmations.length, 0);
+  assert.equal(neutral.selections.length, 0);
 });

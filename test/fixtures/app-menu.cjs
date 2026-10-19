@@ -205,13 +205,11 @@ async function main() {
       ),
     })),
     {
-      headings: [
-        'Project & session',
-        'Appearance',
-        'Tools & settings',
-        'Maintenance',
-      ],
+      headings: ['Workspaces', 'Appearance', 'Tools & settings', 'Maintenance'],
       project: [
+        'menu-new-agent',
+        'open-workspace-config',
+        'open-agent-templates',
         'new-session',
         'start-session',
         'resume-session',
@@ -220,6 +218,7 @@ async function main() {
       appearance: ['app-zoom', 'factory-theme', 'motion-toggle'],
       settings: [
         'open-session-settings',
+        'open-approvals',
         'open-model-settings',
         'open-accounts',
       ],
@@ -230,7 +229,10 @@ async function main() {
     },
   );
   await key('Tab');
-  assert.equal(await evaluate(() => document.activeElement.id), 'new-session');
+  assert.equal(
+    await evaluate(() => document.activeElement.id),
+    'menu-new-agent',
+  );
   await evaluate(() => document.getElementById('app-zoom').focus());
   await key('2');
   await waitFor(() => window.pidev.getZoom() !== 1);
@@ -451,7 +453,8 @@ async function main() {
   await evaluate(() => document.querySelector('.history-row').click());
   await waitFor(
     () =>
-      document.getElementById('inspector').dataset.conversationKind === 'agent',
+      document.getElementById('inspector').dataset.conversationKind ===
+      'primary',
   );
   const narrow = await evaluate(() => {
     const title = document.getElementById('inspector-title');
@@ -471,7 +474,7 @@ async function main() {
   });
   assert.ok(narrow.titleWidth >= 80, JSON.stringify(narrow));
   assert.equal(narrow.titleFits, true);
-  assert.equal(narrow.roleText, 'Agent conversation');
+  assert.equal(narrow.roleText, 'Primary agent');
   assert.equal(narrow.roleFits, true);
   assert.equal(narrow.activityFits, true);
   assert.equal(narrow.badgeVisible, true);

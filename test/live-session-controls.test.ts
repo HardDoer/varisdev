@@ -72,7 +72,7 @@ async function fixture(t: TestContext) {
   const cwd = join(root, 'project');
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  await mkdir(cwd, {recursive: true});
+  await mkdir(join(cwd, '.git'), {recursive: true});
   await mkdir(agentDir, {recursive: true});
   await writeFile(join(cwd, 'fixture.txt'), 'Live control fixture');
   const requests: Array<{
@@ -224,12 +224,26 @@ for (const scenario of ['owned', 'tree', 'fork']) {
         await operation;
       }
       const sharing = parent.prompt('/share');
-      await respond(parent, false);
+      await respond(parent);
       await sharing;
       const reporting = parent.prompt('/bug');
-      await respond(parent, true);
-      await until(() => parent.ui.snapshot().dialogs[0]?.kind === 'editor');
-      parent.ui.respond(parent.ui.snapshot().dialogs[0].id);
+      await until(
+        () =>
+          parent.ui
+            .snapshot()
+            .dialogs[0]?.terminal?.output.includes('What went wrong?') === true,
+      );
+      const report = parent.ui.snapshot().dialogs[0];
+      assert.equal(report.kind, 'terminal');
+      parent.ui.respond(report.id, {input: '\x1b'});
+      await until(
+        () =>
+          parent.ui
+            .snapshot()
+            .dialogs[0]?.terminal?.output.includes('Bug report cancelled') ===
+          true,
+      );
+      parent.ui.respond(report.id, {input: '\r'});
       await reporting;
       const exporting = parent.prompt(
         `/export ${join(env.root, 'live.jsonl')}`,

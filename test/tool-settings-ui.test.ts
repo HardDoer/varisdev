@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
-
-const execFile = promisify(execFileCallback);
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 void test(
@@ -30,7 +27,7 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError;
     try {
-      await execFile(
+      await runRuntimeCommand(
         require('electron') as string,
         [
           fileURLToPath(
@@ -39,7 +36,11 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeout: 40_000},
+        {
+          cwd: fileURLToPath(new URL('../', import.meta.url)),
+          env,
+          timeoutMs: 40_000,
+        },
       );
     } catch (error) {
       launchError = error;

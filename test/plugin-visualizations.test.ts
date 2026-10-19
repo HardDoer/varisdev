@@ -80,7 +80,7 @@ void test(
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(root, {recursive: true, force: true});
     });
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir, {recursive: true});
     await cp(
       fileURLToPath(new URL('../examples/project-board/', import.meta.url)),
@@ -131,7 +131,13 @@ void test(
       ],
       streamSimple(model, context: TranscriptContext) {
         const tools = getCurrentTools(context.messages);
-        const worker = !tools.some(tool => tool.name === 'agent_spawn');
+        const worker = context.messages.some(
+          message =>
+            message.role === 'user' &&
+            JSON.stringify(message.content).includes(
+              'Show project_board with PLAN.md and preview.png.',
+            ),
+        );
         const toolNames = tools.map(tool => tool.name);
         turns.push({worker, toolNames});
         const userIndex = context.messages.findLastIndex(

@@ -563,8 +563,9 @@ export async function createSessionWorker(
     throw new Error(
       `Current agent model provider is unavailable: ${selectedModel.provider}`,
     );
-  if (providers.length)
-    await modelRuntime.refresh({allowNetwork: false, providers});
+  // Native registrations also schedule full availability refreshes. Await a
+  // final full pass so their snapshots cannot omit the bridged providers.
+  if (providers.length) await modelRuntime.refresh({allowNetwork: false});
   if (
     selectedModel.api === 'pi-virtual' &&
     !modelRuntime.getModel(selectedModel.provider, selectedModel.id)

@@ -28,7 +28,15 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import {dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 
 export type AgentTemplateScope =
   'builtin' | 'global' | 'repository' | 'workspace';
@@ -198,6 +206,7 @@ const permissionKeys = new Set(['action', 'resource', 'effect']);
 const maxFileBytes = 100_000;
 const idSegmentPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const preparedTemplateGet = Symbol('varisdev.agent-template-get');
+const templateMutations = new Map<string, Promise<void>>();
 
 export interface PreparedAgentTemplateGet {
   readonly sourcePaths: readonly string[];
@@ -1280,6 +1289,48 @@ function writableDestination(
   return selected;
 }
 
+function templateMutationDestination(path: string): string {
+  let directory = dirname(path);
+  const suffix = [basename(path)];
+  // Resolve the nearest existing parent, including when nested scopes have
+  // not been created yet. The destination file itself is never opened here.
+  for (;;) {
+    try {
+      return join(realpathSync(directory), ...suffix);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      const parent = dirname(directory);
+      if (parent === directory) throw error;
+      suffix.unshift(basename(directory));
+      directory = parent;
+    }
+  }
+}
+
+function withTemplateMutationQueue<T>(
+  path: string,
+  mutate: () => Promise<T>,
+): Promise<T> {
+  const destination = templateMutationDestination(path);
+  const key =
+    process.platform === 'win32' ? destination.toLowerCase() : destination;
+  // Pi resolves the destination before queueing. Order those lookups too so
+  // they cannot hold a Windows file handle during an earlier atomic rename.
+  const operation = (templateMutations.get(key) ?? Promise.resolve()).then(() =>
+    withFileMutationQueue(destination, mutate),
+  );
+  const tail = operation.then(
+    () => {},
+    () => {},
+  );
+  templateMutations.set(key, tail);
+  void tail.then(() => {
+    if (templateMutations.get(key) === tail) templateMutations.delete(key);
+  });
+  return operation;
+}
+
 export async function saveAgentTemplate(
   cwd: string,
   value: unknown,
@@ -1294,7 +1345,7 @@ export async function saveAgentTemplate(
   const content = serializeTemplate(input);
   if (Buffer.byteLength(content, 'utf8') > maxFileBytes)
     throw new Error(`Agent template file exceeds ${maxFileBytes} bytes.`);
-  await withFileMutationQueue(path, async () => {
+  await withTemplateMutationQueue(path, async () => {
     const destinationDirectory = (await templateParentDirectory(
       directory,
       input.id,
@@ -1330,7 +1381,7 @@ export async function deleteAgentTemplate(
   if (sourcePath !== undefined && !isAbsolute(sourcePath))
     throw new Error('Agent template sourcePath must be absolute.');
   const {directory, path} = writableDestination(cwd, scope, id, sourcePath);
-  await withFileMutationQueue(path, async () => {
+  await withTemplateMutationQueue(path, async () => {
     if (!(await templateParentDirectory(directory, id, false))) return;
     if (!(await exists(path))) return;
     await assertReplaceable(path, scope, id);

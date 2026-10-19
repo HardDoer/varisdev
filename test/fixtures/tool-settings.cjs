@@ -85,6 +85,7 @@ const hub = {
 };
 app.setPath('userData', join(directory, 'profile'));
 app.setPath('sessionData', join(directory, 'session'));
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 function handle(channel, action) {
   ipcMain.handle(channel, async (event, ...args) => {
     assert.equal(event.sender, browser.webContents);
@@ -105,7 +106,12 @@ async function waitFor(fn) {
     if (await evaluate(fn)) return;
     await delay(20);
   }
-  throw new Error(`Timed out: ${fn}`);
+  const state = await evaluate(() => ({
+    ready: document.readyState,
+    visibility: document.visibilityState,
+    error: document.getElementById('app-error')?.textContent,
+  }));
+  throw new Error(`Timed out: ${fn}\nRenderer: ${JSON.stringify(state)}`);
 }
 async function click(id) {
   await evaluate(id => document.getElementById(id).click(), id);

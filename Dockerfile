@@ -9,7 +9,7 @@ RUN npm ci --ignore-scripts --no-audit --no-fund \
 COPY . .
 RUN npm run typecheck \
     && npm run desktop:build \
-    && node --test test/web-install.test.ts test/release-web.test.ts \
+    && node --test test/web-install.test.ts test/release-web.test.ts test/production-build.test.ts \
     && npm run release:web -- /release
 
 FROM alpine:3.24.2 AS release

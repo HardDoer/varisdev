@@ -65,7 +65,7 @@ void test(
     const directory = await mkdtemp(join(tmpdir(), 'varisdev-profile-parent-'));
     const agentDir = join(directory, 'config');
     const cwd = join(directory, 'project');
-    await mkdir(cwd);
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir);
     await writeFile(
       join(cwd, 'AGENTS.md'),

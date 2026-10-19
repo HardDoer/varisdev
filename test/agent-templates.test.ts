@@ -923,11 +923,18 @@ void test('updates serialize through one atomic destination and copy caller inpu
     id: 'worker',
     name: 'First',
     instructions: 'First instructions.',
+    permissions: [{action: 'read', resource: 'first.txt', effect: 'allow'}],
   };
   const first = saveAgentTemplate(paths.cwd, input);
   input.name = 'Mutated after call';
   input.instructions = 'Mutated after call.';
-  await first;
+  input.permissions[0].resource = 'mutated.txt';
+  const initial = await first;
+  assert.equal(initial.name, 'First');
+  assert.equal(initial.instructions, 'First instructions.');
+  assert.deepEqual(initial.permissions, [
+    {action: 'read', resource: 'first.txt', effect: 'allow'},
+  ]);
   await Promise.all(
     Array.from({length: 12}, (_, index) =>
       saveAgentTemplate(paths.cwd, {
@@ -942,6 +949,81 @@ void test('updates serialize through one atomic destination and copy caller inpu
   assert.equal(saved?.name, 'Worker 11');
   assert.equal(saved?.instructions, 'Instructions 11.');
   assert.deepEqual(await readdir(paths.globalDirectory), ['worker.md']);
+  const removed = deleteAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id: 'worker',
+  });
+  const recreated = saveAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id: 'worker',
+    instructions: 'Recreated after deletion.',
+  });
+  await Promise.all([removed, recreated]);
+  assert.equal(
+    (await resolveAgentTemplate(paths.cwd, 'worker'))?.instructions,
+    'Recreated after deletion.',
+  );
+});
+
+void test('template mutations share destinations through workspace and settings aliases before creation', async t => {
+  const paths = await isolate(t);
+  const repositoryAlias = join(paths.root, 'repository-alias');
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  await symlink(paths.repository, repositoryAlias, linkType);
+  const aliasCwd = join(repositoryAlias, 'packages', 'app');
+  const workspaceSaves = await Promise.all(
+    Array.from({length: 12}, (_, index) =>
+      saveAgentTemplate(index % 2 ? aliasCwd : paths.cwd, {
+        scope: 'workspace',
+        id: 'team/worker',
+        instructions: `Workspace ${index}.`,
+      }),
+    ),
+  );
+  assert.equal(new Set(workspaceSaves.map(saved => saved.sourcePath)).size, 1);
+  assert.equal(
+    (await resolveAgentTemplate(aliasCwd, 'team/worker'))?.instructions,
+    'Workspace 11.',
+  );
+
+  const settingsRoot = join(paths.root, 'settings-root');
+  const settingsAlias = join(paths.root, 'settings-alias');
+  await mkdir(settingsRoot);
+  await symlink(settingsRoot, settingsAlias, linkType);
+  const settingsHomes = [settingsRoot, settingsAlias].map(path =>
+    join(path, 'missing', 'home'),
+  );
+  const saves = Array.from({length: 12}, (_, index) => {
+    process.env.PI_CODING_AGENT_DIR = settingsHomes[index % 2];
+    return saveAgentTemplate(paths.cwd, {
+      scope: 'global',
+      id: 'team/worker',
+      instructions: `Global ${index}.`,
+    });
+  });
+  await Promise.all(saves);
+  assert.equal(
+    (await resolveAgentTemplate(paths.cwd, 'team/worker'))?.instructions,
+    'Global 11.',
+  );
+  const removed = deleteAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id: 'team/worker',
+  });
+  process.env.PI_CODING_AGENT_DIR = settingsHomes[0];
+  const recreated = saveAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id: 'team/worker',
+    instructions: 'Recreated through the canonical settings path.',
+  });
+  await Promise.all([removed, recreated]);
+  assert.equal(
+    (await resolveAgentTemplate(paths.cwd, 'team/worker'))?.instructions,
+    'Recreated through the canonical settings path.',
+  );
+  assert.deepEqual(await readdir(join(settingsHomes[0], 'agents', 'team')), [
+    'worker.md',
+  ]);
 });
 
 void test('refuses invalid input and will not replace or delete unexpected files', async t => {
@@ -1048,7 +1130,7 @@ void test('workspace templates are machine-local, repository-wide, and isolated 
 void test('uses cwd as the repository scope when no git ancestor exists', async t => {
   const paths = await isolate(t);
   const standalone = join(paths.root, 'standalone');
-  await mkdir(standalone);
+  await mkdir(join(standalone, CONFIG_DIR_NAME), {recursive: true});
   await saveAgentTemplate(standalone, {
     scope: 'repository',
     id: 'local',
@@ -1057,6 +1139,7 @@ void test('uses cwd as the repository scope when no git ancestor exists', async 
   });
   const listed = await listAgentTemplates(standalone);
   const config = workspaceConfigPaths(standalone, paths.agentDir);
+  assert.equal(config.projectDir, standalone);
   assert.equal(
     listed.sources.find(source => source.scope === 'repository')?.directory,
     join(config.repositoryConfigDir, 'agents'),

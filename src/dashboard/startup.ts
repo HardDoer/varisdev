@@ -7,6 +7,7 @@ import type {ImageContent} from '@earendil-works/pi-ai';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {basename, dirname, isAbsolute, join, relative, sep} from 'node:path';
 import type {DesktopStartup} from '../desktop/startup.ts';
+import {piModuleURL} from '../runtime/pi-paths.ts';
 
 export async function restoreDesktopSession(
   startup: DesktopStartup,
@@ -54,12 +55,7 @@ export async function desktopInitialPrompts(
   }));
   if (args.fileArgs.length) {
     // Pi's file processor is distributed with the SDK but is not a root export.
-    const files = (await import(
-      new URL(
-        './cli/file-processor.js',
-        import.meta.resolve('@earendil-works/pi-coding-agent'),
-      ).href
-    )) as {
+    const files = (await import(piModuleURL('cli/file-processor.js').href)) as {
       processFileArguments(
         files: string[],
         options: {autoResizeImages: boolean},

@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
+import {stripVTControlCharacters} from 'node:util';
 import {
   ModelRegistry,
   ModelRuntime,
@@ -33,6 +34,7 @@ void test('desktop and worker adapters use SDK trust, provider registration, sco
   });
   await mkdir(join(agentDir, 'extensions'), {recursive: true});
   await mkdir(join(cwd, '.pi', 'extensions'), {recursive: true});
+  await mkdir(join(cwd, '.git'), {recursive: true});
   const capturePath = join(root, 'capture.json');
   const trustPath = join(root, 'trust-context.json');
   const projectPath = join(root, 'project-loaded.txt');
@@ -114,9 +116,28 @@ void test('desktop and worker adapters use SDK trust, provider registration, sco
     });
     await assert.rejects(readFile(projectPath), {code: 'ENOENT'});
     const command = untrusted.prompt('/settings');
-    while (!untrusted.ui.snapshot().dialogs.length) await delay(5);
+    const deadline = Date.now() + 3000;
+    while (
+      !untrusted.ui.snapshot().dialogs[0]?.terminal?.revision &&
+      Date.now() < deadline
+    )
+      await delay(5);
     const dialog = untrusted.ui.snapshot().dialogs[0];
-    assert.ok(dialog.options?.includes('Steering queue: one-at-a-time'));
+    assert.equal(dialog?.kind, 'terminal');
+    untrusted.ui.respond(dialog.id, {input: 'Steering mode'});
+    while (
+      !untrusted.ui
+        .snapshot()
+        .dialogs[0]?.terminal?.output.includes('Steering mode') &&
+      Date.now() < deadline
+    )
+      await delay(5);
+    assert.match(
+      stripVTControlCharacters(
+        untrusted.ui.snapshot().dialogs[0]?.terminal?.output ?? '',
+      ),
+      /Steering mode\s+one-at-a-time/,
+    );
     untrusted.ui.respond(dialog.id);
     await command;
   } finally {

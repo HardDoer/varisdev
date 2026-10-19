@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 
 void test(
   'actual Pi SDK terminal widgets render in Electron',
@@ -27,7 +26,7 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError: unknown;
     try {
-      await promisify(execFileCallback)(
+      await runRuntimeCommand(
         createRequire(import.meta.url)('electron') as string,
         [
           fileURLToPath(
@@ -36,7 +35,11 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeout: 100_000, maxBuffer: 2 * 1024 * 1024},
+        {
+          cwd: fileURLToPath(new URL('../', import.meta.url)),
+          env,
+          timeoutMs: 100_000,
+        },
       );
     } catch (error) {
       launchError = error;

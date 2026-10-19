@@ -608,7 +608,6 @@ async function main() {
   });
   assert.equal(runtime.getModels('native-fixture').length, 36);
   assert.equal((await runtime.getAvailable('native-fixture')).length, 36);
-  assert.equal(runtime.getAvailableSnapshot().length, 36);
   const auth = await runtime.checkAuth('native-fixture');
   assert.notEqual(auth, undefined);
   authKind = typeof auth;
@@ -630,6 +629,7 @@ async function main() {
 
   browser = new BrowserWindow({
     show: false,
+    enableLargerThanScreen: true,
     width: 1600,
     height: 1000,
     webPreferences: {
@@ -640,6 +640,8 @@ async function main() {
       backgroundThrottling: false,
     },
   });
+  // Hidden Windows windows pause animation frames used by the renderer checks.
+  browser.showInactive();
   browser.webContents.on('console-message', (_event, level, message) => {
     if (level >= 3) errors.push(message);
   });

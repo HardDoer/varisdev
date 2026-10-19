@@ -294,8 +294,7 @@ export async function createDashboardParent(
       inherited.modelRegistry,
       modelRuntime,
     );
-    if (providers.length)
-      await modelRuntime.refresh({allowNetwork: false, providers});
+    if (providers.length) await modelRuntime.refresh({allowNetwork: false});
   }
   const startupModel = startup?.model
     ? modelRuntime.getModel(startup.model.provider, startup.model.id)

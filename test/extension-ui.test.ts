@@ -285,7 +285,9 @@ async function selectorRuntime(t: TestContext) {
   return {
     modelRuntime,
     currentModel: modelRuntime.getModel('selector-fixture', 'alpha')!,
-    scopedModels: [],
+    scopedModels: ['alpha', 'beta'].map(id => ({
+      model: modelRuntime.getModel('selector-fixture', id)!,
+    })),
     initialSearch: 'selector-fixture/beta',
   };
 }
@@ -669,7 +671,10 @@ void test('extension reload resets registrations and dialogs while preserving th
   let oldRawCalls = 0;
   let disposedViews = 0;
   const editorFactory: Factory = (screen, theme, keys) => {
-    keys.setUserBindings({'tui.input.submit': 'enter', 'tui.input.tab': 'tab'});
+    keys.setUserBindings({
+      'tui.input.submit': 'enter',
+      'tui.input.tab': 'tab',
+    });
     return new Editor(screen, theme);
   };
   ui.setEditorComponent(editorFactory);

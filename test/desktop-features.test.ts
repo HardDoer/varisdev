@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
+import {stripVTControlCharacters} from 'node:util';
 import {
   ModelRegistry,
   ModelRuntime,
@@ -26,6 +27,12 @@ async function waitFor(check: () => boolean, description: string) {
   const deadline = Date.now() + 3000;
   while (!check() && Date.now() < deadline) await delay(5);
   assert.ok(check(), description);
+}
+
+function terminalText(parent: DesktopDashboardParent) {
+  return stripVTControlCharacters(
+    parent.ui.snapshot().dialogs[0]?.terminal?.output ?? '',
+  );
 }
 
 async function commandDialog(parent: DesktopDashboardParent, text: string) {
@@ -73,6 +80,7 @@ async function fixture(
     mkdir(join(cwd, '.pi', 'skills', 'project-skill'), {recursive: true}),
     mkdir(join(cwd, '.pi', 'prompts'), {recursive: true}),
     mkdir(join(cwd, '.pi', 'extensions'), {recursive: true}),
+    mkdir(join(cwd, '.git'), {recursive: true}),
   ]);
   await writeFile(
     join(agentDir, 'skills', 'user-skill', 'SKILL.md'),
@@ -510,7 +518,7 @@ void test(
   'desktop SDK expands skills and templates and executes builtins locally',
   {timeout: 15000},
   async t => {
-    const {parent, requests, cwd} = await fixture(t);
+    const {parent, requests} = await fixture(t);
     assert.equal(parent.state.snapshot().session.thinkingLevel, 'low');
     await parent.prompt('/skill:project-skill extra skill arguments');
     const skillRequest = JSON.stringify(requests.at(-1)?.messages);
@@ -529,13 +537,18 @@ void test(
     await parent.prompt('/name Renamed fixture');
     const transcriptBeforeReport = parent.state.snapshot().conversation;
     const report = await commandDialog(parent, '/session');
-    assert.equal(report.dialog.kind, 'info');
-    assert.equal(report.dialog.title, 'Session information');
-    assert.match(report.dialog.message!, /Name: Renamed fixture/);
-    assert.ok(report.dialog.message!.includes(cwd));
+    assert.equal(report.dialog.kind, 'terminal');
+    assert.equal(report.dialog.title, 'Session');
+    await waitFor(
+      () => terminalText(parent).includes('Name: Renamed fixture'),
+      'Pi renders the active session name',
+    );
+    const reportText = terminalText(parent);
+    assert.match(reportText, /Session Info/);
+    assert.ok(reportText.includes(parent.state.snapshot().session.id));
     assert.match(
-      report.dialog.message!,
-      /Messages:.*\nTool calls:.*\nTokens:.*\nCost:/,
+      reportText,
+      /Messages[\s\S]*Tools:[\s\S]*Tokens[\s\S]*Cache Warming/,
     );
     parent.ui.respond(report.dialog.id);
     await report.operation;
@@ -715,59 +728,53 @@ void test(
   async t => {
     const {parent, requests, settingsPath} = await fixture(t);
     const settings = await commandDialog(parent, '/settings');
-    assert.equal(settings.dialog.kind, 'select');
-    assert.equal(settings.dialog.title, 'Session settings');
-    assert.ok(settings.dialog.options!.includes('Auto retry: off'));
-    parent.ui.respond(settings.dialog.id, 'Auto retry: off');
+    assert.equal(settings.dialog.kind, 'terminal');
+    assert.equal(settings.dialog.title, 'Settings');
+    assert.match(terminalText(parent), /Auto-compact\s+false/);
+    parent.ui.respond(settings.dialog.id, {input: '\r'});
     await waitFor(
-      () => parent.ui.snapshot().dialogs[0]?.title === 'Auto retry',
-      'Settings opens the retry submenu',
+      () => /Auto-compact\s+true/.test(terminalText(parent)),
+      'The native setting updates in place',
     );
-    const retry = parent.ui.snapshot().dialogs[0];
-    assert.equal(retry.selected, 'off');
-    assert.deepEqual(retry.options, ['on', 'off']);
-    parent.ui.respond(retry.id, 'on');
-    await waitFor(
-      () =>
-        !!parent.ui.snapshot().dialogs[0]?.options?.includes('Auto retry: on'),
-      'Changed setting is reflected in the menu',
-    );
-    parent.ui.respond(parent.ui.snapshot().dialogs[0].id);
+    parent.ui.respond(settings.dialog.id, {input: '\x1b'});
     await settings.operation;
     assert.equal(
-      JSON.parse(await readFile(settingsPath, 'utf8')).retry.enabled,
+      JSON.parse(await readFile(settingsPath, 'utf8')).compaction.enabled,
       true,
     );
 
     await parent.reload();
     const reloaded = await commandDialog(parent, '/settings');
-    assert.ok(reloaded.dialog.options!.includes('Auto retry: on'));
-    parent.ui.respond(reloaded.dialog.id, 'Auto retry: on');
+    assert.match(terminalText(parent), /Auto-compact\s+true/);
+    parent.ui.respond(reloaded.dialog.id, {input: 'Warnings'});
     await waitFor(
-      () => parent.ui.snapshot().dialogs[0]?.title === 'Auto retry',
-      'Reloaded settings retain the selected value',
+      () =>
+        terminalText(parent).includes('Enable or disable individual warnings'),
+      'Pi filters its settings list',
     );
-    const cancelledRetry = parent.ui.snapshot().dialogs[0];
-    assert.equal(cancelledRetry.selected, 'on');
-    parent.ui.respond(cancelledRetry.id);
+    parent.ui.respond(reloaded.dialog.id, {input: '\r'});
     await waitFor(
-      () => parent.ui.snapshot().dialogs[0]?.title === 'Session settings',
-      'Cancelling a submenu returns to settings',
+      () => terminalText(parent).includes('Anthropic extra usage'),
+      'Pi opens its warning submenu',
     );
-    const nested = parent.ui.snapshot().dialogs[0];
-    parent.ui.respond(nested.id, 'Auto retry: on');
+    parent.ui.respond(reloaded.dialog.id, {input: '\x1b'});
     await waitFor(
-      () => parent.ui.snapshot().dialogs[0]?.title === 'Auto retry',
-      'Retry submenu opens before Stop',
+      () =>
+        terminalText(parent).includes('Enable or disable individual warnings'),
+      'Cancelling the submenu returns to settings',
     );
-    const stoppedRetry = parent.ui.snapshot().dialogs[0];
+    parent.ui.respond(reloaded.dialog.id, {input: '\r'});
+    await waitFor(
+      () => terminalText(parent).includes('Anthropic extra usage'),
+      'The native submenu opens before Stop',
+    );
     await parent.abort();
     await reloaded.operation;
-    parent.ui.respond(stoppedRetry.id, 'off');
+    parent.ui.respond(reloaded.dialog.id, {input: '\r'});
     await delay(20);
     assert.deepEqual(parent.ui.snapshot().dialogs, []);
     assert.equal(
-      JSON.parse(await readFile(settingsPath, 'utf8')).retry.enabled,
+      JSON.parse(await readFile(settingsPath, 'utf8')).compaction.enabled,
       true,
     );
     await assert.rejects(
@@ -783,7 +790,7 @@ void test(
   'native name input and session information can be dismissed or stopped without transcript messages',
   {timeout: 15000},
   async t => {
-    const {parent, requests, cwd} = await fixture(t);
+    const {parent, requests} = await fixture(t);
     const transcript = parent.state.snapshot().conversation;
     const rename = await commandDialog(parent, '/name');
     assert.equal(rename.dialog.kind, 'input');
@@ -802,10 +809,15 @@ void test(
     assert.equal(parent.state.snapshot().session.name, 'Named through input');
 
     const info = await commandDialog(parent, '/session');
-    assert.equal(info.dialog.kind, 'info');
-    assert.equal(info.dialog.title, 'Session information');
-    assert.match(info.dialog.message!, /Name: Named through input/);
-    assert.ok(info.dialog.message!.includes(cwd));
+    assert.equal(info.dialog.kind, 'terminal');
+    assert.equal(info.dialog.title, 'Session');
+    await waitFor(
+      () => terminalText(parent).includes('Name: Named through input'),
+      'Pi renders the renamed session',
+    );
+    assert.ok(
+      terminalText(parent).includes(parent.state.snapshot().session.id),
+    );
     parent.ui.respond(info.dialog.id);
     await info.operation;
     const stoppedInfo = await commandDialog(parent, '/session');
@@ -1056,7 +1068,8 @@ void test(
     await parent.reload();
     assert.deepEqual(parent.ui.snapshot().editor, composer);
     assert.equal(parent.ui.context.getEditorComponent(), undefined);
-    assert.equal(parent.ui.snapshot().extensionEditor, undefined);
+    assert.ok(parent.ui.snapshot().extensionEditor);
+    assert.notEqual(parent.ui.snapshot().extensionEditor!.id, editor.id);
     assert.deepEqual(parent.ui.snapshot().notifications, []);
     parent.ui.respond(editor.id, 'stale editor button');
     assert.deepEqual(parent.ui.snapshot().dialogs, []);
@@ -1150,25 +1163,27 @@ void test('tool settings follow real Pi scope changes while keeping saved global
     'session',
   );
 
-  const applyScope = async (action: string) => {
+  const applyScope = async (onlyCurrent: boolean) => {
     const {operation, dialog} = await commandDialog(parent, '/scoped-models');
-    assert.equal(dialog.kind, 'select');
-    parent.ui.respond(dialog.id, action);
-    await waitFor(
-      () =>
-        Boolean(
-          parent.ui.snapshot().dialogs[0]?.id !== dialog.id &&
-          parent.ui.snapshot().dialogs[0]?.title === 'Scoped models',
-        ),
-      'The scope editor returns to its menu',
-    );
-    parent.ui.respond(
-      parent.ui.snapshot().dialogs[0].id,
-      'Apply to this session',
-    );
+    assert.equal(dialog.kind, 'terminal');
+    assert.match(terminalText(parent), /Model Configuration/);
+    if (onlyCurrent) {
+      parent.ui.respond(dialog.id, {input: '\x18'});
+      parent.ui.respond(dialog.id, {input: 'desktop-fixture/first-model'});
+      await waitFor(
+        () => terminalText(parent).includes('desktop-fixture/first-model'),
+        'The native scope editor filters the current model',
+      );
+      parent.ui.respond(dialog.id, {input: '\r'});
+      await waitFor(
+        () => /1\/\d+ enabled/.test(terminalText(parent)),
+        'The native scope editor enables the selected model',
+      );
+    } else parent.ui.respond(dialog.id, {input: '\x01'});
+    parent.ui.respond(dialog.id, {input: '\x1b'});
     await operation;
   };
-  await applyScope('Enable only current model');
+  await applyScope(true);
   assert.deepEqual((await parent.features()).scopedModels, [
     {
       model: {
@@ -1202,7 +1217,7 @@ void test('tool settings follow real Pi scope changes while keeping saved global
     enabledModels,
   );
 
-  await applyScope('Enable all models');
+  await applyScope(false);
   assert.deepEqual((await parent.features()).scopedModels, []);
   const restored = await service.getToolSettings('session');
   assert.ok(restored.models.some(model => model.id === 'first-model'));

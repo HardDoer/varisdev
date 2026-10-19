@@ -150,6 +150,7 @@ void test(
     let worker: AgentWorker | undefined;
     let workerTools: string[] = [];
     let workerCommands: string[] = [];
+    let workerModels: string[] = [];
     let workerStopped = false;
     t.after(async () => {
       await worker?.dispose();
@@ -164,7 +165,7 @@ void test(
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(directory, {recursive: true, force: true});
     });
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir, {recursive: true});
     await writeFile(
       join(agentDir, 'settings.json'),
@@ -240,9 +241,12 @@ void test(
       thinkingLevel: 'high',
       projectTrustOverride: true,
       agentToolsExtension: pi => {
-        pi.on('session_start', () => {
+        pi.on('session_start', (_event, ctx) => {
           workerTools = pi.getAllTools().map(tool => tool.name);
           workerCommands = pi.getCommands().map(command => command.name);
+          workerModels = ctx.modelRegistry
+            .getAvailable()
+            .map(model => `${model.provider}/${model.id}`);
         });
         pi.on('session_shutdown', () => {
           workerStopped = true;
@@ -253,6 +257,7 @@ void test(
       workerTools.includes('codemode') && workerTools.includes('tool_search'),
     );
     assert.ok(workerCommands.includes('mcp'));
+    assert.ok(workerModels.includes('varisdev-agent-test/worker-model'));
     const initialFeatures = await worker.features!();
     assert.deepEqual(initialFeatures.agentProfile, {
       id: 'default',
@@ -564,7 +569,7 @@ void test(
     const cwd = join(directory, 'project');
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir, {recursive: true});
     const providerId = 'worker-pin-test';
     const pinnedId = 'pinned-model';
@@ -765,7 +770,7 @@ void test(
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(directory, {recursive: true, force: true});
     });
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(0, '127.0.0.1', resolve);
@@ -1081,7 +1086,7 @@ void test(
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(directory, {recursive: true, force: true});
     });
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(0, '127.0.0.1', resolve);
@@ -1344,7 +1349,7 @@ void test(
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(directory, {recursive: true, force: true});
     });
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir, {recursive: true});
     await writeFile(
       join(agentDir, 'settings.json'),
@@ -1694,11 +1699,6 @@ void test(
       await readFile(initial.resultFile!, 'utf8'),
       'Initial context retained.',
     );
-    const prompt = JSON.stringify(requests[1].messages.at(-1)?.content);
-    assert.match(prompt, /Active workspace commit skill marker/);
-    assert.ok(prompt.includes(skillPath));
-    assert.ok(prompt.includes(`References are relative to ${skillDirectory}.`));
-    assert.match(prompt, /Use the requested commit message/);
     const text = requests[1].messages.at(-1)!.content;
     const content =
       typeof text === 'string'
@@ -1706,6 +1706,12 @@ void test(
         : (text as Array<{text?: string}>)
             .map(part => part.text ?? '')
             .join('\n');
+    assert.match(content, /Active workspace commit skill marker/);
+    assert.ok(content.includes(skillPath));
+    assert.ok(
+      content.includes(`References are relative to ${skillDirectory}.`),
+    );
+    assert.match(content, /Use the requested commit message/);
     const configuration = content.match(
       /Use these exact agent_spawn configuration arguments: (\{[^\n]+\})/,
     );
@@ -2365,7 +2371,7 @@ void test(
     const cwd = join(directory, 'project');
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    await mkdir(cwd, {recursive: true});
+    await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir, {recursive: true});
     await writeFile(
       join(agentDir, 'settings.json'),

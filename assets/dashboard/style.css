@@ -683,8 +683,9 @@ main > .welcome {
 .scene-labels {
   display: flex;
   gap: 6px;
-  padding: 6px 12px;
-  overflow-x: auto;
+  padding: 4px 12px;
+  overflow-x: scroll;
+  scrollbar-width: thin;
   overscroll-behavior: contain;
 }
 .scene-label {

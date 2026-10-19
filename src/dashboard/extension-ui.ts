@@ -19,13 +19,12 @@ import {
   type Theme,
 } from '@earendil-works/pi-coding-agent';
 
+import {piModuleURL} from '../runtime/pi-paths.ts';
+
 // The SDK exports Theme at its root, but its theme discovery helpers only live
-// in this module. Resolve from the package entry so desktop builds work too.
+// in this module.
 const themes = (await import(
-  new URL(
-    './modes/interactive/theme/theme.js',
-    import.meta.resolve('@earendil-works/pi-coding-agent'),
-  ).href
+  piModuleURL('modes/interactive/theme/theme.js').href
 )) as {
   getThemeByName(name: string): Theme | undefined;
   resolveThemeSetting(
@@ -74,7 +73,7 @@ type AutocompleteFactory = Parameters<
 >[0];
 type AutocompleteProvider = Parameters<AutocompleteFactory>[0];
 
-const sdkEntry = import.meta.resolve('@earendil-works/pi-coding-agent');
+const sdkEntry = piModuleURL('index.js');
 const tui = (await import(
   pathToFileURL(createRequire(sdkEntry).resolve('@earendil-works/pi-tui')).href
 )) as {

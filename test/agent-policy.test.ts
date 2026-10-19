@@ -11,7 +11,7 @@ import {createServer, type ServerResponse} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {pathToFileURL} from 'node:url';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {test} from 'node:test';
 import {Type} from 'typebox';
 import {
@@ -39,6 +39,10 @@ import {
   isAgentToolWhollyDenied,
   type AgentPermissionRule,
 } from '../src/agents/policy.ts';
+
+function permissionPath(path: string): string {
+  return path.replaceAll('\\', '/');
+}
 
 type Handler = (
   event: Record<string, unknown>,
@@ -248,6 +252,7 @@ void test('home expansion applies only to leading rule patterns and leaves reque
 });
 
 void test('tool mappings include VarisDev mutators, patch destinations, and actual template IDs', () => {
+  const cwd = resolve('/workspace');
   for (const name of [
     'read',
     'json_query',
@@ -312,11 +317,11 @@ void test('tool mappings include VarisDev mutators, patch destinations, and actu
         inputImagePaths: ['a.png'],
         outputDir: 'images',
       },
-      '/workspace',
+      cwd,
     ),
     [
-      {action: 'read', resource: '/workspace/a.png'},
-      {action: 'edit', resource: '/workspace/images/**'},
+      {action: 'read', resource: permissionPath(join(cwd, 'a.png'))},
+      {action: 'edit', resource: permissionPath(join(cwd, 'images', '**'))},
     ],
   );
   assert.deepEqual(agentToolPermissions('custom_tool', {path: 'a.txt'}), [
@@ -325,13 +330,13 @@ void test('tool mappings include VarisDev mutators, patch destinations, and actu
   assert.deepEqual(agentToolPermissions('query', {path: 'a.txt'}), [
     {action: 'query', resource: 'a.txt'},
   ]);
-  assert.deepEqual(
-    agentToolPermissions('read', {path: '../secret'}, '/workspace'),
-    [
-      {action: 'read', resource: '/secret'},
-      {action: 'external_directory', resource: '/secret'},
-    ],
-  );
+  assert.deepEqual(agentToolPermissions('read', {path: '../secret'}, cwd), [
+    {action: 'read', resource: permissionPath(resolve(cwd, '../secret'))},
+    {
+      action: 'external_directory',
+      resource: permissionPath(resolve(cwd, '../secret')),
+    },
+  ]);
 });
 
 void test('media permissions use actual trimmed and environment-resolved paths without normalizing them twice', async t => {
@@ -346,7 +351,7 @@ void test('media permissions use actual trimmed and environment-resolved paths w
     else process.env.OPENAI_IMAGE_OUTPUT_DIR = previous;
     await rm(root, {recursive: true, force: true});
   });
-  await mkdir(cwd);
+  await mkdir(join(cwd, '.git'), {recursive: true});
   await mkdir(outside);
   process.env.OPENAI_IMAGE_OUTPUT_DIR = outside;
   const outsideGuard = harness(
@@ -363,7 +368,7 @@ void test('media permissions use actual trimmed and environment-resolved paths w
       outputDir,
     });
     assert.match(denied.reason!, /permission denied: external_directory/);
-    assert.ok(denied.reason!.includes(outside));
+    assert.ok(denied.reason!.includes(permissionPath(outside)));
   }
   const protectedGuard = harness(
     createAgentPolicyExtension({
@@ -393,7 +398,7 @@ void test('media permissions use actual trimmed and environment-resolved paths w
   const denied = await outsideGuard.call('openai_image', input);
   assert.match(denied.reason!, /permission denied: external_directory/);
   assert.ok(
-    denied.reason!.includes(outsideImage),
+    denied.reason!.includes(permissionPath(outsideImage)),
     'the resolved literal @ and trailing space identify the actual image',
   );
 });
@@ -441,9 +446,14 @@ void test('template mutations check physical scoped paths and outside-directory 
       const input = {action, scope, id: 'src/helper'};
       const outside = scope !== 'repository';
       assert.deepEqual(agentToolPermissions('agent_templates', input, cwd), [
-        {action: 'edit', resource: targets[scope]},
+        {action: 'edit', resource: permissionPath(targets[scope])},
         ...(outside
-          ? [{action: 'external_directory', resource: targets[scope]}]
+          ? [
+              {
+                action: 'external_directory',
+                resource: permissionPath(targets[scope]),
+              },
+            ]
           : []),
       ]);
       assert.equal(
@@ -477,7 +487,7 @@ void test('template mutations authorize an explicit ancestor sourcePath', async 
     const input = {action, scope: 'repository', id: 'helper', sourcePath};
     assert.equal(
       agentToolPermissions('agent_templates', input, cwd)[0].resource,
-      sourcePath,
+      permissionPath(sourcePath),
     );
     assert.match(
       (await h.call('agent_templates', input, true)).reason!,
@@ -562,7 +572,7 @@ void test('template gets authorize actual raw and effective definition sources',
     assert.match(denied.reason!, /permission denied: read/);
     assert.ok(
       denied.reason!.includes(
-        scope === 'global' ? globalPath : nestedRepositoryPath,
+        permissionPath(scope === 'global' ? globalPath : nestedRepositoryPath),
       ),
     );
   }
@@ -591,7 +601,7 @@ void test('template gets authorize actual raw and effective definition sources',
     });
     assert.match(effective.reason!, /permission denied: external_directory/);
     assert.ok(
-      effective.reason!.includes(globalPath),
+      effective.reason!.includes(permissionPath(globalPath)),
       'effective gets authorize lower contributing scopes too',
     );
     const contributor = await contributingGuard.call('agent_templates', {
@@ -599,7 +609,7 @@ void test('template gets authorize actual raw and effective definition sources',
       id,
     });
     assert.match(contributor.reason!, /permission denied: read/);
-    assert.ok(contributor.reason!.includes(globalPath));
+    assert.ok(contributor.reason!.includes(permissionPath(globalPath)));
   }
   assert.equal(
     await readGuard.call('query', {path: 'src/helper'}),
@@ -800,6 +810,7 @@ void test('shell outside-directory checks infer static directories, arguments, r
   const cwd = join(root, 'project');
   const outside = join(root, 'outside');
   await mkdir(join(cwd, 'nested'), {recursive: true});
+  await mkdir(join(cwd, '.git'));
   await mkdir(outside);
   await symlink(outside, join(cwd, 'escape'), 'dir');
   const h = harness(
@@ -1146,8 +1157,11 @@ void test('canonical paths catch symlink escapes and nonexistent write targets w
   await symlink(outside, join(cwd, 'linked'), 'junction');
   const read = agentToolPermissions('read', {path: 'linked/secret.json'}, cwd);
   assert.deepEqual(read, [
-    {action: 'read', resource: join(outside, 'secret.json')},
-    {action: 'external_directory', resource: join(outside, 'secret.json')},
+    {action: 'read', resource: permissionPath(join(outside, 'secret.json'))},
+    {
+      action: 'external_directory',
+      resource: permissionPath(join(outside, 'secret.json')),
+    },
   ]);
   const write = agentToolPermissions(
     'write',
@@ -1155,11 +1169,17 @@ void test('canonical paths catch symlink escapes and nonexistent write targets w
     cwd,
   );
   assert.deepEqual(write, [
-    {action: 'edit', resource: join(outside, 'new/deep/file.ts')},
-    {action: 'external_directory', resource: join(outside, 'new/deep/file.ts')},
+    {
+      action: 'edit',
+      resource: permissionPath(join(outside, 'new/deep/file.ts')),
+    },
+    {
+      action: 'external_directory',
+      resource: permissionPath(join(outside, 'new/deep/file.ts')),
+    },
   ]);
   assert.deepEqual(agentToolPermissions('read', {path: '../shared.ts'}, cwd), [
-    {action: 'read', resource: join(project, 'shared.ts')},
+    {action: 'read', resource: permissionPath(join(project, 'shared.ts'))},
   ]);
   assert.deepEqual(
     agentToolPermissions('grep', {pattern: '../regex', path: '.'}, cwd),
@@ -1169,7 +1189,7 @@ void test('canonical paths catch symlink escapes and nonexistent write targets w
     agentToolPermissions('grep', {pattern: 'name', path: outside}, cwd),
     [
       {action: 'grep', resource: 'name'},
-      {action: 'external_directory', resource: outside},
+      {action: 'external_directory', resource: permissionPath(outside)},
     ],
   );
   const h = harness(
@@ -1315,8 +1335,8 @@ void test('query permission checks use actual matched files and retain the execu
   await writeFile(join(root, 'public-later.json'), '{}');
   assert.equal(await approved.call('json_query', input), undefined);
   assert.deepEqual(asks, [
-    join(root, 'public.json'),
-    join(root, 'public.json'),
+    permissionPath(join(root, 'public.json')),
+    permissionPath(join(root, 'public.json')),
   ]);
 });
 
@@ -1326,7 +1346,7 @@ void test('prepared query matches retain literal Unicode and dollar paths instea
   );
   t.after(() => rm(root, {recursive: true, force: true}));
   const cwd = join(root, 'project');
-  await mkdir(cwd);
+  await mkdir(join(cwd, '.git'), {recursive: true});
   const outside = join(root, 'outside.json');
   await writeFile(outside, '{}');
   await writeFile(join(cwd, 'space file.json'), '{}');
@@ -1399,7 +1419,7 @@ void test(
     const cwd = join(root, 'project');
     await Promise.all([
       mkdir(agentDir, {recursive: true}),
-      mkdir(cwd, {recursive: true}),
+      mkdir(join(cwd, '.git'), {recursive: true}),
     ]);
     const outsideFile = join(root, 'outside.txt');
     const literalHomeFile = join(cwd, '$HOME', 'allowed.txt');

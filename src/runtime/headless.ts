@@ -1,6 +1,7 @@
 import './settings-entry.mjs';
 import {SettingsManager, getAgentDir} from '@earendil-works/pi-coding-agent';
 import {createAppResourceFilter} from '../dashboard/resources.ts';
+import {piModuleURL} from './pi-paths.ts';
 
 // This entry runs only in the command's child process. The bundled app extension
 // supplies its current tools; keep older app registrations out of the loader
@@ -13,7 +14,4 @@ SettingsManager.create = (cwd, agentDir, options) =>
     agentDir ?? getAgentDir(),
   ).settingsManager;
 
-await import(
-  new URL('./cli.js', import.meta.resolve('@earendil-works/pi-coding-agent'))
-    .href
-);
+await import(piModuleURL('cli.js').href);

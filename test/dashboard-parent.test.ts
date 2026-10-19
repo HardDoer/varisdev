@@ -180,7 +180,10 @@ void test(
           const outputs = [
             {
               name: 'write',
-              arguments: {path: 'parent.txt', content: 'Parent wrote this.\n'},
+              arguments: {
+                path: 'parent.txt',
+                content: 'Parent wrote this.\n',
+              },
             },
             {
               name: 'agent_spawn',
@@ -220,8 +223,8 @@ void test(
       }
     });
     await Promise.all([
-      mkdir(cwd, {recursive: true}),
-      mkdir(otherCwd, {recursive: true}),
+      mkdir(join(cwd, '.git'), {recursive: true}),
+      mkdir(join(otherCwd, '.git'), {recursive: true}),
       mkdir(agentDir, {recursive: true}),
     ]);
     await writeFile(
@@ -285,6 +288,13 @@ void test(
     assert.equal(initial.session.name, 'Chosen parent');
     assert.equal(initial.session.status, 'idle');
     assert.equal(initial.session.model, `${providerId}/dashboard-model`);
+    assert.ok(
+      (await parent.features()).models.some(
+        model =>
+          model.provider === providerId && model.id === 'dashboard-model',
+      ),
+      'Inherited providers are available before the first turn',
+    );
     const activities: string[] = [];
     const unsubscribe = parent.state.subscribe(() => {
       activities.push(parent!.state.snapshot().session.activity);
@@ -541,7 +551,10 @@ void test(
     const resumedTemplate = await createDashboardParent(
       {
         cwd,
-        resume: {id: initial.session.id, path: completed.session.sessionFile!},
+        resume: {
+          id: initial.session.id,
+          path: completed.session.sessionFile!,
+        },
       },
       inherited,
     );
@@ -1047,6 +1060,7 @@ void test(
         assert.deepEqual(after.usage, before.usage);
         assert.equal(after.session.response, before.session.response);
         await historical.close();
+        cancellation.mock.restoreAll();
 
         const resumed = await createDashboardParent(
           {
@@ -1061,6 +1075,7 @@ void test(
         );
         parents.push(resumed);
         const restored = resumed.state.snapshot();
+        assert.equal(restored.session.model, `${providerId}/dashboard-model`);
         assert.deepEqual(
           conversationIdentity(resumed.state),
           beforeConversation,

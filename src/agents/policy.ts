@@ -23,12 +23,10 @@ import {
   type AgentApprovalStore,
 } from './approvals.ts';
 import {requestAgentApproval} from './approval-ui.ts';
+import {piModuleURL} from '../runtime/pi-paths.ts';
 
 const {resolveReadPath, resolveToCwd} = (await import(
-  new URL(
-    './core/tools/path-utils.js',
-    import.meta.resolve('@earendil-works/pi-coding-agent'),
-  ).href
+  piModuleURL('core/tools/path-utils.js').href
 )) as {
   resolveReadPath(path: string, cwd: string): string;
   resolveToCwd(path: string, cwd: string): string;
