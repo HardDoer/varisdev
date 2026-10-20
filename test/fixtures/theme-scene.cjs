@@ -26,6 +26,15 @@ async function run(name, fn) {
   }
 }
 async function setupRenderer(moduleUrl) {
+  // Pixel comparisons read back repeatedly; keep Canvas2D on one rasterizer.
+  const getContext = window.HTMLCanvasElement.prototype.getContext;
+  window.HTMLCanvasElement.prototype.getContext = function (type, options) {
+    return getContext.call(
+      this,
+      type,
+      type === '2d' ? {...options, willReadFrequently: true} : options,
+    );
+  };
   let clock = 1000;
   let sequence = 0;
   const frames = new Map();
@@ -1034,16 +1043,19 @@ async function main() {
   );
 
   await run(
-    'Year1998 normal and compact scenes render visible content for visual review',
+    'Year1998 scenes render at display resolution and remain selectable across sizes and zoom levels',
     async () => {
       const output = resolve(__dirname, '../../.pi/tmp/year1998-scenes');
       mkdirSync(output, {recursive: true});
-      for (const [name, width, height, dense] of [
-        ['normal', 960, 600, true],
-        ['compact', 360, 260, false],
-        ['compact-dense', 380, 240, true],
+      for (const [name, width, height, dense, zoom] of [
+        ['normal', 960, 600, true, 1],
+        ['compact', 360, 260, false, 1],
+        ['compact-dense', 380, 240, true, 1],
+        ['zoomed', 960, 600, true, 1.5],
+        ['zoomed-compact', 600, 440, true, 2.5],
       ]) {
         browser.setContentSize(width, height);
+        browser.webContents.setZoomFactor(zoom);
         await evaluate(async dense => {
           const f = window.fixture;
           await f.year('running');
@@ -1067,10 +1079,28 @@ async function main() {
           f.host().update(snapshot, dense ? 'city-agent-4' : 'parent');
           window.dispatchEvent(new Event('resize'));
         }, dense);
-        const state = await evaluate(() => ({
-          ...window.fixture.inspect(),
-          hash: window.fixture.pixelHash(),
-        }));
+        const state = await evaluate(dense => {
+          const canvas = document.querySelector('canvas');
+          const bounds = canvas.getBoundingClientRect();
+          return {
+            ...window.fixture.click(dense ? 'city-agent-4' : 'parent'),
+            hash: window.fixture.pixelHash(),
+            backing: [canvas.width, canvas.height],
+            display: [bounds.width, bounds.height].map(value =>
+              Math.round(value * window.devicePixelRatio),
+            ),
+          };
+        }, dense);
+        assert.deepEqual(
+          state.backing,
+          state.display,
+          name + ': canvas uses every display pixel',
+        );
+        assert.equal(
+          state.selections.at(-1),
+          dense ? 'city-agent-4' : 'parent',
+          name + ': displayed robot stays selectable',
+        );
         assert.equal(state.renderer, 'year1998');
         assert.ok(state.hash > 0);
         assert.equal(state.layout.length, dense ? 9 : 1);

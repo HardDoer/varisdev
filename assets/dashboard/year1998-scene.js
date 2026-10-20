@@ -71,16 +71,12 @@ export function createYear1998Scene(
   canvas,
   {onSelect = () => {}, onLayout = () => {}} = {},
 ) {
-  let output;
+  let ctx;
   try {
-    output = canvas.getContext('2d', {alpha: false});
+    ctx = canvas.getContext('2d', {alpha: false});
   } catch {
     return null;
   }
-  if (!output) return null;
-  // Render on a small pixel grid, then present with nearest-neighbour scaling.
-  const pixels = document.createElement('canvas');
-  const ctx = pixels.getContext('2d', {alpha: false});
   if (!ctx) return null;
   const originalLabel = canvas.getAttribute('aria-label');
   const parent = createParentMotion();
@@ -95,8 +91,8 @@ export function createYear1998Scene(
     frame = 0;
   let width = 1,
     height = 1,
-    pixelWidth = 420,
-    pixelHeight = 265;
+    viewWidth = 420,
+    viewHeight = 265;
   let snapshot = null,
     sessionId,
     selected = 'parent',
@@ -1154,15 +1150,15 @@ export function createYear1998Scene(
     const center = toScreen([bodyX, bodyY - (item.parent ? 19 : 14)]);
     anchors.push({
       id: item.id,
-      x: screen[0] / pixelWidth,
-      y: screen[1] / pixelHeight,
+      x: screen[0] / viewWidth,
+      y: screen[1] / viewHeight,
       visible:
         screen[0] > 0 &&
-        screen[0] < pixelWidth &&
+        screen[0] < viewWidth &&
         screen[1] > 0 &&
-        screen[1] < pixelHeight,
-      centerX: center[0] / pixelWidth,
-      centerY: center[1] / pixelHeight,
+        screen[1] < viewHeight,
+      centerX: center[0] / viewWidth,
+      centerY: center[1] / viewHeight,
       radius: (item.parent ? 18 : 14) * camera.zoom,
       selectable: item.selectable !== false,
       targetable: pose.phase === 'alive' && !item.away,
@@ -1299,8 +1295,8 @@ export function createYear1998Scene(
 
   function toScreen([x, y]) {
     return [
-      (x - camera.x) * camera.zoom + pixelWidth / 2,
-      (y - camera.y) * camera.zoom + pixelHeight / 2,
+      (x - camera.x) * camera.zoom + viewWidth / 2,
+      (y - camera.y) * camera.zoom + viewHeight / 2,
     ];
   }
   function fitCamera() {
@@ -1324,8 +1320,8 @@ export function createYear1998Scene(
       y: (top + bottom) / 2,
       zoom: Math.min(
         units.length ? 1.4 : 1.6,
-        (pixelWidth - 24) / (right - left),
-        (pixelHeight - 22) / (bottom - top),
+        (viewWidth - 24) / (right - left),
+        (viewHeight - 22) / (bottom - top),
       ),
     };
   }
@@ -1388,11 +1384,19 @@ export function createYear1998Scene(
       });
     }
     anchors = [];
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    // Keep the camera's logical grid, but rasterize at the display resolution.
+    ctx.setTransform(
+      canvas.width / viewWidth,
+      0,
+      0,
+      canvas.height / viewHeight,
+      0,
+      0,
+    );
     ctx.fillStyle = '#495961';
-    ctx.fillRect(0, 0, pixelWidth, pixelHeight);
+    ctx.fillRect(0, 0, viewWidth, viewHeight);
     ctx.save();
-    ctx.translate(pixelWidth / 2, pixelHeight / 2);
+    ctx.translate(viewWidth / 2, viewHeight / 2);
     ctx.scale(camera.zoom, camera.zoom);
     ctx.translate(-camera.x, -camera.y);
     drawGround();
@@ -1440,10 +1444,10 @@ export function createYear1998Scene(
       const p = toScreen([x, y - 43]);
       anchors.push({
         id: 'parent',
-        x: p[0] / pixelWidth,
-        y: p[1] / pixelHeight,
-        centerX: p[0] / pixelWidth,
-        centerY: (p[1] + 20 * camera.zoom) / pixelHeight,
+        x: p[0] / viewWidth,
+        y: p[1] / viewHeight,
+        centerX: p[0] / viewWidth,
+        centerY: (p[1] + 20 * camera.zoom) / viewHeight,
         radius: 18 * camera.zoom,
         visible: true,
         selectable: true,
@@ -1456,9 +1460,6 @@ export function createYear1998Scene(
       drawCleaner(damageHomes.get(item.id) || item.world, damage.pose(item.id));
     drawEffects(items);
     ctx.restore();
-    output.setTransform(1, 0, 0, 1, 0, 0);
-    output.imageSmoothingEnabled = false;
-    output.drawImage(pixels, 0, 0, canvas.width, canvas.height);
     publishLayout(away, visiting, pose, ownTravel, shown);
   }
 
@@ -1635,12 +1636,10 @@ export function createYear1998Scene(
     const bounds = canvas.getBoundingClientRect();
     width = Math.max(1, bounds.width);
     height = Math.max(1, bounds.height);
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = window.devicePixelRatio || 1;
     const scale = Math.max(0.6, Math.min(width / 420, height / 265));
-    pixelWidth = Math.max(1, Math.round(width / scale));
-    pixelHeight = Math.max(1, Math.round(height / scale));
-    if (pixels.width !== pixelWidth) pixels.width = pixelWidth;
-    if (pixels.height !== pixelHeight) pixels.height = pixelHeight;
+    viewWidth = Math.max(1, Math.round(width / scale));
+    viewHeight = Math.max(1, Math.round(height / scale));
     const w = Math.round(width * dpr),
       h = Math.round(height * dpr);
     if (canvas.width !== w) canvas.width = w;
@@ -1662,7 +1661,7 @@ export function createYear1998Scene(
         ),
         Math.hypot(x - anchor.x * bounds.width, y - anchor.y * bounds.height),
       );
-      const radius = Math.max(16, (anchor.radius * bounds.width) / pixelWidth);
+      const radius = Math.max(16, (anchor.radius * bounds.width) / viewWidth);
       if (d < radius * 1.5 && d < distance) {
         hit = anchor.id;
         distance = d;
@@ -1690,7 +1689,7 @@ export function createYear1998Scene(
         id: anchor.id,
         x: bounds.left + anchor.centerX * bounds.width,
         y: bounds.top + anchor.centerY * bounds.height,
-        radius: Math.max(12, (anchor.radius * bounds.width) / pixelWidth),
+        radius: Math.max(12, (anchor.radius * bounds.width) / viewWidth),
       }))
       .filter(
         target =>
@@ -1842,8 +1841,6 @@ export function createYear1998Scene(
       if (originalLabel === null) canvas.removeAttribute('aria-label');
       else canvas.setAttribute('aria-label', originalLabel);
       for (const key of DATA_KEYS) delete canvas.dataset[key];
-      pixels.width = 1;
-      pixels.height = 1;
     },
   };
 }
