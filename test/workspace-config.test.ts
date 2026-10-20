@@ -334,9 +334,8 @@ void test('workspace resources override matching names while retaining all confi
     join(f.paths.workspaceDir, 'themes', 'shared.json'),
   );
   assert.equal(
-    f.loader.getSkills().skills.find(s => s.name === 'commit')
-      ?.disableModelInvocation,
-    true,
+    f.loader.getSkills().skills.find(s => s.name === 'commit'),
+    undefined,
   );
   assert.deepEqual(f.loader.getExtensions().errors, []);
   await f.put(

@@ -2271,7 +2271,6 @@ async function sendPrompt(event) {
       if (await routing) clearSubmittedDraft(id, submitted);
       return;
     }
-    if (!agentId && !(await toolSettings.beforePrompt(prompt))) return;
     if (!agentId && !native && session.status === 'idle') {
       if (stopEffectSession === id) clearStopEffect();
       (scene || fallbackScene)?.prompt(id);

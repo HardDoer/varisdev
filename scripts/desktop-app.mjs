@@ -10,6 +10,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import {homedir} from 'node:os';
@@ -138,6 +139,10 @@ function install() {
     ]);
     run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', staged]);
     run('/usr/bin/codesign', ['--verify', '--deep', '--strict', staged]);
+    // ditto preserves Electron's 1980 bundle date. macOS uses the bundle's
+    // modification time to notice changes to its icon and other metadata.
+    const installedAt = new Date();
+    utimesSync(staged, installedAt, installedAt);
     if (existsSync(destination)) {
       checkNotRunning();
       renameSync(destination, previous);

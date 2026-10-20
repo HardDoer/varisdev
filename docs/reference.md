@@ -45,12 +45,6 @@ Resuming a saved conversation replaces other open workspaces in the same folder,
 
 Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to cane hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
-## Commit and push
-
-`/commit [instructions]` delegates committing and pushing to the effective `commit` agent configuration. Workspace, repository, and global `commit` configurations override the built-in configuration. **Menu → Tool models → Commit** supplies defaults for the built-in configuration; custom configurations take precedence. An explicit model in the agent configuration is pinned. Inherited and legacy Commit models must be allowed in **Agent models**.
-
-The command uses the active Pi `commit` skill when configured and falls back to VarisDev's bundled skill. `/skill:commit` also invokes it explicitly. The bundled skill and agent instructions stay out of ordinary prompts; they are loaded for the commit request. The delegated agent inspects the changes, runs checks, and reports the result.
-
 ## Browsing and files
 
 | Tool              | Purpose                                                            |

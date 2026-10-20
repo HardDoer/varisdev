@@ -127,15 +127,9 @@ export class DesktopToolSettings {
           update.agents.allowedModels ?? [],
           settings.agents.allowedModels ?? [],
         );
-      if (update.commit)
-        assertKnown([update.commit.model], [settings.commit.model]);
       await saveToolSettings(
         section,
-        section === 'all'
-          ? update
-          : section === 'agents'
-            ? update.agents
-            : update.commit,
+        section === 'all' ? update : update.agents,
       );
       return {
         settings: await readToolSettings(),

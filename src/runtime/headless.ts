@@ -1,5 +1,11 @@
 import './settings-entry.mjs';
-import {SettingsManager, getAgentDir} from '@earendil-works/pi-coding-agent';
+import {join} from 'node:path';
+import {
+  ModelRuntime,
+  SettingsManager,
+  getAgentDir,
+} from '@earendil-works/pi-coding-agent';
+import {installOpenAIRegistrationReuse} from '../openai-registration.ts';
 import {createAppResourceFilter} from '../dashboard/resources.ts';
 import {piModuleURL} from './pi-paths.ts';
 
@@ -13,5 +19,15 @@ SettingsManager.create = (cwd, agentDir, options) =>
     cwd,
     agentDir ?? getAgentDir(),
   ).settingsManager;
+
+const createModelRuntime = ModelRuntime.create;
+ModelRuntime.create = async (options = {}) => {
+  const runtime = await createModelRuntime.call(ModelRuntime, options);
+  installOpenAIRegistrationReuse(runtime, {
+    ...options,
+    authPath: options.authPath ?? join(getAgentDir(), 'auth.json'),
+  });
+  return runtime;
+};
 
 await import(piModuleURL('cli.js').href);

@@ -15,7 +15,6 @@ import {
   type DesktopDashboardParent,
 } from '../src/dashboard/parent.ts';
 import {DesktopToolSettings} from '../src/desktop/tool-settings.ts';
-import {saveToolSettings} from '../src/tools/settings.ts';
 
 interface Request {
   model: string;
@@ -427,7 +426,6 @@ void test(
       'user-template',
       'project-template',
       'fixture-command',
-      'commit',
       'compact',
       'reload',
       'model',
@@ -497,7 +495,7 @@ void test(
     assert.equal(reloadedSkill?.content, undefined);
     assert.equal(
       reloaded.commands.filter(command => command.name === 'commit').length,
-      1,
+      0,
     );
     assert.deepEqual(reloaded.diagnostics, []);
     await assert.rejects(
@@ -927,45 +925,6 @@ void test(
   },
 );
 
-void test('commit validation failures appear in the desktop conversation', async t => {
-  const {parent, requests} = await fixture(t);
-  await parent.prompt('/commit');
-  assert.equal(requests.length, 0);
-  assert.ok(
-    parent.ui
-      .snapshot()
-      .notifications.some(
-        item =>
-          item.type === 'error' &&
-          /No agent models selected.*Menu → Tool models/.test(item.message),
-      ),
-  );
-});
-
-void test('commit inherits max reasoning and sends a model request through the desktop session', async t => {
-  const {parent, requests} = await fixture(t);
-  await saveToolSettings('agents', {
-    allowedModels: ['desktop-fixture/second-model'],
-  });
-  await parent.configure({modelId: 'second-model', thinkingLevel: 'max'});
-  await parent.prompt('/commit Use the requested destination.');
-  assert.equal(requests.length, 1);
-  const messages = JSON.stringify(requests[0].messages);
-  assert.ok(messages.includes('Commit and push.'));
-  assert.ok(messages.includes('Use the requested destination.'));
-  assert.ok(
-    requests[0].messages.some(
-      message =>
-        message.role === 'user' &&
-        JSON.stringify(message.content).includes(
-          '\\"thinkingLevel\\":\\"max\\"',
-        ),
-    ),
-  );
-  assert.equal(parent.state.snapshot().session.response, 'Fixture answer.');
-  assert.deepEqual(parent.ui.snapshot().notifications, []);
-});
-
 void test(
   'extension commands retain dialogs and editors, reject reload while busy and report UI errors',
   {timeout: 15000},
@@ -1203,11 +1162,8 @@ void test('tool settings follow real Pi scope changes while keeping saved global
   ]);
   await assert.rejects(
     service.saveToolSettings(
-      'commit',
-      {
-        model: 'desktop-fixture/second-model',
-        thinkingLevel: null,
-      },
+      'agents',
+      {allowedModels: ['desktop-fixture/second-model', 'unknown/new-model']},
       'session',
     ),
     /Unknown model/,

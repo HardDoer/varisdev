@@ -38,7 +38,6 @@ export class DesktopPreferences {
   private lastFolder?: string;
   private recentFolders: string[] = [];
   private agentNoticeSeen = false;
-  private commitNoticeSeen = false;
   private readonly directory: string;
 
   constructor(directory: string) {
@@ -60,9 +59,6 @@ export class DesktopPreferences {
         this.agentNoticeSeen =
           'agentNoticeAcknowledged' in saved &&
           saved.agentNoticeAcknowledged === true;
-        this.commitNoticeSeen =
-          'commitNoticeAcknowledged' in saved &&
-          saved.commitNoticeAcknowledged === true;
       }
     } catch {
       // A new profile starts in the launch folder with its first-use notice.
@@ -92,7 +88,6 @@ export class DesktopPreferences {
   private save(
     lastFolder: string | undefined,
     agentNoticeAcknowledged: boolean,
-    commitNoticeAcknowledged = this.commitNoticeSeen,
     recentProjects = this.recentFolders,
   ): void {
     mkdirSync(this.directory, {recursive: true});
@@ -106,7 +101,6 @@ export class DesktopPreferences {
             lastFolder,
             recentProjects,
             agentNoticeAcknowledged,
-            commitNoticeAcknowledged,
           },
           null,
           2,
@@ -120,7 +114,6 @@ export class DesktopPreferences {
     this.lastFolder = lastFolder;
     this.recentFolders = recentProjects;
     this.agentNoticeSeen = agentNoticeAcknowledged;
-    this.commitNoticeSeen = commitNoticeAcknowledged;
   }
 
   rememberFolder(folder: string): void {
@@ -132,7 +125,7 @@ export class DesktopPreferences {
       folder = normalize(folder);
     }
     const projects = recentFolders([folder, ...this.recentFolders]);
-    this.save(folder, this.agentNoticeSeen, this.commitNoticeSeen, projects);
+    this.save(folder, this.agentNoticeSeen, projects);
   }
 
   agentNoticeAcknowledged(): boolean {
@@ -141,13 +134,5 @@ export class DesktopPreferences {
 
   acknowledgeAgentNotice(): void {
     this.save(this.lastFolder, true);
-  }
-
-  commitNoticeAcknowledged(): boolean {
-    return this.commitNoticeSeen;
-  }
-
-  acknowledgeCommitNotice(): void {
-    this.save(this.lastFolder, this.agentNoticeSeen, true);
   }
 }

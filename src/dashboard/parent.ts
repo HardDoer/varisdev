@@ -24,7 +24,6 @@ import {
 } from '../agents/approval-ui.ts';
 import {createAgentResourcePolicy} from '../agents/resources.ts';
 import type {AgentSessionController} from '../agents/team.ts';
-import {registerCommitCommand} from '../commit.ts';
 import {registerAgentTools} from '../tools/agents.ts';
 import {registerProjectTools} from '../tools/index.ts';
 import type {DashboardParent, ParentRequest, StoppedMessages} from './hub.ts';
@@ -250,14 +249,6 @@ export async function createDashboardParent(
               approval,
               signal: approvalSignal,
             });
-            registerCommitCommand(
-              pi,
-              (...args) => pi.sendUserMessage(...args),
-              {
-                approval,
-                signal: approvalSignal,
-              },
-            );
             showCustomMessage = observeDashboardSession(
               pi,
               control,

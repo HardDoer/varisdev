@@ -29,14 +29,3 @@ export const builtinDefaultAgentPath = join(
   builtinAgentsDirectory,
   'default.md',
 );
-export const builtinSkillsDirectory = join(builtinAssetsDirectory, 'skills');
-export const builtinCommitSkillPath = join(
-  builtinSkillsDirectory,
-  'commit',
-  'SKILL.md',
-);
-export const builtinCommitAgentsDirectory = join(
-  builtinSkillsDirectory,
-  'commit',
-  'agents',
-);

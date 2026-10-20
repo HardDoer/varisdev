@@ -27,7 +27,6 @@ import {
   parseSlashCommand,
 } from '../dashboard/command-catalog.mjs';
 import {WorkerConversation} from './conversation.ts';
-import {registerCommitCommand} from '../commit.ts';
 import {
   createDefaultAgentProfile,
   ensureAgentProfilePermissions,
@@ -552,12 +551,6 @@ export async function createSessionWorker(
           },
           ...createBuiltinExtensions({mcp: configuration.mcpOptions}),
           registerProjectTools,
-          pi =>
-            registerCommitCommand(
-              pi,
-              (text, options) => session.sendUserMessage(text, options),
-              {approval: options.approval, signal: () => promptState.signal},
-            ),
           options.agentToolsExtension,
           ...(agentProfile.permissions.length ||
           agentProfile.steps !== undefined

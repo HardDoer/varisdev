@@ -1557,10 +1557,10 @@ void test(
 );
 
 void test(
-  'retained SDK workers isolate command results, await /commit, and cancel idle maintenance',
+  'retained SDK workers isolate command results, await a skill command, and cancel idle maintenance',
   {timeout: 15000},
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-commit-'));
+    const directory = await mkdtemp(join(tmpdir(), 'varisdev-worker-command-'));
     const agentDir = join(directory, 'config');
     const cwd = join(directory, 'project');
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -1574,7 +1574,7 @@ void test(
         compaction: {enabled: false, keepRecentTokens: 32},
       }),
     );
-    const providerId = 'worker-commit-test';
+    const providerId = 'worker-command-test';
     const registry = new ModelRegistry(
       await ModelRuntime.create({
         authPath: join(agentDir, 'auth.json'),
@@ -1584,8 +1584,8 @@ void test(
     );
     const manager = new AgentOrchestrator(1);
     const requests: ProviderRequest[] = [];
-    const commitStarted = Promise.withResolvers<void>();
-    const finishCommit = Promise.withResolvers<void>();
+    const commandStarted = Promise.withResolvers<void>();
+    const finishCommand = Promise.withResolvers<void>();
     const compactionStarted = Promise.withResolvers<AbortSignal>();
     const finishCompaction = Promise.withResolvers<void>();
     const dialogStarted = Promise.withResolvers<void>();
@@ -1601,13 +1601,13 @@ void test(
       if (requests.length === 1) {
         reply(response, 'Initial context retained.');
       } else {
-        commitStarted.resolve();
-        await finishCommit.promise;
-        reply(response, 'Commit delegation response.');
+        commandStarted.resolve();
+        await finishCommand.promise;
+        reply(response, 'Command response.');
       }
     });
     t.after(async () => {
-      finishCommit.resolve();
+      finishCommand.resolve();
       finishCompaction.resolve();
       await manager.close();
       ui.dispose();
@@ -1627,7 +1627,7 @@ void test(
       models: [
         {
           id: 'worker-model',
-          name: 'Commit fixture',
+          name: 'Command fixture',
           reasoning: true,
           input: ['text'],
           cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
@@ -1639,35 +1639,19 @@ void test(
     await saveToolSettings('agents', {
       allowedModels: [`${providerId}/worker-model`],
     });
-    await saveAgentTemplate(cwd, {
-      scope: 'global',
-      id: 'commit',
-      name: 'Global commit',
-      instructions: 'Global commit configuration.',
-      thinkingLevel: 'high',
-    });
-    await saveAgentTemplate(cwd, {
-      scope: 'workspace',
-      id: 'commit',
-      name: 'Workspace commit',
-      instructions: 'Workspace commit configuration.',
-      model: `${providerId}/worker-model`,
-      thinkingLevel: 'low',
-    });
     const skillDirectory = join(
       workspaceConfigPaths(cwd, agentDir).workspaceDir,
       'skills',
-      'commit',
+      'fixture-follow-up',
     );
-    const skillPath = join(skillDirectory, 'SKILL.md');
     await mkdir(skillDirectory, {recursive: true});
     await writeFile(
-      skillPath,
-      '---\nname: commit\ndescription: Workspace commit workflow\n---\nActive workspace commit skill marker: read [guidance](guidance.md) before delegating.',
+      join(skillDirectory, 'SKILL.md'),
+      '---\nname: fixture-follow-up\ndescription: Follow-up fixture\n---\nUse these follow-up instructions.',
     );
     const {id} = manager.spawn(
       {
-        name: 'Retained committer',
+        name: 'Retained worker',
         task: 'Inspect the fixture.',
         cwd,
         model: `${providerId}/worker-model`,
@@ -1676,9 +1660,9 @@ void test(
       id =>
         createSessionWorker({
           id,
-          parentSessionId: 'commit-parent',
+          parentSessionId: 'command-parent',
           cwd,
-          name: 'Retained committer',
+          name: 'Retained worker',
           model: registry.find(providerId, 'worker-model')!,
           modelRegistry: registry,
           thinkingLevel: 'high',
@@ -1705,7 +1689,9 @@ void test(
     assert.equal(initial.output, 'Initial context retained.');
     assert.ok(
       (await manager.features(id)).commands.some(
-        command => command.name === 'commit' && command.source === 'extension',
+        command =>
+          command.name === 'skill:fixture-follow-up' &&
+          command.source === 'skill',
       ),
     );
 
@@ -1729,8 +1715,11 @@ void test(
         .notifications.some(item => /No finished agents/.test(item.message)),
     );
 
-    await manager.send(id, '/commit Use the requested commit message.');
-    await commitStarted.promise;
+    await manager.send(
+      id,
+      '/skill:fixture-follow-up Use the requested instructions.',
+    );
+    await commandStarted.promise;
     await delay(20);
     assert.equal(
       manager.get(id).status,
@@ -1746,36 +1735,21 @@ void test(
         : (text as Array<{text?: string}>)
             .map(part => part.text ?? '')
             .join('\n');
-    assert.match(content, /Active workspace commit skill marker/);
-    assert.ok(content.includes(skillPath));
-    assert.ok(
-      content.includes(`References are relative to ${skillDirectory}.`),
-    );
-    assert.match(content, /Use the requested commit message/);
-    const configuration = content.match(
-      /Use these exact agent_spawn configuration arguments: (\{[^\n]+\})/,
-    );
-    assert.ok(configuration);
-    assert.deepEqual(JSON.parse(configuration[1]), {
-      template: 'workspace:commit',
-      model: `${providerId}/worker-model`,
-      thinkingLevel: 'low',
-      autoCleanup: true,
-    });
+    assert.match(content, /Use the requested instructions/);
     assert.match(
       JSON.stringify(requests[1].messages),
       /Initial context retained/,
     );
 
-    finishCommit.resolve();
+    finishCommand.resolve();
     const [completed] = await manager.wait([id], {timeoutMs: 5000});
     assert.equal(completed.status, 'completed');
-    assert.equal(completed.output, 'Commit delegation response.');
+    assert.equal(completed.output, 'Command response.');
     assert.equal(completed.sessionFile, initial.sessionFile);
     assert.equal(completed.resumable, true);
     assert.equal(
       await readFile(completed.resultFile!, 'utf8'),
-      'Commit delegation response.',
+      'Command response.',
     );
     assert.deepEqual(toolExecutions, []);
     assert.equal(requests.length, 2);

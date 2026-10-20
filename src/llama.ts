@@ -1,12 +1,14 @@
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {
+  getAgentDir,
   getPackageDir,
   ModelRuntime,
   type CreateModelRuntimeOptions,
   type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import type {Provider} from '@earendil-works/pi-ai';
+import {installOpenAIRegistrationReuse} from './openai-registration.ts';
 
 export const LLAMA_PROVIDER = 'llama.cpp';
 
@@ -87,5 +89,10 @@ export const officialLlamaExtension: ExtensionFactory = async pi => {
 export async function createDesktopModelRuntime(
   options: CreateModelRuntimeOptions,
 ): Promise<ModelRuntime> {
-  return ModelRuntime.create(options);
+  const runtime = await ModelRuntime.create(options);
+  installOpenAIRegistrationReuse(runtime, {
+    ...options,
+    authPath: options.authPath ?? join(getAgentDir(), 'auth.json'),
+  });
+  return runtime;
 }

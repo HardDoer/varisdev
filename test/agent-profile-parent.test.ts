@@ -489,10 +489,6 @@ void test(
     );
     assert.doesNotMatch(
       plainMessages,
-      /assets\/skills\/commit|<name>commit<\/name>|# Commit and push|Commit and push the requested changes/,
-    );
-    assert.doesNotMatch(
-      plainMessages,
       /You are (?:the )?(?:Build|Plan|General|Explore)\b|default coding agent|builtin:(?:build|plan|general|explore)/i,
     );
     assert.match(plainMessages, /Automatic global base marker/);

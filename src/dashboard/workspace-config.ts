@@ -18,7 +18,6 @@ import {
   type ResourceLoader,
 } from '@earendil-works/pi-coding-agent';
 import {createAppResourceFilter} from './resources.ts';
-import {builtinSkillsDirectory} from '../builtin-assets.ts';
 
 // Pi exposes the MCP loader hook, while its file parser is shipped internally.
 const {loadMcpConfig} = (await import(
@@ -535,10 +534,6 @@ export function createWorkspaceConfiguration(
       currentContextScope = contextScope;
       return {
         ...options,
-        additionalSkillPaths: [
-          ...(options.additionalSkillPaths ?? []),
-          ...(!options.noSkills ? [builtinSkillsDirectory] : []),
-        ],
         ...(taskOnly
           ? {
               skillsOverride: () => {

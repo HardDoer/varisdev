@@ -4,7 +4,6 @@ export function initToolSettings({api, selectedSessionId}) {
   const $ = id => document.getElementById(id);
   const dialog = $('tool-settings-dialog');
   const notice = $('agent-notice-dialog');
-  const commitNotice = $('commit-notice-dialog');
   const listeners = [];
   let disposed = false;
   let sessionId;
@@ -20,12 +19,6 @@ export function initToolSettings({api, selectedSessionId}) {
   let noticeLoaded = false;
   let noticeBusy = false;
   let noticeFailure = '';
-  let commitResolve;
-  let commitAcknowledged = false;
-  let commitLoaded = false;
-  let commitBusy = false;
-  let commitFailure = '';
-
   function listen(element, event, callback) {
     element.addEventListener(event, callback);
     listeners.push(() => element.removeEventListener(event, callback));
@@ -44,22 +37,12 @@ export function initToolSettings({api, selectedSessionId}) {
     const entries = new Map(
       (state?.models || []).map(model => [modelKey(model), model]),
     );
-    const saved = [...draft.agents.allowedModels, draft.commit.model];
+    const saved = draft.agents.allowedModels;
     for (const id of saved) {
       if (id && !entries.has(id))
         entries.set(id, {name: id, unavailable: true});
     }
     return [...entries].map(([id, model]) => ({...model, key: id}));
-  }
-  function commitAllowed(id) {
-    return draft.agents.allowedModels.includes(id);
-  }
-  function commitValid() {
-    return (
-      draft.commit.model === null ||
-      (state.models.some(model => modelKey(model) === draft.commit.model) &&
-        commitAllowed(draft.commit.model))
-    );
   }
   function renderModels() {
     const query = $('tool-settings-search').value.trim().toLowerCase();
@@ -108,33 +91,6 @@ export function initToolSettings({api, selectedSessionId}) {
       ? 'No models match your search.'
       : 'No models available. Check your provider in Menu → Accounts, then reopen these settings.';
   }
-  function renderCommitModels() {
-    const inherit = document.createElement('option');
-    inherit.value = '';
-    inherit.textContent = 'Inherit current agent model';
-    $('commit-model').replaceChildren(
-      inherit,
-      ...models()
-        .filter(
-          model => commitAllowed(model.key) || draft.commit.model === model.key,
-        )
-        .map(model => {
-          const option = document.createElement('option');
-          option.value = model.key;
-          const reason = model.unavailable
-            ? ' — unavailable'
-            : !commitAllowed(model.key)
-              ? ' — not allowed'
-              : '';
-          option.textContent = `${model.name} (${model.key})${reason}`;
-          option.disabled = Boolean(
-            model.unavailable || !commitAllowed(model.key),
-          );
-          return option;
-        }),
-    );
-    $('commit-model').value = draft.commit.model ?? '';
-  }
   function renderImageModels() {
     const select = $('image-model');
     const firstUse = document.createElement('option');
@@ -179,16 +135,7 @@ export function initToolSettings({api, selectedSessionId}) {
     $('tool-settings-save').disabled = busy || !loaded;
     if (!loaded) return;
     $('tool-settings-search').disabled = busy;
-    $('commit-model').disabled = busy;
-    $('commit-thinking').disabled = busy;
-    renderCommitModels();
     renderImageModels();
-    $('commit-thinking').value = draft.commit.thinkingLevel ?? '';
-    const invalid = !commitValid();
-    $('tool-settings-validation').textContent = invalid
-      ? 'Choose an available allowed Commit model, or inherit the current agent model.'
-      : '';
-    $('tool-settings-save').disabled = busy || invalid;
     const count = draft.agents.allowedModels.length;
     $('tool-settings-selection').textContent =
       `${count} model${count === 1 ? '' : 's'} selected.`;
@@ -224,7 +171,7 @@ export function initToolSettings({api, selectedSessionId}) {
       if (!disposed && version === request) render();
     }
   }
-  async function open(focus = 'agents') {
+  async function open() {
     if (disposed || busy) return;
     hideMenu();
     sessionId = selectedSessionId() ?? undefined;
@@ -236,7 +183,7 @@ export function initToolSettings({api, selectedSessionId}) {
     if (!dialog.open) dialog.showModal();
     await load();
     if (!disposed && dialog.open && state && draft)
-      $(focus === 'commit' ? 'commit-model' : 'tool-settings-search').focus();
+      $('tool-settings-search').focus();
   }
   async function save(event) {
     event.preventDefault();
@@ -259,18 +206,6 @@ export function initToolSettings({api, selectedSessionId}) {
     }
   }
   function maybeNotice() {
-    if (commitResolve && (commitLoaded || commitFailure)) {
-      if (!disposed && !document.querySelector('dialog[open]')) {
-        hideMenu();
-        renderCommitNotice();
-        commitNotice.showModal();
-        (commitLoaded
-          ? $('commit-notice-continue')
-          : $('commit-notice-retry')
-        ).focus();
-      }
-      return;
-    }
     if (
       disposed ||
       !observedAgent ||
@@ -327,71 +262,12 @@ export function initToolSettings({api, selectedSessionId}) {
       if (disposed) return;
       acknowledged = true;
       notice.close();
-      if (configure) open('agents');
+      if (configure) open();
     } catch (error) {
       noticeFailure = `Could not remember your acknowledgment. Try again. ${errorText(error)}`;
     } finally {
       noticeBusy = false;
       if (!disposed) renderNotice();
-    }
-  }
-
-  function renderCommitNotice() {
-    $('commit-notice-error').textContent = commitFailure;
-    $('commit-notice-error').hidden = !commitFailure;
-    $('commit-notice-retry').hidden = commitLoaded;
-    $('commit-notice-retry').disabled = commitBusy;
-    $('commit-notice-continue').disabled = commitBusy || !commitLoaded;
-    $('commit-notice-configure').disabled = commitBusy || !commitLoaded;
-    $('commit-notice-cancel').disabled = commitBusy;
-  }
-  function finishCommitNotice(proceed) {
-    const resolve = commitResolve;
-    commitResolve = undefined;
-    commitNotice.close();
-    resolve?.(proceed);
-  }
-  async function loadCommitNotice() {
-    if (commitBusy || disposed) return;
-    commitBusy = true;
-    commitFailure = '';
-    renderCommitNotice();
-    try {
-      if (!api?.getCommitNotice || !api?.acknowledgeCommitNotice)
-        throw new Error(
-          'Commit notice settings are unavailable. Restart or update the desktop app.',
-        );
-      const result = await api.getCommitNotice();
-      if (disposed) return;
-      commitLoaded = true;
-      commitAcknowledged = result.acknowledged;
-      if (commitAcknowledged) finishCommitNotice(true);
-    } catch (error) {
-      commitFailure = `Could not load the commit notice preference. ${errorText(error)}`;
-    } finally {
-      commitBusy = false;
-      if (!disposed) {
-        renderCommitNotice();
-        maybeNotice();
-      }
-    }
-  }
-  async function acknowledgeCommit(configure = false) {
-    if (commitBusy || !commitLoaded || disposed) return;
-    commitBusy = true;
-    commitFailure = '';
-    renderCommitNotice();
-    try {
-      await api.acknowledgeCommitNotice();
-      if (disposed) return;
-      commitAcknowledged = true;
-      finishCommitNotice(!configure);
-      if (configure) open('commit');
-    } catch (error) {
-      commitFailure = `Could not remember your acknowledgment. Try again. ${errorText(error)}`;
-    } finally {
-      commitBusy = false;
-      if (!disposed) renderCommitNotice();
     }
   }
 
@@ -415,36 +291,12 @@ export function initToolSettings({api, selectedSessionId}) {
     failure = '';
     renderControls();
   });
-  listen($('commit-model'), 'change', event => {
-    draft.commit.model = event.target.value || null;
-    failure = '';
-    renderControls();
-  });
-  listen($('commit-thinking'), 'change', event => {
-    draft.commit.thinkingLevel = event.target.value || null;
-    failure = '';
-    renderControls();
-  });
   listen($('agent-notice-retry'), 'click', () => void loadNotice());
   listen($('agent-notice-acknowledge'), 'click', () => void acknowledge());
   listen($('agent-notice-configure'), 'click', () => void acknowledge(true));
   listen(notice, 'cancel', event => {
     event.preventDefault();
     void acknowledge();
-  });
-  listen($('commit-notice-retry'), 'click', () => void loadCommitNotice());
-  listen($('commit-notice-continue'), 'click', () => void acknowledgeCommit());
-  listen(
-    $('commit-notice-configure'),
-    'click',
-    () => void acknowledgeCommit(true),
-  );
-  listen($('commit-notice-cancel'), 'click', () => {
-    if (!commitBusy) finishCommitNotice(false);
-  });
-  listen(commitNotice, 'cancel', event => {
-    event.preventDefault();
-    if (!commitBusy) finishCommitNotice(false);
   });
   const observer = new MutationObserver(maybeNotice);
   observer.observe(document.body, {
@@ -454,16 +306,6 @@ export function initToolSettings({api, selectedSessionId}) {
   });
   if (api?.getAgentNotice && api?.acknowledgeAgentNotice) void loadNotice();
   return {
-    beforePrompt(prompt) {
-      if (!/^\/commit(?:\s|$)/.test(prompt.trim()) || commitAcknowledged)
-        return Promise.resolve(true);
-      if (disposed || commitResolve) return Promise.resolve(false);
-      return new Promise(resolve => {
-        commitResolve = resolve;
-        commitLoaded = false;
-        void loadCommitNotice();
-      });
-    },
     observe(snapshot) {
       if (snapshot.sessions?.some(session => session.agents?.length > 0)) {
         observedAgent = true;
@@ -477,7 +319,6 @@ export function initToolSettings({api, selectedSessionId}) {
       for (const remove of listeners) remove();
       dialog.close();
       notice.close();
-      finishCommitNotice(false);
     },
   };
 }

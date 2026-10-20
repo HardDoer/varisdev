@@ -1,6 +1,5 @@
 #tool-settings-dialog,
-#agent-notice-dialog,
-#commit-notice-dialog {
+#agent-notice-dialog {
   width: min(620px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   padding: clamp(16px, 4vw, 28px);
@@ -33,13 +32,11 @@
   padding: var(--tool-settings-padding);
 }
 #tool-settings-dialog .dialog-heading h2,
-#agent-notice-dialog h2,
-#commit-notice-dialog h2 {
+#agent-notice-dialog h2 {
   margin-top: 0;
 }
 #tool-settings-dialog p,
-#agent-notice-dialog p,
-#commit-notice-dialog p {
+#agent-notice-dialog p {
   overflow-wrap: anywhere;
 }
 #tool-settings-loading,
@@ -66,15 +63,10 @@
   );
 }
 #agent-model-settings {
-  grid-row: span 2;
   --tool-settings-card-accent: var(--action-agent);
 }
 #image-model-settings {
   --tool-settings-card-accent: var(--action-media);
-  padding: 16px;
-}
-#commit-model-settings {
-  --tool-settings-card-accent: var(--action-command);
   padding: 16px;
 }
 #tool-settings-content h3 {
@@ -96,8 +88,7 @@
   content: '';
 }
 #agent-model-settings > label,
-#image-model-settings > label,
-.commit-settings-fields label {
+#image-model-settings > label {
   display: block;
   margin-bottom: 6px;
   color: var(--text);
@@ -111,14 +102,7 @@
   font-size: 0.875rem;
   line-height: 1.5;
 }
-.commit-settings-fields {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-}
 #tool-settings-search,
-#commit-model,
-#commit-thinking,
 #image-model {
   width: 100%;
   min-width: 0;
@@ -131,10 +115,6 @@
 #tool-settings-models {
   border-color: var(--action-agent);
 }
-#commit-model,
-#commit-thinking {
-  border-color: var(--action-command);
-}
 #tool-settings-models {
   max-height: min(240px, 30dvh);
   overflow-y: auto;
@@ -142,8 +122,7 @@
   border-radius: 8px;
   background: var(--input, var(--panel));
 }
-#tool-settings-models:empty,
-#tool-settings-validation:empty {
+#tool-settings-models:empty {
   display: none;
 }
 .tool-model-option {
@@ -179,16 +158,12 @@
   outline-offset: -2px;
 }
 #tool-settings-dialog .dialog-footer,
-#agent-notice-dialog .dialog-footer,
-#commit-notice-dialog .dialog-footer {
+#agent-notice-dialog .dialog-footer {
   flex-wrap: wrap;
 }
 @media (max-width: 760px) {
   #tool-settings-content {
     grid-template-columns: minmax(0, 1fr);
-  }
-  #agent-model-settings {
-    grid-row: auto;
   }
 }
 @media (max-width: 520px) {

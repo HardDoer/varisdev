@@ -1,8 +1,9 @@
-import {execFile} from 'node:child_process';
+import {openBrowser} from './browser.mjs';
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 import {Writable} from 'node:stream';
 import {pathToFileURL} from 'node:url';
+import {preserveOpenAIRegistration} from '../openai-registration.ts';
 import type {
   AuthInteraction,
   AuthPrompt,
@@ -113,20 +114,6 @@ export class CommandCancelledError extends Error {
 
 function checkCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new CommandCancelledError();
-}
-
-async function openBrowser(url: string): Promise<void> {
-  const parsed = new URL(url);
-  if (!['http:', 'https:'].includes(parsed.protocol)) return;
-  const [command, args] =
-    process.platform === 'darwin'
-      ? ['open', [url]]
-      : process.platform === 'win32'
-        ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
-        : ['xdg-open', [url]];
-  await new Promise<void>((resolve, reject) => {
-    execFile(command, args, error => (error ? reject(error) : resolve()));
-  });
 }
 
 /** Keep typed secrets out of the terminal's readline echo. */
@@ -279,6 +266,11 @@ export async function runAccountCommand(
           });
     checkCancelled(controller.signal);
     if (command === 'logout') {
+      if (positional[0] === 'openai')
+        await preserveOpenAIRegistration(
+          join(agentDir, 'auth.json'),
+          controller.signal,
+        );
       await runtime.logout(positional[0], {signal: controller.signal});
       write(`Signed out of ${positional[0]}.`);
       return;

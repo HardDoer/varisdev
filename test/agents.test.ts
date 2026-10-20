@@ -641,7 +641,11 @@ void test('session workers never reuse an older answer for handled commands or e
     options?.preflightResult?.('handled');
   };
   assert.equal(
-    await worker.run('/commit', new AbortController().signal, () => {}),
+    await worker.run(
+      '/fixture-command',
+      new AbortController().signal,
+      () => {},
+    ),
     'Current command answer',
   );
 });

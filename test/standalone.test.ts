@@ -387,7 +387,7 @@ async function assertFeatures(features: SessionFeatures) {
         command.source === 'skill',
     ),
   );
-  assert.ok(features.commands.some(command => command.name === 'commit'));
+  assert.ok(!features.commands.some(command => command.name === 'commit'));
   for (const name of [
     'browse',
     'agent_spawn',

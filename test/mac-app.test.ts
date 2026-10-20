@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFile, spawn} from 'node:child_process';
-import {mkdtemp, readFile, readdir, realpath, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, readdir, realpath, rm, stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {createServer} from 'node:http';
 import {join} from 'node:path';
@@ -63,6 +63,7 @@ void test(
     assert.ok(address && typeof address !== 'string');
     const base = `http://127.0.0.1:${address.port}`;
     const prefix = join(home, 'install space');
+    const installStartedAt = Date.now();
     await promisify(execFile)(
       '/bin/sh',
       [
@@ -91,6 +92,21 @@ void test(
       ]);
       assert.equal(stdout.trim(), 'VarisDev');
     }
+    assert.ok(
+      (await stat(bundle)).mtimeMs >= installStartedAt - 1000,
+      'The installed bundle must have a fresh modification time for macOS icon updates.',
+    );
+    const {stdout: iconFile} = await promisify(execFile)(
+      '/usr/libexec/PlistBuddy',
+      ['-c', 'Print :CFBundleIconFile', join(bundle, 'Contents/Info.plist')],
+    );
+    assert.equal(iconFile.trim(), 'varisdev.icns');
+    await promisify(execFile)('/usr/bin/codesign', [
+      '--verify',
+      '--deep',
+      '--strict',
+      bundle,
+    ]);
     assert.deepEqual(
       await readFile(join(bundle, 'Contents/Resources/varisdev.icns')),
       await readFile(join(root, 'assets/desktop/robot-crow.icns')),

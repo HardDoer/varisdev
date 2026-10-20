@@ -70,6 +70,11 @@ void test(
       join(agentDir, 'settings.json'),
       JSON.stringify({retry: {enabled: false}}),
     );
+    await mkdir(join(agentDir, 'skills', 'review'), {recursive: true});
+    await writeFile(
+      join(agentDir, 'skills', 'review', 'SKILL.md'),
+      '---\nname: review\ndescription: Review fixture\n---\nReview the requested changes.',
+    );
     const runtime = await ModelRuntime.create({
       authPath: join(agentDir, 'auth.json'),
       modelsPath: null,
@@ -101,7 +106,7 @@ void test(
       mode: 'all' as const,
       permissionsVersion: 1 as const,
       permissions: [
-        {action: 'skill', resource: 'commit', effect: 'ask' as const},
+        {action: 'skill', resource: 'review', effect: 'ask' as const},
       ],
     };
     const parent = await createDashboardParent(
@@ -252,7 +257,7 @@ void test(
     assert.equal(parent.ui.snapshot().dialogs.length, 0);
 
     const skill = worker.run(
-      '/skill:commit',
+      '/skill:review',
       new AbortController().signal,
       () => {},
     );
@@ -268,7 +273,7 @@ void test(
     await assert.rejects(skill, /approval declined/);
     const workerController = new AbortController();
     const cancelledSkill = worker.run(
-      '/skill:commit',
+      '/skill:review',
       workerController.signal,
       () => {},
     );
@@ -278,9 +283,9 @@ void test(
     assert.equal(workerUi.snapshot().dialogs.length, 0);
 
     await store.revoke(parentGrant.id);
-    const committing = parent.prompt('/commit');
+    const reviewing = parent.prompt('/skill:review');
     await select(parent.ui, 'Deny');
-    await committing;
+    await reviewing;
     assert.ok(
       parent.ui
         .snapshot()
@@ -291,10 +296,10 @@ void test(
       0,
       'Denied skill command saves no grant',
     );
-    const cancelledCommit = parent.prompt('/commit');
+    const cancelledSkillPrompt = parent.prompt('/skill:review');
     await dialog(parent.ui);
     await parent.abort();
-    await cancelledCommit;
+    await cancelledSkillPrompt;
     assert.equal(parent.ui.snapshot().dialogs.length, 0);
     assert.equal((await store.list()).length, 0);
     await assert.rejects(
@@ -321,7 +326,7 @@ void test(
       await terminalManagement;
       assert.equal(workerUi.snapshot().dialogs.length, 0);
       const terminalSkill = terminalWorker.run(
-        '/skill:commit',
+        '/skill:review',
         new AbortController().signal,
         () => {},
       );
@@ -329,7 +334,7 @@ void test(
       await assert.rejects(terminalSkill, /approval declined/);
       assert.equal(workerUi.snapshot().dialogs.length, 0);
       const closingSkill = terminalWorker.run(
-        '/skill:commit',
+        '/skill:review',
         new AbortController().signal,
         () => {},
       );

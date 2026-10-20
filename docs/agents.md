@@ -8,7 +8,7 @@ Every conversation has a selected agent. **Default** is selected automatically a
 
 **New conversation** lets you choose another agent configuration. A name and initial message are optional; unnamed workspaces use the folder name. Set `default_agent` in Pi `settings.json` to choose a visible primary or all-mode agent automatically. An unavailable, hidden, disabled, or subagent-only choice falls back to Default. If an override makes Default unsuitable, the empty built-in Default remains available.
 
-Resumed conversations retain their selected profile snapshot. Older and attached Pi conversations without a saved selection receive the neutral Default rather than a newly configured persona. The selected configuration appears beside the composer and in session settings.
+Resumed conversations keep their saved agent configuration. The selected configuration appears beside the composer and in session settings.
 
 Every new agent has its own message history. Starting one does not copy the calling conversation or other agents' messages. Resuming an agent retains its own history. Additional agents share workspace files and can exchange messages explicitly.
 
@@ -18,9 +18,7 @@ Start a subagent with a configuration ID at the beginning of a message, for exam
 
 Build and Plan are optional primary agents. General and Explore are optional subagents. Plan and Explore provide restricted tools for investigation; General can work broadly but cannot delegate further. Their instructions apply only when selected.
 
-[Example configurations](../examples/agents/README.md) can be copied and customized. They are outside the configuration discovery paths and add nothing to the default prompt.
-
-The bundled `commit` configuration belongs to the explicitly invoked `/commit` skill. Its instructions and skill description stay out of ordinary prompts and agent catalogs. It remains available in the configuration editor for customization.
+[Example configurations](../examples/agents/README.md) can be copied and customized.
 
 ## Storage and scopes
 
@@ -29,13 +27,13 @@ Open **Agent configurations** to create or edit Markdown profiles. Higher scopes
 1. **Workspace (this machine)** applies to this project on the current machine.
 2. **Repository** can be shared through version control.
 3. **Global** is available across projects.
-4. **Built-in** supplies Default, the other standard agents, and the commit skill's fallback configuration.
+4. **Built-in** supplies Default and the other standard agents.
 
 Files are stored at:
 
-- Global: `getAgentDir()/agents/**/*.md`, normally `~/.varisdev/agent/agents/**/*.md`.
+- Global: `<settings-directory>/agents/**/*.md`, normally `~/.varisdev/agent/agents/**/*.md`.
 - Repository: `.varisdev/agents/**/*.md` in each directory from the repository root through the current working directory. Closer definitions override earlier ones.
-- Workspace: `getAgentDir()/workspaces/<project-hash>/agents/**/*.md`.
+- Workspace: `<settings-directory>/workspaces/<project-hash>/agents/**/*.md`.
 
 **Menu → Open workspace configuration** opens the personal workspace directory. It is associated with the canonical repository or worktree root, so project subdirectories and symlink aliases share it. Separate worktrees and moved repositories have separate workspace configuration. `VARISDEV_SETTINGS_DIR` changes the global settings directory.
 
@@ -43,7 +41,7 @@ A file's relative path supplies its ID: `team/reviewer.md` becomes `team/reviewe
 
 ## Markdown format
 
-Frontmatter configures the profile. A nonempty Markdown body supplies its system instructions once, replacing the usual system-prompt base while retaining the selected context scope.
+Frontmatter configures the profile. A nonempty Markdown body replaces the default system instructions; the selected context files still apply.
 
 ```markdown
 ---
@@ -82,9 +80,9 @@ Later scalar values replace earlier values. An empty body inherits lower-scope i
 
 Common actions include `shell`, `edit`, `subagent`, `read`, `glob`, `list`, `grep`, `webfetch`, `skill`, `execute`, and `external_directory`. Actions and resources support whole-value `*` and `?` wildcards. Subagent rules use the configuration's unscoped ID, including `default` for implicit launches. `grep` matches the requested regular expression. Filesystem rules use canonical paths and expand leading `~` or `$HOME`; paths within the active folder or its worktree are internal. Code Mode uses `execute`, while nested calls still check their own permissions.
 
-Permissions are checked when tools execute, including nested and deferred calls. Shell rules check parsed command components, including pipelines and substitutions, and infer static filesystem paths. A trailing ` *` also matches the command without arguments. Restricted shell calls are limited to 16 KiB of source; malformed or excessively nested syntax returns a scanner error. Dynamic filenames remain subject to the command rules. File query tools check the actual matched files and execute that approved selection. Configuration reads check their contributing files and return the approved snapshot. `ask` opens Pi's approval selector through the owning workspace. Tools wholly denied by the profile and denied skill descriptions are omitted from model declarations. Explicit skill commands and reads of discovered skill files also check skill permissions.
+Permissions are checked when tools run, including nested and deferred calls. Shell rules apply to commands in pipelines and substitutions and to explicit file paths. A trailing ` *` also matches the command without arguments. Restricted shell calls are limited to 16 KiB of source. `ask` requests approval in the owning workspace. Tools and skills that are fully denied are unavailable to the agent, though tool metadata may still appear in search results. Skill permissions also apply to explicit skill commands and reads.
 
-Primary conversations use Pi's selected model and reasoning independently of the agent profile. Delegated agents inherit omitted values from their caller, subject to Tool models selections. Existing conversations retain their saved effective profile snapshot. Delegated model pins remain fixed; other model and reasoning controls remain editable. Legacy snapshots acquire shared permission rules once when migrated.
+Primary conversations use Pi's selected model and reasoning independently of the agent profile. Delegated agents inherit omitted values from their caller, subject to Tool models selections. Delegated model pins remain fixed; other model and reasoning controls remain editable.
 
 ### Remembered approvals
 
@@ -97,7 +95,7 @@ When an operation requires approval, choose:
 
 Remembered approvals match the exact tool, action, resource, and input. An effective `deny` rule takes precedence. Each delegated agent has its own conversation scope; sharing the parent's approval dialog does not share its conversation grants.
 
-Use **Menu → Approvals** or `/approvals` to inspect and revoke grants. These controls also remain available for subagents. Grants are stored in `getAgentDir()/varisdev/approvals.json`.
+Use **Menu → Approvals** or `/approvals` to inspect and revoke grants. These controls also remain available for subagents. Grants are stored in `<settings-directory>/varisdev/approvals.json`.
 
 ### Context scope and token costs
 
@@ -105,8 +103,6 @@ Use **Menu → Approvals** or `/approvals` to inspect and revoke grants. These c
 
 For conversations created by VarisDev, `context: task` omits automatic instruction files and skill/prompt discovery. Profile instructions, explicit instructions, explicitly selected resources, tools, and providers remain available. `agent_spawn.context` can override the profile's scope for that launch. Neither scope copies another conversation's history.
 
-An attached native Pi session has already loaded its instructions. Its task profile can filter automatic skill metadata, but Pi's combined context and appended instructions do not retain enough source information to remove automatic instructions while preserving explicit ones. Those instruction sections remain in attached sessions.
-
-Repeated instruction-file sources and identical appended blocks are deduplicated. Automatic agent catalogs contain at most 16 short descriptions. Configuration management is available through Pi's `tool_search`; configuration bodies are returned only by `get`. Pi's search helpers can expose tool metadata even when execution is denied. Listings default to 20 entries with pagination, and save/spawn operations return short acknowledgements.
+For attached Pi sessions, `context: task` cannot remove instruction files that Pi has already loaded.
 
 Malformed files are omitted and reported with their scope and path. Invalid shared permission settings prevent profile resolution. VarisDev does not replace malformed files, directories, or symbolic links through the configuration editor.

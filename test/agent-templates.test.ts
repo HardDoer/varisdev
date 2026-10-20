@@ -15,9 +15,6 @@ import {isAbsolute, join, relative, sep} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {
   builtinAgentsDirectory,
-  builtinCommitAgentsDirectory,
-  builtinCommitSkillPath,
-  builtinSkillsDirectory,
   findVarisDevPackageRoot,
 } from '../src/builtin-assets.ts';
 import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
@@ -33,7 +30,7 @@ import {
   saveAgentTemplate,
 } from '../src/agents/templates.ts';
 
-const builtinIds = ['build', 'commit', 'default', 'explore', 'general', 'plan'];
+const builtinIds = ['build', 'default', 'explore', 'general', 'plan'];
 
 void test('built-in asset paths resolve from source and compiled desktop locations', async () => {
   const root = findVarisDevPackageRoot();
@@ -44,15 +41,6 @@ void test('built-in asset paths resolve from source and compiled desktop locatio
     root,
   );
   assert.equal(builtinAgentsDirectory, join(root, 'assets', 'agents'));
-  assert.equal(builtinSkillsDirectory, join(root, 'assets', 'skills'));
-  assert.equal(
-    builtinCommitSkillPath,
-    join(root, 'assets', 'skills', 'commit', 'SKILL.md'),
-  );
-  assert.equal(
-    builtinCommitAgentsDirectory,
-    join(root, 'assets', 'skills', 'commit', 'agents'),
-  );
   assert.equal(
     JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).name,
     'varisdev',
@@ -151,7 +139,6 @@ void test('lists all scopes and applies workspace then repository precedence', a
     ]),
     [
       ['build', 'builtin', 'builtin:build', 'Build'],
-      ['commit', 'builtin', 'builtin:commit', 'Commit and push'],
       ['default', 'builtin', 'builtin:default', 'Default'],
       ['explore', 'builtin', 'builtin:explore', 'Explore'],
       ['general', 'builtin', 'builtin:general', 'General'],
@@ -169,7 +156,6 @@ void test('lists all scopes and applies workspace then repository precedence', a
     result.allTemplates.map(template => template.key),
     [
       'builtin:build',
-      'builtin:commit',
       'builtin:default',
       'builtin:explore',
       'builtin:general',
@@ -307,19 +293,29 @@ void test('merges partial definitions and keeps raw scoped entries for editing',
   assert.equal(repository?.instructions, 'Use the shared review checklist.');
 });
 
+void test('commit configurations use the normal reusable agent settings', async t => {
+  const paths = await isolate(t);
+  assert.equal(await resolveAgentTemplate(paths.cwd, 'commit'), undefined);
+  await saveAgentTemplate(paths.cwd, {
+    scope: 'workspace',
+    id: 'commit',
+    name: 'Commit',
+    instructions: 'Review and commit the requested changes.',
+    model: 'provider/committer',
+    thinkingLevel: 'high',
+  });
+  const profile = await resolveAgentTemplate(paths.cwd, 'commit');
+  assert.equal(profile?.key, 'workspace:commit');
+  assert.equal(profile?.model, 'provider/committer');
+  assert.equal(profile?.thinkingLevel, 'high');
+});
+
 void test('loads optional built-ins and keeps an empty Default selected', async t => {
   const paths = await isolate(t);
   const result = await listAgentTemplates(paths.cwd);
   assert.deepEqual(
     result.sources[0].templates.map(template => template.id),
     builtinIds,
-  );
-  const commit = result.allTemplates.find(template => template.id === 'commit');
-  assert.equal(commit?.mode, 'all');
-  assert.equal(commit?.hidden, true);
-  assert.equal(
-    commit?.sourcePath,
-    join(builtinSkillsDirectory, 'commit', 'agents', 'commit.md'),
   );
   const fallback = createDefaultAgentProfile();
   assert.equal(fallback.instructions, '');
@@ -1179,7 +1175,7 @@ void test('refuses invalid input and will not replace or delete unexpected files
     await assert.rejects(saveAgentTemplate(paths.cwd, input));
   await assert.rejects(resolveAgentTemplate(paths.cwd, 3), /id or key/);
   await assert.rejects(
-    deleteAgentTemplate(paths.cwd, {scope: 'builtin', id: 'commit'}),
+    deleteAgentTemplate(paths.cwd, {scope: 'builtin', id: 'build'}),
     /read-only/,
   );
   await assert.rejects(

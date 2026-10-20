@@ -2,9 +2,13 @@ import {readFile, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
 import process from 'node:process';
+import {patchBundledOpenAIRegistration} from './patch-openai-registration.mjs';
+import {patchBundledBrowser} from './patch-browser.mjs';
 
 /** Give the private Pi runtime its own project settings and resource directory. */
 export async function configureBundledPi(desktop) {
+  await patchBundledOpenAIRegistration(desktop);
+  await patchBundledBrowser(desktop);
   const path = join(
     desktop,
     'node_modules/@earendil-works/pi-coding-agent/package.json',

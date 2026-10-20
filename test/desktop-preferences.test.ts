@@ -37,16 +37,12 @@ void test('agent notice acknowledgment survives restart and folder changes', asy
   const profile = await temporaryDirectory(t, 'varisdev-notice-');
   const first = new DesktopPreferences(profile);
   assert.equal(first.agentNoticeAcknowledged(), false);
-  assert.equal(first.commitNoticeAcknowledged(), false);
   first.acknowledgeAgentNotice();
   const restarted = new DesktopPreferences(profile);
   assert.equal(restarted.agentNoticeAcknowledged(), true);
-  assert.equal(restarted.commitNoticeAcknowledged(), false);
-  restarted.acknowledgeCommitNotice();
   restarted.rememberFolder(profile);
   const changed = new DesktopPreferences(profile);
   assert.equal(changed.agentNoticeAcknowledged(), true);
-  assert.equal(changed.commitNoticeAcknowledged(), true);
   assert.equal(changed.folder('/unused'), profile);
 
   await writeFile(
@@ -65,13 +61,9 @@ void test('a failed preference write leaves the agent notice unacknowledged', as
   const preferences = new DesktopPreferences(profile);
   await mkdir(join(profile, 'settings.json'));
   assert.throws(() => preferences.acknowledgeAgentNotice());
-  assert.throws(() => preferences.acknowledgeCommitNotice());
   assert.equal(preferences.agentNoticeAcknowledged(), false);
-  assert.equal(preferences.commitNoticeAcknowledged(), false);
   await rm(join(profile, 'settings.json'), {recursive: true});
-  preferences.acknowledgeCommitNotice();
   const restarted = new DesktopPreferences(profile);
-  assert.equal(restarted.commitNoticeAcknowledged(), true);
   assert.equal(restarted.agentNoticeAcknowledged(), false);
 });
 
@@ -95,7 +87,6 @@ void test('recent projects persist in most-recent order, deduplicate, and surviv
   preferences.rememberFolder(alias);
   assert.equal(preferences.folder('/unused'), first);
   preferences.acknowledgeAgentNotice();
-  preferences.acknowledgeCommitNotice();
   const restarted = new DesktopPreferences(profile);
   assert.deepEqual(restarted.recentProjects(), [first, second]);
   const copy = restarted.recentProjects();

@@ -128,6 +128,58 @@ void test('login lists providers from the shared app runtime and selects OAuth',
   assert.doesNotMatch(fixture.output.join('\n'), /Ambient/);
 });
 
+void test('CLI OpenAI logout retains the issued registration before deleting credentials', async t => {
+  const agentDir = await mkdtemp(
+    join(tmpdir(), 'varisdev-logout-registration-'),
+  );
+  t.after(() => rm(agentDir, {recursive: true, force: true}));
+  const authPath = join(agentDir, 'auth.json');
+  await writeFile(
+    authPath,
+    JSON.stringify({
+      openai: {
+        type: 'oauth',
+        clientId: 'oaiapp_existing',
+        access: 'private-access',
+        refresh: 'private-refresh',
+        expires: 0,
+      },
+    }),
+  );
+  const fixture = accountFixture();
+  const sdk = await fixture.dependencies.loadSDK!('/runtime');
+  fixture.dependencies.loadSDK = async () => ({
+    ...sdk,
+    getAgentDir: () => agentDir,
+    ModelRuntime: {
+      async create() {
+        return {
+          getProviders: () => [],
+          login: async () => assert.fail('Logout must not authorize'),
+          async logout(provider) {
+            assert.equal(provider, 'openai');
+            const saved = await readFile(
+              join(agentDir, 'openai-registrations.json'),
+              'utf8',
+            );
+            assert.deepEqual(JSON.parse(saved).clientIds, ['oaiapp_existing']);
+            assert.doesNotMatch(saved, /private-access|private-refresh/);
+            await writeFile(authPath, '{}');
+          },
+        };
+      },
+    },
+  });
+  await runAccountCommand(
+    '/runtime',
+    'logout',
+    ['openai'],
+    fixture.dependencies,
+  );
+  assert.equal(await readFile(authPath, 'utf8'), '{}');
+  assert.deepEqual(fixture.output, ['Signed out of openai.']);
+});
+
 void test('login delegates configured extension and llama providers to the shared runtime', async () => {
   const fixture = accountFixture();
   for (const [id, name] of [

@@ -124,7 +124,7 @@ void test(
     for (const listener of listeners.get(tools)?.get('before_agent_start') ??
       [])
       await listener({}, ctx);
-    assert.doesNotMatch(catalogFor(), /commit:|build:|plan:/);
+    assert.doesNotMatch(catalogFor(), /build:|plan:/);
     assert.match(catalogFor(), /default:/);
     assert.match(catalogFor(), /explore:/);
     assert.match(catalogFor(), /general:/);

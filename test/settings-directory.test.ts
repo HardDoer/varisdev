@@ -143,12 +143,75 @@ void test('private SDK configuration preserves package metadata and the standalo
   };
   await f.put(privateManifest, JSON.stringify(original));
   await f.put(stockManifest, JSON.stringify(original));
+  const oauthRelative =
+    'node_modules/@earendil-works/pi-ai/dist/auth/oauth/openai-chatgpt.js';
+  const oauthSource = await readFile(
+    new URL(
+      './auth/oauth/openai-chatgpt.js',
+      import.meta.resolve('@earendil-works/pi-ai/oauth'),
+    ),
+    'utf8',
+  );
+  await f.put(join(f.home, 'desktop', oauthRelative), oauthSource);
+  await f.put(join(f.home, oauthRelative), oauthSource);
+  const browserRelative =
+    'node_modules/@earendil-works/pi-coding-agent/dist/utils/open-browser.js';
+  const browserSource = await readFile(
+    new URL(
+      './utils/open-browser.js',
+      import.meta.resolve('@earendil-works/pi-coding-agent'),
+    ),
+    'utf8',
+  );
+  await f.put(join(f.home, 'desktop', browserRelative), browserSource);
+  await f.put(join(f.home, browserRelative), browserSource);
   await configureBundledPi(join(f.home, 'desktop'));
   assert.deepEqual(JSON.parse(await readFile(privateManifest, 'utf8')), {
     ...original,
     piConfig: {...original.piConfig, name: 'varisdev', configDir: '.varisdev'},
   });
   assert.deepEqual(JSON.parse(await readFile(stockManifest, 'utf8')), original);
+  const patched = await readFile(
+    join(f.home, 'desktop', oauthRelative),
+    'utf8',
+  );
+  assert.match(patched, /varisdevRegistrationReuse: true/);
+  assert.equal(
+    await readFile(join(f.home, oauthRelative), 'utf8'),
+    oauthSource,
+  );
+  const patchedBrowser = await readFile(
+    join(f.home, 'desktop', browserRelative),
+    'utf8',
+  );
+  assert.match(patchedBrowser, /openWSLBrowser\(target\)/);
+  assert.equal(
+    await readFile(join(f.home, browserRelative), 'utf8'),
+    browserSource,
+  );
+  assert.equal(
+    await readFile(
+      join(
+        f.home,
+        'desktop',
+        browserRelative.replace('open-browser.js', 'varisdev-browser.mjs'),
+      ),
+      'utf8',
+    ),
+    await readFile(
+      new URL('../src/runtime/browser.mjs', import.meta.url),
+      'utf8',
+    ),
+  );
+  await configureBundledPi(join(f.home, 'desktop'));
+  assert.equal(
+    await readFile(join(f.home, 'desktop', oauthRelative), 'utf8'),
+    patched,
+  );
+  assert.equal(
+    await readFile(join(f.home, 'desktop', browserRelative), 'utf8'),
+    patchedBrowser,
+  );
 });
 
 void test('legacy flat VarisDev profiles migrate without changing originals or Pi', async t => {

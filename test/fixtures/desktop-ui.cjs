@@ -209,14 +209,6 @@ function initialAgentTemplates() {
       mode: 'subagent',
       context: 'task',
     }),
-    agentDefinition('builtin', 'commit', {
-      name: 'Commit',
-      instructions: 'Review, commit, and push the requested changes.',
-      mode: 'all',
-      context: 'workspace',
-      hidden: true,
-      permissions: [{action: 'shell', resource: 'git push *', effect: 'ask'}],
-    }),
   ];
 }
 
@@ -9555,7 +9547,7 @@ async function main() {
         await evaluate(
           () => document.querySelectorAll('.agent-template-list-item').length,
         ),
-        7,
+        6,
         'Agent configurations must still load when models fail',
       );
       await selectSaved();
@@ -9767,7 +9759,7 @@ async function main() {
       await click('open-agent-templates');
       await until(
         () =>
-          document.querySelectorAll('.agent-template-list-item').length === 15,
+          document.querySelectorAll('.agent-template-list-item').length === 14,
         'Raw agent definitions did not load',
       );
       const rawAgentText = await evaluate(
@@ -9782,7 +9774,6 @@ async function main() {
         'Writer',
         'Researcher',
         'Flexible agent',
-        'Commit',
         'Hidden helper',
         'Disabled helper',
         'team/reviewer',
@@ -10014,7 +10005,7 @@ async function main() {
             .textContent.includes('Customized in repository'),
         'Repository customization is missing',
       );
-      assert.equal(agentTemplates.length, 17);
+      assert.equal(agentTemplates.length, 16);
       assert.match(
         await evaluate(
           () => document.getElementById('agent-template-source').textContent,
@@ -10036,7 +10027,7 @@ async function main() {
           'Saved.',
         'Workspace configuration was not saved',
       );
-      assert.equal(agentTemplates.length, 18);
+      assert.equal(agentTemplates.length, 17);
       assert.match(
         await evaluate(
           () => document.getElementById('agent-template-source').textContent,
@@ -10274,7 +10265,7 @@ async function main() {
       await click('open-agent-templates');
       await until(
         () =>
-          document.querySelectorAll('.agent-template-list-item').length === 18,
+          document.querySelectorAll('.agent-template-list-item').length === 17,
         'Saved agent definitions did not return',
       );
       await evaluate(() =>
@@ -10286,7 +10277,7 @@ async function main() {
       await click('agent-template-delete-confirm');
       await until(
         () =>
-          document.querySelectorAll('.agent-template-list-item').length === 17,
+          document.querySelectorAll('.agent-template-list-item').length === 16,
         'Personal workspace configuration did not delete',
       );
       assert.deepEqual(
@@ -10307,7 +10298,7 @@ async function main() {
       await click('agent-template-delete-confirm');
       await until(
         () =>
-          document.querySelectorAll('.agent-template-list-item').length === 16,
+          document.querySelectorAll('.agent-template-list-item').length === 15,
         'Repository template did not delete',
       );
       assert.deepEqual(
@@ -10372,11 +10363,11 @@ async function main() {
       await click('open-agent-templates');
       await until(
         () =>
-          document.querySelectorAll('.agent-template-list-item').length === 16,
+          document.querySelectorAll('.agent-template-list-item').length === 15,
         'Built-in agents were not listed',
       );
       await evaluate(() =>
-        document.querySelector('[data-template-key="builtin:commit"]').click(),
+        document.querySelector('[data-template-key="builtin:general"]').click(),
       );
       assert.equal(
         await evaluate(
@@ -10400,32 +10391,32 @@ async function main() {
         'agent-template-color': '',
         'agent-template-steps': '',
         'agent-template-permissions': '',
-        'agent-template-instructions':
-          'Use my commit conventions, then commit and push.',
+        'agent-template-instructions': 'Use my review conventions.',
       });
       await click('agent-template-save');
       await until(
         () =>
-          document.querySelectorAll('.agent-template-list-item').length === 17,
+          document.querySelectorAll('.agent-template-list-item').length === 16,
         'Built-in customization was not saved',
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'saveAgentTemplate').at(-1).input,
         {
           scope: 'workspace',
-          id: 'commit',
-          instructions: 'Use my commit conventions, then commit and push.',
+          id: 'general',
+          instructions: 'Use my review conventions.',
         },
         'Empty customization fields inherit the built-in definition',
       );
       assert.equal(
-        agentTemplates.find(item => item.key === 'builtin:commit').instructions,
-        'Review, commit, and push the requested changes.',
+        agentTemplates.find(item => item.key === 'builtin:general')
+          .instructions,
+        '',
       );
       assert.equal(
-        agentTemplates.find(item => item.key === 'workspace:commit')
+        agentTemplates.find(item => item.key === 'workspace:general')
           .instructions,
-        'Use my commit conventions, then commit and push.',
+        'Use my review conventions.',
       );
       await click('agent-templates-close');
     },

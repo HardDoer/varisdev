@@ -64,7 +64,6 @@ void test('app catalog uses Pi available models and refreshes local custom model
   const initial = await service.getToolSettings();
   assert.deepEqual(initial.settings, {
     agents: {allowedModels: []},
-    commit: {model: null, thinkingLevel: null},
   });
   assert.ok(
     !initial.models.some(model => model.provider === 'unconfigured-fixture'),
@@ -72,13 +71,6 @@ void test('app catalog uses Pi available models and refreshes local custom model
   await assert.rejects(
     service.saveToolSettings('agents', {
       allowedModels: ['unconfigured-fixture/unavailable'],
-    }),
-    /Unknown model/,
-  );
-  await assert.rejects(
-    service.saveToolSettings('commit', {
-      model: 'unconfigured-fixture/unavailable',
-      thinkingLevel: null,
     }),
     /Unknown model/,
   );
@@ -94,11 +86,10 @@ void test('app catalog uses Pi available models and refreshes local custom model
   await service.saveToolSettings('agents', {
     allowedModels: ['desktop-fixture/local/two'],
   });
-  const saved = await service.saveToolSettings('commit', {
-    model: 'desktop-fixture/local/two',
-    thinkingLevel: 'medium',
-  });
-  assert.equal(saved.settings.commit.model, 'desktop-fixture/local/two');
+  assert.deepEqual(
+    (await service.getToolSettings()).settings.agents.allowedModels,
+    ['desktop-fixture/local/two'],
+  );
 });
 
 void test('healthy global extension models remain selectable with extension diagnostics', async t => {
@@ -132,96 +123,38 @@ void test('healthy global extension models remain selectable with extension diag
   for (const id of ids)
     assert.ok(catalog.some(model => `${model.provider}/${model.id}` === id));
   await service.saveToolSettings('agents', {allowedModels: ids});
-  for (const model of ids) {
-    const saved = await service.saveToolSettings('commit', {
-      model,
-      thinkingLevel: 'high',
-    });
-    assert.equal(saved.settings.commit.model, model);
-    assert.deepEqual(saved.diagnostics, initial.diagnostics);
-  }
   const selected = await service.getToolSettings('session');
   assert.deepEqual(selected.models, [first]);
   assert.equal(selected.diagnostics, undefined);
   const persisted = await readToolSettings();
   assert.deepEqual(persisted.agents.allowedModels, ids);
-  assert.equal(persisted.commit.model, ids[1]);
 });
 
-void test('session extension IDs and live saved settings are returned', async t => {
+void test('desktop saves copy queued inputs and return live session choices', async t => {
   const {service, models} = await fixture(t);
-  assert.deepEqual((await service.getToolSettings('session')).models, models);
+  const replacement = {agents: {allowedModels: [firstId]}};
+  const pending = service.saveToolSettings('all', replacement, 'session');
+  replacement.agents.allowedModels[0] = 'unknown/mutated';
+  const saved = await pending;
+  assert.deepEqual(saved.settings, {agents: {allowedModels: [firstId]}});
+  assert.deepEqual(saved.models, models);
+  await saveToolSettings('agents', {allowedModels: [secondId]});
+  assert.deepEqual(
+    (await service.getToolSettings('session')).settings.agents.allowedModels,
+    [secondId],
+  );
+  models.push({provider: 'new-extension', id: 'new', name: 'New'});
+  assert.equal((await service.getToolSettings('session')).models.length, 3);
+});
+
+void test('invalid IPC settings and unknown models preserve saved choices', async t => {
+  const {service} = await fixture(t);
   await service.saveToolSettings(
     'agents',
     {allowedModels: [firstId]},
     'session',
   );
-  const saved = await service.saveToolSettings(
-    'commit',
-    {model: firstId, thinkingLevel: 'xhigh'},
-    'session',
-  );
-  assert.equal(saved.settings.commit.model, firstId);
-  await saveToolSettings('commit', {model: null, thinkingLevel: 'off'});
-  assert.deepEqual((await service.getToolSettings('session')).settings.commit, {
-    model: null,
-    thinkingLevel: 'off',
-  });
-  models.push({provider: 'new-extension', id: 'new', name: 'New'});
-  assert.equal((await service.getToolSettings('session')).models.length, 3);
-});
-
-void test('combined desktop saves replace disjoint choices and snapshot both inputs', async t => {
-  const {service, models} = await fixture(t);
-  await service.saveToolSettings(
-    'all',
-    {
-      agents: {allowedModels: [firstId]},
-      commit: {model: firstId, thinkingLevel: 'low'},
-    },
-    'session',
-  );
-  const replacement = {
-    agents: {allowedModels: [secondId]},
-    commit: {model: secondId, thinkingLevel: 'high'},
-  };
-  const pending = service.saveToolSettings('all', replacement, 'session');
-  replacement.agents.allowedModels[0] = 'unknown/mutated';
-  replacement.commit.model = firstId;
-  replacement.commit.thinkingLevel = 'invalid';
-  const saved = await pending;
-  const expected = {
-    agents: {allowedModels: [secondId]},
-    commit: {model: secondId, thinkingLevel: 'high'},
-  };
-  assert.deepEqual(saved.settings, expected);
-  assert.deepEqual(saved.models, models);
-  assert.deepEqual(await readToolSettings(), expected);
-  await assert.rejects(
-    service.saveToolSettings(
-      'all',
-      {
-        agents: {allowedModels: [firstId]},
-        commit: {model: secondId, thinkingLevel: 'off'},
-      },
-      'session',
-    ),
-    /Commit model .* must be allowed/,
-  );
-  assert.deepEqual(await readToolSettings(), expected);
-});
-
-void test('invalid IPC values and unknown catalog selections leave settings intact', async t => {
-  const {service} = await fixture(t);
-  await service.saveToolSettings(
-    'all',
-    {
-      agents: {allowedModels: [firstId]},
-      commit: {model: firstId, thinkingLevel: 'low'},
-    },
-    'session',
-  );
-  const initial = await readToolSettings();
+  const before = await readToolSettings();
   const invalid: Array<[unknown, unknown]> = [
     ['__proto__', {}],
     [null, {}],
@@ -230,129 +163,40 @@ void test('invalid IPC values and unknown catalog selections leave settings inta
     ['agents', {allowedModels: 'all'}],
     ['agents', {allowedModels: [42]}],
     ['agents', {allowedModels: [firstId], extra: true}],
-    ['commit', {model: firstId, thinkingLevel: 'invalid'}],
-    ['commit', {model: false, thinkingLevel: null}],
-    ['commit', {model: null, thinkingLevel: null, extra: true}],
     ['agents', {allowedModels: ['unknown/new']}],
-    ['commit', {model: 'unknown/new', thinkingLevel: null}],
-    ...[
-      null,
-      [],
-      {},
-      {agents: {allowedModels: [secondId]}},
-      {commit: {model: secondId, thinkingLevel: 'high'}},
+    ['commit', {model: firstId, thinkingLevel: null}],
+    [
+      'all',
       {
         agents: {allowedModels: [secondId]},
-        commit: {model: secondId, thinkingLevel: 'high'},
-        extra: true,
+        commit: {model: null, thinkingLevel: null},
       },
-      {
-        agents: {allowedModels: false},
-        commit: {model: secondId, thinkingLevel: 'high'},
-      },
-      {
-        agents: {allowedModels: [secondId]},
-        commit: {model: secondId, thinkingLevel: 'invalid'},
-      },
-    ].map(value => ['all', value] as [unknown, unknown]),
+    ],
+    ['all', {agents: {allowedModels: ['unknown/new']}}],
   ];
   for (const [section, value] of invalid) {
     await assert.rejects(service.saveToolSettings(section, value, 'session'));
-    assert.deepEqual(await readToolSettings(), initial);
-  }
-  // A failed request must not poison the save queue.
-  await service.saveToolSettings(
-    'agents',
-    {allowedModels: [firstId]},
-    'session',
-  );
-});
-
-void test('combined catalog checks reject new unknown choices in either section without saving', async t => {
-  const {service} = await fixture(t);
-  await service.saveToolSettings(
-    'all',
-    {
-      agents: {allowedModels: [firstId]},
-      commit: {model: firstId, thinkingLevel: 'low'},
-    },
-    'session',
-  );
-  const before = await readToolSettings();
-  for (const value of [
-    {
-      agents: {allowedModels: ['unknown/agent']},
-      commit: {model: secondId, thinkingLevel: 'high'},
-    },
-    {
-      agents: {allowedModels: null},
-      commit: {model: 'unknown/commit', thinkingLevel: 'high'},
-    },
-  ]) {
-    await assert.rejects(
-      service.saveToolSettings('all', value, 'session'),
-      /Unknown model: unknown\/(agent|commit)/,
-    );
     assert.deepEqual(await readToolSettings(), before);
   }
+  const saved = await service.saveToolSettings(
+    'all',
+    {agents: {allowedModels: [secondId]}},
+    'session',
+  );
+  assert.deepEqual(saved.settings, {agents: {allowedModels: [secondId]}});
 });
 
-void test('commit selection and agent allowlist stay consistent across saves', async t => {
-  const {service} = await fixture(t);
-  await service.saveToolSettings(
-    'agents',
-    {allowedModels: [firstId]},
-    'session',
-  );
-  await assert.rejects(
-    service.saveToolSettings(
-      'commit',
-      {model: secondId, thinkingLevel: null},
-      'session',
-    ),
-  );
-  await service.saveToolSettings(
-    'commit',
-    {model: firstId, thinkingLevel: 'high'},
-    'session',
-  );
-  await assert.rejects(
-    service.saveToolSettings('agents', {allowedModels: [secondId]}, 'session'),
-  );
-  await assert.rejects(
-    service.saveToolSettings('agents', {allowedModels: []}, 'session'),
-    /Commit model .* must be allowed/,
-  );
-  assert.equal((await readToolSettings()).commit.model, firstId);
-  assert.deepEqual((await readToolSettings()).agents.allowedModels, [firstId]);
-  await service.saveToolSettings(
-    'commit',
-    {model: null, thinkingLevel: null},
-    'session',
-  );
-  await service.saveToolSettings(
-    'agents',
-    {allowedModels: [secondId]},
-    'session',
-  );
-});
-
-void test('saved unavailable choices remain visible and can be retained or removed', async t => {
+void test('saved unavailable choices can be retained or removed but cannot be reintroduced', async t => {
   const {service} = await fixture(t);
   const missing = 'removed-provider/old-model';
   await saveToolSettings('agents', {allowedModels: [missing]});
-  await saveToolSettings('commit', {model: missing, thinkingLevel: 'low'});
-  const state = await service.getToolSettings('session');
-  assert.deepEqual(state.settings.agents.allowedModels, [missing]);
-  assert.equal(state.settings.commit.model, missing);
-  await service.saveToolSettings(
-    'agents',
-    {allowedModels: [missing, firstId]},
-    'session',
+  assert.deepEqual(
+    (await service.getToolSettings('session')).settings.agents.allowedModels,
+    [missing],
   );
   await service.saveToolSettings(
-    'commit',
-    {model: missing, thinkingLevel: 'high'},
+    'all',
+    {agents: {allowedModels: [missing, firstId]}},
     'session',
   );
   await assert.rejects(
@@ -362,11 +206,6 @@ void test('saved unavailable choices remain visible and can be retained or remov
       'session',
     ),
     /Unknown model/,
-  );
-  await service.saveToolSettings(
-    'commit',
-    {model: null, thinkingLevel: null},
-    'session',
   );
   await service.saveToolSettings(
     'agents',
@@ -381,81 +220,12 @@ void test('saved unavailable choices remain visible and can be retained or remov
     ),
     /Unknown model/,
   );
-});
-
-void test('combined saves retain or remove unavailable choices using each previous section', async t => {
-  const {service} = await fixture(t);
-  const missing = 'removed-provider/old-model';
-  const agentOnly = 'removed-provider/agent-only';
-  await saveToolSettings('all', {
-    agents: {allowedModels: [missing, agentOnly]},
-    commit: {model: missing, thinkingLevel: 'low'},
-  });
-  const retained = await service.saveToolSettings(
+  const saved = await service.saveToolSettings(
     'all',
-    {
-      agents: {allowedModels: [missing, agentOnly, firstId]},
-      commit: {model: missing, thinkingLevel: 'high'},
-    },
+    {agents: {allowedModels: []}},
     'session',
   );
-  assert.deepEqual(retained.settings, {
-    agents: {allowedModels: [missing, agentOnly, firstId]},
-    commit: {model: missing, thinkingLevel: 'high'},
-  });
-  await assert.rejects(
-    service.saveToolSettings(
-      'all',
-      {
-        agents: retained.settings.agents,
-        commit: {model: agentOnly, thinkingLevel: 'high'},
-      },
-      'session',
-    ),
-    /Unknown model: removed-provider\/agent-only/,
-  );
-  assert.deepEqual(await readToolSettings(), retained.settings);
-  const removed = await service.saveToolSettings(
-    'all',
-    {
-      agents: {allowedModels: [firstId]},
-      commit: {model: firstId, thinkingLevel: 'off'},
-    },
-    'session',
-  );
-  for (const value of [
-    {
-      agents: {allowedModels: [missing, firstId]},
-      commit: removed.settings.commit,
-    },
-    {
-      agents: {allowedModels: null},
-      commit: {model: missing, thinkingLevel: null},
-    },
-  ]) {
-    await assert.rejects(
-      service.saveToolSettings('all', value, 'session'),
-      /Unknown model: removed-provider\/old-model/,
-    );
-    assert.deepEqual(await readToolSettings(), removed.settings);
-  }
-  // A saved unavailable Commit choice does not become a new allowed choice.
-  await saveToolSettings('all', {
-    agents: {allowedModels: null},
-    commit: {model: missing, thinkingLevel: null},
-  });
-  await assert.rejects(
-    service.saveToolSettings(
-      'all',
-      {
-        agents: {allowedModels: [missing]},
-        commit: {model: missing, thinkingLevel: 'high'},
-      },
-      'session',
-    ),
-    /Unknown model: removed-provider\/old-model/,
-  );
-  assert.equal((await readToolSettings()).agents.allowedModels, null);
+  assert.deepEqual(saved.settings.agents.allowedModels, []);
 });
 
 void test('stale session errors propagate without using the app catalog or saving', async t => {
@@ -476,62 +246,21 @@ void test('stale session errors propagate without using the app catalog or savin
   assert.deepEqual((await readToolSettings()).agents.allowedModels, []);
 });
 
-void test('desktop settings start empty and persist clearing explicit model choices', async t => {
-  const {service} = await fixture(t);
-  assert.deepEqual(
-    (await service.getToolSettings('session')).settings.agents.allowedModels,
-    [],
-  );
-  await service.saveToolSettings(
-    'agents',
-    {allowedModels: [firstId, secondId]},
-    'session',
-  );
-  const saved = await service.saveToolSettings(
-    'agents',
-    {allowedModels: []},
-    'session',
-  );
-  assert.deepEqual(saved.settings.agents.allowedModels, []);
-  assert.deepEqual((await readToolSettings()).agents.allowedModels, []);
-  await assert.rejects(
-    service.saveToolSettings(
-      'commit',
-      {model: firstId, thinkingLevel: null},
-      'session',
-    ),
-    /No agent models selected.*Menu → Tool models/,
-  );
-});
-
-void test('active Pi scope limits new choices without clearing saved global preferences', async t => {
+void test('live Pi scope limits new choices and preserves saved agent preferences', async t => {
   const {directory, models, scopedModels, service} = await fixture(t);
   await writeFile(
     join(directory, 'settings.json'),
-    JSON.stringify({enabledModels: [secondId]}),
+    JSON.stringify({enabledModels: [firstId]}),
   );
   await saveToolSettings('agents', {allowedModels: [firstId]});
-  await saveToolSettings('commit', {model: firstId, thinkingLevel: null});
   const before = await readToolSettings();
   scopedModels.push({model: second, thinkingLevel: 'high'});
   const restricted = await service.getToolSettings('session');
   assert.deepEqual(restricted.models, [second]);
   assert.deepEqual(restricted.settings, before);
-  assert.deepEqual(await readToolSettings(), before);
-  // Existing preferences may be retained while editing another setting.
   await service.saveToolSettings(
-    'agents',
-    {allowedModels: [firstId, secondId]},
-    'session',
-  );
-  await service.saveToolSettings(
-    'commit',
-    {model: firstId, thinkingLevel: 'low'},
-    'session',
-  );
-  await service.saveToolSettings(
-    'commit',
-    {model: null, thinkingLevel: null},
+    'all',
+    {agents: {allowedModels: [firstId, secondId]}},
     'session',
   );
   await service.saveToolSettings('agents', {allowedModels: []}, 'session');
@@ -544,60 +273,17 @@ void test('active Pi scope limits new choices without clearing saved global pref
     {allowedModels: [secondId]},
     'session',
   );
-  await service.saveToolSettings(
-    'commit',
-    {model: secondId, thinkingLevel: null},
-    'session',
-  );
-  assert.equal((await readToolSettings()).commit.thinkingLevel, null);
-  // Clearing the live scope restores this session's catalog, even with a
-  // different scope still saved globally in Pi.
-  scopedModels.length = 0;
-  assert.deepEqual((await service.getToolSettings('session')).models, models);
-  await service.saveToolSettings(
-    'agents',
-    {allowedModels: [firstId, secondId]},
-    'session',
-  );
-});
-
-void test('save validates against changed live scope and preserves parent inheritance', async t => {
-  const {scopedModels, service} = await fixture(t);
-  scopedModels.push({model: first});
-  assert.deepEqual((await service.getToolSettings('session')).models, [first]);
-  scopedModels.splice(0, 1, {model: second, thinkingLevel: 'high'});
-  await assert.rejects(
-    service.saveToolSettings('agents', {allowedModels: [firstId]}, 'session'),
-    /Unknown model/,
-  );
-  await saveToolSettings('agents', {allowedModels: null});
+  scopedModels.splice(0, 1, {model: first});
   await assert.rejects(
     service.saveToolSettings(
-      'commit',
-      {model: firstId, thinkingLevel: null},
+      'agents',
+      {allowedModels: [secondId, 'unknown/new']},
       'session',
     ),
     /Unknown model/,
   );
-  const saved = await service.saveToolSettings(
-    'commit',
-    {model: null, thinkingLevel: null},
-    'session',
-  );
-  assert.deepEqual(saved.settings, {
-    agents: {allowedModels: null},
-    commit: {model: null, thinkingLevel: null},
-  });
-  // A scoped thinking annotation does not silently become a Commit override.
-  const explicit = await service.saveToolSettings(
-    'commit',
-    {model: secondId, thinkingLevel: null},
-    'session',
-  );
-  assert.deepEqual(explicit.settings.commit, {
-    model: secondId,
-    thinkingLevel: null,
-  });
+  scopedModels.length = 0;
+  assert.deepEqual((await service.getToolSettings('session')).models, models);
 });
 
 void test('no-session pickers resolve and refresh global Pi scope through registered extension models', async t => {
@@ -627,10 +313,6 @@ void test('no-session pickers resolve and refresh global Pi scope through regist
     [virtual],
   );
   await service.saveToolSettings('agents', {allowedModels: [virtual]});
-  await service.saveToolSettings('commit', {
-    model: virtual,
-    thinkingLevel: null,
-  });
   await assert.rejects(
     service.saveToolSettings('agents', {allowedModels: [virtual, physical]}),
     /Unknown model/,
@@ -642,18 +324,9 @@ void test('no-session pickers resolve and refresh global Pi scope through regist
     [physical],
   );
   assert.deepEqual(changed.settings.agents.allowedModels, [virtual]);
-  assert.deepEqual(changed.settings.commit, {
-    model: virtual,
-    thinkingLevel: null,
-  });
   // Session state takes priority over saved global settings.
   assert.deepEqual((await service.getToolSettings('session')).models, [first]);
-  await service.saveToolSettings('commit', {model: null, thinkingLevel: null});
   await service.saveToolSettings('agents', {allowedModels: [physical]});
-  await service.saveToolSettings('commit', {
-    model: physical,
-    thinkingLevel: 'off',
-  });
   for (const scope of [[], undefined, ['missing-provider/missing']]) {
     await writeScope(scope);
     const fallback = await service.getToolSettings();

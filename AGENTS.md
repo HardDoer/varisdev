@@ -33,8 +33,14 @@
 - Give different effects purposeful accent colors and enough separation from their surroundings. A theme must not turn every effect into the same color.
 - Verify every shipped theme in the renderer as well as checking palette values. Include status distinctions, selected items, robot faces, and active effects in that review.
 
+# Documentation
+
+- Documentation is for users of the software. Describe features, installation, configuration, usage, and relevant limitations, including supported plugin interfaces.
+- Do not add documents or sections about work in progress, individual bug fixes, regressions, implementation patches, benchmark results, test coverage, or development progress.
+- Update existing user guides when functionality changes. Add a new page only when a user topic needs its own guide.
+
 # README.md
 
 - Keep the README concise and preserve its existing tone and level of detail.
 - Do not add unnecessary implementation details, UI routing explanations, exhaustive command examples, or redundant explanations. If the existing wording already communicates the behavior, leave it alone.
-- Put detailed technical documentation in `docs/`.
+- Put detailed user guides in `docs/`.

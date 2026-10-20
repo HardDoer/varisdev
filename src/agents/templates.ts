@@ -6,10 +6,7 @@ import {
   withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
 import {randomUUID} from 'node:crypto';
-import {
-  builtinAgentsDirectory,
-  builtinCommitAgentsDirectory,
-} from '../builtin-assets.ts';
+import {builtinAgentsDirectory} from '../builtin-assets.ts';
 import {createDefaultAgentProfile} from './default.ts';
 export {createDefaultAgentProfile} from './default.ts';
 import {
@@ -600,7 +597,7 @@ function templateLocations(cwd: string): TemplateLocations {
   return {
     agentDir,
     projectDirectories: ancestors,
-    builtinDirectories: [builtinAgentsDirectory, builtinCommitAgentsDirectory],
+    builtinDirectories: [builtinAgentsDirectory],
     globalDirectory: join(agentDir, 'agents'),
     repositoryDirectories: ancestors
       .filter(
@@ -706,11 +703,8 @@ async function loadBuiltinSource(): Promise<{
   source: AgentTemplateSource;
   diagnostics: AgentTemplateDiagnostic[];
 }> {
-  const [agents, commit] = await Promise.all([
-    loadSource('builtin', builtinAgentsDirectory),
-    loadSource('builtin', builtinCommitAgentsDirectory),
-  ]);
-  const templates = [...agents.source.templates, ...commit.source.templates];
+  const agents = await loadSource('builtin', builtinAgentsDirectory);
+  const templates = agents.source.templates;
   if (!templates.some(template => template.id === 'default'))
     templates.push(createDefaultAgentProfile());
   return {
@@ -719,7 +713,7 @@ async function loadBuiltinSource(): Promise<{
       directory: builtinAgentsDirectory,
       templates: templates.sort(compareTemplates),
     },
-    diagnostics: [...agents.diagnostics, ...commit.diagnostics],
+    diagnostics: agents.diagnostics,
   };
 }
 

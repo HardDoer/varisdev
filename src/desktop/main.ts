@@ -1,4 +1,5 @@
 import '../runtime/settings-entry.mjs';
+import {openBrowser} from '../runtime/browser.mjs';
 import {
   app,
   BrowserWindow,
@@ -138,7 +139,8 @@ const desktopCommands = new DesktopCommands({
   quit: () => app.quit(),
 });
 const accounts = new DesktopAccounts({
-  openBrowser: url => shell.openExternal(url),
+  openBrowser: url =>
+    openBrowser(url, {fallback: target => shell.openExternal(target)}),
   changed: state => {
     if (
       mainWindow &&
@@ -270,12 +272,6 @@ function installHandlers(): void {
   }));
   handle('varisdev:acknowledge-agent-notice', () =>
     preferences.acknowledgeAgentNotice(),
-  );
-  handle('varisdev:get-commit-notice', () => ({
-    acknowledged: preferences.commitNoticeAcknowledged(),
-  }));
-  handle('varisdev:acknowledge-commit-notice', () =>
-    preferences.acknowledgeCommitNotice(),
   );
   handle('varisdev:get-tool-models', getToolModels);
   handle('varisdev:save-tool-model', saveToolModel);

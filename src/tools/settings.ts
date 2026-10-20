@@ -5,20 +5,13 @@ import {dirname, join} from 'node:path';
 
 export interface ToolSettings {
   agents: {allowedModels: string[] | null};
-  commit: {
-    model: string | null;
-    thinkingLevel:
-      'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
-  };
 }
 
-const efforts = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const writes = new Map<string, Promise<void>>();
 const settingsPath = () =>
   join(getAgentDir(), 'varisdev', 'tool-settings.json');
 const defaults = (): ToolSettings => ({
   agents: {allowedModels: []},
-  commit: {model: null, thinkingLevel: null},
 });
 
 function object(value: unknown, keys: string[]): Record<string, unknown> {
@@ -54,27 +47,9 @@ function agents(value: unknown): ToolSettings['agents'] {
   return {allowedModels: [...new Set(Array.from(allowedModels, modelId))]};
 }
 
-function commit(value: unknown): ToolSettings['commit'] {
-  const input = object(value, ['model', 'thinkingLevel']);
-  const model = input.model === null ? null : modelId(input.model);
-  if (
-    input.thinkingLevel !== null &&
-    (typeof input.thinkingLevel !== 'string' ||
-      !efforts.includes(input.thinkingLevel))
-  )
-    throw new Error(
-      'Commit thinkingLevel must be null, off, minimal, low, medium, high, xhigh, or max.',
-    );
-  return {
-    model,
-    thinkingLevel:
-      input.thinkingLevel as ToolSettings['commit']['thinkingLevel'],
-  };
-}
-
 function toolSettings(value: unknown): ToolSettings {
-  const input = object(value, ['agents', 'commit']);
-  return {agents: agents(input.agents), commit: commit(input.commit)};
+  const input = object(value, ['agents']);
+  return {agents: agents(input.agents)};
 }
 
 export function parseToolSettingsUpdate(
@@ -83,8 +58,7 @@ export function parseToolSettingsUpdate(
 ): Partial<ToolSettings> {
   if (section === 'all') return toolSettings(value);
   if (section === 'agents') return {agents: agents(value)};
-  if (section === 'commit') return {commit: commit(value)};
-  throw new Error('Tool settings section must be agents, commit, or all.');
+  throw new Error('Tool settings section must be agents or all.');
 }
 
 async function read(path: string): Promise<ToolSettings> {
@@ -92,7 +66,11 @@ async function read(path: string): Promise<ToolSettings> {
     const text = await readFile(path, 'utf8');
     if (text.length > 300000)
       throw new Error('Tool settings file is too large.');
-    return toolSettings(JSON.parse(text));
+    const saved = JSON.parse(text);
+    // Discard retired settings while preserving existing agent model choices.
+    if (saved && typeof saved === 'object' && !Array.isArray(saved))
+      delete saved.commit;
+    return toolSettings(saved);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaults();
     throw new Error(
@@ -117,17 +95,6 @@ export async function saveToolSettings(
   const path = settingsPath();
   const operation = (writes.get(path) ?? Promise.resolve()).then(async () => {
     const settings = {...(await read(path)), ...update};
-    if (settings.commit.model !== null) {
-      if (
-        section !== 'commit' &&
-        settings.agents.allowedModels !== null &&
-        !settings.agents.allowedModels.includes(settings.commit.model)
-      )
-        throw new Error(
-          `Commit model ${settings.commit.model} must be allowed. Update Agent models or Commit in Menu → Tool models. Allowed models: ${settings.agents.allowedModels.join(', ')}.`,
-        );
-      await assertAgentModelAllowed(settings.commit.model, settings);
-    }
     await mkdir(dirname(path), {recursive: true});
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {

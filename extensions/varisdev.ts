@@ -1,9 +1,5 @@
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
-import {registerCommitCommand} from '../src/commit.ts';
-import {
-  registerApprovalCommand,
-  requestAgentApproval,
-} from '../src/agents/approval-ui.ts';
+import {registerApprovalCommand} from '../src/agents/approval-ui.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import {registerDesktopStartup} from '../src/desktop/startup.ts';
 import {
@@ -24,12 +20,6 @@ export default function (pi: ExtensionAPI) {
     },
   );
   registerFactory(pi, agents, undefined, agentTools);
-  registerCommitCommand(pi, (...args) => pi.sendUserMessage(...args), {
-    approval: (request, ctx) =>
-      typeof agentTools.approval === 'function'
-        ? agentTools.approval(request, ctx)
-        : requestAgentApproval(request, ctx),
-  });
   registerApprovalCommand(pi);
   registerDesktopStartup(pi);
   pi.on('session_shutdown', () => {

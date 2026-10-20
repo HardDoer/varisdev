@@ -511,48 +511,6 @@
               <p id="tool-settings-empty" class="muted" hidden></p>
             </section>
             <section
-              id="commit-model-settings"
-              class="tool-settings-card"
-              role="region"
-              aria-labelledby="commit-model-settings-title"
-              aria-describedby="commit-model-settings-note"
-            >
-              <h3 id="commit-model-settings-title">Commit</h3>
-              <p
-                id="commit-model-settings-note"
-                class="tool-settings-card-note"
-              >
-                Custom commit configurations take precedence over these
-                defaults.
-              </p>
-              <div class="commit-settings-fields">
-                <div>
-                  <label for="commit-model">Model</label>
-                  <select id="commit-model">
-                    <option value="">Inherit current model</option>
-                  </select>
-                </div>
-                <div>
-                  <label for="commit-thinking">Thinking level</label>
-                  <select id="commit-thinking">
-                    <option value="">Inherit current thinking level</option>
-                    <option value="off">Off</option>
-                    <option value="minimal">Minimal</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="xhigh">Extra high</option>
-                    <option value="max">Max</option>
-                  </select>
-                </div>
-              </div>
-              <p
-                id="tool-settings-validation"
-                class="form-error"
-                role="status"
-              ></p>
-            </section>
-            <section
               id="image-model-settings"
               class="tool-settings-card"
               role="region"
@@ -587,50 +545,6 @@
       </form>
     </dialog>
     <dialog
-      id="commit-notice-dialog"
-      aria-labelledby="commit-notice-title"
-      aria-describedby="commit-notice-description"
-    >
-      <h2 id="commit-notice-title">Your commit agent’s model and reasoning</h2>
-      <p id="commit-notice-description">
-        The commit agent inherits the current agent’s model and reasoning level
-        by default. Choices saved in Menu → Tool models → Commit override these
-        values.
-      </p>
-      <p>
-        The /commit command asks that agent to review changes, create a Git
-        commit and push it to the remote repository.
-      </p>
-      <p class="muted">
-        Continue sends your command. Configure commit settings keeps it in the
-        composer. Cancel or Escape leaves it unsent.
-      </p>
-      <p id="commit-notice-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-footer">
-        <button
-          id="commit-notice-retry"
-          class="quiet-button"
-          type="button"
-          hidden
-        >
-          Retry
-        </button>
-        <button id="commit-notice-cancel" class="quiet-button" type="button">
-          Cancel
-        </button>
-        <button id="commit-notice-configure" class="quiet-button" type="button">
-          Configure commit settings
-        </button>
-        <button
-          id="commit-notice-continue"
-          class="primary-button"
-          type="button"
-        >
-          Continue
-        </button>
-      </div>
-    </dialog>
-    <dialog
       id="agent-notice-dialog"
       aria-labelledby="agent-notice-title"
       aria-describedby="agent-notice-description"
@@ -643,7 +557,7 @@
       </p>
       <p>
         Choose allowed models in Menu → Tool models. This also limits which
-        models agents can inherit, including agents started by /commit.
+        models agents can inherit.
       </p>
       <p class="muted">Escape also acknowledges this notice.</p>
       <p id="agent-notice-error" class="form-error" role="alert" hidden></p>
