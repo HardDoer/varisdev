@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {userInfo} from 'node:os';
-import {isAbsolute} from 'node:path';
+import {isAbsolute, join} from 'node:path';
 import type {IDisposable, IPty} from '@lydell/node-pty';
 
 const HISTORY_LIMIT = 256 * 1024;
@@ -146,9 +146,16 @@ export class DesktopTerminals {
     }
     if (this.sessions.size >= 16)
       throw new Error('Close a terminal before opening another.');
+    // Desktop launchers can inherit a PATH without Windows shell directories.
     const shell =
       process.platform === 'win32'
-        ? 'powershell.exe'
+        ? join(
+            process.env.SystemRoot || process.env.windir || 'C:\\Windows',
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+            'powershell.exe',
+          )
         : process.env.SHELL || userInfo().shell || '/bin/sh';
     const env: NodeJS.ProcessEnv = {
       ...process.env,

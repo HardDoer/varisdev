@@ -126,8 +126,19 @@
   stroke: var(--panel, #101c27);
   stroke-width: 2.5;
 }
-.gun-guard {
+.gun-side,
+.gun-rear,
+.gun-sight {
   fill: var(--panel, #101c27);
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1.5;
+}
+.gun-slide {
+  fill: color-mix(
+    in srgb,
+    var(--panel-raised, #172532) 65%,
+    var(--cyan, #75d9ff)
+  );
   stroke: var(--text, #edf4f6);
   stroke-width: 1.5;
 }
@@ -136,9 +147,9 @@
   stroke: var(--panel, #101c27);
   stroke-width: 1;
 }
-.gun-barrel {
+.gun-sight-dots {
   fill: none;
-  stroke: var(--text, #edf4f6);
+  stroke: var(--cyan, #75d9ff);
   stroke-width: 2.5;
 }
 .gun-cell {

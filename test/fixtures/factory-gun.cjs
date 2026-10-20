@@ -51,6 +51,7 @@ async function run(name, fn) {
 }
 
 async function installFixture(moduleUrl) {
+  const paintFrame = window.requestAnimationFrame.bind(window);
   let clock = 1000;
   let nextId = 0;
   const frames = new Map();
@@ -352,6 +353,7 @@ async function installFixture(moduleUrl) {
 
   window.fixture = {
     cleanup,
+    paint: () => new Promise(resolve => paintFrame(() => paintFrame(resolve))),
     shotState: () => current.state(),
     themes: () => THEMES.map(theme => theme.id),
     firing(renderer) {
@@ -735,6 +737,9 @@ async function installFixture(moduleUrl) {
 }
 
 async function capture(filename, metadata) {
+  // The fake effect clock does not flush Chromium's compositor after zooming.
+  browser.webContents.invalidate();
+  await evaluate('paint');
   await delay(50);
   const state = await evaluate('shotState');
   assert.equal(state.held.visible, true, filename + ': held gun at capture');
@@ -783,6 +788,8 @@ async function main() {
     if (details.level === 'error') rendererErrors.push(details.message);
   });
   await browser.loadFile(join(__dirname, 'factory-gun.html'));
+  // Capturing a hidden window changes document visibility and holsters the gun.
+  browser.showInactive();
   const moduleUrl = pathToFileURL(
     resolve(__dirname, '../../assets/dashboard/factory-scene.js'),
   ).href;
@@ -999,7 +1006,7 @@ async function main() {
           for (const zoom of [1, 1.25, 0.8]) {
             browser.setContentSize(560, 430);
             browser.webContents.setZoomFactor(zoom);
-            await delay(40);
+            await evaluate('paint');
             const points = await evaluate('nativeSetup', renderer);
             await nativeClick(points.holster);
             await nativeClick(points.menu);

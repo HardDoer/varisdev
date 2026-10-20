@@ -15,13 +15,15 @@ let fail = false;
 const closedSessions = new Set();
 const openSessions = () =>
   ['first', 'second'].filter(name => !closedSessions.has(name));
-for (const name of ['first', 'second']) mkdirSync(join(profile, name));
+const projectDirectory = name =>
+  join(profile, name === 'first' ? "project's files & $work" : name);
+for (const name of ['first', 'second']) mkdirSync(projectDirectory(name));
 const snapshot = id => ({
   sessions: openSessions().map(name => ({
     session: {
       id: name,
       name,
-      cwd: join(profile, name),
+      cwd: projectDirectory(name),
       status: 'idle',
       owned: true,
       controllable: true,
@@ -91,7 +93,7 @@ app
     handle('pidev:open-terminal', id => {
       calls.push(id);
       if (fail) throw new Error('Shell could not start.');
-      return terminals.open(id, join(profile, id));
+      return terminals.open(id, projectDirectory(id));
     });
     handle('pidev:terminal-write', (id, data) => terminals.write(id, data));
     handle('pidev:terminal-resize', (id, cols, rows) =>
@@ -136,9 +138,12 @@ app
       await evaluate("document.getElementById('terminal-panel').hidden"),
       false,
     );
+    // Check the project launch through Electron and the real Windows PTY.
+    // Split markers ensure echoed commands cannot satisfy the output checks.
+    if (process.platform === 'win32') terminals.resize('first', 93, 31);
     await browser.webContents.insertText(
       process.platform === 'win32'
-        ? "if (Get-Module PSReadLine) { 'embedded-' + 'ready' } else { throw 'PSReadLine unavailable' }"
+        ? `if ((Get-Location).ProviderPath -eq '${projectDirectory('first').replaceAll("'", "''")}') { 'cwd-' + 'ready' } else { throw 'Wrong project directory' }; if ($Host.UI.RawUI.WindowSize.Width -eq 93 -and $Host.UI.RawUI.WindowSize.Height -eq 31) { 'size-' + 'ready' } else { throw 'Wrong terminal size' }; if (Get-Module PSReadLine) { 'embedded-' + 'ready' } else { throw 'PSReadLine unavailable' }`
         : "printf 'embedded-%s\\n' 'ready'",
     );
     browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
@@ -147,8 +152,10 @@ app
       "document.querySelector('.project-terminal').textContent.includes('embedded-ready')",
     );
     if (process.platform === 'win32') {
-      const output = (await terminals.open('first', join(profile, 'first')))
+      const output = (await terminals.open('first', projectDirectory('first')))
         .data;
+      assert.match(output, /cwd-ready/);
+      assert.match(output, /size-ready/);
       assert.doesNotMatch(
         output,
         /Cannot load PSReadLine|Modules_InsufficientPowerShellVersion/i,
@@ -187,6 +194,20 @@ app
       "!document.getElementById('terminal-close').disabled && document.getElementById('terminal-error').hidden",
     );
     assert.deepEqual(calls, ['first', 'second', 'second']);
+    await browser.webContents.insertText(
+      process.platform === 'win32'
+        ? "'second-' + 'ready'"
+        : "printf 'second-%s\\n' 'ready'",
+    );
+    browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
+    browser.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Return'});
+    await until(
+      "document.querySelector('.project-terminal:not([hidden])').textContent.includes('second-ready')",
+    );
+    assert.doesNotMatch(
+      (await terminals.open('first', projectDirectory('first'))).data,
+      /second-ready/,
+    );
     await evaluate(
       "[...document.querySelectorAll('#parents button')].find(button => button.textContent.includes('first')).click()",
     );

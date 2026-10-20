@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {execFile} from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
@@ -11,10 +10,35 @@ import {
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
 import {DesktopTerminals} from '../src/desktop/terminal.ts';
+import {runTerminalProcess} from './fixtures/terminal-process.mjs';
+
+async function windowsTerminalEnvironment(
+  directory: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  // Desktop launches can inherit a PATH without the Windows shell directories
+  // and PowerShell 7 modules that Windows PowerShell cannot import.
+  const modules = join(directory, 'modules');
+  await mkdir(join(modules, 'PSReadLine'), {recursive: true});
+  await writeFile(
+    join(modules, 'PSReadLine', 'PSReadLine.psd1'),
+    "@{ ModuleVersion = '99.0'; PowerShellVersion = '99.0'; GUID = 'b0372f07-b2a1-4076-9725-89a858e21dde' }",
+  );
+  for (const key of Object.keys(env))
+    if (['path', 'psmodulepath'].includes(key.toLowerCase())) delete env[key];
+  env.PATH = dirname(process.execPath);
+  env.PSMODULEPATH = modules;
+  env.PSModuleAnalysisCachePath = join(directory, 'module-cache');
+  env.APPDATA = join(directory, 'appdata');
+  env.LOCALAPPDATA = join(directory, 'localappdata');
+  await Promise.all([
+    mkdir(env.APPDATA, {recursive: true}),
+    mkdir(env.LOCALAPPDATA, {recursive: true}),
+  ]);
+}
 
 void test(
   'embedded shells retain their project, resize, isolate sessions and close',
@@ -71,7 +95,7 @@ void test(
 );
 
 void test(
-  'Embedded terminal and conversation controls work in Electron',
+  'Electron project terminals launch with a restricted Windows PATH and preserve controls',
   {
     timeout: 30000,
     skip:
@@ -89,43 +113,11 @@ void test(
       SHELL: '/bin/sh',
     };
     delete env.ELECTRON_RUN_AS_NODE;
-    if (process.platform === 'win32') {
-      // Reproduce an inherited path that resolves PSReadLine to an incompatible
-      // PowerShell module, then verify the real embedded shell recovers from it.
-      const modules = join(directory, 'modules');
-      await mkdir(join(modules, 'PSReadLine'), {recursive: true});
-      await writeFile(
-        join(modules, 'PSReadLine', 'PSReadLine.psd1'),
-        "@{ ModuleVersion = '99.0'; PowerShellVersion = '99.0'; GUID = 'b0372f07-b2a1-4076-9725-89a858e21dde' }",
-      );
-      for (const key of Object.keys(env))
-        if (key.toLowerCase() === 'psmodulepath') delete env[key];
-      env.PSMODULEPATH = modules;
-      env.PSModuleAnalysisCachePath = join(directory, 'module-cache');
-      env.APPDATA = join(directory, 'appdata');
-      env.LOCALAPPDATA = join(directory, 'localappdata');
-      await Promise.all([
-        mkdir(env.APPDATA, {recursive: true}),
-        mkdir(env.LOCALAPPDATA, {recursive: true}),
-      ]);
-      await assert.rejects(
-        promisify(execFile)(
-          'powershell.exe',
-          [
-            '-NoLogo',
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            "$ErrorActionPreference = 'Stop'; Import-Module PSReadLine",
-          ],
-          {env, timeout: 10000},
-        ),
-        /Modules_InsufficientPowerShellVersion/,
-      );
-    }
+    if (process.platform === 'win32')
+      await windowsTerminalEnvironment(directory, env);
     let error;
     try {
-      await promisify(execFile)(
+      await runTerminalProcess(
         createRequire(import.meta.url)('electron') as string,
         [
           fileURLToPath(
@@ -134,7 +126,7 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeout: 25000},
+        {env, timeoutMs: 25000},
       );
     } catch (failure) {
       error = failure;

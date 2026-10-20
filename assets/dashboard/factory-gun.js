@@ -3,8 +3,6 @@ const COOLDOWN = 180;
 const EFFECT_DURATION = 260;
 const CONTROLS =
   'button, a, input, textarea, select, label, summary, [role="button"], [role="link"], [role="menuitem"], [role="slider"], [role="checkbox"], [role="switch"], [role="textbox"], [role="combobox"], [role="tab"], [contenteditable]:not([contenteditable="false"]), .factory-cane-holster, .factory-gun-holster';
-const BODY = 'M0 -8 H35 L46 -2 V7 H24 L20 11 H11 L8 5 H0 Z';
-const GRIP = 'M27 7 H41 L48 28 H34 Z';
 
 function validTarget(target) {
   return (
@@ -53,15 +51,55 @@ export function createFactoryGun(
   };
   function pistol() {
     const group = svg('g');
-    group.append(
-      svg('path', {d: 'M14 8 H28 L32 20 H21 L16 15 Z', class: 'gun-guard'}),
-      svg('path', {d: GRIP, class: 'gun-grip'}),
-      svg('path', {d: BODY, class: 'gun-body'}),
-      svg('path', {d: 'M2 -8 H32 V-3 H2 Z', class: 'gun-rail'}),
-      svg('path', {d: 'M0 -6 V4 M7 -3 V4', class: 'gun-barrel'}),
-      svg('path', {d: 'M29 0 H38 V5 H29 Z', class: 'gun-cell'}),
-      svg('path', {d: 'M35 14 L41 14 M37 19 L43 19', class: 'gun-grip-lines'}),
+    // A broad rear face and grip taper to the muzzle at the local origin.
+    const perspective = svg('g', {transform: 'rotate(-60) scale(.8)'});
+    perspective.append(
+      svg('path', {
+        d: 'M5 48 L29 40 L44 74 L15 83 Z',
+        class: 'gun-grip',
+      }),
+      svg('path', {
+        d: 'M29 40 L35 39 L49 69 L44 74 Z',
+        class: 'gun-side',
+      }),
+      svg('path', {
+        d: 'M10 58 L31 51 M12 65 L34 58 M15 72 L37 65',
+        class: 'gun-grip-lines',
+      }),
+      svg('path', {
+        d: 'M-5 0 L5 -2 L37 31 L38 45 L2 57 L-7 7 Z',
+        class: 'gun-body',
+      }),
+      svg('path', {
+        d: 'M-5 0 L5 -2 L37 31 L1 43 Z',
+        class: 'gun-slide',
+      }),
+      svg('path', {
+        d: 'M-1 2 L2 1 L25 28 L17 31 Z',
+        class: 'gun-rail',
+      }),
+      svg('path', {
+        d: 'M1 43 L37 31 L38 45 L2 57 Z',
+        class: 'gun-rear',
+      }),
+      svg('path', {
+        d: 'M9 45 L29 38 L30 43 L10 50 Z',
+        class: 'gun-cell',
+      }),
+      svg('path', {
+        d: 'M-2 36 L-3 30 L7 27 L10 33 L22 29 L20 23 L30 20 L34 32 Z',
+        class: 'gun-sight',
+      }),
+      svg('path', {
+        d: 'M-2 1 L-3 -6 L1 -7 L3 0 Z',
+        class: 'gun-sight',
+      }),
+      svg('path', {
+        d: 'M2 32 L5 31 M25 25 L28 24',
+        class: 'gun-sight-dots',
+      }),
     );
+    group.append(perspective);
     return group;
   }
   const holster = document.createElement('button');
@@ -75,7 +113,7 @@ export function createFactoryGun(
     focusable: 'false',
   });
   const stored = pistol();
-  stored.setAttribute('transform', 'translate(9 15) scale(.9)');
+  stored.setAttribute('transform', 'translate(6 18) scale(.74)');
   icon.append(stored);
   const label = document.createElement('span');
   const name = document.createElement('strong');
