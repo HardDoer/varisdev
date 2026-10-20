@@ -6,6 +6,9 @@ import console from 'node:console';
 
 const installRoot = fileURLToPath(new URL('../', import.meta.url));
 try {
+  const {initializeEnvironment} =
+    await import('../src/runtime/environment.mjs');
+  await initializeEnvironment();
   const {RuntimeManager} =
     await import('../desktop/build/src/runtime/manager.js');
   const root = await new RuntimeManager({installRoot}).currentRoot();

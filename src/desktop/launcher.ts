@@ -19,6 +19,7 @@ import type {
 import {conversationImageInput, requestId} from './ipc.ts';
 import {readConversationImage} from '../conversation-images.ts';
 import {buildDesktop} from './build.ts';
+import {environmentForChild} from '../runtime/environment.mjs';
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -265,7 +266,7 @@ export function createFactoryBridge(
 
 async function openFactory(state: DashboardState): Promise<FactoryWindow> {
   await buildDesktop();
-  const env = {...process.env};
+  const env = environmentForChild();
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(
     require('electron') as string,

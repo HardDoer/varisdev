@@ -208,7 +208,7 @@ void test('quit coalesces pending confirmations and allows retry after dialog er
 void test('production preload and trusted main IPC route only native allowlisted commands', async () => {
   const native = fakeElectron();
   const source = await readFile(
-    new URL('../src/desktop/main.ts', import.meta.url),
+    new URL('../src/desktop/application.ts', import.meta.url),
     'utf8',
   );
   const parsed = ts.createSourceFile(

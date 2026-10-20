@@ -26,12 +26,31 @@ async function start() {
     throw new Error(
       'Invalid launcher configuration. Run varisdev app install.',
     );
+  const {initializeEnvironment} = await import(
+    pathToFileURL(
+      join(
+        config.runtimeRoot || config.installRoot,
+        'src/runtime/environment.mjs',
+      ),
+    ).href
+  );
   const bootstrapProfile = join(config.profile, 'windows-launcher/bootstrap');
   mkdirSync(bootstrapProfile, {recursive: true});
   app.setPath('userData', bootstrapProfile);
   process.env.VARISDEV_INSTALL_ROOT = config.installRoot;
-  process.env.VARISDEV_DATA_DIR = config.dataDir;
-  process.env.PIDEV_DESKTOP_DATA_DIR = config.profile;
+  if (config.environment) {
+    for (const name of [
+      'VARISDEV_DATA_DIR',
+      'PIDEV_DESKTOP_DATA_DIR',
+      'VARISDEV_SETTINGS_DIR',
+    ]) {
+      if (typeof config.environment[name] === 'string')
+        process.env[name] ??= config.environment[name];
+    }
+  } else {
+    process.env.VARISDEV_DATA_DIR ??= config.dataDir;
+    process.env.PIDEV_DESKTOP_DATA_DIR ??= config.profile;
+  }
   if (config.nodeExecutable)
     process.env.VARISDEV_NODE_EXECUTABLE = config.nodeExecutable;
   process.env.PATH = [
@@ -43,9 +62,10 @@ async function start() {
       ].filter(Boolean),
     ),
   ].join(delimiter);
-  if (config.settingsDir)
-    process.env.VARISDEV_SETTINGS_DIR = config.settingsDir;
+  if (!config.environment && config.settingsDir)
+    process.env.VARISDEV_SETTINGS_DIR ??= config.settingsDir;
   delete process.env.ELECTRON_RUN_AS_NODE;
+  await initializeEnvironment();
   process.chdir(homedir());
   const {RuntimeManager} = await import(
     pathToFileURL(

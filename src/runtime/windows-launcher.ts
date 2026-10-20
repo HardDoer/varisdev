@@ -11,6 +11,7 @@ import {randomUUID} from 'node:crypto';
 import {dirname, join, resolve} from 'node:path';
 import type {ShortcutDetails} from 'electron';
 import {settingsDirectory} from './settings.mjs';
+import {environmentForChild} from './environment.mjs';
 
 export const windowsAppId = 'com.varisware.varisdev';
 
@@ -41,13 +42,20 @@ export async function prepareWindowsLauncher(options: WindowsLauncherOptions) {
   await mkdir(directory, {recursive: true});
   const bootstrap = join(directory, 'main.cjs');
   const icon = join(directory, 'varisdev.ico');
+  const machine = environmentForChild();
   const config = JSON.stringify({
     installRoot: resolve(installRoot),
+    runtimeRoot: resolve(runtimeRoot),
     dataDir: resolve(dataDir),
     profile: resolve(profile),
     nodeExecutable: options.nodeExecutable,
-    path: process.env.PATH,
-    settingsDir: settingsDirectory(process.env),
+    path: machine.PATH,
+    settingsDir: settingsDirectory(machine),
+    environment: {
+      VARISDEV_DATA_DIR: machine.VARISDEV_DATA_DIR,
+      PIDEV_DESKTOP_DATA_DIR: machine.PIDEV_DESKTOP_DATA_DIR,
+      VARISDEV_SETTINGS_DIR: machine.VARISDEV_SETTINGS_DIR,
+    },
   });
   // Replace individual files atomically so another launch never reads a partial file.
   for (const [destination, contents] of [

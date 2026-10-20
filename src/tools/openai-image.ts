@@ -4,7 +4,6 @@ import {
   formatSize,
   truncateHead,
   type ExtensionAPI,
-  type ExtensionContext,
   withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
 import {randomUUID} from 'node:crypto';
@@ -29,7 +28,7 @@ const openAIImageSchema = Type.Object({
     Type.String({
       minLength: 1,
       description:
-        'Image model chosen by the user. Otherwise uses OPENAI_IMAGE_MODEL or the saved choice; offers presets on first GUI use; defaults to gpt-image-2.5-flare without a UI.',
+        'Image model chosen by the user. Otherwise uses the saved choice, then OPENAI_IMAGE_MODEL; offers presets on first GUI use; defaults to gpt-image-2.5-flare without a UI.',
     }),
   ),
   prompt: Type.String({
@@ -167,15 +166,11 @@ function trimEnv(name: string): string | undefined {
   return value ? value : undefined;
 }
 
-async function getApiKey(
-  ctx: ExtensionContext,
-): Promise<{apiKey: string; envVarName?: string}> {
+function getApiKey(): {apiKey: string; envVarName: string} {
   const apiKey = trimEnv(API_KEY_ENV_VAR);
   if (apiKey) return {apiKey, envVarName: API_KEY_ENV_VAR};
-  const saved = await ctx.modelRegistry?.getApiKeyForProvider('openai');
-  if (saved) return {apiKey: saved};
   throw new Error(
-    'Connect OpenAI in Accounts or set OPENAI_API_KEY before generating images.',
+    'OpenAI image generation and editing require OPENAI_API_KEY. Set it in Environment settings or the process environment.',
   );
 }
 
@@ -471,13 +466,13 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
     name: OPENAI_IMAGE_TOOL_NAME,
     label: 'OpenAI Image',
     description:
-      "Create or edit images using the user's chosen OpenAI image model and save them in the current project.",
+      "Create or edit images using the user's chosen OpenAI image model and save them in the current project. Requires OPENAI_API_KEY from Environment settings or the process environment.",
     promptSnippet:
       'Create or edit images with the OpenAI Images API and save them to project files.',
     promptGuidelines: [
       'Use openai_image when the user asks to generate, edit, transform, restyle, or use input images with OpenAI.',
       'Use the configured image model unless the user requests an override. First GUI use offers presets; headless use defaults to gpt-image-2.5-flare.',
-      'openai_image uses the saved OpenAI account or OPENAI_API_KEY; never ask the user to paste the API key into tool arguments.',
+      'openai_image authenticates only with OPENAI_API_KEY from Environment settings or the process environment, independently of Accounts. Never ask the user to paste the API key into tool arguments.',
       'When the user wants to use existing local images, pass their paths as inputImagePaths. Do not pass raw base64; the tool reads each path and builds the base64-backed OpenAI edit payloads internally.',
       'openai_image returns saved file paths; refer to those paths instead of embedding base64 image data in the final answer.',
       `Choose the quality parameter from the user's requested speed/detail/cost preference; use ${DEFAULT_IMAGE_QUALITY} when unspecified.`,
@@ -485,7 +480,7 @@ export function registerOpenAIImageTool(pi: ExtensionAPI): void {
     ],
     parameters: openAIImageSchema,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const {apiKey, envVarName} = await getApiKey(ctx);
+      const {apiKey, envVarName} = getApiKey();
       const model = await selectToolModel(
         'openai-image',
         params.model,

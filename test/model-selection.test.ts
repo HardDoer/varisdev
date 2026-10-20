@@ -94,25 +94,61 @@ void test('first GUI use hosts native Pi presets and shares its saved choice wit
   assert.equal(OPENAI_IMAGE_PRESETS.length, 6);
 });
 
-void test('legacy saved models and explicit/environment overrides remain compatible', async t => {
+void test('request and saved models precede the environment, and removal restores it', async t => {
   const {ctx, path, ui} = await fixture(t);
   await mkdir(dirname(path), {recursive: true});
   await writeFile(path, JSON.stringify({model: 'legacy-model'}));
+  process.env.OPENAI_IMAGE_MODEL = ' environment-model ';
+  for (const hasUI of [true, false]) {
+    assert.equal(
+      await selectToolModel('openai-image', undefined, {...ctx, hasUI}),
+      'legacy-model',
+    );
+    assert.equal(
+      await selectToolModel('openai-image', 'request-model', {...ctx, hasUI}),
+      'request-model',
+    );
+  }
+  const [settings] = await getToolModels();
+  assert.equal(settings.model, 'legacy-model');
+  assert.equal(settings.environment, 'OPENAI_IMAGE_MODEL');
+  assert.equal(settings.environmentModel, 'environment-model');
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).model, 'legacy-model');
+
+  await saveToolModel('openai-image', 'gpt-image-2');
   assert.equal(
     await selectToolModel('openai-image', undefined, ctx),
-    'legacy-model',
+    'gpt-image-2',
   );
+  await saveToolModel('openai-image', '');
+  for (const hasUI of [true, false]) {
+    assert.equal(
+      await selectToolModel('openai-image', undefined, {...ctx, hasUI}),
+      'environment-model',
+    );
+  }
+  assert.equal((await getToolModels())[0].model, '');
+  assert.equal(ui.snapshot().dialogs.length, 0);
+  await assert.rejects(readFile(path), {code: 'ENOENT'});
+});
+
+void test('reading and using an environment model never saves it', async t => {
+  const {ctx, path, ui} = await fixture(t);
   process.env.OPENAI_IMAGE_MODEL = ' environment-model ';
+  const [settings] = await getToolModels();
+  assert.equal(settings.model, '');
+  assert.equal(settings.environmentModel, 'environment-model');
   assert.equal(
     await selectToolModel('openai-image', undefined, ctx),
     'environment-model',
   );
-  assert.equal(
-    await selectToolModel('openai-image', 'request-model', ctx),
-    'request-model',
-  );
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).model, 'legacy-model');
   assert.equal(ui.snapshot().dialogs.length, 0);
+  await assert.rejects(readFile(path), {code: 'ENOENT'});
+  delete process.env.OPENAI_IMAGE_MODEL;
+  const [withoutEnvironment] = await getToolModels();
+  assert.equal(withoutEnvironment.model, '');
+  assert.equal(withoutEnvironment.environment, undefined);
+  assert.equal(withoutEnvironment.environmentModel, undefined);
 });
 
 void test('headless fallback leaves first GUI setup available and cancellation saves nothing', async t => {

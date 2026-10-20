@@ -17,6 +17,7 @@ import {
   createNavigationReceiver,
 } from './native-commands.js';
 import {initToolSettings} from './tool-settings.js';
+import {initEnvironment} from './environment.js';
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
 import {initLiveView} from './live-view.js';
@@ -2613,6 +2614,7 @@ const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
 });
 const cleanupZoom = initZoom(api);
 const cleanupAccounts = initAccounts(api);
+const cleanupEnvironment = initEnvironment(api);
 const routeNativeCommand = createNativeCommandRouter({
   api,
   newSession: startSession,
@@ -2795,6 +2797,7 @@ window.addEventListener('unload', () => {
   cleanupZoom();
   cleanupUpdates();
   cleanupAccounts();
+  cleanupEnvironment();
   toolSettings.dispose();
   appMenu.dispose();
   liveView.dispose();

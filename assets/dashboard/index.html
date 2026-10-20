@@ -21,6 +21,7 @@
     <link rel="stylesheet" href="updates.css" />
     <link rel="stylesheet" href="accounts.css" />
     <link rel="stylesheet" href="tool-settings.css" />
+    <link rel="stylesheet" href="environment.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link rel="stylesheet" href="live-view.css" />
     <link rel="stylesheet" href="agent-templates.css" />
@@ -464,6 +465,80 @@
         Cancel sign-in
       </button>
     </dialog>
+    <dialog id="environment-dialog" aria-labelledby="environment-title">
+      <form id="environment-form">
+        <div class="dialog-heading">
+          <h2 id="environment-title">Environment</h2>
+          <button id="environment-close" class="quiet-button" type="button">
+            Close
+          </button>
+        </div>
+        <div class="environment-body">
+          <label for="environment-variable">Variable</label>
+          <select id="environment-variable"></select>
+          <div id="environment-name-field">
+            <label for="environment-name">Name</label>
+            <input
+              id="environment-name"
+              type="text"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="environment-value-field">
+            <label for="environment-value">Value</label>
+            <div class="environment-value-row">
+              <input
+                id="environment-value"
+                type="password"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                aria-describedby="environment-value-note"
+              />
+              <button
+                id="environment-show"
+                class="quiet-button"
+                type="button"
+                aria-controls="environment-value"
+                aria-pressed="false"
+                aria-label="Show value"
+                hidden
+              >
+                Show
+              </button>
+            </div>
+            <p id="environment-value-note" hidden>
+              Value read from environment variables.
+            </p>
+          </div>
+          <p id="environment-error" class="form-error" role="alert" hidden></p>
+          <button
+            id="environment-retry"
+            class="quiet-button"
+            type="button"
+            hidden
+          >
+            Retry
+          </button>
+        </div>
+        <div class="dialog-footer">
+          <p id="environment-status" role="status"></p>
+          <button
+            id="environment-remove"
+            class="quiet-button"
+            type="button"
+            hidden
+          >
+            Use environment value
+          </button>
+          <button id="environment-save" class="primary-button" type="submit">
+            Save
+          </button>
+        </div>
+      </form>
+    </dialog>
     <dialog
       id="tool-settings-dialog"
       aria-labelledby="tool-settings-title"
@@ -774,6 +849,15 @@
                       aria-controls="tool-settings-dialog"
                     >
                       Tool models
+                    </button>
+                    <button
+                      id="open-environment"
+                      class="quiet-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-controls="environment-dialog"
+                    >
+                      Environment
                     </button>
                   </div>
                 </div>

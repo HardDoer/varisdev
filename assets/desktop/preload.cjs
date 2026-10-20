@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld('pidev', {
   getToolModels: () => invoke('varisdev:get-tool-models'),
   saveToolModel: (tool, model) =>
     invoke('varisdev:save-tool-model', tool, model),
+  getEnvironment: () => invoke('varisdev:get-environment'),
+  saveEnvironment: (name, value) =>
+    invoke('varisdev:save-environment', name, value),
   getAccounts: () => invoke('varisdev:get-accounts'),
   startAccount: (provider, method) =>
     invoke('varisdev:account-start', provider, method),

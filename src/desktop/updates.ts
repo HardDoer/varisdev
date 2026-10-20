@@ -1,4 +1,5 @@
 import {join} from 'node:path';
+import {environmentForChild} from '../runtime/environment.mjs';
 import type {DashboardHubSnapshot} from '../dashboard/hub.ts';
 import type {UpdateStatus} from '../runtime/manager.ts';
 
@@ -35,7 +36,7 @@ export function updateRestartCommand(
   electronExecutable: string,
   project?: string,
 ): {executable: string; args: string[]; env: NodeJS.ProcessEnv} {
-  const env = {...process.env};
+  const env = environmentForChild();
   if (nodeExecutable) delete env.ELECTRON_RUN_AS_NODE;
   else env.ELECTRON_RUN_AS_NODE = '1';
   return {

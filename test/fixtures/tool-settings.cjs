@@ -1,18 +1,26 @@
 /* global process, __dirname, document, window, Event, setTimeout, getComputedStyle, requestAnimationFrame */
 const assert = require('node:assert/strict');
-const {mkdirSync, writeFileSync} = require('node:fs');
+const {existsSync, mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
 const screenshotDirectory = process.env.VARISDEV_TOOL_MODELS_SCREENSHOTS;
-const report = {cases: []};
+const report = {cases: [], rendererErrors: []};
 process.env.VARISDEV_CODING_AGENT_DIR = join(directory, 'agent');
 process.env.PI_CODING_AGENT_DIR = join(directory, 'agent');
-delete process.env.OPENAI_IMAGE_MODEL;
+process.env.OPENAI_IMAGE_MODEL = 'gpt-image-1-mini';
+const imageModelPath = join(
+  directory,
+  'agent',
+  'varisdev',
+  'tool-models',
+  'openai-image.json',
+);
 let browser;
 const reads = [];
 const writes = [];
+const imageWrites = [];
 let settings = {
   agents: {allowedModels: []},
 };
@@ -106,7 +114,9 @@ async function waitFor(fn) {
     visibility: document.visibilityState,
     error: document.getElementById('app-error')?.textContent,
   }));
-  throw new Error(`Timed out: ${fn}\nRenderer: ${JSON.stringify(state)}`);
+  throw new Error(
+    `Timed out: ${fn}\nRenderer: ${JSON.stringify(state)}\n${report.rendererErrors.join('\n')}`,
+  );
 }
 async function click(id) {
   await evaluate(id => document.getElementById(id).click(), id);
@@ -233,6 +243,12 @@ async function auditThemeContrast() {
         image: card('image-model-settings'),
         search: control('tool-settings-search', 'agent-model-settings'),
         imageModel: control('image-model', 'image-model-settings'),
+        environmentLabel: contrast(
+          getComputedStyle(document.getElementById('image-model-environment'))
+            .color,
+          getComputedStyle(document.getElementById('image-model-settings'))
+            .backgroundColor,
+        ),
       };
     });
     root.dataset.theme = original;
@@ -316,6 +332,9 @@ async function main() {
       backgroundThrottling: false,
     },
   });
+  browser.webContents.on('console-message', details => {
+    if (details.level === 'error') report.rendererErrors.push(details.message);
+  });
   handle('pidev:get-state', () => hub);
   handle('pidev:recent-projects', () => []);
   handle('pidev:prompt-session', (id, input) => {
@@ -342,7 +361,10 @@ async function main() {
     return features();
   });
   handle('varisdev:get-tool-models', getToolModels);
-  handle('varisdev:save-tool-model', saveToolModel);
+  handle('varisdev:save-tool-model', async (...args) => {
+    imageWrites.push(args);
+    await saveToolModel(...args);
+  });
   handle('varisdev:get-tool-settings', id => {
     reads.push(id);
     if (loadError) throw new Error(loadError);
@@ -427,8 +449,43 @@ async function main() {
     };
   });
   assert.deepEqual(desktopLayout, {beside: true, visibleTogether: true});
+  const environmentControl = await evaluate(() => {
+    const select = document.getElementById('image-model');
+    const source = document.getElementById('image-model-environment');
+    return {
+      value: select.value,
+      option: select.selectedOptions[0].textContent,
+      fallbackSource: select.selectedOptions[0].parentElement.label,
+      disabled: select.disabled,
+      source: source.textContent,
+      sourceVisible: source.checkVisibility(),
+      muted: select.classList.contains('environment-fallback'),
+      matchesMutedLabel:
+        getComputedStyle(select).color === getComputedStyle(source).color,
+    };
+  });
+  assert.deepEqual(environmentControl, {
+    value: '',
+    option: 'gpt-image-1-mini',
+    fallbackSource: 'OPENAI_IMAGE_MODEL',
+    disabled: false,
+    source: 'From OPENAI_IMAGE_MODEL',
+    sourceVisible: true,
+    muted: true,
+    matchesMutedLabel: true,
+  });
+  assert.equal(
+    existsSync(imageModelPath),
+    false,
+    'viewing does not save fallback',
+  );
+  assert.deepEqual(imageWrites, []);
   const themeContrast = await auditThemeContrast();
   for (const result of themeContrast) {
+    assert.ok(
+      result.environmentLabel >= 4.5,
+      `${result.theme} environment source contrast is ${result.environmentLabel}`,
+    );
     assert.notEqual(
       result.agents.background,
       result.image.background,
@@ -512,6 +569,64 @@ async function main() {
   );
   report.cases.push(
     'agent search and image choices save through the production preload',
+  );
+
+  await open();
+  assert.deepEqual(
+    await evaluate(() => ({
+      value: document.getElementById('image-model').value,
+      muted: document
+        .getElementById('image-model')
+        .classList.contains('environment-fallback'),
+      sourceHidden: document.getElementById('image-model-environment').hidden,
+    })),
+    {value: 'gpt-image-2', muted: false, sourceHidden: true},
+  );
+  await change('image-model', '');
+  await click('tool-settings-close');
+  assert.equal((await getToolModels())[0].model, 'gpt-image-2');
+  assert.deepEqual(imageWrites, [['openai-image', 'gpt-image-2']]);
+
+  await open();
+  await change('image-model', '');
+  await save();
+  assert.equal(
+    existsSync(imageModelPath),
+    false,
+    'removal deletes saved model',
+  );
+  assert.equal((await getToolModels())[0].model, '');
+  const removedWrites = imageWrites.length;
+  await open();
+  await save();
+  assert.equal(
+    imageWrites.length,
+    removedWrites,
+    'saving unchanged environment fallback does not persist it',
+  );
+  assert.equal(existsSync(imageModelPath), false);
+
+  await open();
+  await change('image-model', 'gpt-image-1-mini');
+  await save();
+  assert.equal(
+    (await getToolModels())[0].model,
+    'gpt-image-1-mini',
+    'explicitly selecting the environment model saves a user choice',
+  );
+  await open();
+  assert.equal(
+    await evaluate(() =>
+      document
+        .getElementById('image-model')
+        .classList.contains('environment-fallback'),
+    ),
+    false,
+  );
+  await change('image-model', '');
+  await save();
+  report.cases.push(
+    'environment fallback is muted and labeled; only explicit image changes save and removal restores it',
   );
 
   await open();
@@ -730,6 +845,28 @@ async function main() {
       noHorizontalScroll: true,
       actionsVisible: true,
     });
+    const imageVisible = await evaluate(() => {
+      document
+        .getElementById('image-model-settings')
+        .scrollIntoView({block: 'nearest'});
+      const body = document
+        .querySelector('.tool-settings-body')
+        .getBoundingClientRect();
+      return ['image-model', 'image-model-environment'].every(id => {
+        const element = document.getElementById(id);
+        const rect = element.getBoundingClientRect();
+        return (
+          element.checkVisibility() &&
+          rect.top >= body.top &&
+          rect.bottom <= body.bottom
+        );
+      });
+    });
+    assert.equal(
+      imageVisible,
+      true,
+      'environment model and source are accessible',
+    );
     if (screenshotDirectory) {
       for (const {theme} of themeContrast) {
         await evaluate(theme => {

@@ -17,6 +17,10 @@ import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
 import {configureSettings} from '../src/runtime/settings.mjs';
+import {
+  environmentForChild,
+  initializeEnvironment,
+} from '../src/runtime/environment.mjs';
 import {configureBundledPi} from './configure-pi.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -43,6 +47,7 @@ function checkNotRunning() {
 }
 
 function install() {
+  const machine = environmentForChild();
   const electron = require('electron');
   const source = join(dirname(electron), '../..');
   const main = join(root, 'desktop/build/src/desktop/main.js');
@@ -73,6 +78,10 @@ function install() {
       join(appDirectory, 'main.cjs'),
     );
     copyFileSync(
+      join(root, 'src/runtime/environment.mjs'),
+      join(appDirectory, 'environment.mjs'),
+    );
+    copyFileSync(
       join(root, 'assets/desktop/robot-crow.icns'),
       join(resources, 'varisdev.icns'),
     );
@@ -100,18 +109,18 @@ function install() {
           runtimeRoot: resolve(root),
           nodeExecutable:
             process.env.VARISDEV_NODE_EXECUTABLE || process.execPath,
-          dataDir: process.env.VARISDEV_DATA_DIR,
+          dataDir: machine.VARISDEV_DATA_DIR,
           path: [
             ...new Set([
               dirname(process.execPath),
-              ...(process.env.PATH || '').split(':').filter(Boolean),
+              ...(machine.PATH || '').split(':').filter(Boolean),
               '/usr/bin',
               '/bin',
               '/usr/sbin',
               '/sbin',
             ]),
           ].join(':'),
-          settingsDir: process.env.VARISDEV_SETTINGS_DIR,
+          settingsDir: machine.VARISDEV_SETTINGS_DIR,
         },
         null,
         2,
@@ -192,6 +201,7 @@ function windowsApp() {
 
 try {
   await configureBundledPi(join(root, 'desktop'));
+  if (command === 'install') await initializeEnvironment();
   configureSettings();
   if (process.platform === 'win32') windowsApp();
   else if (process.platform !== 'darwin')

@@ -111,6 +111,13 @@
 #image-model {
   border-color: var(--action-media);
 }
+#image-model.environment-fallback,
+#image-model option[value=''] {
+  color: var(--muted);
+}
+#image-model option:not([value='']) {
+  color: var(--text);
+}
 #tool-settings-search,
 #tool-settings-models {
   border-color: var(--action-agent);

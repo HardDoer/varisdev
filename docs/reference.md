@@ -74,9 +74,9 @@ The query tools accept paths or globs. JSON fields support dotted paths and RFC 
 
 ## Images
 
-`openai_image` generates or edits images through the OpenAI Images API. It uses the OpenAI account connected in **Accounts** or `OPENAI_API_KEY`.
+`openai_image` generates or edits images through the OpenAI Images API using `OPENAI_API_KEY`. Configure it in your shell or in **Menu → Environment**. Image authentication is independent of **Accounts** and ChatGPT/ChatPass sign-in. See [Environment settings](configuration.md#environment).
 
-Choose from six image presets on first GUI use or in **Menu → Tool models → OpenAI images**. The `model` parameter and `OPENAI_IMAGE_MODEL` override the saved choice. Headless use defaults to `gpt-image-2.5-flare` when no model is configured.
+Choose from six image presets on first GUI use or in **Menu → Tool models → OpenAI images**. The `model` parameter takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Remove the saved choice to use the environment value again. Headless use defaults to `gpt-image-2.5-flare` when no model is configured.
 
 - `prompt`: generation or editing instructions.
 - `inputImagePaths`: local reference images for editing.

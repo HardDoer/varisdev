@@ -29,7 +29,16 @@ export async function refreshMacLauncher(
     join(updatedRoot, 'assets/desktop/app-main.cjs'),
   );
   const temporary = join(directory, `main-${randomUUID()}.tmp`);
+  const environmentTemporary = join(
+    directory,
+    `environment-${randomUUID()}.tmp`,
+  );
   try {
+    await writeFile(
+      environmentTemporary,
+      await readFile(join(updatedRoot, 'src/runtime/environment.mjs')),
+    );
+    await rename(environmentTemporary, join(directory, 'environment.mjs'));
     await writeFile(temporary, source);
     await rename(temporary, join(directory, 'main.cjs'));
     if (process.platform === 'darwin') {
@@ -49,6 +58,7 @@ export async function refreshMacLauncher(
     }
   } finally {
     await rm(temporary, {force: true});
+    await rm(environmentTemporary, {force: true});
   }
 }
 

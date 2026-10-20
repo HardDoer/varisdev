@@ -72,7 +72,21 @@ For virtual models, the router's extension must also be loaded from the worker's
 
 Choose an OpenAI image preset on first GUI use or in **Menu → Tool models → OpenAI images**. The choice is saved for future requests. Presets include GPT Image 2.5 Sunburst, GPT Image 2.5 Flare, GPT Image 2, GPT Image 1.5, GPT Image 1, and GPT Image 1 Mini. Sunburst prioritizes editing precision; Flare is suited to fast, high-quality everyday images.
 
-The `model` request parameter and `OPENAI_IMAGE_MODEL` override the saved choice. Existing model IDs in requests, the environment, and saved settings remain supported. Without an interactive UI or a configured choice, the tool uses `gpt-image-2.5-flare`.
+The `model` request parameter takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Selecting the environment option removes the saved choice. Environment values appear muted with their source. Existing model IDs remain supported. Without an interactive UI or a configured choice, the tool uses `gpt-image-2.5-flare`.
+
+## Environment
+
+Open **Menu → Environment** to view or edit environment settings. Values are hidden until you choose **Show**. Values read from the machine environment appear muted and are labeled; viewing them does not save them.
+
+Saving a value writes that variable to `environment.json`. Saved values take precedence over the machine environment. **Use environment value** deletes the saved entry and restores the environment value.
+
+On macOS and systems with Zsh, startup reads exported variables from `.zshrc` for both desktop and terminal launches. Native Windows uses the inherited environment. Changes to tool credentials apply to subsequent requests; changes to startup paths require restarting the app.
+
+The settings file is stored at:
+
+- macOS: `~/Library/Application Support/VarisDev/environment.json`
+- Windows: `%LOCALAPPDATA%/VarisDev/environment.json`
+- Linux: `$XDG_CONFIG_HOME/varisdev/environment.json`, or `~/.config/varisdev/environment.json`
 
 ## Desktop storage
 
@@ -88,7 +102,7 @@ The `model` request parameter and `OPENAI_IMAGE_MODEL` override the saved choice
 
 Use `varisdev app install` to reinstall the launcher in `~/Applications`.
 
-Finder uses the executable search path and settings directory recorded when the launcher was installed. Extra environment settings can be placed in `~/Library/Application Support/VarisDev/environment.json` as a JSON object of string values.
+Finder launches load exported variables from `.zshrc` at startup. Saved [environment settings](#environment) take precedence.
 
 ## CLI
 

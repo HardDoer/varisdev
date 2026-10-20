@@ -1,0 +1,101 @@
+#environment-dialog {
+  width: min(580px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  overflow: hidden;
+  border-color: var(--line);
+  --environment-padding: clamp(14px, 3vw, 24px);
+}
+#environment-form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 28px);
+}
+#environment-dialog .dialog-heading {
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: var(--environment-padding);
+}
+#environment-dialog h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.environment-body {
+  min-height: 0;
+  padding: 0 var(--environment-padding);
+  overflow: auto;
+}
+.environment-body label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 650;
+}
+#environment-name-field,
+.environment-value-field {
+  margin-top: 16px;
+}
+#environment-variable,
+#environment-name,
+#environment-value {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  font: inherit;
+  background: var(--input, var(--panel));
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+#environment-value.environment-read-value {
+  color: var(--muted);
+}
+.environment-value-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+#environment-show {
+  flex: none;
+  min-width: 64px;
+}
+#environment-value-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+#environment-error {
+  overflow-wrap: anywhere;
+}
+#environment-status {
+  flex: 1 0 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+#environment-dialog .dialog-footer {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: var(--environment-padding);
+  gap: 12px;
+}
+#environment-save {
+  flex: none;
+}
+@media (max-height: 420px) {
+  #environment-dialog .dialog-heading,
+  #environment-dialog .dialog-footer {
+    padding-block: 10px;
+  }
+  #environment-dialog h2 {
+    font-size: 1.25rem;
+  }
+  #environment-name-field,
+  .environment-value-field {
+    margin-top: 10px;
+  }
+}

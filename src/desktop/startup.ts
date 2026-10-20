@@ -12,6 +12,7 @@ import {fileURLToPath} from 'node:url';
 import {buildDesktop} from './build.ts';
 import {configureSettings} from '../runtime/settings.mjs';
 import {defaultDataDir} from '../runtime/manager.ts';
+import {environmentForChild} from '../runtime/environment.mjs';
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -58,7 +59,7 @@ export async function launchDesktop(
 ): Promise<void> {
   await buildDesktop(signal);
   signal.throwIfAborted();
-  const env = configureSettings({...process.env});
+  const env = configureSettings(environmentForChild());
   delete (env as NodeJS.ProcessEnv).ELECTRON_RUN_AS_NODE;
   const dataDir =
     process.env.PIDEV_DESKTOP_DATA_DIR ?? join(defaultDataDir(), 'desktop');

@@ -47,6 +47,13 @@ async function appFiles(
     JSON.stringify({name: 'varisdev', type: 'module', version}),
   );
   await put(
+    join(root, 'src/runtime/environment.mjs'),
+    await readFile(
+      new URL('../src/runtime/environment.mjs', import.meta.url),
+      'utf8',
+    ),
+  );
+  await put(
     join(root, 'src/dashboard/parent.ts'),
     `export const version = '${version}';`,
   );
@@ -236,7 +243,14 @@ void test('full application update installs new code, dependencies and runtime a
   const cli = await execute(
     process.execPath,
     [join(f.installRoot, 'bin/varisdev.mjs'), '--version'],
-    {env: {...process.env, VARISDEV_DATA_DIR: f.dataDir}},
+    {
+      env: {
+        ...process.env,
+        HOME: f.temp,
+        ZDOTDIR: f.temp,
+        VARISDEV_DATA_DIR: f.dataDir,
+      },
+    },
   );
   assert.equal(cli.stdout.trim(), 'VarisDev 0.2.0');
   await assert.rejects(stat(join(f.dataDir, 'update.lock')));
@@ -508,6 +522,10 @@ void test('application updates refresh only the Finder launcher belonging to tha
     join(f.installRoot, 'assets/desktop/app-main.cjs'),
     'updated launcher',
   );
+  await put(
+    join(f.installRoot, 'src/runtime/environment.mjs'),
+    'updated environment loader',
+  );
   await refreshMacLauncher(f.installRoot, f.installRoot, bundle);
   assert.equal(
     await readFile(join(directory, 'main.cjs'), 'utf8'),
@@ -522,7 +540,12 @@ void test('application updates refresh only the Finder launcher belonging to tha
     await readFile(join(directory, 'main.cjs'), 'utf8'),
     'updated launcher',
   );
+  assert.equal(
+    await readFile(join(directory, 'environment.mjs'), 'utf8'),
+    'updated environment loader',
+  );
   assert.deepEqual((await readdir(directory)).sort(), [
+    'environment.mjs',
     'launch.json',
     'main.cjs',
   ]);

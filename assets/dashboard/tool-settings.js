@@ -95,7 +95,14 @@ export function initToolSettings({api, selectedSessionId}) {
     const select = $('image-model');
     const firstUse = document.createElement('option');
     firstUse.value = '';
-    firstUse.textContent = 'Ask on first use';
+    firstUse.textContent = imageState.environmentModel || 'Ask on first use';
+    let fallbackOption = firstUse;
+    if (imageState.environmentModel) {
+      const group = document.createElement('optgroup');
+      group.label = imageState.environment;
+      group.append(firstUse);
+      fallbackOption = group;
+    }
     const options = imageState.presets.map(preset => {
       const option = document.createElement('option');
       option.value = preset.id;
@@ -112,13 +119,16 @@ export function initToolSettings({api, selectedSessionId}) {
       legacy.disabled = true;
       options.push(legacy);
     }
-    select.replaceChildren(firstUse, ...options);
+    select.replaceChildren(fallbackOption, ...options);
     select.value = imageModel;
     select.disabled = busy;
-    $('image-model-environment').textContent = imageState.environment
-      ? `${imageState.environment} overrides this saved choice.`
+    const fromEnvironment = !imageModel && Boolean(imageState.environmentModel);
+    select.classList.toggle('environment-fallback', fromEnvironment);
+    select.setAttribute('aria-describedby', 'image-model-environment');
+    $('image-model-environment').textContent = fromEnvironment
+      ? `From ${imageState.environment}`
       : '';
-    $('image-model-environment').hidden = !imageState.environment;
+    $('image-model-environment').hidden = !fromEnvironment;
   }
   function renderControls() {
     const loaded = Boolean(state && draft);

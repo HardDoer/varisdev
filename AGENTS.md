@@ -4,6 +4,19 @@
 - Every verification command must have an enforced process timeout. A timed-out check must terminate its child processes too; do not rely only on a tool-call timeout or launch an unbounded synchronous Electron process.
 - Report a timeout or stalled check immediately. Investigate the failure before retrying, and stop once the relevant checks pass.
 
+# Tool authentication
+
+- Plugins may define their own configuration, authentication, and service APIs independently of Pi's LLM providers. Do not force a plugin through LLM account or model-selection mechanisms. Check and preserve the plugin's existing contract before changing shared infrastructure.
+- `openai_image` generation and editing use the OpenAI Images API with `OPENAI_API_KEY` only. Do not introduce another image credential variable or fall back to Accounts credentials. ChatGPT/ChatPass sign-in and image API-key access are independent.
+- Authentication checks must cover the affected launch environment and credential selection, including a missing environment key with a saved OAuth login. A test that injects a valid key and mocks a successful response does not cover that failure.
+
+# Settings and environment variables
+
+- Apply this precedence consistently: an explicitly saved user value takes precedence over the machine environment; removing the saved value restores the environment fallback.
+- Reading or displaying an environment fallback must never persist it. Only an explicit user edit writes a value to the settings JSON; removing a value deletes that entry.
+- Show environment fallback values in a muted style with a clear source label. Keep them editable so the user can save a replacement. Hide all environment field values by default and provide a Show/Hide control, including for names that do not look sensitive.
+- Load the required shell environment at app startup, including `.zshrc`, for desktop and terminal launches. Keep credentials out of logs and bound shell startup with process-tree cleanup.
+
 # Layout
 
 - All main elements must remain visible without page scrolling. Content inside an element may scroll.

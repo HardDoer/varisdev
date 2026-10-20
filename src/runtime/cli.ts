@@ -14,6 +14,7 @@ import {defaultDataDir, RuntimeManager} from './manager.ts';
 import {macLauncherExecutable} from './mac-launcher.ts';
 import {runAccountCommand, runPluginCommand} from './commands.ts';
 import {configureSettings} from './settings.mjs';
+import {environmentForChild, initializeEnvironment} from './environment.mjs';
 
 const help = `VarisDev
 
@@ -66,7 +67,10 @@ function runBundledPiCli(
         ),
         ...args,
       ],
-      {stdio: 'inherit', env: launchEnvironment(installRoot, runtimeRoot)},
+      {
+        stdio: 'inherit',
+        env: launchEnvironment(installRoot, runtimeRoot, false),
+      },
     ),
   );
 }
@@ -74,18 +78,20 @@ function runBundledPiCli(
 function launchEnvironment(
   installRoot: string,
   runtimeRoot = installRoot,
+  continuation = true,
 ): NodeJS.ProcessEnv {
   const nodeExecutable =
     process.env.VARISDEV_NODE_EXECUTABLE ||
     (!process.versions.electron ? process.execPath : undefined);
+  const inherited = continuation ? environmentForChild() : {...process.env};
   return {
-    ...configureSettings({...process.env}),
+    ...configureSettings(inherited),
     VARISDEV_INSTALL_ROOT: installRoot,
     ...(nodeExecutable ? {VARISDEV_NODE_EXECUTABLE: nodeExecutable} : {}),
     PATH: [
       dirname(process.env.VARISDEV_NODE_EXECUTABLE || process.execPath),
       join(runtimeRoot, 'node_modules/.bin'),
-      process.env.PATH,
+      inherited.PATH,
     ]
       .filter(Boolean)
       .join(delimiter),
@@ -246,6 +252,7 @@ export async function runCli(
   args: string[],
   installRoot: string,
 ): Promise<number> {
+  await initializeEnvironment();
   configureSettings();
   const [command, ...rest] = args;
   const manager = new RuntimeManager({installRoot});

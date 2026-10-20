@@ -87,6 +87,7 @@ export async function getToolModels() {
       environment: process.env[info.environment]?.trim()
         ? info.environment
         : undefined,
+      environmentModel: process.env[info.environment]?.trim() || undefined,
     })),
   );
 }
@@ -117,13 +118,15 @@ export async function selectToolModel(
 ): Promise<string> {
   signal?.throwIfAborted();
   const {label, environment} = tools[tool];
-  const explicit = requested?.trim() || process.env[environment]?.trim();
+  const explicit = requested?.trim();
   if (explicit) return validate(explicit);
   const path = modelPath(tool);
   return withFileMutationQueue(path, async () => {
     signal?.throwIfAborted();
     const saved = await readModel(path);
     if (saved) return saved;
+    const fallback = process.env[environment]?.trim();
+    if (fallback) return validate(fallback);
     if (!ctx.hasUI) return DEFAULT_IMAGE_MODEL;
     const labels = OPENAI_IMAGE_PRESETS.map(
       preset =>

@@ -25,37 +25,32 @@ async function start() {
     throw new Error(
       'Invalid launcher configuration. Run varisdev app install.',
     );
-  // Finder starts apps without the shell's tool paths or startup files.
-  process.env.PATH = config.path;
+  process.env.PATH ||= config.path;
   process.env.VARISDEV_INSTALL_ROOT = config.installRoot;
   process.env.VARISDEV_NODE_EXECUTABLE = config.nodeExecutable;
-  if (config.dataDir) process.env.VARISDEV_DATA_DIR = config.dataDir;
+  if (config.dataDir) process.env.VARISDEV_DATA_DIR ??= config.dataDir;
   if (config.settingsDir)
-    process.env.VARISDEV_SETTINGS_DIR = config.settingsDir;
-  const environmentFile = join(
-    homedir(),
-    'Library/Application Support/VarisDev/environment.json',
-  );
-  let environment;
+    process.env.VARISDEV_SETTINGS_DIR ??= config.settingsDir;
+  let environmentModule;
   try {
-    environment = JSON.parse(readFileSync(environmentFile, 'utf8'));
+    environmentModule = require.resolve('./environment.mjs');
   } catch (error) {
-    if (error.code !== 'ENOENT')
-      throw new Error(`Could not read ${environmentFile}: ${error.message}`);
+    if (error.code !== 'MODULE_NOT_FOUND') throw error;
+    // Older updaters refreshed only main.cjs in an existing app bundle.
+    const {RuntimeManager} = await import(
+      pathToFileURL(
+        join(config.installRoot, 'desktop/build/src/runtime/manager.js'),
+      ).href
+    );
+    const activeRoot = await new RuntimeManager({
+      installRoot: config.installRoot,
+    }).currentRoot();
+    environmentModule = join(activeRoot, 'src/runtime/environment.mjs');
   }
-  if (environment !== undefined) {
-    if (
-      !environment ||
-      typeof environment !== 'object' ||
-      Array.isArray(environment)
-    )
-      throw new Error(`${environmentFile} must contain a JSON object.`);
-    for (const [key, value] of Object.entries(environment)) {
-      if (typeof value !== 'string')
-        throw new Error(`${environmentFile}: ${key} must be a string.`);
-      process.env[key] = value;
-    }
-  }
+  const {initializeEnvironment, environmentForChild} = await import(
+    pathToFileURL(environmentModule).href
+  );
+  await initializeEnvironment();
   process.chdir(homedir());
   const {RuntimeManager, defaultDataDir} = await import(
     pathToFileURL(
@@ -95,7 +90,10 @@ async function start() {
       {
         detached: true,
         stdio: 'ignore',
-        env: {...process.env, VARISDEV_RESTART_PID: String(process.pid)},
+        env: {
+          ...environmentForChild(),
+          VARISDEV_RESTART_PID: String(process.pid),
+        },
       },
     );
     await new Promise((resolve, reject) => {
