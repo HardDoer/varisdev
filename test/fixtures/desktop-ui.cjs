@@ -1362,6 +1362,26 @@ async function main() {
         assert.equal(window.webContents.getZoomFactor(), zoom);
         const compact = await view();
         await detailsVisible(collapsed);
+        await click('.factory-cane-holster');
+        await click('.factory-gun-holster');
+        assert.deepEqual(
+          await evaluate(() => {
+            const scene = document.getElementById('scene');
+            return [scene.dataset.caneEquipped, scene.dataset.gunEquipped];
+          }),
+          ['false', 'true'],
+          'Picking up the gun must holster the cane',
+        );
+        await click('.factory-cane-holster');
+        assert.deepEqual(
+          await evaluate(() => {
+            const scene = document.getElementById('scene');
+            return [scene.dataset.caneEquipped, scene.dataset.gunEquipped];
+          }),
+          ['true', 'false'],
+          'Picking up the cane must holster the gun',
+        );
+        await click('.factory-cane-holster');
         assert.equal(
           await evaluate(() =>
             document.getElementById('factory-agents-button').checkVisibility(),
@@ -1580,12 +1600,20 @@ async function main() {
       await view();
       await click('#markdown-close');
       await click('#factory-info-button');
+      await click('.factory-gun-holster');
       await evaluate(() =>
         [...document.querySelectorAll('#parents button')]
           .find(item => item.textContent.includes('Beta factory'))
           .click(),
       );
       await view();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('scene').dataset.gunEquipped,
+        ),
+        'false',
+        'Switching workspace holsters the gun',
+      );
       assert.equal(
         await evaluate(
           () => document.getElementById('factory-title').textContent,
@@ -2637,6 +2665,7 @@ async function main() {
           const send = document.getElementById('send-prompt');
           const overview = document.querySelector('.overview');
           const cane = document.querySelector('.factory-cane-holster');
+          const gun = document.querySelector('.factory-gun-holster');
           const menu = document.getElementById('app-menu-button');
           const rect = item => {
             const {top, bottom, left, right, height} =
@@ -2653,13 +2682,19 @@ async function main() {
             inspector: rect(inspector),
             overview: rect(overview),
             cane: rect(cane),
+            gun: rect(gun),
             menu: rect(menu),
             caneInline:
               getComputedStyle(cane).position === 'static' &&
               cane.parentElement === menu.parentElement,
+            gunInline:
+              getComputedStyle(gun).position === 'static' &&
+              gun.parentElement === menu.parentElement,
             noCaneControlsOverScene: !document
               .getElementById('scene')
-              .querySelector('.factory-cane-holster, .factory-cane-hint'),
+              .querySelector(
+                '.factory-cane-holster, .factory-cane-hint, .factory-gun-holster, .factory-gun-hint',
+              ),
             overviewInFactory:
               overview.parentElement.classList.contains('factory-column'),
             parent: composer.parentElement === inspector,
@@ -2700,8 +2735,11 @@ async function main() {
         assert.equal(geometry.workspaceInChanges, true);
         assert.equal(geometry.overviewInFactory, true);
         assert.equal(geometry.caneInline, true);
+        assert.equal(geometry.gunInline, true);
         assert.equal(geometry.noCaneControlsOverScene, true);
-        assert.ok(geometry.cane.right <= geometry.menu.left);
+        assert.ok(geometry.cane.right <= geometry.gun.left);
+        assert.ok(geometry.gun.right <= geometry.menu.left);
+        assert.equal(geometry.gun.height, 32);
         assert.ok(geometry.cane.left >= geometry.inspector.left);
         assert.ok(geometry.menu.right <= width);
         assert.equal(geometry.cane.height, 32);

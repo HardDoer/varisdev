@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:"
+    />
+    <link rel="stylesheet" href="../../assets/dashboard/style.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/themes.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/factory-cane.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/factory-gun.css" />
+    <link rel="stylesheet" href="../../assets/dashboard/parent-fallback.css" />
+    <title>Factory gun integration fixture</title>
+    <style>
+      :root {
+        --bg: #0b121b;
+        --panel: #101c27;
+        --line: #577383;
+        --text: #edf4f6;
+        --muted: #a0b5c3;
+        --mint: #74f3c0;
+        --cyan: #75d9ff;
+        --amber: #ffcb7a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          13px system-ui,
+          sans-serif;
+      }
+      #root {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 12px;
+        padding: 12px;
+      }
+      #application-controls {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+      }
+      #application-controls > button:not([class]),
+      #application-controls input {
+        min-height: 32px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 4px 8px;
+        background: var(--panel);
+        color: var(--text);
+      }
+      #application-controls input {
+        width: 112px;
+      }
+      #fixture-label {
+        margin-left: auto;
+        color: var(--muted);
+      }
+      .factory-stage {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--scene, #111e2b);
+        overflow: hidden;
+      }
+      .factory-stage canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .fallback-units {
+        display: flex;
+        align-items: center;
+        padding: 0;
+        gap: 0;
+      }
+      .fallback-station {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        width: 50%;
+        height: 100%;
+        min-width: 0;
+      }
+      .fallback-station.agent .robot-glyph {
+        transform: scale(2.8);
+        margin: 24px 0;
+      }
+      #cover-panel {
+        position: fixed;
+        z-index: 9999;
+        width: 100px;
+        height: 72px;
+        border: 2px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--text);
+      }
+      @media (max-width: 560px) {
+        #root {
+          padding: 6px;
+          gap: 6px;
+        }
+        #application-controls {
+          gap: 4px;
+        }
+        #fixture-label {
+          width: 100%;
+          margin-left: 0;
+          font-size: 11px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="root"></main>
+  </body>
+</html>

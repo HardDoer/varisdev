@@ -43,7 +43,9 @@ Select a workspace and click **Close workspace** in its header, or use **Menu �
 
 Resuming a saved conversation replaces other open workspaces in the same folder, stopping their agents; workspaces in other folders stay open. If the chosen conversation is already open, its workspace is reused rather than duplicated. If it cannot be loaded, the current workspaces stay open.
 
-Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to cane hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
+Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
+
+Choose **Cane** to swing at robots by waving the mouse, or **Gun** to aim and click to shoot. Right-click or press **Esc** to holster either tool. Hits affect the scene's robots without interrupting agent work.
 
 ## Browsing and files
 

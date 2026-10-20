@@ -119,6 +119,7 @@ export function createFactoryCane(
     holsterContainer = container,
     getTargets = () => [],
     onHit = () => true,
+    onEquip = () => {},
   } = {},
 ) {
   const document = container.ownerDocument,
@@ -246,6 +247,7 @@ export function createFactoryCane(
   function equip(value) {
     if (disposed) return;
     equipped = Boolean(value);
+    if (equipped) onEquip();
     resetPointer();
     container.dataset.caneEquipped = String(equipped);
     if (!equipped && overlayLayer.matches(':popover-open'))
@@ -385,7 +387,8 @@ export function createFactoryCane(
   function onMove(event) {
     if (!equipped || event.pointerType === 'touch') return;
     const inScene =
-      container.contains(event.target) && !holster.contains(event.target);
+      container.contains(event.target) &&
+      !event.target.closest('.factory-cane-holster, .factory-gun-holster');
     // Stop only scene moves: the rest of the app keeps normal hover/click behavior.
     if (inScene) event.stopPropagation();
     const move = {
@@ -430,7 +433,11 @@ export function createFactoryCane(
     if (equipped && !event.relatedTarget) resetPointer();
   }
   function onClick(event) {
-    if (equipped && !holster.contains(event.target) && event.detail !== 0) {
+    if (
+      equipped &&
+      !event.target.closest('.factory-cane-holster, .factory-gun-holster') &&
+      event.detail !== 0
+    ) {
       event.preventDefault();
       event.stopImmediatePropagation();
     }
@@ -454,6 +461,7 @@ export function createFactoryCane(
   window.addEventListener('resize', resetPointer);
   equip(false);
   return {
+    stow,
     setSession(id) {
       if (disposed) return;
       if (inToolbar) holster.hidden = !id;

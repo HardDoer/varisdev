@@ -1,0 +1,214 @@
+.factory-gun-holster {
+  position: absolute;
+  z-index: 7;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 3px 11px 3px 5px;
+  border: 1px solid var(--line, #577383);
+  border-radius: 9px;
+  background: var(--panel, #101c27);
+  color: var(--text, #edf4f6);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--bg, #0b121b) 55%, transparent);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.factory-gun-holster[hidden] {
+  display: none;
+}
+#application-controls > .factory-gun-holster,
+.factory-gun-holster.factory-gun-toolbar {
+  position: static;
+  flex: 0 0 auto;
+  min-height: 32px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  gap: 5px;
+  box-shadow: none;
+}
+.factory-gun-holster svg {
+  width: 40px;
+  height: 40px;
+}
+.factory-gun-holster.factory-gun-toolbar svg {
+  width: 24px;
+  height: 24px;
+}
+.factory-gun-holster strong,
+.factory-gun-holster small {
+  display: block;
+}
+.factory-gun-holster strong {
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.factory-gun-holster small {
+  margin-top: 2px;
+  color: var(--muted, #a0b5c3);
+  font-size: 0.625rem;
+}
+.factory-gun-holster.factory-gun-toolbar small {
+  display: none;
+}
+.factory-gun-holster:hover,
+.factory-gun-holster[aria-pressed='true'] {
+  border-color: var(--cyan, #75d9ff);
+  background: var(--hover, #203442);
+}
+.factory-gun-holster:focus-visible {
+  outline: 2px solid var(--focus, var(--cyan, #75d9ff));
+  outline-offset: 3px;
+}
+.factory-gun-layer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+.factory-gun-layer[hidden] {
+  display: none;
+}
+.factory-gun-layer::backdrop {
+  background: transparent;
+  pointer-events: none;
+}
+.factory-gun-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+.factory-gun-overlay *,
+.factory-gun-holster svg * {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.scene[data-gun-equipped='true'] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* The visible reticle replaces the pointer only inside this app. */
+.factory-gun-active,
+.factory-gun-active *,
+.factory-gun-active *::before,
+.factory-gun-active *::after,
+.factory-gun-active *::backdrop {
+  cursor: none !important;
+}
+.gun-held {
+  filter: drop-shadow(
+    0 2px 2px color-mix(in srgb, var(--bg, #0b121b) 70%, transparent)
+  );
+}
+.gun-body {
+  fill: var(--panel-raised, #172532);
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1.8;
+}
+.gun-grip {
+  fill: var(--violet, #d1b7ff);
+  stroke: var(--panel, #101c27);
+  stroke-width: 2.5;
+}
+.gun-guard {
+  fill: var(--panel, #101c27);
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1.5;
+}
+.gun-rail {
+  fill: var(--cyan, #75d9ff);
+  stroke: var(--panel, #101c27);
+  stroke-width: 1;
+}
+.gun-barrel {
+  fill: none;
+  stroke: var(--text, #edf4f6);
+  stroke-width: 2.5;
+}
+.gun-cell {
+  fill: var(--amber, #ffcb7a);
+  stroke: var(--panel, #101c27);
+  stroke-width: 1;
+}
+.gun-grip-lines {
+  fill: none;
+  stroke: var(--panel, #101c27);
+  stroke-width: 1.5;
+}
+.gun-reticle-backing {
+  fill: var(--panel, #101c27);
+  fill-opacity: 0.9;
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1;
+}
+.gun-reticle-outline {
+  fill: none;
+  stroke: var(--panel, #101c27);
+  stroke-width: 5;
+}
+.gun-reticle-lines {
+  fill: none;
+  stroke: var(--cyan, #75d9ff);
+  stroke-width: 2;
+}
+.gun-reticle-dot {
+  fill: var(--text, #edf4f6);
+}
+.gun-effect-outline {
+  fill: none;
+  stroke: var(--panel, #101c27);
+  stroke-width: 6;
+}
+.gun-tracer {
+  fill: none;
+  stroke: var(--cyan, #75d9ff);
+  stroke-width: 2.5;
+}
+.gun-muzzle {
+  fill: var(--amber, #ffcb7a);
+  stroke: var(--panel, #101c27);
+  stroke-width: 2.5;
+}
+.gun-muzzle-core {
+  fill: var(--robot-eyes, #baffdf);
+}
+.gun-impact {
+  color: var(--violet, #d1b7ff);
+}
+.gun-impact-miss {
+  color: var(--text, #edf4f6);
+}
+.gun-impact-rays {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+}
+.gun-impact-ring-outline {
+  fill: none;
+  stroke: var(--panel, #101c27);
+  stroke-width: 4.5;
+}
+.gun-impact-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.gun-impact-miss .gun-impact-ring {
+  stroke-dasharray: 3 3;
+}

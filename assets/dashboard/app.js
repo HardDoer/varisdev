@@ -6,6 +6,7 @@ import {createFactoryScene} from './factory-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createParentFallback} from './parent-fallback.js';
 import {createFactoryCane} from './factory-cane.js';
+import {createFactoryGun} from './factory-gun.js';
 import {createProcessingEffects} from './processing-effects.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
@@ -861,6 +862,7 @@ function setSceneMotion(enabled) {
   sceneMotion = enabled;
   animation.setMotion(enabled);
   factoryCane.setMotion(enabled);
+  factoryGun.setMotion(enabled);
 }
 function activityPhase(data) {
   if (stopping.has(data.session.id)) return 'Stopping';
@@ -1930,6 +1932,7 @@ function render() {
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
   factoryCane.setSession(hasSession ? state.sessionId : null);
+  factoryGun.setSession(hasSession ? state.sessionId : null);
   appMenu.place(hasSession);
   renderSessionActions();
   agentTemplates.render?.();
@@ -2591,11 +2594,19 @@ try {
   scene = null;
 }
 if (!scene) fallbackScene = createParentFallback($('fallback-units'));
-const factoryCane = createFactoryCane($('scene'), {
+const factoryToyOptions = {
   holsterContainer: $('application-controls'),
   getTargets: () => (scene || fallbackScene)?.caneTargets() || [],
   onHit: (id, direction, strength) =>
     (scene || fallbackScene)?.hitWithCane(id, direction, strength),
+};
+const factoryGun = createFactoryGun($('scene'), {
+  ...factoryToyOptions,
+  onEquip: () => factoryCane.stow(),
+});
+const factoryCane = createFactoryCane($('scene'), {
+  ...factoryToyOptions,
+  onEquip: () => factoryGun.stow(),
 });
 const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
   deferDiscovery: true,
@@ -2792,6 +2803,7 @@ window.addEventListener('unload', () => {
   cleanupSessionHistory();
   cleanupSessionSelection?.();
   factoryCane.dispose();
+  factoryGun.dispose();
   scene?.dispose();
   fallbackScene?.dispose();
   processingEffects.dispose();
