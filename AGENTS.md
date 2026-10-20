@@ -34,6 +34,7 @@
 
 # UI text
 
+- Make UI elements and scene objects understandable through their appearance, placement, and behavior. Avoid decorative labels and unexplained abbreviations such as “LEAD” and “IN”.
 - Avoid redundant UI notes that explain obvious behavior or internal implementation details, such as “Choices follow Pi’s Scoped models.” Include notes only when they help the user make a decision or understand a non-obvious constraint.
 
 # Theme colors

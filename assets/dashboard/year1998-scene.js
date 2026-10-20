@@ -415,7 +415,7 @@ export function createYear1998Scene(
     rect(px + 7, py - 12, 2, 7, '#344d57');
   }
 
-  function drawCRT(x, z, status, label, manager = false) {
+  function drawCRT(x, z, status, manager = false) {
     const [px, py] = iso(x, z, 13);
     polygon(
       [
@@ -445,7 +445,6 @@ export function createYear1998Scene(
       rect(px + 3, py - 12, 1, 1, color(status));
     } else rect(px - 3, py - 13, 6, 1, '#6e9da4');
     rect(px - 6, py - 8, 2, 1, status ? color(status) : '#6d8e7e');
-    text(label, px + 3, py - 7, '#40565c', 5);
     rect(px - 2, py - 5, 4, 5, '#b6baa4');
     rect(px - 6, py, 12, 2, '#6e8078');
     polygon(
@@ -461,7 +460,7 @@ export function createYear1998Scene(
     rect(px + 10, py + 4, 3, 2, '#e3ddc1');
   }
 
-  function drawDesk(x, z, unit = null, manager = false, slot = 0) {
+  function drawDesk(x, z, unit = null, manager = false) {
     const cx = x - 0.25,
       cz = z - 0.9;
     const w = manager ? 3.6 : 2.65,
@@ -509,13 +508,7 @@ export function createYear1998Scene(
       [iso(cx - w / 2, cz + d / 2, 13), iso(cx + w / 2, cz + d / 2, 13)],
       '#e4d1a2',
     );
-    drawCRT(
-      x + (manager ? 0.5 : 0.45),
-      z - 1.1,
-      unit?.status,
-      manager ? 'MAIN' : String(slot + 1).padStart(2, '0'),
-      manager,
-    );
+    drawCRT(x + (manager ? 0.5 : 0.45), z - 1.1, unit?.status, manager);
     // Loose papers and a mug make the work surface recognisable at small sizes.
     tile(cx - w / 2 + 0.2, cz - 0.1, 0.55, 0.6, '#f5eed7', 14);
     tile(cx - w / 2 + 0.28, cz + 0.03, 0.4, 0.05, '#89978d', 14.5);
@@ -525,9 +518,6 @@ export function createYear1998Scene(
     rect(mug[0] - 1, mug[1] - 4, 2, 1, '#7b6150');
     chair(x - 0.8, z + 0.55, manager);
     if (manager) {
-      const plate = iso(cx + 1.25, cz + 0.7, 15);
-      rect(plate[0] - 9, plate[1] - 3, 18, 6, '#485d63');
-      text('LEAD', plate[0], plate[1], '#f3e8c4', 5);
       const phone = iso(cx - 1.2, cz - 0.4, 14);
       rect(phone[0] - 3, phone[1] - 3, 7, 5, '#42585b');
       rect(phone[0] - 4, phone[1] - 4, 9, 2, colors[identity.accentKey]);
@@ -540,9 +530,6 @@ export function createYear1998Scene(
     box(x - 1.1, z - 0.5, 0.75, 0.8, 10, '#bdaf8c', '#a1977d', '#859084');
     box(x - 1.1, z - 0.5, 0.65, 0.65, 13, '#465f66', '#7e9192', '#5c7279', 10);
     tile(x - 1.35, z - 0.72, 0.5, 0.5, '#f4edce', 14);
-    const p = iso(x - 1.1, z - 0.5, 17);
-    rect(p[0] - 5, p[1] - 3, 10, 6, '#38515e');
-    text('IN', p[0], p[1], '#f5e5b9', 5);
   }
 
   function cabinet(x, z) {
@@ -1420,7 +1407,7 @@ export function createYear1998Scene(
           draw: () =>
             unit?.status === 'queued' || (!unit && slot >= 6)
               ? drawQueue(x, z)
-              : drawDesk(x, z, unit, false, slot),
+              : drawDesk(x, z, unit),
         };
       }),
       {depth: -14, draw: () => cabinet(-9.2, -4.8)},
