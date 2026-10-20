@@ -3,7 +3,14 @@
 const rgb = hex =>
   [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255);
 
-function theme(id, name, colorScheme, colors, sceneColors) {
+function theme(
+  id,
+  name,
+  colorScheme,
+  colors,
+  sceneColors,
+  {appearance = 'default', scene = 'factory'} = {},
+) {
   const {
     selection = colors['selection-bg'],
     running = colors['status-running'],
@@ -19,6 +26,8 @@ function theme(id, name, colorScheme, colors, sceneColors) {
     id,
     name,
     colorScheme,
+    appearance,
+    scene,
     colors: Object.freeze(colors),
     scenePalette: Object.freeze(
       Object.fromEntries(
@@ -886,6 +895,88 @@ export const THEMES = Object.freeze([
     },
   ),
   theme(
+    'year1998',
+    'Year1998',
+    'light',
+    {
+      bg: '#c0c0c0',
+      panel: '#c0c0c0',
+      'panel-raised': '#d4d4d4',
+      input: '#ffffff',
+      line: '#555555',
+      text: '#000000',
+      muted: '#414141',
+      mint: '#005323',
+      cyan: '#005064',
+      amber: '#594b00',
+      red: '#800020',
+      violet: '#60237b',
+      rose: '#79214c',
+      accent: '#000080',
+      link: '#000080',
+      heading: '#000000',
+      code: '#60237b',
+      'message-user': '#000080',
+      'message-assistant': '#005323',
+      'action-read': '#005064',
+      'action-edit': '#793600',
+      'action-command': '#60237b',
+      'action-web': '#003b80',
+      'action-agent': '#005323',
+      'action-media': '#79214c',
+      'diff-add': '#005323',
+      'diff-remove': '#800020',
+      focus: '#000080',
+      'accent-text': '#ffffff',
+      hover: '#d4d4d4',
+      selected: '#d4d4d4',
+      'selection-bg': '#000080',
+      'selection-text': '#ffffff',
+      'selection-border': '#000000',
+      'status-running': '#005323',
+      'status-queued': '#594b00',
+      'status-completed': '#003b80',
+      'status-failed': '#800020',
+      'status-cancelling': '#793600',
+      'status-compacting': '#60237b',
+      'status-cancelled': '#414141',
+      'robot-shell': '#606060',
+      'robot-outline': '#000000',
+      'robot-screen': '#000000',
+      'robot-eyes': '#ffffff',
+      danger: '#e4caca',
+      scene: '#c0c0c0',
+      'scene-glow': '#d4d4d4',
+      'page-glow': '#c0c0c0',
+    },
+    {
+      floor: '#c0c0c0',
+      edge: '#999999',
+      dark: '#d4d4d4',
+      metal: '#808080',
+      shell: '#606060',
+      outline: '#000000',
+      white: '#ffffff',
+      eyes: '#ffffff',
+      mint: '#005323',
+      cyan: '#005064',
+      amber: '#793600',
+      red: '#800020',
+      violet: '#60237b',
+      rose: '#79214c',
+      dim: '#808080',
+      screen: '#000000',
+      running: '#55ee88',
+      queued: '#ffe066',
+      completed: '#80b3ff',
+      failed: '#ff8099',
+      cancelling: '#ffa060',
+      compacting: '#d49aff',
+      cancelled: '#c0c0c0',
+    },
+    {appearance: 'year1998', scene: 'year1998'},
+  ),
+  theme(
     'high-contrast',
     'High Contrast',
     'dark',
@@ -1038,6 +1129,8 @@ export function pluginTheme(entry) {
   return {
     ...entry,
     colorScheme: base.colorScheme,
+    appearance: entry.appearance ?? base.appearance,
+    scene: entry.scene ?? base.scene,
     colors,
     scenePalette: scene,
   };
@@ -1071,6 +1164,20 @@ export function initThemes(onChange = () => {}, {deferDiscovery = false} = {}) {
   let sessionId;
   let generation = 0;
   let disposed = false;
+  let discoveryErrors = [];
+  let sceneError = '';
+  function renderErrors() {
+    errors.replaceChildren();
+    for (const message of [
+      ...discoveryErrors,
+      ...(sceneError ? [sceneError] : []),
+    ]) {
+      const item = document.createElement('li');
+      item.textContent = message;
+      errors.append(item);
+    }
+    diagnostics.hidden = !errors.childElementCount;
+  }
   try {
     selected = window.localStorage.getItem(STORAGE_KEY);
   } catch {
@@ -1099,17 +1206,31 @@ export function initThemes(onChange = () => {}, {deferDiscovery = false} = {}) {
     const entry = entries.find(candidate => candidate.id === id) ?? THEMES[0];
     select.value = entry.id;
     document.documentElement.dataset.theme = entry.id;
+    document.documentElement.dataset.appearance = entry.appearance;
     document.documentElement.style.colorScheme = entry.colorScheme;
     document.getElementById('plugin-theme-style')?.remove();
+    document.getElementById('plugin-theme-palette')?.remove();
     if (entry.packageName) {
-      const style = document.createElement('style');
+      const style = document.createElement(
+        entry.stylesheetUrl ? 'link' : 'style',
+      );
       style.id = 'plugin-theme-style';
-      style.textContent = `:root {${Object.entries(entry.colors)
+      const palette = `:root {${Object.entries(entry.colors)
         .map(([key, value]) => `--${key}: ${value};`)
-        .join('')}}\n${entry.css ?? ''}`;
+        .join('')}}`;
+      if (entry.stylesheetUrl) {
+        const paletteStyle = document.createElement('style');
+        paletteStyle.id = 'plugin-theme-palette';
+        paletteStyle.textContent = palette;
+        document.head.append(paletteStyle);
+        style.rel = 'stylesheet';
+        style.href = entry.stylesheetUrl;
+      } else {
+        style.textContent = `${palette}\n${entry.css ?? ''}`;
+      }
       document.head.append(style);
     }
-    onChange(entry.scenePalette);
+    onChange(entry.scenePalette, entry);
     return entry.id;
   }
   options();
@@ -1129,24 +1250,18 @@ export function initThemes(onChange = () => {}, {deferDiscovery = false} = {}) {
       result = await window.pidev.appThemes(sessionId);
     } catch (error) {
       if (disposed || request !== generation) return;
-      errors.replaceChildren();
-      const item = document.createElement('li');
-      item.textContent = error instanceof Error ? error.message : String(error);
-      errors.append(item);
-      diagnostics.hidden = false;
+      discoveryErrors = [
+        error instanceof Error ? error.message : String(error),
+      ];
+      renderErrors();
       return;
     }
     if (disposed || request !== generation) return;
     entries = [...THEMES, ...result.themes.map(pluginTheme)];
     options();
     apply(selected);
-    errors.replaceChildren();
-    for (const message of result.errors) {
-      const item = document.createElement('li');
-      item.textContent = message;
-      errors.append(item);
-    }
-    diagnostics.hidden = !result.errors.length;
+    discoveryErrors = result.errors;
+    renderErrors();
   }
   const opened = () => void refresh();
   actions?.addEventListener('varisdev:app-menu-open', opened);
@@ -1157,9 +1272,15 @@ export function initThemes(onChange = () => {}, {deferDiscovery = false} = {}) {
     select.removeEventListener('change', change);
     actions?.removeEventListener('varisdev:app-menu-open', opened);
     document.getElementById('plugin-theme-style')?.remove();
+    document.getElementById('plugin-theme-palette')?.remove();
     diagnostics.remove();
     label.remove();
   };
   dispose.refresh = refresh;
+  dispose.reportSceneError = message => {
+    if (disposed) return;
+    sceneError = message;
+    renderErrors();
+  };
   return dispose;
 }

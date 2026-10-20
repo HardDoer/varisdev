@@ -1,0 +1,13 @@
+{
+  "name": "varisdev-retro-theme",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Year1998 theme starter with an optional custom Canvas2D scene.",
+  "varisdev": {
+    "themes": [
+      "./themes/retro.json",
+      "./themes/control-room.json"
+    ]
+  }
+}

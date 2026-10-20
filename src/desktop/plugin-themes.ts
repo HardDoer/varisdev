@@ -1,4 +1,6 @@
+import {createHash} from 'node:crypto';
 import {open, realpath} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
 import {dirname, isAbsolute, relative, resolve, sep} from 'node:path';
 import {
   DefaultPackageManager,
@@ -6,6 +8,7 @@ import {
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import {workspaceConfigPaths} from '../dashboard/workspace-config.ts';
+import type {ThemeAppearance, ThemeSceneReference} from '../theme-renderers.ts';
 
 export interface PluginTheme {
   id: string;
@@ -14,6 +17,9 @@ export interface PluginTheme {
   colors: Record<string, string>;
   scenePalette?: Record<string, string>;
   css?: string;
+  stylesheetUrl?: string;
+  appearance?: ThemeAppearance;
+  scene?: ThemeSceneReference;
   packageName: string;
   source: string;
 }
@@ -24,9 +30,11 @@ export interface PluginThemesResult {
 }
 
 const MAX_BYTES = 128 * 1024;
+const MAX_SCENE_BYTES = 2 * 1024 * 1024;
 const MAX_THEMES = 64;
 const BASES = new Set([
   'factory',
+  'year1998',
   'nord',
   'dracula',
   'catppuccin-mocha',
@@ -145,24 +153,35 @@ async function resource(
   return target;
 }
 
-async function text(path: string): Promise<string> {
+async function bytes(path: string, limit = MAX_BYTES): Promise<Buffer> {
   const file = await open(path, 'r');
   try {
     const stat = await file.stat();
     if (!stat.isFile()) throw new Error('resource must be a file');
-    if (stat.size > MAX_BYTES) throw new Error('file exceeds 128 KB');
-    const buffer = Buffer.alloc(MAX_BYTES + 1);
+    const sizeError = `file exceeds ${limit === MAX_BYTES ? '128 KB' : '2 MiB'}`;
+    if (stat.size > limit) throw new Error(sizeError);
+    const buffer = Buffer.alloc(limit + 1);
     let size = 0;
     while (size < buffer.length) {
       const read = await file.read(buffer, size, buffer.length - size, null);
       if (!read.bytesRead) break;
       size += read.bytesRead;
     }
-    if (size > MAX_BYTES) throw new Error('file exceeds 128 KB');
-    return buffer.subarray(0, size).toString('utf8');
+    if (size > limit) throw new Error(sizeError);
+    return buffer.subarray(0, size);
   } finally {
     await file.close();
   }
+}
+
+async function text(path: string): Promise<string> {
+  return (await bytes(path)).toString('utf8');
+}
+
+function resourceUrl(path: string, content: Buffer): string {
+  const url = pathToFileURL(path);
+  url.searchParams.set('v', createHash('sha256').update(content).digest('hex'));
+  return url.href;
 }
 
 function palette(
@@ -308,16 +327,52 @@ export async function loadPluginThemes(options: {
             packageName,
             source: pkg.source.slice(0, 256),
           };
+          if (value.appearance !== undefined) {
+            if (
+              value.appearance !== 'default' &&
+              value.appearance !== 'year1998'
+            )
+              throw new Error('appearance must be default or year1998');
+            entry.appearance = value.appearance;
+          }
+          if (value.scene !== undefined) {
+            if (value.scene === 'factory' || value.scene === 'year1998') {
+              entry.scene = value.scene;
+            } else {
+              if (!object(value.scene))
+                throw new Error(
+                  'scene must be factory, year1998, or a module object',
+                );
+              if (value.scene.apiVersion !== 1)
+                throw new Error('scene.apiVersion must be 1');
+              const modulePath = await resource(
+                root,
+                dirname(themePath),
+                value.scene.module,
+              );
+              const content = await bytes(modulePath, MAX_SCENE_BYTES);
+              entry.scene = {
+                moduleUrl: resourceUrl(modulePath, content),
+                apiVersion: 1,
+              };
+            }
+          }
           if (value.scenePalette !== undefined)
             entry.scenePalette = palette(
               value.scenePalette,
               SCENE_COLORS,
               'scenePalette',
             );
-          if (value.stylesheet !== undefined)
-            entry.css = await text(
-              await resource(root, dirname(themePath), value.stylesheet),
+          if (value.stylesheet !== undefined) {
+            const stylesheetPath = await resource(
+              root,
+              dirname(themePath),
+              value.stylesheet,
             );
+            const content = await bytes(stylesheetPath);
+            entry.css = content.toString('utf8');
+            entry.stylesheetUrl = resourceUrl(stylesheetPath, content);
+          }
           if (!ids.has(entry.id)) {
             ids.add(entry.id);
             result.themes.push(entry);

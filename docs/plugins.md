@@ -91,7 +91,7 @@ Add theme files to the installed package's manifest:
 }
 ```
 
-Each file describes a palette and optionally a stylesheet:
+Each file describes a palette and can also choose an appearance, stylesheet, or scene renderer:
 
 ```json
 {
@@ -109,7 +109,7 @@ Each file describes a palette and optionally a stylesheet:
 }
 ```
 
-`base` is `factory`, `nord`, `dracula`, `catppuccin-mocha`, `forest`, `moss`, `kimbie-dark`, `solarized-light`, `mint-paper`, `glacier`, `rose-quartz`, or `high-contrast`. Omitted colors inherit from the base. Colors use six digit hex values. The interface palette also supplies matching factory colors; optional `scenePalette` overrides individual scene colors.
+`base` is `factory`, `year1998`, `nord`, `dracula`, `catppuccin-mocha`, `forest`, `moss`, `kimbie-dark`, `solarized-light`, `mint-paper`, `glacier`, `rose-quartz`, or `high-contrast`. Omitted colors inherit from the base. Colors use six digit hex values. The interface palette also supplies matching factory colors; optional `scenePalette` overrides individual scene colors.
 
 Available interface colors are `bg`, `panel`, `panel-raised`, `input`, `line`, `text`, `muted`, `mint`, `cyan`, `amber`, `red`, `violet`, `rose`, `focus`, `accent-text`, `hover`, `selected`, `selection-bg`, `selection-text`, `selection-border`, `danger`, `scene`, `scene-glow`, and `page-glow`.
 
@@ -123,6 +123,84 @@ Scene overrides are `floor`, `edge`, `dark`, `metal`, `shell`, `outline`, `eyes`
 
 Use a varied accent palette for important controls, robots, and effects rather than tinting everything toward the background color. Check the rendered hover and selection states too: normal text needs at least 4.5:1 contrast, and controls, focus indicators, and meaningful graphics need 3:1.
 
-Stylesheets are relative to the theme file and must remain inside the installed package. They can use the interface's CSS variables and style app elements. Their CSS is applied while that theme is selected and removed when switching. Keep keyboard focus and reduced-motion preferences usable in your styles.
+Stylesheets are relative to the theme file and must remain inside the installed package. They can use the interface's CSS variables and style app elements. The app loads a stylesheet through a file URL so relative assets such as `url('./wallpaper.svg')` resolve beside it. Content hashes refresh changed stylesheets when discovery runs. Their CSS is applied while that theme is selected and removed when switching. Keep keyboard focus and reduced-motion preferences usable in your styles.
 
-The menu lists themes from global plugins and the selected project's plugins. Theme IDs include the package name to avoid collisions. Opening the menu refreshes discovery; invalid entries appear under **Theme errors**. Each manifest, theme, or stylesheet is limited to 128 KB, with up to 64 registrations. The selected theme is saved across restarts. Removing its plugin falls back to Factory.
+### Appearance and scenes
+
+`appearance` accepts `default` or `year1998`. It controls the app's visual treatment, including window frames, controls, and typography. Omitting it inherits the base theme's appearance. `scene` accepts `factory`, `year1998`, or a custom module registration; omitting it inherits the base theme's scene. These choices can be combined with palette overrides and a stylesheet:
+
+```json
+{
+  "id": "retro",
+  "name": "Retro control room",
+  "base": "year1998",
+  "appearance": "year1998",
+  "scene": {"module": "./scene.js", "apiVersion": 1},
+  "stylesheet": "./retro.css"
+}
+```
+
+The [retro theme example](../examples/retro-theme/) includes a Year1998 starter and a custom Canvas2D control room with selection, status lights, motion, prompt reactions, and cane damage.
+
+### Custom scene modules
+
+A scene module is a browser ES module relative to the theme JSON. Its canonical path must stay inside the installed package, including through symbolic links. Bundle the renderer and its dependencies into a module of at most 2 MiB. Discovery reads and validates the registration without executing it. The selected scene is imported using a file URL with a content hash, so changes to that module load again after discovery.
+
+Export `apiVersion = 1` and a synchronous `createScene(canvas, options)` function:
+
+```js
+export const apiVersion = 1;
+
+export function createScene(canvas, {apiVersion, onSelect, onLayout, helpers}) {
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas2D is unavailable');
+  return {
+    update(snapshot, selectedId) {
+      /* draw session and agent state */
+    },
+    setPalette(palette) {
+      /* RGB arrays, each component between 0 and 1 */
+    },
+    setMotion(enabled) {
+      /* honor motion preference */
+    },
+    dispose() {
+      /* release listeners, observers, frames, graphics resources */
+    },
+  };
+}
+```
+
+`options.apiVersion` is `1`. `onSelect(id)` selects `parent` or an agent ID. `onLayout(anchors)` reports robot positions for the app's activity effects and accessible selection controls using `{id, x, y, visible, away?, detail?}`; `x` and `y` are normalized canvas coordinates. Do not use parent session IDs for selection: the current session's selection ID is `parent`.
+
+The required methods are `update(snapshot, selectedId)`, `setPalette(palette)`, `setMotion(enabled)`, and `dispose()`. A snapshot contains `session` and `agents`; it can be `null` before a session is available. Palette values are RGB triples in the range 0–1, keyed by the scene colors listed above.
+
+Optional hooks provide these actions:
+
+| Method                                          | Purpose                                                          |
+| ----------------------------------------------- | ---------------------------------------------------------------- |
+| `updateHub(hub)`                                | Receive the current sessions collection, or `null`.              |
+| `prompt(sessionId)` / `cancelPrompt(sessionId)` | React to prompt submission or cancellation for a parent session. |
+| `startle(animate = true)` / `clearStartle()`    | Show and clear the app's attention reaction.                     |
+| `caneTargets()`                                 | Return `{id, x, y, radius}` targets in viewport CSS pixels.      |
+| `hitWithCane(id, direction = 1, strength = 1)`  | React to a target hit; return whether it was accepted.           |
+
+`options.helpers` supplies `createParentMotion`, `createFactoryVisitors`, `visitorCaneId`, `createRobotDamage`, `createRobotWhip`, `factoryIdentity`, and `factoryIdentityPalette`. These share the built-in scene's motion, visitors, damage, and session identity behaviors. The controllers schedule no frames; call their `tick(seconds)` methods from your scene's animation loop, forward motion preferences, and dispose them with the scene.
+
+The host imports modules asynchronously and calls `createScene` synchronously. When switching renderers it replaces the canvas and replays the current snapshot, selection, hub, palette, and motion preference. Release acquired resources before throwing during creation, and release remaining resources in `dispose()`. Load or API errors appear under **Theme errors**, with Factory used as the scene fallback.
+
+Modules run in the desktop renderer with browser APIs and the app's existing content security policy. Node APIs are unavailable. Scene modules have access to the desktop bridge.
+
+Optional TypeScript types are available without importing the agent SDK:
+
+```ts
+import type {
+  ThemeSceneModule,
+  ThemeScene,
+  ThemeSceneOptions,
+} from 'varisdev/theme-renderers';
+```
+
+Use `ThemeSceneModule['createScene']` as the factory's type. `ThemeSceneRegistration` describes the theme JSON's `scene` field. `ThemeSceneReference` describes the resolved registration delivered to the renderer; custom registrations contain `moduleUrl` and `apiVersion` there. The public snapshot types expose stable scene fields and use `unknown` for additional data.
+
+The menu lists themes from global plugins and the selected project's plugins. Theme IDs include the package name to avoid collisions. Opening the menu refreshes discovery; invalid entries appear under **Theme errors**. Each manifest, theme, or stylesheet is limited to 128 KB; a scene module is limited to 2 MiB, with up to 64 theme registrations. The selected theme is saved across restarts. Removing its plugin falls back to Factory.

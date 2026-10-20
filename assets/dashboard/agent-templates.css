@@ -83,6 +83,12 @@
 #new-agent-task {
   min-height: 112px;
 }
+#new-agent-recent-workspaces label {
+  margin-top: 14px;
+}
+#new-agent-recent-status:empty {
+  display: none;
+}
 .agent-template-folder-row {
   display: flex;
   flex: none;
@@ -123,6 +129,8 @@
   padding-top: 14px;
   border-top: 1px solid var(--line);
 }
+#new-agent-recent-status,
+#new-agent-recent-error,
 #new-agent-status,
 #new-agent-error,
 #agent-templates-status,

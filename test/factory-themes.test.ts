@@ -134,9 +134,36 @@ void test('catalog includes green, warm dark, and varied light themes with compl
     }
     const inherited = pluginTheme({base: theme.id, colors: {}});
     assert.equal(inherited.colorScheme, theme.colorScheme);
+    assert.equal(inherited.appearance, theme.appearance);
+    assert.equal(inherited.scene, theme.scene);
     assert.deepEqual(inherited.colors, theme.colors);
     assert.deepEqual(inherited.scenePalette, theme.scenePalette);
   }
+});
+
+void test('plugin appearance and scene inherit independently and allow explicit overrides', () => {
+  const retro = THEMES.find(theme => theme.id === 'year1998')!;
+  assert.equal(retro.name, 'Year1998');
+  assert.equal(retro.appearance, 'year1998');
+  assert.equal(retro.scene, 'year1998');
+  for (const theme of THEMES.filter(theme => theme.id !== retro.id)) {
+    assert.equal(theme.appearance, 'default');
+    assert.equal(theme.scene, 'factory');
+  }
+  const inherited = pluginTheme({base: retro.id, colors: {accent: '#123456'}});
+  assert.equal(inherited.appearance, 'year1998');
+  assert.equal(inherited.scene, 'year1998');
+  const customScene = {moduleUrl: 'varisdev://theme/scene.js', apiVersion: 1};
+  const custom = pluginTheme({base: retro.id, colors: {}, scene: customScene});
+  assert.equal(custom.appearance, 'year1998');
+  assert.deepEqual(custom.scene, customScene);
+  const defaultChrome = pluginTheme({
+    base: retro.id,
+    colors: {},
+    appearance: 'default',
+  });
+  assert.equal(defaultChrome.appearance, 'default');
+  assert.equal(defaultChrome.scene, 'year1998');
 });
 
 void test('plugin role overrides inherit the base and take precedence over legacy palette overrides', () => {

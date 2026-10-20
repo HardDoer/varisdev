@@ -1,0 +1,8 @@
+{
+  "id": "control-room",
+  "name": "Retro control room",
+  "base": "year1998",
+  "appearance": "year1998",
+  "scene": {"module": "./scene.js", "apiVersion": 1},
+  "stylesheet": "./retro.css"
+}

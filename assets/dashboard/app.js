@@ -2,9 +2,8 @@
 import {createTerminalTabs} from './terminal.js';
 import {createRenderScheduler} from './render-scheduler.js';
 import {renderFileLinks} from './file-links.js';
-import {createFactoryScene} from './factory-scene.js';
+import {createThemeScene} from './theme-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
-import {createParentFallback} from './parent-fallback.js';
 import {createFactoryCane} from './factory-cane.js';
 import {createFactoryGun} from './factory-gun.js';
 import {createProcessingEffects} from './processing-effects.js';
@@ -160,8 +159,6 @@ const closingSessions = new Set();
 const pausedActivity = new Set();
 let stopEffectTimer;
 let stopEffectSession;
-let scene;
-let fallbackScene;
 let sceneMotion;
 let unsubscribe;
 let clock;
@@ -755,7 +752,7 @@ function layoutLabels(layout) {
   lastLayout = layout;
   processingEffects.layout(layout);
   const data = snapshot();
-  if (!data || !scene) return;
+  if (!data || !scene?.hasCanvas()) return;
   const ids = new Set(layout.map(item => item.id));
   for (const [id, entry] of labelNodes) {
     if (!ids.has(id)) {
@@ -849,16 +846,16 @@ function sizeScene() {
   const element = $('scene');
   element.classList.toggle(
     'compact-scene',
-    element.clientHeight < (scene ? 360 : 620),
+    element.clientHeight < (scene?.hasCanvas() ? 360 : 620),
   );
 }
 function resizeFactory() {
   sizeScene();
   sizeInspector();
-  if (scene) layoutLabels(lastLayout);
+  if (scene?.hasCanvas()) layoutLabels(lastLayout);
 }
 function setSceneMotion(enabled) {
-  const animation = scene || fallbackScene;
+  const animation = scene;
   if (!animation || sceneMotion === enabled) return;
   sceneMotion = enabled;
   animation.setMotion(enabled);
@@ -906,7 +903,7 @@ function clearStopEffect() {
   const session = stopEffectSession;
   stopEffectSession = undefined;
   $('scene').classList.remove('is-startled');
-  (scene || fallbackScene)?.clearStartle();
+  scene?.clearStartle();
   const data = snapshot();
   if (!state.disposed && session && data?.session.id === session)
     renderProcessing(data);
@@ -918,7 +915,7 @@ function stopEffect() {
   // Restart the alert and fallback robot animation for each stop.
   void element.offsetWidth;
   element.classList.add('is-startled');
-  (scene || fallbackScene)?.startle(state.motion && !motionPreference.matches);
+  scene?.startle(state.motion && !motionPreference.matches);
   stopEffectTimer = setTimeout(clearStopEffect, 1100);
 }
 function renderFactory() {
@@ -965,13 +962,9 @@ function renderFactory() {
     motion: state.motion && !motionPreference.matches,
     stopping: stopping.has(session.id) || pausedActivity.has(session.id),
   });
-  if (scene) {
-    scene.update({...data, agents: sceneAgents(data)}, state.unitId);
-    layoutLabels(lastLayout);
-  } else {
-    renderFallback(data);
-    fallbackScene?.update(data, state.unitId);
-  }
+  if (!scene.hasCanvas()) renderFallback(data);
+  scene.update(data, state.unitId);
+  if (scene.hasCanvas()) layoutLabels(lastLayout);
 }
 function createWorkerCard(agent) {
   const element = node('button', 'worker-card');
@@ -1963,7 +1956,7 @@ function receive(hub) {
   snapshotVersion++;
   state.hub = agentControls.filterHub(hub);
   void receiveNavigation(hub);
-  (scene || fallbackScene)?.updateHub(state.hub);
+  scene?.updateHub(state.hub);
   toolSettings.observe(hub);
   const next =
     state.desiredSessionId &&
@@ -2004,7 +1997,7 @@ function applyMotion() {
     ? 'Reduced motion is enabled in system settings'
     : 'Toggle factory animation';
   setSceneMotion(enabled);
-  if (!enabled && stopEffectSession) (scene || fallbackScene)?.startle(false);
+  if (!enabled && stopEffectSession) scene?.startle(false);
   const data = snapshot();
   if (data)
     processingEffects.update(data, {
@@ -2277,7 +2270,7 @@ async function sendPrompt(event) {
     }
     if (!agentId && !native && session.status === 'idle') {
       if (stopEffectSession === id) clearStopEffect();
-      (scene || fallbackScene)?.prompt(id);
+      scene?.prompt(id);
       animated = true;
     }
     if (agentId) {
@@ -2304,7 +2297,7 @@ async function sendPrompt(event) {
     }
     clearSubmittedDraft(id, submitted);
   } catch (error) {
-    if (animated) (scene || fallbackScene)?.cancelPrompt(id);
+    if (animated) scene?.cancelPrompt(id);
     promptErrors.set(
       id,
       error instanceof Error ? error.message : String(error),
@@ -2586,20 +2579,31 @@ try {
 } catch {
   /* Use the default motion setting. */
 }
-try {
-  scene = createFactoryScene($('factory-canvas'), {
-    onSelect: selectUnit,
-    onLayout: layoutLabels,
-  });
-} catch {
-  scene = null;
-}
-if (!scene) fallbackScene = createParentFallback($('fallback-units'));
+let initialSceneError = '';
+let reportSceneError = message => {
+  initialSceneError = message;
+};
+const scene = createThemeScene($('factory-canvas'), {
+  fallbackContainer: $('fallback-units'),
+  agentsForBuiltin: sceneAgents,
+  onSelect: selectUnit,
+  onLayout: layoutLabels,
+  onAvailability(available) {
+    $('fallback').hidden = available;
+    $('scene-labels').hidden = !available;
+    for (const entry of labelNodes.values()) entry.element.remove();
+    labelNodes.clear();
+    lastLayout = [];
+    sizeScene();
+    renderScheduler.schedule();
+  },
+  onError: message => reportSceneError(message),
+});
 const factoryToyOptions = {
   holsterContainer: $('application-controls'),
-  getTargets: () => (scene || fallbackScene)?.caneTargets() || [],
+  getTargets: () => scene.caneTargets(),
   onHit: (id, direction, strength) =>
-    (scene || fallbackScene)?.hitWithCane(id, direction, strength),
+    scene.hitWithCane(id, direction, strength),
 };
 const factoryGun = createFactoryGun($('scene'), {
   ...factoryToyOptions,
@@ -2609,9 +2613,12 @@ const factoryCane = createFactoryCane($('scene'), {
   ...factoryToyOptions,
   onEquip: () => factoryGun.stow(),
 });
-const cleanupThemes = initThemes(palette => scene?.setPalette(palette), {
-  deferDiscovery: true,
-});
+const cleanupThemes = initThemes(
+  (palette, entry) => void scene.setTheme(entry, palette),
+  {deferDiscovery: true},
+);
+reportSceneError = cleanupThemes.reportSceneError;
+if (initialSceneError) reportSceneError(initialSceneError);
 const cleanupZoom = initZoom(api);
 const cleanupAccounts = initAccounts(api);
 const cleanupEnvironment = initEnvironment(api);
@@ -2734,9 +2741,9 @@ const cleanupSessionSelection = api?.onSelectSession?.(id => {
   state.desiredSessionId = id;
   api.getState().then(receive).catch(showError);
 });
-$('fallback').hidden = Boolean(scene);
-$('factory-canvas').hidden = !scene;
-$('scene-labels').hidden = !scene;
+$('fallback').hidden = scene.hasCanvas();
+$('factory-canvas').hidden = !scene.hasCanvas();
+$('scene-labels').hidden = !scene.hasCanvas();
 applyMotion();
 initMarkdownFiles({api, selected: snapshot});
 initSessionFeatures({
@@ -2808,7 +2815,6 @@ window.addEventListener('unload', () => {
   factoryCane.dispose();
   factoryGun.dispose();
   scene?.dispose();
-  fallbackScene?.dispose();
   processingEffects.dispose();
 });
 if (api) {

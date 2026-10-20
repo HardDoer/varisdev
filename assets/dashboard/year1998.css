@@ -1,0 +1,688 @@
+/* Year1998 desktop chrome. Layout and terminal content remain owned by their hosts. */
+:root[data-appearance='year1998'] {
+  --desktop: #008080;
+  --classic-face: #c0c0c0;
+  --classic-light: #ffffff;
+  --classic-shadow: #808080;
+  --classic-dark: #000000;
+  --classic-title: #000080;
+  --classic-raised:
+    inset 1px 1px #ffffff, inset -1px -1px #000000, inset 2px 2px #dfdfdf,
+    inset -2px -2px #808080;
+  --classic-sunken:
+    inset 1px 1px #808080, inset -1px -1px #ffffff, inset 2px 2px #000000,
+    inset -2px -2px #dfdfdf;
+  font-family: Tahoma, 'MS Sans Serif', Arial, sans-serif;
+}
+
+:root[data-appearance='year1998'] body {
+  background: var(--desktop);
+}
+
+/* Square chrome includes hosted dialogs and popovers from every feature. */
+:root[data-appearance='year1998'] *,
+:root[data-appearance='year1998'] *::before,
+:root[data-appearance='year1998'] *::after {
+  border-radius: 0 !important;
+}
+
+:root[data-appearance='year1998'] main {
+  padding: clamp(6px, 1vw, 12px);
+  gap: 8px;
+}
+
+:root[data-appearance='year1998'] .factory-workspace {
+  gap: 8px;
+}
+
+:root[data-appearance='year1998']
+  :is(.panel, .overview, .welcome, dialog, .mission-editor.editor-expanded),
+:root[data-appearance='year1998']
+  :is(
+    #app-menu-panel,
+    #factory-info[popover],
+    #factory-agents-drawer,
+    #markdown-panel
+  ) {
+  border: 1px solid var(--classic-dark);
+  background: var(--classic-face);
+  color: var(--text);
+  box-shadow: var(--classic-raised);
+}
+
+:root[data-appearance='year1998'] .overview {
+  padding: 5px;
+}
+
+:root[data-appearance='year1998'] :is(h1, h2, h3, .eyebrow) {
+  letter-spacing: normal;
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .factory-heading,
+    .inspector-title-row,
+    .dialog-heading,
+    .factory-drawer-heading,
+    :where(#markdown-heading)
+  ) {
+  background: var(--classic-title);
+  color: #ffffff;
+  padding: 4px 6px;
+  gap: 6px;
+  box-shadow: none;
+}
+
+:root[data-appearance='year1998']
+  :is(.dialog-heading, .factory-drawer-heading, .markdown-heading)
+  > :is(h2, h3),
+:root[data-appearance='year1998'] .factory-title-group > h2,
+:root[data-appearance='year1998'] .inspector-unit-controls > h2 {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: #ffffff;
+  line-height: 1.3;
+}
+
+:root[data-appearance='year1998'] .factory-heading {
+  margin: 3px;
+}
+
+:root[data-appearance='year1998'] #factory-info:not([popover]) {
+  background: var(--classic-face);
+  color: var(--text);
+  padding: 4px 6px;
+  margin: 0 -3px -1px;
+}
+
+:root[data-appearance='year1998'] #inspector .inspector-heading {
+  background-color: var(--classic-face);
+  box-shadow: inset 3px 0 var(--conversation-accent);
+  padding: 3px 3px 0;
+}
+
+:root[data-appearance='year1998'] #inspector .inspector-title-row {
+  margin: 0 0 3px;
+  height: auto;
+  min-height: 36px;
+}
+
+:root[data-appearance='year1998'] .inspector-activity-row {
+  padding-inline: 5px;
+}
+
+:root[data-appearance='year1998'] .conversation-kind {
+  background: var(--classic-face);
+  color: var(--conversation-accent);
+  border-color: var(--conversation-accent);
+}
+
+:root[data-appearance='year1998'] :is(button, select) {
+  font-family: inherit;
+  color: var(--text);
+  background: var(--classic-face);
+  border: 1px solid var(--classic-dark);
+  box-shadow: var(--classic-raised);
+}
+
+:root[data-appearance='year1998']
+  :is(.primary-button, .quiet-button, .danger-button) {
+  background: var(--classic-face);
+  color: var(--text);
+  border-color: var(--classic-dark);
+}
+
+:root[data-appearance='year1998'] .primary-button {
+  outline: 1px solid var(--classic-dark);
+  outline-offset: 1px;
+  font-weight: 700;
+}
+
+:root[data-appearance='year1998'] .danger-button {
+  color: var(--status-failed);
+}
+
+:root[data-appearance='year1998'] :is(button, select):hover:enabled {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--classic-dark);
+  text-decoration: none;
+}
+
+:root[data-appearance='year1998'] button:active:enabled,
+:root[data-appearance='year1998'] button[aria-pressed='true'] {
+  box-shadow: var(--classic-sunken);
+  background: var(--panel-raised);
+}
+
+:root[data-appearance='year1998']
+  :is(button, input, textarea, select):disabled {
+  color: var(--muted);
+  background: var(--classic-face);
+  border-style: solid;
+  text-shadow: 1px 1px #ffffff;
+  cursor: default;
+}
+
+:root[data-appearance='year1998'] :is(input, textarea, select) {
+  border: 1px solid var(--classic-dark);
+  background-color: var(--input);
+  color: var(--text);
+  box-shadow: var(--classic-sunken);
+  font-family: inherit;
+}
+
+:root[data-appearance='year1998'] :is(input, textarea) {
+  padding: 8px 10px;
+}
+
+:root[data-appearance='year1998'] select {
+  padding: 6px 8px;
+}
+
+:root[data-appearance='year1998']
+  :is(input[type='checkbox'], input[type='radio']) {
+  box-shadow: none;
+  accent-color: var(--classic-title);
+}
+
+:root[data-appearance='year1998']
+  :is(button, input, textarea, select, summary, a, [tabindex]):focus-visible {
+  outline: 3px dotted var(--focus);
+  outline-offset: 2px;
+}
+
+:root[data-appearance='year1998']
+  :is(.dialog-heading, .factory-drawer-heading)
+  > :is(button, a, [tabindex]):focus-visible,
+:root[data-appearance='year1998'] .factory-view-actions > button:focus-visible,
+:root[data-appearance='year1998']
+  .inspector-title-row
+  #application-controls
+  > button:focus-visible,
+:root[data-appearance='year1998']
+  .markdown-heading-actions
+  > button:focus-visible,
+:root[data-appearance='year1998'] #markdown-heading:focus-visible {
+  outline-color: #ffffff;
+}
+
+:root[data-appearance='year1998'] :is(.mono, .diff, pre, code, kbd) {
+  font-family: 'Lucida Console', Consolas, 'Courier New', monospace;
+}
+
+:root[data-appearance='year1998'] dialog,
+:root[data-appearance='year1998'] #markdown-panel {
+  box-shadow:
+    var(--classic-raised),
+    3px 3px #00000080;
+}
+
+:root[data-appearance='year1998'] dialog {
+  padding: 12px;
+}
+
+:root[data-appearance='year1998'] dialog::backdrop {
+  background: #00000050;
+  backdrop-filter: none;
+}
+
+:root[data-appearance='year1998'] dialog .dialog-heading {
+  padding: 5px 6px;
+  margin-bottom: 12px;
+}
+
+:root[data-appearance='year1998'] .dialog-heading > #extension-dialog-session {
+  color: #ffffff;
+}
+
+:root[data-appearance='year1998'] dialog .dialog-footer {
+  gap: 8px;
+  margin-top: 12px;
+}
+
+:root[data-appearance='year1998'] #app-menu-panel {
+  margin-top: 2px;
+  padding: 3px;
+  box-shadow:
+    var(--classic-raised),
+    2px 2px #00000080;
+}
+
+:root[data-appearance='year1998'] .app-menu-group {
+  padding: 6px;
+}
+
+:root[data-appearance='year1998'] .app-menu-group :is(h2, h3) {
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+:root[data-appearance='year1998'] #app-menu-panel button {
+  box-shadow: none;
+  border: 1px solid transparent;
+  padding: 6px 8px;
+  background: transparent;
+}
+
+:root[data-appearance='year1998'] #app-menu-panel button:hover:enabled,
+:root[data-appearance='year1998'] #app-menu-panel button:focus-visible {
+  color: #ffffff;
+  background: var(--classic-title);
+  border-color: var(--classic-title);
+  outline-color: #ffffff;
+  outline-offset: -3px;
+}
+
+:root[data-appearance='year1998'] :is(.inspector-tabs, .composer-tabs),
+:root[data-appearance='year1998'] #extension-dialog-tabs {
+  background: var(--classic-face);
+  gap: 3px;
+  border-bottom: 1px solid var(--classic-shadow);
+}
+
+:root[data-appearance='year1998'] :is(.inspector-tabs button, .composer-tab),
+:root[data-appearance='year1998'] #extension-dialog-tabs [role='tab'] {
+  border: 1px solid var(--classic-dark);
+  padding: 6px 9px;
+  background: var(--classic-face);
+  color: var(--text);
+  box-shadow: var(--classic-raised);
+}
+
+:root[data-appearance='year1998']
+  :is(.inspector-tabs button[aria-selected='true'], .composer-tab.selected),
+:root[data-appearance='year1998']
+  #extension-dialog-tabs
+  [aria-selected='true'] {
+  background: var(--input);
+  color: var(--classic-title);
+  box-shadow: var(--classic-sunken);
+  border-bottom-color: var(--classic-dark);
+  font-weight: 700;
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .parent-card,
+    .worker-card,
+    .history-row,
+    .recent-project,
+    .agent-template-list-item,
+    .command-choice,
+    .fallback-station
+  ),
+:root[data-appearance='year1998'] #session-history-list button {
+  background: var(--classic-face);
+  border: 1px solid var(--classic-dark);
+  box-shadow: var(--classic-raised);
+}
+
+:root[data-appearance='year1998'] .fallback-station.running:not(.selected) {
+  border-color: var(--status-running);
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .parent-card.selected,
+    .worker-card.selected,
+    .history-row.selected,
+    .agent-template-list-item.selected,
+    .command-suggestion[aria-selected='true'],
+    .scene-label.selected,
+    .fallback-station.selected
+  ) {
+  background: var(--selection-bg);
+  color: var(--selection-text);
+  border-color: var(--selection-border);
+  box-shadow: inset 0 0 0 1px var(--selection-text);
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .parent-card.selected,
+    .worker-card.selected,
+    .history-row.selected,
+    .agent-template-list-item.selected,
+    .scene-label.selected,
+    .fallback-station.selected
+  ):hover:enabled {
+  background: var(--selection-bg);
+  color: var(--selection-text);
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .agent-template-list-item.selected,
+    .command-suggestion[aria-selected='true']
+  )
+  :is(strong, small, span) {
+  color: var(--selection-text);
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .factory-metrics,
+    .parent-summary,
+    .parent-controls,
+    .attached-note,
+    .steering-messages,
+    .detail-section,
+    .tool-settings-card,
+    .agent-template-list-panel,
+    .agent-template-editor,
+    .agent-template-editor-empty
+  ) {
+  background: var(--classic-face);
+}
+
+:root[data-appearance='year1998'] .factory-metrics {
+  padding: 3px 8px;
+  border: 0;
+  box-shadow: var(--classic-sunken);
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .factory-metrics > span,
+    .count-tag,
+    .effort-badge,
+    .extension-statuses,
+    .attached-note
+  ) {
+  border: 1px solid var(--classic-shadow);
+  background: var(--classic-face);
+  box-shadow:
+    inset 1px 1px #808080,
+    inset -1px -1px #ffffff;
+}
+
+:root[data-appearance='year1998'] .factory-metrics > span {
+  padding: 1px 5px;
+}
+
+:root[data-appearance='year1998']
+  :is(
+    .conversation-body,
+    .live-feed,
+    .diff,
+    .tool-output,
+    .change-entry,
+    .context-preview pre
+  ),
+:root[data-appearance='year1998'] #agent-template-instructions {
+  background: var(--input);
+  color: var(--text);
+}
+
+:root[data-appearance='year1998'] .conversation-body {
+  box-shadow: var(--classic-sunken);
+}
+
+:root[data-appearance='year1998']
+  :is(.conversation-message, .conversation-tool, .feed-event) {
+  box-shadow: none;
+}
+
+:root[data-appearance='year1998']
+  .conversation-message[data-action='assistant'] {
+  background: var(--input);
+}
+
+:root[data-appearance='year1998'] .status-badge {
+  background: var(--panel-raised);
+  border: 1px solid currentColor;
+  font-weight: 700;
+  text-shadow: none;
+}
+
+:root[data-appearance='year1998']
+  :is(.token-meter, .usage-breakdown, progress) {
+  background: var(--input);
+  border: 1px solid var(--classic-shadow);
+  box-shadow: var(--classic-sunken);
+}
+
+:root[data-appearance='year1998'] .token-meter i {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--classic-title) 0 8px,
+    var(--classic-face) 8px 10px
+  );
+}
+
+:root[data-appearance='year1998'] .token-meter.over-budget i {
+  background: var(--status-failed);
+}
+
+/* The 2D scene uses the canvas's actual displayed bounds. */
+:root[data-appearance='year1998'] #factory-canvas {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+:root[data-appearance='year1998'] .scene {
+  background: var(--desktop);
+  border: 1px solid var(--classic-dark);
+  box-shadow: var(--classic-sunken);
+}
+
+:root[data-appearance='year1998'] .scene::after {
+  content: none;
+}
+
+:root[data-appearance='year1998']
+  :is(.scene-label, .processing-bubble, .agent-work-marker) {
+  color: var(--text);
+  background: var(--classic-face);
+  border: 1px solid var(--classic-dark);
+  box-shadow: var(--classic-raised);
+  filter: none;
+}
+
+:root[data-appearance='year1998'] .agent-work-marker {
+  border-color: var(--status-running);
+}
+
+:root[data-appearance='year1998'] .agent-work-marker[data-status='cancelling'] {
+  border-color: var(--status-cancelling);
+}
+
+:root[data-appearance='year1998'] .agent-work-marker::before {
+  box-shadow: none;
+  animation: none;
+}
+
+:root[data-appearance='year1998']
+  :is(.processing-dots i, .processing-state > i) {
+  box-shadow: none;
+  animation-timing-function: steps(4, end);
+}
+
+:root[data-appearance='year1998']
+  :is(.prompt-jolt-glow, .prompt-jolt-head, .prompt-jolt-impact) {
+  filter: none;
+  box-shadow: none;
+}
+
+:root[data-appearance='year1998'] .prompt-jolt-glow {
+  stroke: #ffffff;
+  stroke-width: 4px;
+}
+
+:root[data-appearance='year1998'] .prompt-jolt-head {
+  stroke: #000000;
+  stroke-width: 1px;
+}
+
+:root[data-appearance='year1998'] .prompt-jolt-impact {
+  box-shadow:
+    0 0 0 1px #ffffff,
+    inset 0 0 0 1px #ffffff;
+}
+
+:root[data-appearance='year1998'] .prompt-jolt path {
+  stroke-linejoin: miter;
+  stroke-linecap: square;
+}
+
+:root[data-appearance='year1998']
+  :is(#terminal-sessions, #extension-dialog-terminal) {
+  border: 2px solid var(--classic-shadow);
+  box-shadow: var(--classic-sunken);
+}
+
+:root[data-appearance='year1998'] #terminal-sessions {
+  background: #000000;
+}
+
+:root[data-appearance='year1998'] .project-terminal {
+  padding: 5px;
+}
+
+:root[data-appearance='year1998'] #extension-dialog.terminal-dialog {
+  background: var(--classic-face);
+  padding: 4px;
+}
+
+:root[data-appearance='year1998']
+  #extension-dialog.terminal-dialog
+  .dialog-heading {
+  margin-bottom: 4px;
+}
+
+:root[data-appearance='year1998'] * {
+  scrollbar-color: var(--classic-face) #dfdfdf;
+  scrollbar-width: auto;
+}
+
+:root[data-appearance='year1998'] ::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+:root[data-appearance='year1998'] ::-webkit-scrollbar-track {
+  background: repeating-conic-gradient(#c0c0c0 0% 25%, #dfdfdf 0% 50%) 0 0 / 2px
+    2px;
+}
+:root[data-appearance='year1998'] ::-webkit-scrollbar-thumb,
+:root[data-appearance='year1998'] ::-webkit-scrollbar-button,
+:root[data-appearance='year1998'] ::-webkit-scrollbar-corner {
+  background: var(--classic-face);
+  border: 1px solid var(--classic-shadow);
+  box-shadow: var(--classic-raised);
+}
+:root[data-appearance='year1998'] ::-webkit-scrollbar-thumb:active {
+  box-shadow: var(--classic-sunken);
+}
+
+@media (max-width: 950px), (max-height: 700px) {
+  :root[data-appearance='year1998'] main {
+    padding: 6px;
+    gap: 6px;
+  }
+  :root[data-appearance='year1998'] .factory-workspace {
+    gap: 6px;
+  }
+  :root[data-appearance='year1998'] :is(.inspector-tabs button, .composer-tab),
+  :root[data-appearance='year1998'] #extension-dialog-tabs [role='tab'] {
+    padding: 5px 6px;
+  }
+  :root[data-appearance='year1998']
+    :is(.factory-heading, .inspector-title-row) {
+    padding: 3px;
+    gap: 4px;
+  }
+}
+
+@media (max-height: 560px) {
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-dialog-frame {
+    padding: 6px;
+  }
+  :root[data-appearance='year1998'] #agent-templates-dialog .dialog-heading {
+    padding: 3px 4px;
+    margin-bottom: 5px;
+    gap: 6px;
+  }
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-folder-row {
+    padding: 3px 5px;
+    gap: 6px;
+  }
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-folder-row
+    .agent-template-field-label {
+    margin-bottom: 1px;
+    font-size: 0.75rem;
+    line-height: 1.2;
+  }
+  :root[data-appearance='year1998'] #agent-templates-folder {
+    font-size: 0.75rem;
+    line-height: 1.25;
+  }
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-workspace {
+    margin-top: 4px;
+    gap: 4px;
+  }
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-editor-body {
+    padding: 8px;
+  }
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-editor-footer {
+    margin-top: 0;
+    padding: 4px 6px;
+    gap: 6px;
+  }
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    :is(
+      .dialog-heading,
+      .agent-template-folder-row,
+      .agent-template-list-heading,
+      .agent-template-editor-footer
+    )
+    button {
+    min-height: 28px;
+    padding: 4px 8px;
+    font-size: 0.8125rem;
+    line-height: 1.3;
+  }
+}
+
+@media (max-width: 720px) and (max-height: 560px) {
+  :root[data-appearance='year1998']
+    #agent-templates-dialog
+    .agent-template-list-panel {
+    padding: 4px;
+    gap: 4px;
+  }
+  :root[data-appearance='year1998'] #agent-template-picker {
+    min-height: 28px;
+    padding: 3px 24px 3px 6px;
+    font-size: 0.8125rem;
+  }
+}
+
+@media (max-width: 600px), (max-height: 500px) {
+  :root[data-appearance='year1998'] .overview {
+    padding: 3px;
+  }
+  :root[data-appearance='year1998'] dialog {
+    padding: 6px;
+  }
+  :root[data-appearance='year1998'] .factory-metrics {
+    gap: 2px 4px;
+    padding: 3px;
+  }
+}

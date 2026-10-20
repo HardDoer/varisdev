@@ -6,7 +6,7 @@ A workspace contains a main agent and any additional agents. The main agent is t
 
 Every conversation has a selected agent. **Default** is selected automatically and adds no persona, workflow instructions, model pin, step limit, or permission rules. It preserves Pi's normal context, resources, tools, and settings. You can use Default for all work.
 
-**New conversation** lets you choose another agent configuration. A name and initial message are optional; unnamed workspaces use the folder name. Set `default_agent` in Pi `settings.json` to choose a visible primary or all-mode agent automatically. An unavailable, hidden, disabled, or subagent-only choice falls back to Default. If an override makes Default unsuitable, the empty built-in Default remains available.
+**New conversation** starts in the current workspace. Choose a saved folder from **Recent workspaces** or use **Choose folder** to work elsewhere. Recent workspaces use the same history as the welcome screen; folders that no longer exist are omitted. Selecting a folder reloads its available agent configurations and default agent. A name and initial message are optional; unnamed workspaces use the folder name. Set `default_agent` in Pi `settings.json` to choose a visible primary or all-mode agent automatically. An unavailable, hidden, disabled, or subagent-only choice falls back to Default. If an override makes Default unsuitable, the empty built-in Default remains available.
 
 Resumed conversations keep their saved agent configuration. The selected configuration appears beside the composer and in session settings.
 

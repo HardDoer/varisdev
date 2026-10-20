@@ -8,7 +8,11 @@
     <link rel="stylesheet" href="../../assets/dashboard/themes.css" />
     <link rel="stylesheet" href="../../assets/dashboard/parent-fallback.css" />
     <link rel="stylesheet" href="../../assets/dashboard/factory-cane.css" />
-    <link rel="stylesheet" href="../../assets/dashboard/processing-effects.css" />
+    <link
+      rel="stylesheet"
+      href="../../assets/dashboard/processing-effects.css"
+    />
+    <link rel="stylesheet" href="../../assets/dashboard/year1998.css" />
     <style>
       html,
       body {
@@ -248,8 +252,14 @@
             <span class="parent-card-activity">Rendering every theme</span>
           </button>
 
-          <div id="status-section" class="status-section" aria-label="Job statuses">
-            <span class="status-badge running" data-status="running">Working</span>
+          <div
+            id="status-section"
+            class="status-section"
+            aria-label="Job statuses"
+          >
+            <span class="status-badge running" data-status="running"
+              >Working</span
+            >
             <span class="status-badge queued" data-status="queued">Queued</span>
             <span class="status-badge completed" data-status="completed"
               >Completed</span
@@ -304,7 +314,9 @@
               <span><i class="cyan"></i>completed</span>
             </div>
             <div id="webgl-scene" class="scene">
-              <span class="scene-caption">Semantic lights · themed effects</span>
+              <span class="scene-caption"
+                >Semantic lights · themed effects</span
+              >
               <canvas
                 id="factory-canvas"
                 aria-label="Factory scene showing the parent and seven job states"
@@ -312,7 +324,10 @@
             </div>
           </section>
 
-          <section class="visual-panel panel" aria-labelledby="fallback-heading">
+          <section
+            class="visual-panel panel"
+            aria-labelledby="fallback-heading"
+          >
             <div class="scene-legend">
               <span id="fallback-heading">SVG and CSS fallback robots</span>
               <span>shell · visor · eyes · status ring</span>
@@ -335,7 +350,7 @@
     </svg>
     <script type="module">
       import {THEMES} from '../../assets/dashboard/themes.js';
-      import {createFactoryScene} from '../../assets/dashboard/factory-scene.js';
+      import {createThemeScene} from '../../assets/dashboard/theme-scene.js';
       import {createParentFallback} from '../../assets/dashboard/parent-fallback.js';
       import {createProcessingEffects} from '../../assets/dashboard/processing-effects.js';
       import {createFactoryCane} from '../../assets/dashboard/factory-cane.js';
@@ -358,7 +373,10 @@
           <span class="status-badge compacting">Compacting</span>
         </div>`,
         ...STATUS.map(
-          ([status, label]) => `<div id="fallback-${status}" class="fallback-station agent ${status}${status === 'running' ? ' selected' : ''}" data-unit-id="${status}" data-status="${status}">
+          ([
+            status,
+            label,
+          ]) => `<div id="fallback-${status}" class="fallback-station agent ${status}${status === 'running' ? ' selected' : ''}" data-unit-id="${status}" data-status="${status}">
             <span class="robot-glyph agent"><i></i></span>
             <strong>${label}</strong><p class="muted">${status} agent</p>
             <span class="status-badge ${status}">${label}</span>
@@ -366,43 +384,55 @@
         ),
       ].join('');
 
-      const canvas = document.querySelector('#factory-canvas');
-      const gl = canvas.getContext('webgl');
-      if (!gl) throw new Error('Electron could not create the WebGL theme preview');
+      let canvas = document.querySelector('#factory-canvas');
       const gpuBuffers = new Map();
-      let boundArrayBuffer = null;
-      const originalBindBuffer = gl.bindBuffer.bind(gl);
-      const originalBufferSubData = gl.bufferSubData.bind(gl);
-      gl.bindBuffer = (target, buffer) => {
-        if (target === gl.ARRAY_BUFFER) boundArrayBuffer = buffer;
-        return originalBindBuffer(target, buffer);
-      };
-      gl.bufferSubData = (target, offset, data) => {
-        if (
-          target === gl.ARRAY_BUFFER &&
-          boundArrayBuffer &&
-          ArrayBuffer.isView(data)
-        ) {
-          gpuBuffers.set(
-            boundArrayBuffer,
-            new Float32Array(
-              data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-            ),
-          );
-        }
-        return originalBufferSubData(target, offset, data);
-      };
+      function observeBuffers() {
+        const gl = canvas.getContext('webgl');
+        if (!gl) return;
+        let boundArrayBuffer = null;
+        const originalBindBuffer = gl.bindBuffer.bind(gl);
+        const originalBufferSubData = gl.bufferSubData.bind(gl);
+        gl.bindBuffer = (target, buffer) => {
+          if (target === gl.ARRAY_BUFFER) boundArrayBuffer = buffer;
+          return originalBindBuffer(target, buffer);
+        };
+        gl.bufferSubData = (target, offset, data) => {
+          if (
+            target === gl.ARRAY_BUFFER &&
+            boundArrayBuffer &&
+            ArrayBuffer.isView(data)
+          )
+            gpuBuffers.set(
+              boundArrayBuffer,
+              new Float32Array(
+                data.buffer.slice(
+                  data.byteOffset,
+                  data.byteOffset + data.byteLength,
+                ),
+              ),
+            );
+          return originalBufferSubData(target, offset, data);
+        };
+      }
 
       let latestLayout = [];
       let processingEffects;
-      const factoryScene = createFactoryScene(canvas, {
+      const factoryScene = createThemeScene(canvas, {
+        fallbackContainer: fallbackUnits,
         onLayout(layout) {
           latestLayout = layout;
           processingEffects?.layout(layout);
         },
+        onAvailability(available) {
+          if (!available)
+            throw new Error('The production scene did not initialize');
+          canvas = document.querySelector('#factory-canvas');
+          if (canvas.dataset.renderer === 'factory') observeBuffers();
+        },
+        onError(message) {
+          if (message) console.error(message);
+        },
       });
-      if (!factoryScene)
-        throw new Error('The production WebGL factory scene did not initialize');
       const webglScene = document.querySelector('#webgl-scene');
       processingEffects = createProcessingEffects(webglScene, {
         getOrigin: () => document.querySelector('#primary-button'),
@@ -467,7 +497,9 @@
             .split(/[\s,]+/)
             .filter(Boolean);
           const channel = part =>
-            part.endsWith('%') ? parseFloat(part) / 100 : parseFloat(part) / 255;
+            part.endsWith('%')
+              ? parseFloat(part) / 100
+              : parseFloat(part) / 255;
           return [
             channel(parts[0]),
             channel(parts[1]),
@@ -494,30 +526,34 @@
       function composite(foreground, background) {
         const alpha = foreground[3] + background[3] * (1 - foreground[3]);
         return [
-          ...foreground.slice(0, 3).map((channel, index) =>
-            alpha
-              ? (channel * foreground[3] +
-                  background[index] * background[3] * (1 - foreground[3])) /
-                alpha
-              : 0,
-          ),
+          ...foreground
+            .slice(0, 3)
+            .map((channel, index) =>
+              alpha
+                ? (channel * foreground[3] +
+                    background[index] * background[3] * (1 - foreground[3])) /
+                  alpha
+                : 0,
+            ),
           alpha,
         ];
       }
 
       function luminance(color) {
-        const values = color.slice(0, 3).map(value =>
-          value <= 0.04045
-            ? value / 12.92
-            : ((value + 0.055) / 1.055) ** 2.4,
-        );
+        const values = color
+          .slice(0, 3)
+          .map(value =>
+            value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+          );
         return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
       }
 
       function contrast(foreground, background) {
         const back = parseColor(background);
         const front = composite(parseColor(foreground), back);
-        const values = [luminance(front), luminance(back)].sort((a, b) => a - b);
+        const values = [luminance(front), luminance(back)].sort(
+          (a, b) => a - b,
+        );
         return (values[1] + 0.05) / (values[0] + 0.05);
       }
 
@@ -566,9 +602,10 @@
         const theme = byId.get(id);
         if (!theme) throw new Error(`Unknown shipped theme: ${id}`);
         document.documentElement.dataset.theme = id;
+        document.documentElement.dataset.appearance = theme.appearance;
         document.querySelector('#theme-name').textContent = theme.name;
         gpuBuffers.clear();
-        factoryScene.setPalette(theme.scenePalette);
+        await factoryScene.setTheme(theme, theme.scenePalette);
         sequence++;
         const data = snapshot();
         factoryScene.update(data, 'running');
@@ -599,34 +636,168 @@
         const danger = style('#error-message').backgroundColor;
         const scene = variable('--scene');
 
-        contrastCheck(checks, 'body text on panel', style('#panel-copy').color, panel, 4.5);
-        contrastCheck(checks, 'raised card text', style('#raised-card').color, raised, 4.5);
-        contrastCheck(checks, 'raised card muted text', style('#raised-muted').color, raised, 4.5);
-        contrastCheck(checks, 'selected card text', style('#selected-card .parent-card-name').color, selected, 4.5);
-        contrastCheck(checks, 'selected card secondary text', style('#selected-card .project-path').color, selected, 4.5);
-        contrastCheck(checks, 'input text', style('#focus-control').color, input, 4.5);
-        contrastCheck(checks, 'hovered button text', style('#hover-button').color, hover, 4.5);
-        contrastCheck(checks, 'primary button text', style('#primary-button').color, style('#primary-button').backgroundColor, 4.5);
-        contrastCheck(checks, 'danger button text', style('#danger-button').color, style('#danger-button').backgroundColor, 4.5);
-        contrastCheck(checks, 'error message text', style('#error-message').color, danger, 4.5);
+        contrastCheck(
+          checks,
+          'body text on panel',
+          style('#panel-copy').color,
+          panel,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'raised card text',
+          style('#raised-card').color,
+          raised,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'raised card muted text',
+          style('#raised-muted').color,
+          raised,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'selected card text',
+          style('#selected-card .parent-card-name').color,
+          selected,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'selected card secondary text',
+          style('#selected-card .project-path').color,
+          selected,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'input text',
+          style('#focus-control').color,
+          input,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'hovered button text',
+          style('#hover-button').color,
+          hover,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'primary button text',
+          style('#primary-button').color,
+          style('#primary-button').backgroundColor,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'danger button text',
+          style('#danger-button').color,
+          style('#danger-button').backgroundColor,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'error message text',
+          style('#error-message').color,
+          danger,
+          4.5,
+        );
 
-        contrastCheck(checks, 'panel boundary', style('#component-panel').borderColor, variable('--bg'), 3);
-        contrastCheck(checks, 'raised card boundary', style('#raised-card').borderColor, panel, 3);
-        contrastCheck(checks, 'input boundary', style('#focus-control').borderColor, panel, 3);
-        contrastCheck(checks, 'hovered control boundary', style('#hover-button').borderColor, hover, 3);
-        contrastCheck(checks, 'focused input indicator', style('#focus-control').outlineColor, panel, 3);
-        contrastCheck(checks, 'selected surface against panel', selected, panel, 3);
-        contrastCheck(checks, 'selected border against panel', style('#selected-card').borderColor, panel, 3);
-        contrastCheck(checks, 'selected inset indicator', variable('--selection-text'), selected, 3);
-        contrastCheck(checks, 'primary control against panel', style('#primary-button').backgroundColor, panel, 3);
-        contrastCheck(checks, 'error boundary against panel', style('#error-message').borderColor, panel, 3);
+        contrastCheck(
+          checks,
+          'panel boundary',
+          style('#component-panel').borderColor,
+          variable('--bg'),
+          3,
+        );
+        contrastCheck(
+          checks,
+          'raised card boundary',
+          style('#raised-card').borderColor,
+          panel,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'input boundary',
+          style('#focus-control').borderColor,
+          panel,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'hovered control boundary',
+          style('#hover-button').borderColor,
+          hover,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'focused input indicator',
+          style('#focus-control').outlineColor,
+          panel,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'selected surface against panel',
+          selected,
+          panel,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'selected border against panel',
+          style('#selected-card').borderColor,
+          panel,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'selected inset indicator',
+          variable('--selection-text'),
+          selected,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'primary control boundary against panel',
+          theme.appearance === 'year1998'
+            ? style('#primary-button').borderColor
+            : style('#primary-button').backgroundColor,
+          panel,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'error boundary against panel',
+          style('#error-message').borderColor,
+          panel,
+          3,
+        );
 
         const statuses = STATUS.map(([status, label]) => {
           const selector = `.status-section [data-status='${status}']`;
           const badge = style(selector);
           const icon = style(selector, '::before');
-          contrastCheck(checks, `${label} status text`, badge.color, badge.backgroundColor, 4.5);
-          contrastCheck(checks, `${label} status border and icon`, badge.borderColor, badge.backgroundColor, 3);
+          contrastCheck(
+            checks,
+            `${label} status text`,
+            badge.color,
+            badge.backgroundColor,
+            4.5,
+          );
+          contrastCheck(
+            checks,
+            `${label} status border and icon`,
+            badge.borderColor,
+            badge.backgroundColor,
+            3,
+          );
           equal(
             `${label} status uses its semantic token`,
             badge.color,
@@ -645,9 +816,27 @@
         const glyphStyle = style(glyph);
         const glyphScreen = style(glyph, '::after').backgroundColor;
         const station = style('#fallback-queued').backgroundColor;
-        contrastCheck(checks, 'robot shell against station', glyphStyle.backgroundColor, station, 3);
-        contrastCheck(checks, 'robot visor against shell', glyphScreen, glyphStyle.backgroundColor, 3);
-        contrastCheck(checks, 'robot eyes against visor', variable('--robot-eyes'), glyphScreen, 4.5);
+        contrastCheck(
+          checks,
+          'robot shell against station',
+          glyphStyle.backgroundColor,
+          station,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'robot visor against shell',
+          glyphScreen,
+          glyphStyle.backgroundColor,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'robot eyes against visor',
+          variable('--robot-eyes'),
+          glyphScreen,
+          4.5,
+        );
         contrastCheck(
           checks,
           'running robot status ring',
@@ -656,39 +845,152 @@
           3,
         );
 
-        const runningMarker = style(".agent-work-marker[data-agent-id='running']");
-        const runningBeacon = style(".agent-work-marker[data-agent-id='running']", '::before');
-        const stoppingMarker = style(".agent-work-marker[data-agent-id='cancelling']");
-        const stoppingBeacon = style(".agent-work-marker[data-agent-id='cancelling']", '::before');
-        contrastCheck(checks, 'working marker text', runningMarker.color, runningMarker.backgroundColor, 4.5);
-        contrastCheck(checks, 'working marker border', runningMarker.borderColor, runningMarker.backgroundColor, 3);
-        contrastCheck(checks, 'working marker beacon', runningBeacon.backgroundColor, runningMarker.backgroundColor, 3);
-        contrastCheck(checks, 'stopping marker text', stoppingMarker.color, stoppingMarker.backgroundColor, 4.5);
-        contrastCheck(checks, 'stopping marker border', stoppingMarker.borderColor, stoppingMarker.backgroundColor, 3);
-        contrastCheck(checks, 'stopping marker beacon', stoppingBeacon.backgroundColor, stoppingMarker.backgroundColor, 3);
-        contrastCheck(checks, 'prompt impact on scene', style('.prompt-jolt-impact').borderColor, scene, 3);
+        const runningMarker = style(
+          ".agent-work-marker[data-agent-id='running']",
+        );
+        const runningBeacon = style(
+          ".agent-work-marker[data-agent-id='running']",
+          '::before',
+        );
+        const stoppingMarker = style(
+          ".agent-work-marker[data-agent-id='cancelling']",
+        );
+        const stoppingBeacon = style(
+          ".agent-work-marker[data-agent-id='cancelling']",
+          '::before',
+        );
+        contrastCheck(
+          checks,
+          'working marker text',
+          runningMarker.color,
+          runningMarker.backgroundColor,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'working marker border',
+          runningMarker.borderColor,
+          runningMarker.backgroundColor,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'working marker beacon',
+          runningBeacon.backgroundColor,
+          runningMarker.backgroundColor,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'stopping marker text',
+          stoppingMarker.color,
+          stoppingMarker.backgroundColor,
+          4.5,
+        );
+        contrastCheck(
+          checks,
+          'stopping marker border',
+          stoppingMarker.borderColor,
+          stoppingMarker.backgroundColor,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'stopping marker beacon',
+          stoppingBeacon.backgroundColor,
+          stoppingMarker.backgroundColor,
+          3,
+        );
+        contrastCheck(
+          checks,
+          'prompt impact on scene',
+          style('.prompt-jolt-impact').borderColor,
+          scene,
+          3,
+        );
 
-        equal('prompt tail start uses violet', style('.prompt-jolt-tail-start').stopColor, variable('--violet'));
-        equal('prompt tail end uses cyan', style('.prompt-jolt-tail-end').stopColor, variable('--cyan'));
-        equal('prompt head uses robot eyes', style('.prompt-jolt-head').fill, variable('--robot-eyes'));
-        equal('prompt impact uses violet', style('.prompt-jolt-impact').borderColor, variable('--violet'));
-        equal('working marker uses running status', runningMarker.borderColor, variable('--status-running'));
-        equal('working beacon uses running status', runningBeacon.backgroundColor, variable('--status-running'));
-        equal('stopping marker uses stopping status', stoppingMarker.borderColor, variable('--status-cancelling'));
-        equal('stopping beacon uses stopping status', stoppingBeacon.backgroundColor, variable('--status-cancelling'));
-        equal('cane outline uses robot outline', style('.cane-outline').stroke, variable('--robot-outline'));
-        equal('cane wood uses amber', style('.cane-wood').stroke, variable('--amber'));
-        equal('cane shine uses robot eyes', style('.cane-shine').stroke, variable('--robot-eyes'));
-        equal('cane grip uses robot screen', style('.cane-grip').stroke, variable('--robot-screen'));
-        equal('cane band uses violet', style('.cane-band').stroke, variable('--violet'));
-        equal('cane trail uses cyan', style('.cane-trail').stroke, variable('--cyan'));
-        equal('cane impact uses amber', style('.cane-impact').stroke, variable('--amber'));
+        equal(
+          'prompt tail start uses violet',
+          style('.prompt-jolt-tail-start').stopColor,
+          variable('--violet'),
+        );
+        equal(
+          'prompt tail end uses cyan',
+          style('.prompt-jolt-tail-end').stopColor,
+          variable('--cyan'),
+        );
+        equal(
+          'prompt head uses robot eyes',
+          style('.prompt-jolt-head').fill,
+          variable('--robot-eyes'),
+        );
+        equal(
+          'prompt impact uses violet',
+          style('.prompt-jolt-impact').borderColor,
+          variable('--violet'),
+        );
+        equal(
+          'working marker uses running status',
+          runningMarker.borderColor,
+          variable('--status-running'),
+        );
+        equal(
+          'working beacon uses running status',
+          runningBeacon.backgroundColor,
+          variable('--status-running'),
+        );
+        equal(
+          'stopping marker uses stopping status',
+          stoppingMarker.borderColor,
+          variable('--status-cancelling'),
+        );
+        equal(
+          'stopping beacon uses stopping status',
+          stoppingBeacon.backgroundColor,
+          variable('--status-cancelling'),
+        );
+        equal(
+          'cane outline uses robot outline',
+          style('.cane-outline').stroke,
+          variable('--robot-outline'),
+        );
+        equal(
+          'cane wood uses amber',
+          style('.cane-wood').stroke,
+          variable('--amber'),
+        );
+        equal(
+          'cane shine uses robot eyes',
+          style('.cane-shine').stroke,
+          variable('--robot-eyes'),
+        );
+        equal(
+          'cane grip uses robot screen',
+          style('.cane-grip').stroke,
+          variable('--robot-screen'),
+        );
+        equal(
+          'cane band uses violet',
+          style('.cane-band').stroke,
+          variable('--violet'),
+        );
+        equal(
+          'cane trail uses cyan',
+          style('.cane-trail').stroke,
+          variable('--cyan'),
+        );
+        equal(
+          'cane impact uses amber',
+          style('.cane-impact').stroke,
+          variable('--amber'),
+        );
 
         presence.push({
           name: 'selected item has a visible inset indicator',
           present: style('#selected-card').boxShadow !== 'none',
         });
-        const svgMarkup = document.querySelector('.parent-fallback-robot')?.innerHTML || '';
+        const svgMarkup =
+          document.querySelector('.parent-fallback-robot')?.innerHTML || '';
         for (const token of [
           '--robot-shell',
           '--robot-outline',
@@ -699,6 +1001,15 @@
             name: `SVG fallback uses ${token}`,
             present: svgMarkup.includes(`var(${token})`),
           });
+        const pixelColors = new Set();
+        if (canvas.dataset.renderer === 'year1998') {
+          const pixels = canvas
+            .getContext('2d')
+            .getImageData(0, 0, canvas.width, canvas.height).data;
+          for (let i = 0; i < pixels.length; i += 4)
+            if (pixels[i + 3])
+              pixelColors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
+        }
         for (const key of [
           'shell',
           'outline',
@@ -713,8 +1024,15 @@
           'cancelled',
         ])
           presence.push({
-            name: `WebGL buffer contains scene ${key}`,
-            present: gpuHasColor(theme.scenePalette[key]),
+            name: `Live scene contains ${key}`,
+            present:
+              canvas.dataset.renderer === 'year1998'
+                ? pixelColors.has(
+                    theme.scenePalette[key]
+                      .map(value => Math.round(value * 255))
+                      .join(','),
+                  )
+                : gpuHasColor(theme.scenePalette[key]),
           });
 
         const rootTokens = Object.fromEntries(
@@ -764,7 +1082,8 @@
           hovered: document.querySelector('#hover-button').matches(':hover'),
           focusState: {
             active:
-              document.activeElement === document.querySelector('#focus-control'),
+              document.activeElement ===
+              document.querySelector('#focus-control'),
             visible: document
               .querySelector('#focus-control')
               .matches(':focus-visible'),
@@ -781,7 +1100,9 @@
         applyTheme,
         audit,
         hoverTarget() {
-          const box = document.querySelector('#hover-button').getBoundingClientRect();
+          const box = document
+            .querySelector('#hover-button')
+            .getBoundingClientRect();
           return {x: box.left + box.width / 2, y: box.top + box.height / 2};
         },
         focusTarget() {

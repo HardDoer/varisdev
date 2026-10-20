@@ -40,6 +40,10 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     prompted: false,
     submission: undefined,
     defaultAgentId: undefined,
+    recentFolders: [],
+    recentLoading: false,
+    recentFailure: '',
+    recentRequest: 0,
   };
   const templateState = {
     cwd: '',
@@ -128,6 +132,19 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     $('new-agent-folder').textContent = createState.cwd || 'Choose a folder';
     $('new-agent-choose-folder').disabled =
       working || created || !api?.chooseFolder;
+    $('new-agent-recent').disabled =
+      createState.busy ||
+      createState.choosing ||
+      created ||
+      createState.recentLoading ||
+      !createState.recentFolders.length;
+    $('new-agent-recent-workspaces').hidden = !api?.recentProjects;
+    $('new-agent-recent-status').textContent = createState.recentLoading
+      ? 'Loading recent workspaces…'
+      : !createState.recentFolders.length && !createState.recentFailure
+        ? 'No recent workspaces yet.'
+        : '';
+    setError($('new-agent-recent-error'), createState.recentFailure);
     $('new-agent-template').disabled = working || created;
     $('new-agent-name').disabled = createState.busy || created;
     $('new-agent-name').placeholder =
@@ -164,6 +181,11 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   }
   function resetCreate() {
     createState.request++;
+    createState.recentRequest++;
+    createState.recentFolders = [];
+    createState.recentLoading = false;
+    createState.recentFailure = '';
+    $('new-agent-recent').replaceChildren();
     createState.cwd = '';
     createState.templates = [];
     createState.busy = false;
@@ -212,6 +234,9 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       return;
     }
     const request = ++createState.request;
+    createState.templates = [];
+    createState.defaultAgentId = undefined;
+    populateCreateTemplates([]);
     createState.loading = true;
     createState.failure = '';
     createState.diagnostics = '';
@@ -278,27 +303,73 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     renderCreate();
     newDialog.showModal();
     $('new-agent-name').focus();
+    await Promise.all([loadCreateTemplates(), loadRecentWorkspaces()]);
+  }
+  async function loadRecentWorkspaces() {
+    if (!api?.recentProjects || disposed) return;
+    const request = ++createState.recentRequest;
+    createState.recentLoading = true;
+    createState.recentFailure = '';
+    renderCreate();
+    try {
+      const folders = await api.recentProjects();
+      if (disposed || request !== createState.recentRequest) return;
+      createState.recentFolders = folders;
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'Select a workspace…';
+      $('new-agent-recent').replaceChildren(
+        placeholder,
+        ...folders.map(cwd => {
+          const option = document.createElement('option');
+          option.value = cwd;
+          option.textContent = cwd;
+          return option;
+        }),
+      );
+    } catch (error) {
+      if (!disposed && request === createState.recentRequest)
+        createState.recentFailure = `Could not load recent workspaces: ${errorText(error)}`;
+    } finally {
+      if (!disposed && request === createState.recentRequest) {
+        createState.recentLoading = false;
+        renderCreate();
+      }
+    }
+  }
+  async function selectCreateWorkspace(cwd) {
+    if (
+      disposed ||
+      !newDialog.open ||
+      createState.busy ||
+      createState.choosing ||
+      createState.createdId ||
+      !cwd
+    )
+      return;
+    createState.cwd = cwd;
     await loadCreateTemplates();
   }
   async function chooseCreateFolder() {
     if (createWorking() || createState.createdId || !api?.chooseFolder) return;
+    const request = ++createState.request;
     createState.choosing = true;
     createState.failure = '';
     renderCreate();
-    let changed = false;
+    let cwd;
     try {
-      const cwd = await api.chooseFolder();
-      if (disposed || !newDialog.open || !cwd) return;
-      createState.cwd = cwd;
-      populateCreateTemplates([]);
-      changed = true;
+      cwd = await api.chooseFolder();
     } catch (error) {
-      if (!disposed) createState.failure = errorText(error);
+      if (!disposed && request === createState.request)
+        createState.failure = errorText(error);
     } finally {
-      createState.choosing = false;
-      if (!disposed) renderCreate();
+      if (!disposed && request === createState.request) {
+        createState.choosing = false;
+        renderCreate();
+      }
     }
-    if (changed && !disposed && newDialog.open) await loadCreateTemplates();
+    if (!disposed && request === createState.request)
+      await selectCreateWorkspace(cwd);
   }
   async function submitCreate(event) {
     event.preventDefault();
@@ -1055,6 +1126,12 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     'click',
     () => void chooseCreateFolder(),
   );
+  listen($('new-agent-recent'), 'change', event => {
+    const cwd = event.target.value;
+    event.target.value = '';
+    if (createState.recentFolders.includes(cwd))
+      void selectCreateWorkspace(cwd);
+  });
   listen($('new-agent-form'), 'submit', submitCreate);
 
   listen(templatesButton, 'click', () => void openTemplates());
@@ -1117,6 +1194,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     dispose() {
       disposed = true;
       createState.request++;
+      createState.recentRequest++;
       templateState.request++;
       for (const remove of listeners) remove();
       closeDialog(newDialog);

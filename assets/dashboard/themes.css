@@ -583,6 +583,59 @@
   --page-glow: #f4e8e5;
 }
 
+:root[data-theme='year1998'] {
+  color-scheme: light;
+  --bg: #c0c0c0;
+  --panel: #c0c0c0;
+  --panel-raised: #d4d4d4;
+  --input: #ffffff;
+  --line: #555555;
+  --text: #000000;
+  --muted: #414141;
+  --mint: #005323;
+  --cyan: #005064;
+  --amber: #594b00;
+  --red: #800020;
+  --violet: #60237b;
+  --rose: #79214c;
+  --accent: #000080;
+  --link: #000080;
+  --heading: #000000;
+  --code: #60237b;
+  --message-user: #000080;
+  --message-assistant: #005323;
+  --action-read: #005064;
+  --action-edit: #793600;
+  --action-command: #60237b;
+  --action-web: #003b80;
+  --action-agent: #005323;
+  --action-media: #79214c;
+  --diff-add: #005323;
+  --diff-remove: #800020;
+  --focus: #000080;
+  --accent-text: #ffffff;
+  --hover: #d4d4d4;
+  --selected: #d4d4d4;
+  --selection-bg: #000080;
+  --selection-text: #ffffff;
+  --selection-border: #000000;
+  --status-running: #005323;
+  --status-queued: #594b00;
+  --status-completed: #003b80;
+  --status-failed: #800020;
+  --status-cancelling: #793600;
+  --status-compacting: #60237b;
+  --status-cancelled: #414141;
+  --robot-shell: #606060;
+  --robot-outline: #000000;
+  --robot-screen: #000000;
+  --robot-eyes: #ffffff;
+  --danger: #e4caca;
+  --scene: #c0c0c0;
+  --scene-glow: #d4d4d4;
+  --page-glow: #c0c0c0;
+}
+
 :root[data-theme='high-contrast'] {
   color-scheme: dark;
   --bg: #000000;

@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const {writeFileSync} = require('node:fs');
 const {join} = require('node:path');
+const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
 const report = {cases: []};
@@ -281,6 +282,145 @@ async function main() {
     false,
   );
   report.cases.push('diagnostics and concurrent project refresh');
+
+  const stylesheet = join(directory, 'plugin-theme.css');
+  writeFileSync(stylesheet, '#spacing-probe { padding: 31px; }');
+  await evaluate(async stylesheetUrl => {
+    window.cleanup();
+    window.themeErrors = [];
+    window.plugins = [
+      {
+        id: 'plugin:test:retro',
+        name: 'Retro plugin',
+        base: 'year1998',
+        packageName: 'test',
+        colors: {mint: '#123456'},
+        stylesheetUrl,
+        css: '#spacing-probe { padding: 77px; }',
+      },
+    ];
+    window.pidev.appThemes = async () => ({
+      themes: window.plugins,
+      errors: window.themeErrors,
+    });
+    window.localStorage.setItem('varisdev.factory.theme', 'plugin:test:retro');
+    window.cleanup = window.initThemes(
+      (palette, entry) => {
+        window.palette = palette;
+        window.themeEntry = entry;
+      },
+      {deferDiscovery: true},
+    );
+    await window.cleanup.refresh();
+    const link = document.getElementById('plugin-theme-style');
+    if (!link.sheet)
+      await new Promise((resolve, reject) => {
+        link.addEventListener('load', resolve, {once: true});
+        link.addEventListener(
+          'error',
+          () => reject(new Error('Stylesheet failed to load')),
+          {once: true},
+        );
+      });
+  }, pathToFileURL(stylesheet).href);
+  assert.deepEqual(
+    await evaluate(() => ({
+      appearance: document.documentElement.dataset.appearance,
+      entry: window.themeEntry.id,
+      scene: window.themeEntry.scene,
+      tag: document.getElementById('plugin-theme-style').tagName,
+      hasPalette: !!document.getElementById('plugin-theme-palette'),
+      mint: getComputedStyle(document.documentElement)
+        .getPropertyValue('--mint')
+        .trim(),
+      spacing: getComputedStyle(document.getElementById('spacing-probe'))
+        .padding,
+      palette: window.palette.mint,
+    })),
+    {
+      appearance: 'year1998',
+      entry: 'plugin:test:retro',
+      scene: 'year1998',
+      tag: 'LINK',
+      hasPalette: true,
+      mint: '#123456',
+      spacing: '31px',
+      palette: [18 / 255, 52 / 255, 86 / 255],
+    },
+  );
+  report.cases.push(
+    'plugin links preserve palette overrides and inherit appearance and scene',
+  );
+
+  await evaluate(async () => {
+    window.cleanup.reportSceneError('Scene module failed');
+    window.themeErrors = ['Discovery failed'];
+    await window.cleanup.refresh();
+  });
+  assert.deepEqual(
+    await evaluate(() =>
+      Array.from(
+        document.querySelectorAll('#plugin-theme-errors li'),
+        item => item.textContent,
+      ),
+    ),
+    ['Discovery failed', 'Scene module failed'],
+  );
+  await evaluate(async () => {
+    window.themeErrors = [];
+    await window.cleanup.refresh();
+  });
+  assert.deepEqual(
+    await evaluate(() =>
+      Array.from(
+        document.querySelectorAll('#plugin-theme-errors li'),
+        item => item.textContent,
+      ),
+    ),
+    ['Scene module failed'],
+  );
+  await evaluate(() => window.cleanup.reportSceneError(''));
+  assert.equal(
+    await evaluate(() => document.getElementById('plugin-theme-errors').hidden),
+    true,
+  );
+  report.cases.push(
+    'scene diagnostics survive same-theme refresh and clear independently',
+  );
+
+  await evaluate(() => {
+    const select = document.getElementById('factory-theme');
+    select.value = 'factory';
+    select.dispatchEvent(new Event('change'));
+  });
+  assert.deepEqual(
+    await evaluate(() => ({
+      appearance: document.documentElement.dataset.appearance,
+      hasStyle: !!document.getElementById('plugin-theme-style'),
+      hasPalette: !!document.getElementById('plugin-theme-palette'),
+      spacing: getComputedStyle(document.getElementById('spacing-probe'))
+        .padding,
+    })),
+    {appearance: 'default', hasStyle: false, hasPalette: false, spacing: '0px'},
+  );
+  await evaluate(async () => {
+    const select = document.getElementById('factory-theme');
+    select.value = 'plugin:test:retro';
+    select.dispatchEvent(new Event('change'));
+    window.cleanup();
+    window.cleanup.reportSceneError('Ignored after dispose');
+  });
+  assert.deepEqual(
+    await evaluate(() => ({
+      hasStyle: !!document.getElementById('plugin-theme-style'),
+      hasPalette: !!document.getElementById('plugin-theme-palette'),
+      hasDiagnostics: !!document.getElementById('plugin-theme-errors'),
+    })),
+    {hasStyle: false, hasPalette: false, hasDiagnostics: false},
+  );
+  report.cases.push(
+    'switching and disposal remove linked styles and palette overrides',
+  );
 }
 main()
   .catch(error => {

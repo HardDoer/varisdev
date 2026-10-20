@@ -20,6 +20,10 @@
       "types": "./src/visualizations.ts",
       "default": "./desktop/build/src/visualizations.js"
     },
+    "./theme-renderers": {
+      "types": "./src/theme-renderers.ts",
+      "default": "./desktop/build/src/theme-renderers.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
 import {THEMES} from '../assets/dashboard/themes.js';
-
-const execFile = promisify(execFileCallback);
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 interface ThemeResult {
@@ -52,7 +49,7 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError: unknown;
     try {
-      await execFile(
+      await runRuntimeCommand(
         require('electron') as string,
         [
           fileURLToPath(
@@ -62,7 +59,11 @@ void test(
           reportPath,
           screenshotDirectory,
         ],
-        {env, timeout: 110_000, maxBuffer: 2 * 1024 * 1024},
+        {
+          env,
+          timeoutMs: 110_000,
+          cwd: fileURLToPath(new URL('../', import.meta.url)),
+        },
       );
     } catch (error) {
       launchError = error;

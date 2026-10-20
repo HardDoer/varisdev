@@ -27,7 +27,7 @@ Type `/` in the conversation composer or open **Commands**. Installed extensions
 
 `/bug` saves its ZIP export in the app's startup directory and shows the full path.
 
-Model and thinking changes take effect on the next model request. `/reload` requires an idle session. Branch changes stop active work when applied. Terminal appearance settings are not desktop themes; VarisDev's appearance is controlled through **Menu → Theme**.
+Model and thinking changes take effect on the next model request. `/reload` requires an idle session. Branch changes stop active work when applied. Terminal appearance settings are not desktop themes; VarisDev's appearance is controlled through **Menu → Appearance → Theme**. **Year1998** uses a teal desktop, beveled silver controls, navy title bars, classic system fonts, and an isometric pixel office for the live agent scene.
 
 ## Settings directory
 

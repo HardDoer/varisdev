@@ -1,0 +1,9 @@
+{
+  "id": "retro",
+  "name": "Retro desktop",
+  "base": "year1998",
+  "appearance": "year1998",
+  "scene": "year1998",
+  "colors": {"accent": "#065bc1", "accent-text": "#ffffff"},
+  "stylesheet": "./retro.css"
+}

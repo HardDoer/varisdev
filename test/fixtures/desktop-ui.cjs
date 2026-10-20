@@ -30,6 +30,11 @@ let closeDelay;
 let closeError;
 let resumeError;
 let recentProjects;
+let recentProjectsDelay;
+let recentProjectsError;
+let workspaceTemplateResponses;
+let workspaceTemplateDelays;
+let workspaceTemplateErrors;
 let agentPromptError;
 let agentPromptDelay;
 let dialogDelays;
@@ -423,6 +428,11 @@ function reset() {
     },
   ];
   recentProjects = [directory, join(directory, 'other-project')];
+  recentProjectsDelay = 0;
+  recentProjectsError = undefined;
+  workspaceTemplateResponses = new Map();
+  workspaceTemplateDelays = new Map();
+  workspaceTemplateErrors = new Map();
   resources = new Map([
     ['alpha', features()],
     ['beta', features()],
@@ -433,12 +443,21 @@ function reset() {
 }
 
 ipcMain.handle('fixture:state', () => hub);
-ipcMain.handle('fixture:recent-projects', () => recentProjects);
+ipcMain.handle('fixture:recent-projects', async () => {
+  const folders = [...recentProjects];
+  const error = recentProjectsError;
+  if (recentProjectsDelay)
+    await new Promise(resolve => setTimeout(resolve, recentProjectsDelay));
+  if (error) throw new Error(error);
+  return folders;
+});
 ipcMain.on('fixture:error', (_event, error) => rendererErrors.push(error));
 for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
   ipcMain.handle(`fixture:${method}`, async (_event, sessionId, request) => {
     calls.push({method, sessionId, request});
     const target = hub.sessions.find(item => item.session.id === sessionId);
+    if (method === 'prompt' && dialogErrors.get('promptSession'))
+      throw new Error(dialogErrors.get('promptSession'));
     if (method === 'cancelAgent') {
       if (cancellationError) throw new Error(cancellationError);
       for (const agent of target.agents) {
@@ -654,9 +673,16 @@ ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
   window.webContents.send('fixture:snapshot', hub);
 });
 
-ipcMain.handle('fixture:choose-folder', () => {
+ipcMain.handle('fixture:choose-folder', async () => {
   calls.push({method: 'chooseFolder'});
-  return chosenFolder;
+  const folder = chosenFolder;
+  const error = dialogErrors.get('chooseFolder');
+  if (dialogDelays.get('chooseFolder'))
+    await new Promise(resolve =>
+      setTimeout(resolve, dialogDelays.get('chooseFolder')),
+    );
+  if (error) throw new Error(error);
+  return folder;
 });
 ipcMain.handle('fixture:list-sessions', (_event, cwd) => {
   calls.push({method: 'listSessions', cwd});
@@ -665,9 +691,18 @@ ipcMain.handle('fixture:list-sessions', (_event, cwd) => {
 ipcMain.handle('fixture:open-workspace-configuration', (_event, cwd) => {
   calls.push({method: 'openWorkspaceConfiguration', cwd});
 });
-ipcMain.handle('fixture:list-agent-templates', (_event, cwd) =>
-  listFixtureAgentTemplates(cwd),
-);
+ipcMain.handle('fixture:list-agent-templates', async (_event, cwd) => {
+  const result = structuredClone(
+    workspaceTemplateResponses.get(cwd) || listFixtureAgentTemplates(cwd),
+  );
+  const error = workspaceTemplateErrors.get(cwd);
+  if (workspaceTemplateDelays.get(cwd))
+    await new Promise(resolve =>
+      setTimeout(resolve, workspaceTemplateDelays.get(cwd)),
+    );
+  if (error) throw new Error(error);
+  return result;
+});
 ipcMain.handle('fixture:tool-models', async () => {
   const {OPENAI_IMAGE_PRESETS, DEFAULT_IMAGE_MODEL} = await import(
     pathToFileURL(resolve('src/tools/model-selection.ts')).href
@@ -1057,6 +1092,15 @@ async function run(name, callback, width = 1600, height = 1000) {
       'Dashboard never connected to the isolated preload fixture',
     );
     await settle();
+    if (process.env.DESKTOP_UI_THEME) {
+      await evaluate(theme => {
+        window.fixtureTheme = theme;
+        const select = document.getElementById('factory-theme');
+        select.value = theme;
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+      }, process.env.DESKTOP_UI_THEME);
+      await settle();
+    }
     await callback();
     assert.deepEqual(rendererErrors, [], 'Renderer errors');
     const visibleErrors = await evaluate(() =>
@@ -1416,8 +1460,10 @@ async function main() {
           }
           await evaluate(() => {
             const select = document.getElementById('factory-theme');
-            select.value = 'factory';
+            select.value = window.fixtureTheme || 'factory';
             select.dispatchEvent(new Event('change'));
+            window.compactLiveView.canvas =
+              document.getElementById('factory-canvas');
           });
         }
         if (zoom > 1) {
@@ -1456,8 +1502,10 @@ async function main() {
             }
             await evaluate(() => {
               const select = document.getElementById('factory-theme');
-              select.value = 'factory';
+              select.value = window.fixtureTheme || 'factory';
               select.dispatchEvent(new Event('change'));
+              window.compactLiveView.canvas =
+                document.getElementById('factory-canvas');
             });
           }
           await press('Escape');
@@ -2320,7 +2368,7 @@ async function main() {
       }
       await evaluate(() => {
         const select = document.getElementById('factory-theme');
-        select.value = 'factory';
+        select.value = window.fixtureTheme || 'factory';
         select.dispatchEvent(new Event('change', {bubbles: true}));
         [...document.querySelectorAll('#active-workers button')]
           .find(item => item.textContent.includes('Working agent'))
@@ -2355,7 +2403,7 @@ async function main() {
           changed++;
       assert.ok(
         changed > 50,
-        'Selecting an agent must visibly change the still 3D scene',
+        'Selecting an agent must visibly change the still scene',
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
         await evaluate(() =>
@@ -2366,7 +2414,7 @@ async function main() {
         await screenshot('selected-queued-agent');
       }
 
-      // Exercise the same selection when WebGL is unavailable in the browser.
+      // Exercise the same selection when canvas graphics are unavailable.
       window.webContents.debugger.attach('1.3');
       await window.webContents.debugger.sendCommand('Page.enable');
       const {identifier} = await window.webContents.debugger.sendCommand(
@@ -2375,7 +2423,7 @@ async function main() {
           source: `(() => {
             const getContext = HTMLCanvasElement.prototype.getContext;
             HTMLCanvasElement.prototype.getContext = function(type, ...args) {
-              return type === 'webgl' ? null : getContext.call(this, type, ...args);
+              return ['webgl', '2d'].includes(type) ? null : getContext.call(this, type, ...args);
             };
           })();`,
         },
@@ -2385,7 +2433,7 @@ async function main() {
         assert.equal(
           await evaluate(() => !document.getElementById('fallback').hidden),
           true,
-          'Disabling WebGL must reveal the fallback scene',
+          'Unavailable canvas graphics must reveal the fallback scene',
         );
         await evaluate(() =>
           [...document.querySelectorAll('#fallback-units button')]
@@ -3799,11 +3847,20 @@ async function main() {
         // CSS alert tint changing pixels around it.
         scene.scrollIntoView({block: 'center'});
         scene.classList.remove('is-startled');
-        const gl = document
-          .getElementById('factory-canvas')
-          .getContext('webgl');
-        const bufferSubData = gl.bufferSubData.bind(gl);
+        const canvas = document.getElementById('factory-canvas');
+        const gl = canvas.getContext('webgl');
         window.fixtureGeometry = new Map();
+        if (!gl) {
+          window.fixturePixels = () => {
+            const pixels = canvas
+              .getContext('2d')
+              .getImageData(0, 0, canvas.width, canvas.height).data;
+            window.fixtureGeometry.set('pixels', pixels);
+          };
+          window.fixturePixels();
+          return;
+        }
+        const bufferSubData = gl.bufferSubData.bind(gl);
         gl.bufferSubData = (target, offset, data) => {
           if (
             gl.getBufferParameter(target, gl.BUFFER_USAGE) === gl.DYNAMIC_DRAW
@@ -3817,14 +3874,15 @@ async function main() {
       });
       await settle();
       const geometry = () =>
-        evaluate(() =>
-          [...window.fixtureGeometry.values()].map(data => {
+        evaluate(() => {
+          window.fixturePixels?.();
+          return [...window.fixtureGeometry.values()].map(data => {
             const bytes = new Uint8Array(data.buffer);
             let hash = 2166136261;
             for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619);
             return {length: data.length, hash: hash >>> 0};
-          }),
-        );
+          });
+        });
       await until(
         () =>
           [...window.fixtureGeometry.values()].some(data => data.length > 0),
@@ -4114,7 +4172,7 @@ async function main() {
             }
             await evaluate(() => {
               const select = document.getElementById('factory-theme');
-              select.value = 'factory';
+              select.value = window.fixtureTheme || 'factory';
               select.dispatchEvent(new Event('change'));
             });
           }
@@ -4731,7 +4789,7 @@ async function main() {
             }
             await evaluate(() => {
               const select = document.getElementById('factory-theme');
-              select.value = 'factory';
+              select.value = window.fixtureTheme || 'factory';
               select.dispatchEvent(new Event('change'));
             });
           }
@@ -6536,7 +6594,7 @@ async function main() {
         }
         await evaluate(() => {
           const select = document.getElementById('factory-theme');
-          select.value = 'factory';
+          select.value = window.fixtureTheme || 'factory';
           select.dispatchEvent(new Event('change'));
         });
         window.setContentSize(1100, 760);
@@ -7701,7 +7759,11 @@ async function main() {
           option => option.value,
         ),
       );
-      assert.equal(themes.length, 12);
+      assert.equal(
+        themes.length,
+        await evaluate(async () => (await import('./themes.js')).THEMES.length),
+      );
+      assert.ok(themes.includes('year1998'));
       const backgrounds = new Set();
       for (const id of themes) {
         const result = await evaluate(async id => {
@@ -7738,7 +7800,12 @@ async function main() {
               actual: getComputedStyle(document.querySelector(selector))[
                 property
               ],
-              expected: `rgb(${[1, 3, 5].map(offset => parseInt(colors[role].slice(offset, offset + 2), 16)).join(', ')})`,
+              expected:
+                id === 'year1998' && selector === '#new-session'
+                  ? 'rgba(0, 0, 0, 0)'
+                  : id === 'year1998' && role === 'heading'
+                    ? 'rgb(255, 255, 255)'
+                    : `rgb(${[1, 3, 5].map(offset => parseInt(colors[role].slice(offset, offset + 2), 16)).join(', ')})`,
             })),
             selected: document.documentElement.dataset.theme,
             visible:
@@ -7766,9 +7833,141 @@ async function main() {
       );
       await evaluate(() => {
         const select = document.getElementById('factory-theme');
+        select.value = 'year1998';
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+        const menu = document.getElementById('app-menu-panel');
+        if (menu.matches(':popover-open')) menu.hidePopover();
+        if (
+          document
+            .getElementById('motion-toggle')
+            .getAttribute('aria-pressed') === 'true'
+        )
+          document.getElementById('motion-toggle').click();
+      });
+      hub.sessions[0].agents = [
+        'running',
+        'queued',
+        'completed',
+        'failed',
+        'cancelling',
+        'cancelled',
+      ].map((status, index) => ({
+        id: `retro-${index}`,
+        name: `${status} agent`,
+        status,
+        task: 'Inspect workspace',
+        activity: status,
+        createdAt: at,
+        startedAt: at,
+        model: 'fixture/small',
+      }));
+      hub.sessions[0].totalAgents = 6;
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-canvas').dataset.renderer,
+        ),
+        'year1998',
+      );
+      await evaluate(() =>
+        [...document.querySelectorAll('.scene-label')]
+          .find(button => button.textContent === 'completed agent')
+          .click(),
+      );
+      await settle();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-title').textContent,
+        ),
+        'completed agent',
+      );
+      await evaluate(() =>
+        document.querySelector('.scene-label.parent-label').click(),
+      );
+      for (const [width, height, zoom] of [
+        [1600, 1000, 1],
+        [1100, 760, 1.5],
+        [1600, 1000, 2],
+      ]) {
+        window.setContentSize(width, height);
+        await evaluate(zoom => {
+          const control = document.getElementById('app-zoom');
+          control.value = String(zoom);
+          control.dispatchEvent(new Event('change', {bubbles: true}));
+        }, zoom);
+        await evaluate(
+          expected => {
+            window.fixtureViewport = expected;
+          },
+          {width: width / zoom, height: height / zoom},
+        );
+        await until(
+          () =>
+            Math.abs(innerWidth - window.fixtureViewport.width) < 2 &&
+            Math.abs(innerHeight - window.fixtureViewport.height) < 2,
+          'Year1998 window did not finish resizing',
+        );
+        await settle();
+        const geometry = await evaluate(() => {
+          const ids = [
+            'factory-panel',
+            'inspector',
+            'scene',
+            'parent-controls',
+            'app-menu-button',
+          ];
+          const main = document.querySelector('main');
+          return {
+            scrolls:
+              main.scrollHeight > main.clientHeight + 1 ||
+              main.scrollWidth > main.clientWidth + 1,
+            clipped: ids.filter(id => {
+              const box = document.getElementById(id).getBoundingClientRect();
+              return (
+                box.width <= 0 ||
+                box.height <= 0 ||
+                box.left < 0 ||
+                box.top < 0 ||
+                box.right > innerWidth + 1 ||
+                box.bottom > innerHeight + 1
+              );
+            }),
+            scene: document.getElementById('scene').getBoundingClientRect()
+              .height,
+          };
+        });
+        assert.deepEqual(geometry.clipped, []);
+        assert.equal(geometry.scrolls, false);
+        assert.ok(
+          geometry.scene >= 180,
+          `Year1998 scene too small at ${width}x${height}/${zoom}: ${geometry.scene}`,
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`year1998-workspace-${width}-${zoom}`);
+      }
+      await reloadPage();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-canvas').dataset.renderer,
+        ),
+        'year1998',
+      );
+      window.setContentSize(1600, 1000);
+      await evaluate(() => {
+        const zoom = document.getElementById('app-zoom');
+        zoom.value = '1';
+        zoom.dispatchEvent(new Event('change', {bubbles: true}));
+        const select = document.getElementById('factory-theme');
         select.value = 'solarized-light';
         select.dispatchEvent(new Event('change', {bubbles: true}));
       });
+      await settle();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-canvas').dataset.renderer,
+        ),
+        'factory',
+      );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('light-theme');
     },
@@ -9318,6 +9517,337 @@ async function main() {
   );
 
   await run(
+    'New conversation recent workspaces reload agents and preserve creation workflow',
+    async () => {
+      const other = join(directory, 'other-project');
+      workspaceTemplateResponses.set(other, {
+        templates: [
+          {id: 'writer', name: 'Workspace writer', scope: 'workspace'},
+        ],
+        defaultAgentId: 'writer',
+      });
+      const click = id =>
+        evaluate(id => document.getElementById(id).click(), id);
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-recent').disabled,
+        'Recent workspace suggestions did not load',
+      );
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.getElementById('new-agent-recent').options]
+            .slice(1)
+            .map(option => option.value),
+        ),
+        [directory, other],
+      );
+      await evaluate(other => {
+        document.getElementById('new-agent-name').value =
+          'Review the workspace';
+        document.getElementById('new-agent-task').value = 'Inspect its files';
+        const recent = document.getElementById('new-agent-recent');
+        recent.value = other;
+        recent.dispatchEvent(new Event('change'));
+      }, other);
+      await until(
+        () => document.getElementById('new-agent-template').value === 'writer',
+        'Selected workspace agent default did not load',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          folder: document.getElementById('new-agent-folder').textContent,
+          name: document.getElementById('new-agent-name').value,
+          task: document.getElementById('new-agent-task').value,
+        })),
+        {
+          folder: other,
+          name: 'Review the workspace',
+          task: 'Inspect its files',
+        },
+      );
+      for (const [width, height, zoom] of [
+        [1600, 1000, 1],
+        [1100, 760, 1.5],
+      ]) {
+        window.setContentSize(width, height);
+        window.webContents.setZoomFactor(zoom);
+        await settle();
+        assert.equal(
+          await evaluate(() => {
+            const recent = document.getElementById('new-agent-recent');
+            const rect = recent.getBoundingClientRect();
+            const create = document
+              .getElementById('new-agent-create')
+              .getBoundingClientRect();
+            return (
+              rect.top >= 0 &&
+              rect.right <= innerWidth &&
+              document.elementFromPoint(
+                rect.left + rect.width / 2,
+                rect.top + rect.height / 2,
+              ) === recent &&
+              create.bottom <= innerHeight &&
+              document.documentElement.scrollHeight <= innerHeight
+            );
+          }),
+          true,
+          'Recent workspace selector and create action remain accessible',
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`new-conversation-recents-${width}-${zoom}`);
+      }
+      creationDelay = 150;
+      dialogErrors.set(
+        'promptSession',
+        'Initial message temporarily unavailable',
+      );
+      await click('new-agent-create');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('new-agent-recent').disabled,
+        ),
+        true,
+      );
+      await until(
+        () =>
+          !document.getElementById('new-agent-create').disabled &&
+          document
+            .getElementById('new-agent-error')
+            .textContent.includes('Initial message temporarily unavailable'),
+        'Initial message failure did not offer retry',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('new-agent-recent').disabled,
+        ),
+        true,
+      );
+      dialogErrors.delete('promptSession');
+      await click('new-agent-create');
+      await until(
+        () => !document.getElementById('new-agent-dialog').open,
+        'Retry did not finish conversation',
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession'),
+        [
+          {
+            method: 'createSession',
+            input: {
+              cwd: other,
+              name: 'Review the workspace',
+              templateId: 'writer',
+            },
+          },
+        ],
+      );
+      assert.equal(
+        calls.some(call => call.method === 'chooseFolder'),
+        false,
+      );
+      assert.deepEqual(
+        calls
+          .filter(call => call.method === 'prompt')
+          .map(call => call.request),
+        [{prompt: 'Inspect its files'}, {prompt: 'Inspect its files'}],
+      );
+      recentProjects = [other];
+      await click('open-new-agent');
+      await until(
+        () => document.getElementById('new-agent-recent').options.length === 2,
+        'Reopening did not refresh recent workspace history',
+      );
+      await click('new-agent-cancel');
+    },
+  );
+
+  await run(
+    'New conversation recent workspace failures allow folder selection and template retry',
+    async () => {
+      const other = join(directory, 'other-project');
+      const click = id =>
+        evaluate(id => document.getElementById(id).click(), id);
+      recentProjectsError = 'History unavailable';
+      await click('open-new-agent');
+      await until(
+        () =>
+          document
+            .getElementById('new-agent-recent-error')
+            .textContent.includes('History unavailable'),
+        'Recent workspace loading error was not shown',
+      );
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'Recent history failure blocked conversation creation',
+      );
+      dialogErrors.set('chooseFolder', 'Picker unavailable');
+      await click('new-agent-choose-folder');
+      await until(
+        () =>
+          document
+            .getElementById('new-agent-error')
+            .textContent.includes('Picker unavailable'),
+        'Folder picker failure was not shown',
+      );
+      dialogErrors.delete('chooseFolder');
+      await click('new-agent-choose-folder');
+      await until(
+        () => !document.getElementById('new-agent-choose-folder').disabled,
+        'Cancelled folder picker stayed busy',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('new-agent-folder').textContent,
+        ),
+        directory,
+      );
+      chosenFolder = other;
+      workspaceTemplateErrors.set(other, 'Workspace agents unavailable');
+      await click('new-agent-choose-folder');
+      await until(
+        () =>
+          document
+            .getElementById('new-agent-error')
+            .textContent.includes('Workspace agents unavailable'),
+        'Workspace template failure was not shown',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          count: document.getElementById('new-agent-template').options.length,
+          disabled: document.getElementById('new-agent-create').disabled,
+        })),
+        {count: 0, disabled: true},
+      );
+      await click('new-agent-cancel');
+      recentProjectsError = undefined;
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-recent').disabled,
+        'Recent history did not recover',
+      );
+      workspaceTemplateErrors.delete(other);
+      await evaluate(other => {
+        const recent = document.getElementById('new-agent-recent');
+        recent.value = other;
+        recent.dispatchEvent(new Event('change'));
+      }, other);
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'Workspace retry did not reload templates',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('new-agent-error').hidden),
+        true,
+      );
+      await click('new-agent-cancel');
+      recentProjects = [];
+      await click('open-new-agent');
+      await until(
+        () =>
+          document.getElementById('new-agent-recent-status').textContent ===
+          'No recent workspaces yet.',
+        'Empty recent history was not shown',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('new-agent-recent').disabled,
+        ),
+        true,
+      );
+      await click('new-agent-cancel');
+    },
+  );
+
+  await run(
+    'New conversation ignores stale workspace, history, and folder picker results',
+    async () => {
+      const other = join(directory, 'other-project');
+      const click = id =>
+        evaluate(id => document.getElementById(id).click(), id);
+      workspaceTemplateDelays.set(directory, 250);
+      workspaceTemplateErrors.set(directory, 'Stale template error');
+      workspaceTemplateResponses.set(other, {
+        templates: [{id: 'other', name: 'Other workspace', scope: 'workspace'}],
+        defaultAgentId: 'other',
+      });
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-recent').disabled,
+        'Recent choices did not load during template request',
+      );
+      await evaluate(other => {
+        const recent = document.getElementById('new-agent-recent');
+        recent.value = other;
+        recent.dispatchEvent(new Event('change'));
+      }, other);
+      await until(
+        () => document.getElementById('new-agent-template').value === 'other',
+        'Latest workspace did not load',
+      );
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.equal(
+        await evaluate(() => document.getElementById('new-agent-error').hidden),
+        true,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('new-agent-template').value,
+        ),
+        'other',
+      );
+      await click('new-agent-cancel');
+      workspaceTemplateErrors.clear();
+      recentProjectsDelay = 250;
+      recentProjects = [directory];
+      workspaceTemplateDelays.set(directory, 250);
+      await click('open-new-agent');
+      await click('new-agent-cancel');
+      recentProjectsDelay = 0;
+      recentProjects = [other];
+      workspaceTemplateDelays.clear();
+      workspaceTemplateResponses.set(directory, {
+        templates: [{id: 'fresh', scope: 'workspace'}],
+        defaultAgentId: 'fresh',
+      });
+      await click('open-new-agent');
+      await until(
+        () =>
+          document.getElementById('new-agent-template').value === 'fresh' &&
+          document.getElementById('new-agent-recent').options.length === 2,
+        'Reopened dialog did not load fresh results',
+      );
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.deepEqual(
+        await evaluate(() => ({
+          agent: document.getElementById('new-agent-template').value,
+          folders: [...document.getElementById('new-agent-recent').options]
+            .slice(1)
+            .map(option => option.value),
+        })),
+        {agent: 'fresh', folders: [other]},
+      );
+      chosenFolder = other;
+      dialogDelays.set('chooseFolder', 250);
+      await click('new-agent-choose-folder');
+      await click('new-agent-cancel');
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'Reopened dialog stayed busy',
+      );
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.deepEqual(
+        await evaluate(() => ({
+          folder: document.getElementById('new-agent-folder').textContent,
+          agent: document.getElementById('new-agent-template').value,
+        })),
+        {folder: directory, agent: 'fresh'},
+      );
+      await click('new-agent-cancel');
+    },
+  );
+
+  await run(
     'agent template model dropdown loads tool settings and preserves pins',
     async () => {
       const click = id =>
@@ -10073,7 +10603,7 @@ async function main() {
         }
         await evaluate(() => {
           const select = document.getElementById('factory-theme');
-          select.value = 'factory';
+          select.value = window.fixtureTheme || 'factory';
           select.dispatchEvent(new Event('change'));
         });
       }

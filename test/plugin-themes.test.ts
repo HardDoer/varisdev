@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {
   access,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,10 +10,10 @@ import {
 } from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 import {loadPluginThemes} from '../src/desktop/plugin-themes.ts';
 import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
 import {THEMES} from '../assets/dashboard/themes.js';
@@ -294,7 +294,6 @@ void test('theme registration count is bounded', async t => {
   assert.match(result.errors[0], /limit of 64/);
 });
 
-const execFile = promisify(execFileCallback);
 const require = createRequire(import.meta.url);
 void test(
   'renderer discovers, persists, reloads and removes plugin themes in Electron',
@@ -317,7 +316,7 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError;
     try {
-      await execFile(
+      await runRuntimeCommand(
         require('electron') as string,
         [
           fileURLToPath(
@@ -326,7 +325,11 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeout: 25_000},
+        {
+          cwd: fileURLToPath(new URL('../', import.meta.url)),
+          env,
+          timeoutMs: 25_000,
+        },
       );
     } catch (error) {
       launchError = error;
@@ -337,7 +340,7 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 6);
+    assert.equal(report.cases.length, 9);
   },
 );
 
@@ -433,4 +436,208 @@ void test('workspace themes override canonical repository and global packages wh
   assert.ok(
     invalid.themes.some(theme => theme.id === 'plugin:test-style:global'),
   );
+});
+
+void test('discovery resolves hashed stylesheet and scene URLs without executing modules', async t => {
+  const f = await fixture(t);
+  const themes = [
+    {
+      id: 'custom',
+      name: 'Custom',
+      base: 'year1998',
+      appearance: 'default',
+      scene: {module: './scene.js', apiVersion: 1},
+      stylesheet: './retro.css',
+    },
+    {id: 'retro', name: 'Retro', appearance: 'year1998', scene: 'year1998'},
+    {id: 'factory', name: 'Factory', scene: 'factory'},
+    {id: 'inherited', name: 'Inherited', base: 'year1998'},
+  ];
+  await writeFile(
+    join(f.plugin, 'package.json'),
+    JSON.stringify({
+      name: 'test-style',
+      varisdev: {themes: themes.map(theme => `./themes/${theme.id}.json`)},
+    }),
+  );
+  for (const theme of themes)
+    await writeFile(
+      join(f.plugin, `themes/${theme.id}.json`),
+      JSON.stringify(theme),
+    );
+  const modulePath = join(f.plugin, 'themes/scene.js');
+  const cssPath = join(f.plugin, 'themes/retro.css');
+  await writeFile(
+    modulePath,
+    'throw new Error("Discovery must not import scenes");',
+  );
+  await writeFile(cssPath, 'body {background-image: url("./wall.png");}');
+  const result = await loadPluginThemes(f);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.themes.length, 4);
+  const [custom, retro, factory, inherited] = result.themes;
+  assert.equal(custom.appearance, 'default');
+  assert.equal(custom.base, 'year1998');
+  assert.ok(custom.scene && typeof custom.scene === 'object');
+  assert.equal(custom.scene.apiVersion, 1);
+  const moduleUrl = new URL(custom.scene.moduleUrl);
+  assert.equal(moduleUrl.protocol, 'file:');
+  assert.equal(fileURLToPath(moduleUrl), modulePath);
+  assert.match(moduleUrl.searchParams.get('v') || '', /^[a-f0-9]{64}$/);
+  assert.ok(custom.stylesheetUrl);
+  const cssUrl = new URL(custom.stylesheetUrl);
+  assert.equal(fileURLToPath(cssUrl), cssPath);
+  assert.match(cssUrl.searchParams.get('v') || '', /^[a-f0-9]{64}$/);
+  assert.equal(custom.css, 'body {background-image: url("./wall.png");}');
+  assert.equal(retro.appearance, 'year1998');
+  assert.equal(retro.scene, 'year1998');
+  assert.equal(factory.scene, 'factory');
+  assert.equal(inherited.appearance, undefined);
+  assert.equal(inherited.scene, undefined);
+  assert.deepEqual((await loadPluginThemes(f)).themes, result.themes);
+  await writeFile(modulePath, 'export const apiVersion = 1;');
+  await writeFile(cssPath, 'body {color: red;}');
+  const changed = (await loadPluginThemes(f)).themes[0];
+  assert.notDeepEqual(changed.scene, custom.scene);
+  assert.notEqual(changed.stylesheetUrl, custom.stylesheetUrl);
+});
+
+void test('scene registration rejects malformed appearance, versions, paths and types', async t => {
+  const f = await fixture(t);
+  const invalid = [
+    {appearance: 'retro'},
+    {appearance: null},
+    {appearance: {}},
+    {appearance: 1},
+    {scene: null},
+    {scene: []},
+    {scene: 1},
+    {scene: 'unknown'},
+    {scene: {}},
+    {scene: {module: './scene.js'}},
+    {scene: {module: './scene.js', apiVersion: 2}},
+    {scene: {module: './scene.js', apiVersion: '1'}},
+    {scene: {module: './scene.js', apiVersion: null}},
+    {scene: {module: 42, apiVersion: 1}},
+    {scene: {module: '', apiVersion: 1}},
+    {scene: {module: f.root, apiVersion: 1}},
+    {scene: {module: './themes', apiVersion: 1}},
+    {
+      scene: {
+        module: relative(f.plugin, join(f.root, 'outside.js')),
+        apiVersion: 1,
+      },
+    },
+    {scene: {module: './linked/outside.js', apiVersion: 1}},
+  ];
+  await writeFile(join(f.root, 'outside.js'), 'export const apiVersion = 1;');
+  await writeFile(join(f.plugin, 'scene.js'), 'export const apiVersion = 1;');
+  await mkdir(join(f.root, 'outside'));
+  await writeFile(
+    join(f.root, 'outside/outside.js'),
+    'export const apiVersion = 1;',
+  );
+  await createDirectoryLink(join(f.root, 'outside'), join(f.plugin, 'linked'));
+  await writeFile(
+    join(f.plugin, 'package.json'),
+    JSON.stringify({
+      name: 'test-style',
+      varisdev: {themes: invalid.map((_, i) => `./bad${i}.json`)},
+    }),
+  );
+  for (const [i, fields] of invalid.entries())
+    await writeFile(
+      join(f.plugin, `bad${i}.json`),
+      JSON.stringify({id: `bad${i}`, name: 'Bad', ...fields}),
+    );
+  const result = await loadPluginThemes(f);
+  assert.deepEqual(result.themes, []);
+  assert.equal(result.errors.length, invalid.length);
+  assert.ok(result.errors.some(error => error.includes('appearance must be')));
+  assert.ok(
+    result.errors.some(error => error.includes('scene.apiVersion must be 1')),
+  );
+  assert.ok(
+    result.errors.some(error => error.includes('resource must be a file')),
+  );
+  assert.ok(result.errors.some(error => error.includes('leaves the package')));
+});
+
+void test('the shipped retro example discovers both built-in and custom scenes', async t => {
+  const f = await fixture(t);
+  await cp(new URL('../examples/retro-theme/', import.meta.url), f.plugin, {
+    recursive: true,
+  });
+  const result = await loadPluginThemes(f);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.themes.length, 2);
+  const [starter, custom] = result.themes;
+  assert.equal(starter.base, 'year1998');
+  assert.equal(starter.appearance, 'year1998');
+  assert.equal(starter.scene, 'year1998');
+  assert.ok(custom.scene && typeof custom.scene === 'object');
+  assert.equal(custom.scene.apiVersion, 1);
+  assert.ok(custom.stylesheetUrl);
+  assert.match(custom.css || '', /url\('\.\/grid\.svg'\)/);
+});
+
+void test('scene bundle size accepts 2 MiB and rejects larger files', async t => {
+  const f = await fixture(t);
+  await writeFile(
+    join(f.plugin, 'package.json'),
+    JSON.stringify({
+      name: 'test-style',
+      varisdev: {themes: ['./ok.json', './large.json']},
+    }),
+  );
+  for (const id of ['ok', 'large']) {
+    await writeFile(
+      join(f.plugin, `${id}.json`),
+      JSON.stringify({
+        id,
+        name: id,
+        scene: {module: `./${id}.js`, apiVersion: 1},
+      }),
+    );
+    await writeFile(
+      join(f.plugin, `${id}.js`),
+      ' '.repeat(2 * 1024 * 1024 + (id === 'large' ? 1 : 0)),
+    );
+  }
+  const result = await loadPluginThemes(f);
+  assert.equal(result.themes.length, 1);
+  assert.match(result.themes[0].id, /:ok$/);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /2 MiB/);
+});
+
+void test('outside scene and stylesheet file symlinks are rejected when supported', async t => {
+  const f = await fixture(t);
+  const outside = join(f.root, 'outside.js');
+  const linked = join(f.plugin, 'linked.js');
+  await writeFile(outside, 'export const apiVersion = 1;');
+  if (!(await createFileSymlinkOrSkip(t, outside, linked))) return;
+  await writeFile(
+    join(f.plugin, 'package.json'),
+    JSON.stringify({
+      name: 'test-style',
+      varisdev: {themes: ['./scene.json', './style.json']},
+    }),
+  );
+  await writeFile(
+    join(f.plugin, 'scene.json'),
+    JSON.stringify({
+      id: 'scene',
+      name: 'Scene',
+      scene: {module: './linked.js', apiVersion: 1},
+    }),
+  );
+  await writeFile(
+    join(f.plugin, 'style.json'),
+    JSON.stringify({id: 'style', name: 'Style', stylesheet: './linked.js'}),
+  );
+  const result = await loadPluginThemes(f);
+  assert.deepEqual(result.themes, []);
+  assert.equal(result.errors.length, 2);
+  for (const error of result.errors) assert.match(error, /leaves the package/);
 });

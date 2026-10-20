@@ -31,6 +31,7 @@
       rel="stylesheet"
       href="../../node_modules/@xterm/xterm/css/xterm.css"
     />
+    <link rel="stylesheet" href="year1998.css" />
     <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script type="module" src="app.js"></script>
@@ -73,6 +74,20 @@
             >
               Choose folder
             </button>
+          </div>
+          <div id="new-agent-recent-workspaces" hidden>
+            <label for="new-agent-recent">Recent workspaces</label>
+            <select
+              id="new-agent-recent"
+              aria-describedby="new-agent-recent-status"
+            ></select>
+            <p id="new-agent-recent-status" class="muted" role="status"></p>
+            <p
+              id="new-agent-recent-error"
+              class="form-error"
+              role="alert"
+              hidden
+            ></p>
           </div>
           <label for="new-agent-template">Agent</label>
           <select id="new-agent-template" required></select>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self' data:"
+    />
+    <title>Theme scene integration fixture</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #07151d;
+      }
+      #stage {
+        position: absolute;
+        inset: 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #fallback {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <section id="stage">
+      <canvas
+        id="scene"
+        class="theme-scene"
+        aria-label="Session scene"
+      ></canvas>
+      <div id="fallback"></div>
+    </section>
+  </body>
+</html>
