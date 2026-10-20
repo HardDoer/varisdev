@@ -39,24 +39,6 @@
   padding: 5px 8px;
   font-size: 0.75rem;
 }
-#expand-live-view {
-  display: grid;
-  place-items: center;
-  padding: 5px;
-}
-#expand-live-view svg {
-  width: 20px;
-  height: 20px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.75;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-#expand-live-view[aria-expanded='false'] .live-view-restore-icon,
-#expand-live-view[aria-expanded='true'] .live-view-expand-icon {
-  display: none;
-}
 #factory-info-button {
   anchor-name: --factory-info-button;
 }
@@ -147,25 +129,6 @@
   grid-row: auto;
   padding-top: 12px;
   border-top: 1px solid var(--line);
-}
-.factory-panel.live-view-expanded {
-  position: fixed;
-  inset: 12px;
-  margin: 0;
-  width: calc(100vw - 24px);
-  height: calc(100dvh - 24px);
-  max-width: none;
-  max-height: none;
-  padding: 0;
-  color: var(--text);
-}
-.factory-panel.live-view-expanded::backdrop {
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-}
-.live-view-expanded #factory-canvas {
-  inset: 0;
-  width: 100%;
-  height: 100%;
 }
 #factory-agents-button {
   anchor-name: --factory-agents-button;

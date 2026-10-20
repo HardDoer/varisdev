@@ -1146,7 +1146,7 @@ async function main() {
   });
 
   await run(
-    'live view shows details and actions when space allows and preserves the scene across expansion',
+    'live view shows details and actions when space allows and preserves the scene across resizing',
     async () => {
       const conversationActions = () =>
         calls.filter(
@@ -1207,7 +1207,7 @@ async function main() {
               `Unreachable ${selector}: ${JSON.stringify({rect: r.toJSON(), hit: document.elementFromPoint(x, y)?.outerHTML.slice(0, 300), drawer: {open: document.getElementById('factory-agents-drawer').matches(':popover-open'), workersInside: !!document.querySelector('#factory-agents-drawer .worker-panels'), rect: document.getElementById('factory-agents-drawer').getBoundingClientRect().toJSON()}, panel: document.getElementById('factory-panel').getBoundingClientRect().toJSON(), column: document.querySelector('.factory-column').getBoundingClientRect().toJSON(), classes: document.getElementById('factory-panel').outerHTML.slice(0, 250), style: ['width', 'minWidth', 'maxWidth', 'gridTemplateColumns'].map(key => [key, getComputedStyle(document.getElementById('factory-panel'))[key]])})}`,
             );
           if (
-            ['#factory-info-button', '#expand-live-view'].includes(selector) &&
+            selector === '#factory-info-button' &&
             (r.width < 32 || r.height < 32)
           )
             throw new Error(`Small toolbar hit target: ${selector}`);
@@ -1224,54 +1224,48 @@ async function main() {
           });
         await settle();
       };
-      const view = (expanded, focus) =>
-        evaluate(
-          (expanded, focus) => {
-            const $ = id => document.getElementById(id);
-            const saved = window.compactLiveView;
-            const restored =
-              saved.panel.parentElement === saved.home &&
-              saved.panel.nextSibling === saved.next;
+      const view = focus =>
+        evaluate(focus => {
+          const $ = id => document.getElementById(id);
+          const saved = window.compactLiveView;
+          const restored =
+            saved.panel.parentElement === saved.home &&
+            saved.panel.nextSibling === saved.next;
+          if (
+            saved.panel.matches(':popover-open') ||
+            $('factory-info').matches(':popover-open') ||
+            saved.panel !== $('factory-panel') ||
+            saved.canvas !== $('factory-canvas') ||
+            !restored
+          )
+            throw new Error('Scene identity, placement, or open state changed');
+          if (focus && document.activeElement.id !== focus)
+            throw new Error(`Expected focus on ${focus}`);
+          for (const item of document.querySelectorAll(
+            '.factory-metrics > span',
+          )) {
+            const r = item.getBoundingClientRect();
+            if (r.width && !saved.inside(r))
+              throw new Error('Agent metrics outside viewport');
+          }
+          if ($('factory-workspace').checkVisibility()) {
+            const main = document.querySelector('main');
+            const panel = saved.panel.getBoundingClientRect();
+            const inspector = $('inspector').getBoundingClientRect();
             if (
-              saved.panel.matches(':popover-open') !== expanded ||
-              $('factory-info').matches(':popover-open') ||
-              saved.panel !== $('factory-panel') ||
-              saved.canvas !== $('factory-canvas') ||
-              !restored
+              !saved.inside(panel) ||
+              !saved.inside(inspector) ||
+              panel.right > inspector.left ||
+              main.scrollHeight > main.clientHeight + 1 ||
+              main.scrollWidth > main.clientWidth + 1
             )
               throw new Error(
-                'Scene identity, placement, or open state changed',
+                'Main panels must fit without page scrolling or overlap',
               );
-            if (focus && document.activeElement.id !== focus)
-              throw new Error(`Expected focus on ${focus}`);
-            for (const item of document.querySelectorAll(
-              '.factory-metrics > span',
-            )) {
-              const r = item.getBoundingClientRect();
-              if (r.width && !saved.inside(r))
-                throw new Error('Agent metrics outside viewport');
-            }
-            if (!expanded && $('factory-workspace').checkVisibility()) {
-              const main = document.querySelector('main');
-              const panel = saved.panel.getBoundingClientRect();
-              const inspector = $('inspector').getBoundingClientRect();
-              if (
-                !saved.inside(panel) ||
-                !saved.inside(inspector) ||
-                panel.right > inspector.left ||
-                main.scrollHeight > main.clientHeight + 1 ||
-                main.scrollWidth > main.clientWidth + 1
-              )
-                throw new Error(
-                  'Main panels must fit without page scrolling or overlap',
-                );
-            }
-            const r = $('scene').getBoundingClientRect();
-            return {area: r.width * r.height, height: r.height};
-          },
-          expanded,
-          focus,
-        );
+          }
+          const r = $('scene').getBoundingClientRect();
+          return {height: r.height};
+        }, focus);
       const scenePainted = async () => {
         const rect = await evaluate(() => {
           const r = document.getElementById('scene').getBoundingClientRect();
@@ -1366,7 +1360,7 @@ async function main() {
         }, zoom);
         await settle();
         assert.equal(window.webContents.getZoomFactor(), zoom);
-        const compact = await view(false);
+        const compact = await view();
         await detailsVisible(collapsed);
         assert.equal(
           await evaluate(() =>
@@ -1524,28 +1518,12 @@ async function main() {
           if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
             await screenshot('live-view-info-small');
           await press('Escape');
-          await view(false, 'factory-info-button');
+          await view('factory-info-button');
         }
-        await click('#expand-live-view');
-        const expanded = await view(true);
-        await scenePainted();
-        assert.ok(
-          expanded.area > compact.area * 2 && expanded.height > compact.height,
-          'Expanded scene is significantly larger',
-        );
-        await detailsVisible(false);
         assert.deepEqual(
           conversationActions(),
           [],
           'Viewing details must not affect the running session',
-        );
-        if (process.env.DESKTOP_UI_SCREENSHOT_DIR && zoom === 1.5)
-          await screenshot('compact-live-view-expanded-150');
-        await click('#expand-live-view');
-        const restored = await view(false, 'expand-live-view');
-        assert.ok(
-          Math.abs(restored.area - compact.area) < 2,
-          'Restore recovers original scene layout',
         );
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR && zoom === 1.5)
           await screenshot('compact-live-view-small-150');
@@ -1554,15 +1532,11 @@ async function main() {
       window.setContentSize(1600, 1200);
       await settle();
       await detailsVisible(false);
-      await view(false, 'expand-live-view');
-      await evaluate(() =>
-        document.getElementById('close-parent-session').focus(),
-      );
+      await view('markdown-launcher');
       window.setContentSize(1100, 760);
       await settle();
       await detailsVisible(true);
-      await view(false, 'factory-info-button');
-      await click('#expand-live-view');
+      await view('factory-info-button');
       data.agents[1].status = 'running';
       data.agents[0].name = 'Updated live worker';
       data.session.activity = 'Thinking about the latest snapshot';
@@ -1574,16 +1548,16 @@ async function main() {
           document
             .getElementById('scene-labels')
             .textContent.includes('Updated live worker'),
-        'Expanded scene did not receive live snapshot',
+        'Scene did not receive live snapshot',
       );
-      await view(true);
+      await view();
       await evaluate(() => {
         [...document.querySelectorAll('#scene-labels button')].find(item =>
           item.textContent.includes('Updated live worker'),
         ).id = 'compact-agent-label';
       });
       await click('#compact-agent-label');
-      await view(false);
+      await view();
       assert.equal(
         await evaluate(
           () => document.getElementById('inspector-title').textContent,
@@ -1597,48 +1571,39 @@ async function main() {
             .textContent.includes('Live agent answer'),
         ),
       );
-      await click('#expand-live-view');
-      await press('Escape');
-      await view(false, 'expand-live-view');
-      assert.deepEqual(
-        conversationActions(),
-        [],
-        'Expanded Escape must not abort the session',
-      );
-      await click('#expand-live-view');
+      await click('#factory-info-button');
       await click('#markdown-launcher');
       await until(
         () => !document.getElementById('markdown-panel').hidden,
         'Markdown launcher did not open files',
       );
-      await view(false);
+      await view();
       await click('#markdown-close');
-      await click('#expand-live-view');
-      // Exercise session navigation arriving while the modal owns the panel.
+      await click('#factory-info-button');
       await evaluate(() =>
         [...document.querySelectorAll('#parents button')]
           .find(item => item.textContent.includes('Beta factory'))
           .click(),
       );
-      await view(false);
+      await view();
       assert.equal(
         await evaluate(
           () => document.getElementById('factory-title').textContent,
         ),
         'Beta factory',
       );
-      await click('#expand-live-view');
+      await click('#factory-info-button');
       hub.sessions = hub.sessions.filter(item => item.session.id !== 'beta');
       await publish();
-      await view(false);
-      await click('#expand-live-view');
-      await detailsVisible(false);
+      await view();
+      await detailsVisible(true);
+      await click('#factory-info-button');
       await click('#close-parent-session');
       await until(
         () => !document.getElementById('welcome').hidden,
         'Close session action did not remove the session',
       );
-      await view(false);
+      await view();
       assert.deepEqual(conversationActions(), [
         {method: 'closeSession', sessionId: 'alpha'},
       ]);
