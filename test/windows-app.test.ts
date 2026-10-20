@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {execFile} from 'node:child_process';
 import {
   copyFile,
   mkdir,
@@ -16,15 +15,15 @@ import {delimiter, dirname, join} from 'node:path';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {promisify} from 'node:util';
 import {RuntimeManager} from '../src/runtime/manager.ts';
+import {environmentPath} from '../src/runtime/environment.mjs';
 import {
   prepareWindowsLauncher,
   quoteWindowsArgument,
   windowsAppId,
 } from '../src/runtime/windows-launcher.ts';
 
-const execute = promisify(execFile);
+import {runTerminalProcess as execute} from './fixtures/terminal-process.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
 
@@ -146,6 +145,7 @@ void test(
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       APPDATA: appData,
+      LOCALAPPDATA: join(directory, 'local'),
       VARISDEV_INSTALL_ROOT: installRoot,
       VARISDEV_DATA_DIR: dataDir,
       PIDEV_DESKTOP_DATA_DIR: profile,
@@ -155,10 +155,14 @@ void test(
     };
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.VARISDEV_RESTART_PID;
+    await put(
+      environmentPath(env, 'win32'),
+      JSON.stringify({VARISDEV_SETTINGS_DIR: settingsDir}),
+    );
     await execute(
       process.execPath,
       [join(root, 'scripts/desktop-app.mjs'), 'install'],
-      {env, timeout: 20000},
+      {env, timeoutMs: 20000},
     );
     const shortcut = join(
       appData,
@@ -196,7 +200,7 @@ void test(
     );
     await execute(require('electron') as string, [inspect], {
       env,
-      timeout: 20000,
+      timeoutMs: 20000,
     });
     const saved = JSON.parse(
       await readFile(join(directory, 'shortcut.json'), 'utf8'),
@@ -218,19 +222,25 @@ void test(
       await rm(report, {force: true});
       // ShellExecute the saved shortcut, as Windows does for a pinned application.
       await execute(
-        'powershell.exe',
+        join(
+          process.env.SystemRoot || process.env.windir || 'C:\\Windows',
+          'System32',
+          'WindowsPowerShell',
+          'v1.0',
+          'powershell.exe',
+        ),
         [
           '-NoProfile',
           '-NonInteractive',
           '-Command',
-          `Start-Process -FilePath '${pinned.replaceAll("'", "''")}'`,
+          `Start-Process -Wait -FilePath '${pinned.replaceAll("'", "''")}'`,
         ],
         {
           env: {
             ...env,
             VARISDEV_SETTINGS_DIR: join(directory, 'inherited-settings'),
           },
-          timeout: 15000,
+          timeoutMs: 15000,
         },
       );
       for (let attempt = 0; attempt < 100; attempt++) {

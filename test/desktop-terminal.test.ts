@@ -19,8 +19,8 @@ async function windowsTerminalEnvironment(
   directory: string,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  // Desktop launches can inherit a PATH without the Windows shell directories
-  // and PowerShell 7 modules that Windows PowerShell cannot import.
+  // Reproduce a desktop PATH missing Windows and Git, plus PowerShell 7
+  // modules that Windows PowerShell cannot import.
   const modules = join(directory, 'modules');
   await mkdir(join(modules, 'PSReadLine'), {recursive: true});
   await writeFile(
@@ -137,6 +137,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(error);
-    assert.equal(report.cases.length, 5);
+    assert.equal(report.cases.length, 6);
   },
 );

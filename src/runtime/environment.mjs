@@ -5,7 +5,7 @@ import {setTimeout, clearTimeout} from 'node:timers';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {dirname, join, win32} from 'node:path';
 import process from 'node:process';
 
 const hiddenFields = new Set([
@@ -78,16 +78,61 @@ export function environmentPath(
   );
 }
 
-function fields(env) {
+function fieldName(name, platform) {
+  return platform === 'win32' ? name.toUpperCase() : name;
+}
+
+/** @param {NodeJS.ProcessEnv} [env] @param {NodeJS.Platform} [platform] */
+export function copyEnvironment(
+  env = process.env,
+  platform = process.platform,
+) {
   return Object.fromEntries(
-    Object.entries(env).filter(
+    Object.entries(env).map(([name, value]) => [
+      fieldName(name, platform),
+      value,
+    ]),
+  );
+}
+
+function fields(env, platform) {
+  return Object.fromEntries(
+    Object.entries(copyEnvironment(env, platform)).filter(
       ([name, value]) => isEnvironmentField(name) && typeof value === 'string',
     ),
   );
 }
 
+function setField(env, name, value, platform) {
+  for (const key of Object.keys(env)) {
+    if (fieldName(key, platform) === name) delete env[key];
+  }
+  if (value !== undefined) env[name] = value;
+}
+
+/** Preserve launch-specific tools, then restore registered Windows tools. */
+export function windowsEnvironment(env, paths) {
+  const values = fields(env, 'win32');
+  const seen = new Set();
+  values.PATH = [values.PATH, ...paths]
+    .flatMap(value => (value || '').split(';'))
+    .map(value => value.trim())
+    .filter(value => {
+      if (!value) return false;
+      const path = win32.normalize(value);
+      const key = (
+        path === win32.parse(path).root ? path : path.replace(/\\+$/, '')
+      ).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(';');
+  return values;
+}
+
 /**
- * Read exported values over a separate pipe; shell startup output is discarded.
+ * Read Windows PATH or exported Zsh values without logging environment values.
  * @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, shell?: string, timeoutMs?: number, signal?: AbortSignal}} [options]
  * @returns {Promise<Record<string, string>>}
  */
@@ -98,36 +143,73 @@ export function readShellEnvironment({
   timeoutMs = 8000,
   signal,
 } = {}) {
-  if (platform === 'win32') return Promise.resolve({});
+  const windows = platform === 'win32';
+  const system32 = join(
+    env.SystemRoot ||
+      env.SYSTEMROOT ||
+      env.windir ||
+      env.WINDIR ||
+      'C:\\Windows',
+    'System32',
+  );
+  const source = windows ? 'Windows PATH' : '.zshrc';
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const child = spawn(
-      shell,
-      ['-o', 'NO_MONITOR', '-lic', '/usr/bin/env -0 >&3'],
+      windows
+        ? join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        : shell,
+      windows
+        ? [
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            "$ErrorActionPreference = 'Stop'; " +
+              '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); ' +
+              "ConvertTo-Json -Compress -InputObject @([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User'))",
+          ]
+        : ['-o', 'NO_MONITOR', '-lic', '/usr/bin/env -0 >&3'],
       {
         env,
-        cwd: env.HOME || homedir(),
-        detached: true,
-        stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
+        cwd: env.HOME || env.USERPROFILE || homedir(),
+        detached: !windows,
+        windowsHide: true,
+        stdio: windows
+          ? ['ignore', 'pipe', 'ignore']
+          : ['ignore', 'ignore', 'ignore', 'pipe'],
       },
     );
     let output = Buffer.alloc(0);
     let failure;
     const stop = error => {
-      failure ??= error;
-      try {
-        if (child.pid) process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        /* Already exited. */
+      if (failure) return;
+      failure = error;
+      if (windows && child.pid) {
+        const killer = spawn(
+          join(system32, 'taskkill.exe'),
+          ['/PID', String(child.pid), '/T', '/F'],
+          {windowsHide: true, stdio: 'ignore', timeout: 5000},
+        );
+        killer.once('error', () => child.kill('SIGKILL'));
+        killer.once('close', code => {
+          if (code !== 0) child.kill('SIGKILL');
+        });
+      } else {
+        try {
+          if (child.pid) process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          /* Already exited. */
+        }
       }
     };
     const timer = setTimeout(
-      () => stop(new Error('Reading .zshrc timed out.')),
+      () => stop(new Error(`Reading ${source} timed out.`)),
       timeoutMs,
     );
-    const abort = () => stop(new Error('Reading .zshrc was cancelled.'));
+    const abort = () => stop(new Error(`Reading ${source} was cancelled.`));
     signal?.addEventListener('abort', abort, {once: true});
-    child.stdio[3].on('data', chunk => {
+    child.stdio[windows ? 1 : 3].on('data', chunk => {
       if (output.length + chunk.length > 1024 * 1024) {
         stop(new Error('The shell environment is too large.'));
         return;
@@ -135,7 +217,11 @@ export function readShellEnvironment({
       output = Buffer.concat([output, chunk]);
     });
     child.once('error', () => {
-      failure ??= new Error('Could not start Zsh to read .zshrc.');
+      failure ??= new Error(
+        windows
+          ? 'Could not start PowerShell to read Windows PATH.'
+          : 'Could not start Zsh to read .zshrc.',
+      );
     });
     child.once('close', code => {
       clearTimeout(timer);
@@ -143,8 +229,21 @@ export function readShellEnvironment({
       if (failure) return reject(failure);
       if (code !== 0)
         return reject(
-          new Error('Could not read .zshrc: shell startup failed.'),
+          new Error(`Could not read ${source}: shell startup failed.`),
         );
+      if (windows) {
+        try {
+          const paths = JSON.parse(output.toString('utf8'));
+          if (
+            !Array.isArray(paths) ||
+            paths.some(value => value !== null && typeof value !== 'string')
+          )
+            throw new Error();
+          return resolve(windowsEnvironment(env, paths));
+        } catch {
+          return reject(new Error('Could not read Windows PATH.'));
+        }
+      }
       const values = {};
       for (const record of output.toString('utf8').split('\0')) {
         const split = record.indexOf('=');
@@ -156,7 +255,7 @@ export function readShellEnvironment({
   });
 }
 
-/** @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, file?: string, shell?: string, timeoutMs?: number, signal?: AbortSignal}} [options] */
+/** @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, file?: string, shell?: string, timeoutMs?: number, signal?: AbortSignal, readEnvironment?: typeof readShellEnvironment}} [options] */
 export function createEnvironmentSettings({
   env = process.env,
   platform = process.platform,
@@ -164,8 +263,9 @@ export function createEnvironmentSettings({
   shell,
   timeoutMs,
   signal,
+  readEnvironment = readShellEnvironment,
 } = {}) {
-  const inherited = fields(env);
+  const inherited = fields(env, platform);
   let machine;
   let machineValues = inherited;
   let error;
@@ -189,7 +289,8 @@ export function createEnvironmentSettings({
       Array.isArray(saved) ||
       Object.entries(saved).some(
         ([name, value]) =>
-          !isEnvironmentField(name) || typeof value !== 'string',
+          !isEnvironmentField(fieldName(name, platform)) ||
+          typeof value !== 'string',
       )
     )
       throw new Error(
@@ -198,17 +299,14 @@ export function createEnvironmentSettings({
     return saved;
   }
   async function initialize() {
-    machine ??= readShellEnvironment({
+    machine ??= readEnvironment({
       env: {...env},
       platform,
       shell,
       timeoutMs,
       signal,
     })
-      .then(
-        shellValues =>
-          (machineValues = platform === 'win32' ? inherited : shellValues),
-      )
+      .then(shellValues => (machineValues = fields(shellValues, platform)))
       .catch(cause => {
         error = `${cause.message} Using the inherited environment and saved settings.`;
         return inherited;
@@ -222,12 +320,13 @@ export function createEnvironmentSettings({
       {HOME: env.HOME, USERPROFILE: env.USERPROFILE, ...machineValues},
       platform,
     );
-    const saved = await readSaved();
+    const saved = fields(await readSaved(), platform);
     const values = {...machineValues, ...saved};
     for (const name of applied)
-      if (!Object.hasOwn(values, name)) delete env[name];
+      if (!Object.hasOwn(values, name))
+        setField(env, name, undefined, platform);
     for (const [name, value] of Object.entries(values)) {
-      if (lastValues[name] !== value) env[name] = value;
+      if (lastValues[name] !== value) setField(env, name, value, platform);
     }
     lastValues = values;
     applied = new Set(Object.keys(values));
@@ -240,6 +339,7 @@ export function createEnvironmentSettings({
     };
   }
   async function save(name, value) {
+    if (typeof name === 'string') name = fieldName(name, platform);
     if (!isEnvironmentField(name))
       throw new Error('Choose a configurable environment variable name.');
     if (value !== null && (typeof value !== 'string' || value.includes('\0')))
@@ -247,8 +347,7 @@ export function createEnvironmentSettings({
     const operation = saving.then(async () => {
       await initialize();
       const saved = await readSaved();
-      if (value === null) delete saved[name];
-      else saved[name] = value;
+      setField(saved, name, value === null ? undefined : value, platform);
       if (value !== null || Object.keys(saved).length) {
         await mkdir(dirname(file), {recursive: true});
         const temporary = `${file}.${randomUUID()}.tmp`;
@@ -270,11 +369,9 @@ export function createEnvironmentSettings({
   // App continuations load the JSON themselves. Preserve their real fallback
   // rather than passing a saved value off as an inherited environment value.
   function forChild(base = env) {
-    const child = {...base};
-    for (const name of savedNames) {
-      if (!Object.hasOwn(machineValues, name)) delete child[name];
-      else child[name] = machineValues[name];
-    }
+    const child = copyEnvironment(base, platform);
+    for (const name of savedNames)
+      setField(child, name, machineValues[name], platform);
     return child;
   }
   return {initialize, get, save, forChild};

@@ -14,7 +14,11 @@ import {defaultDataDir, RuntimeManager} from './manager.ts';
 import {macLauncherExecutable} from './mac-launcher.ts';
 import {runAccountCommand, runPluginCommand} from './commands.ts';
 import {configureSettings} from './settings.mjs';
-import {environmentForChild, initializeEnvironment} from './environment.mjs';
+import {
+  copyEnvironment,
+  environmentForChild,
+  initializeEnvironment,
+} from './environment.mjs';
 
 const help = `VarisDev
 
@@ -83,7 +87,7 @@ function launchEnvironment(
   const nodeExecutable =
     process.env.VARISDEV_NODE_EXECUTABLE ||
     (!process.versions.electron ? process.execPath : undefined);
-  const inherited = continuation ? environmentForChild() : {...process.env};
+  const inherited = continuation ? environmentForChild() : copyEnvironment();
   return {
     ...configureSettings(inherited),
     VARISDEV_INSTALL_ROOT: installRoot,

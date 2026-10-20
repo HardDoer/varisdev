@@ -74,6 +74,12 @@ async function until(source) {
 app
   .whenReady()
   .then(async () => {
+    const {initializeEnvironment} = await import(
+      pathToFileURL(
+        resolve(__dirname, '../../desktop/build/src/runtime/environment.mjs'),
+      ).href
+    );
+    await initializeEnvironment();
     const {DesktopTerminals} = await import(
       pathToFileURL(
         resolve(__dirname, '../../desktop/build/src/desktop/terminal.js'),
@@ -161,6 +167,23 @@ app
         /Cannot load PSReadLine|Modules_InsufficientPowerShellVersion/i,
       );
     }
+    await browser.webContents.insertText(
+      process.platform === 'win32'
+        ? `git --version; git init --quiet; if ((git rev-parse --show-toplevel) -eq '${projectDirectory('first').replaceAll('\\', '/').replaceAll("'", "''")}') { 'git-project-' + 'ready' }; 'git-' + 'checked'`
+        : "git --version; git init --quiet; test \"$(git rev-parse --show-toplevel)\" = \"$PWD\" && printf 'git-project-%s\\n' 'ready'; printf 'git-%s\\n' 'checked'",
+    );
+    browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
+    browser.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Return'});
+    await until(
+      "document.querySelector('.project-terminal').textContent.includes('git-checked')",
+    );
+    const gitOutput = (await terminals.open('first', projectDirectory('first')))
+      .data;
+    assert.match(gitOutput, /git version \d+\./);
+    assert.match(gitOutput, /git-project-ready/);
+    report.cases.push(
+      'Git runs inside the embedded terminal with the project as its working directory',
+    );
     await evaluate("document.getElementById('prompt-tab').click()");
     assert.equal(await evaluate('document.activeElement.id'), 'parent-prompt');
     assert.equal(

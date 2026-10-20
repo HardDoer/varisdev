@@ -80,7 +80,7 @@ Open **Menu → Environment** to view or edit environment settings. Values are h
 
 Saving a value writes that variable to `environment.json`. Saved values take precedence over the machine environment. **Use environment value** deletes the saved entry and restores the environment value.
 
-On macOS and systems with Zsh, startup reads exported variables from `.zshrc` for both desktop and terminal launches. Native Windows uses the inherited environment. Changes to tool credentials apply to subsequent requests; changes to startup paths require restarting the app.
+On macOS and systems with Zsh, startup reads exported variables from `.zshrc` for both desktop and terminal launches. Native Windows preserves the inherited environment and adds missing entries from the system and user `Path`. Changes to tool credentials apply to subsequent requests; changes to startup paths require restarting the app.
 
 The settings file is stored at:
 
