@@ -1,3 +1,9 @@
+# Versioning
+
+- After completing a set of changes that differs from the default branch (`main`, or `master` in this repository), ensure the application version is higher than the version on that branch. Reuse an appropriate existing bump for the same set of changes.
+- Follow semantic versioning (`MAJOR.MINOR.PATCH`): increment `PATCH` for compatible bug fixes and small changes, `MINOR` for compatible new features, and `MAJOR` for incompatible changes. Use the highest required level in the set and reset lower components to zero.
+- Use `npm version <patch|minor|major> --no-git-tag-version --ignore-scripts` to update `package.json` and `package-lock.json` together. Never edit lockfiles manually.
+
 # Verification
 
 - Keep verification proportional to the change and use the existing test harness where available.
