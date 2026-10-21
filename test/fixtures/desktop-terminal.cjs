@@ -118,6 +118,7 @@ app
       width: 1600,
       height: 1000,
       show: false,
+      enableLargerThanScreen: true,
       webPreferences: {
         preload: resolve(__dirname, '../../assets/desktop/preload.cjs'),
         contextIsolation: true,
@@ -129,6 +130,16 @@ app
       resolve(__dirname, '../../assets/dashboard/index.html'),
     );
     await until("!document.getElementById('parent-controls').hidden");
+    await evaluate(`
+      const Terminal = window.Terminal;
+      window.Terminal = class extends Terminal {
+        constructor(options) {
+          super(options);
+          window.fixtureTerminal = this;
+        }
+      };
+      void 0;
+    `);
     await evaluate(
       "document.getElementById('parent-prompt').value = 'Keep this draft'; document.getElementById('parent-prompt').dispatchEvent(new Event('input')); document.getElementById('terminal-tab').click()",
     );
@@ -184,6 +195,78 @@ app
     report.cases.push(
       'Git runs inside the embedded terminal with the project as its working directory',
     );
+    browser.showInactive();
+    terminals.write(
+      'first',
+      process.platform === 'win32'
+        ? "1..80 | ForEach-Object { Write-Output ('Scroll row ' + $_) }; 'bottom-' + 'visible'\r"
+        : "i=0; while [ $i -lt 80 ]; do printf 'Scroll row %s\\n' $i; i=$((i+1)); done; printf 'bottom-%s\\n' 'visible'\r",
+    );
+    await until(
+      "window.fixtureTerminal.buffer.active.baseY > 0 && document.querySelector('.project-terminal').textContent.includes('bottom-visible')",
+    );
+    for (const [width, height, zoom, terminalHeight] of [
+      [1600, 1000, 1, 120],
+      [1600, 1000, 1, 137],
+      [1600, 1000, 1, 239],
+      [1600, 1000, 1, 240],
+      [1600, 1000, 1, 241],
+      [1100, 760, 1.25, 121],
+      [1100, 760, 1.5, 137],
+    ]) {
+      browser.setContentSize(width, height);
+      await evaluate(`
+        window.pidev.setZoom(${zoom});
+        document.getElementById('terminal-sessions').style.height = '${terminalHeight}px';
+      `);
+      // Let the application's ResizeObserver and scheduled fit finish.
+      await evaluate(
+        'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+      );
+      const bounds = await evaluate(`(() => {
+        const host = document.getElementById('terminal-sessions').getBoundingClientRect();
+        const screen = document.querySelector('.project-terminal .xterm-screen').getBoundingClientRect();
+        return {host: host.toJSON(), screen: screen.toJSON()};
+      })()`);
+      assert.ok(
+        bounds.screen.bottom <= bounds.host.bottom &&
+          bounds.screen.right <= bounds.host.right,
+        `Terminal rows must fit after resize to ${terminalHeight}px at ${zoom}: ${JSON.stringify(bounds)}`,
+      );
+      await evaluate(`
+        window.fixtureTerminal.scrollToTop();
+        new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      `);
+      browser.webContents.sendInputEvent({
+        type: 'mouseWheel',
+        x: Math.round((bounds.screen.x + 30) * zoom),
+        y: Math.round((bounds.screen.y + 30) * zoom),
+        deltaY: -100000,
+        deltaX: 0,
+        wheelTicksY: -2500,
+      });
+      await until(`
+        window.fixtureTerminal.buffer.active.viewportY === window.fixtureTerminal.buffer.active.baseY &&
+        document.querySelector('.project-terminal .xterm-rows').textContent.includes('bottom-visible')
+      `);
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        mkdirSync(process.env.DESKTOP_UI_SCREENSHOT_DIR, {recursive: true});
+        writeFileSync(
+          join(
+            process.env.DESKTOP_UI_SCREENSHOT_DIR,
+            `terminal-${terminalHeight}-${zoom}.png`,
+          ),
+          (await browser.webContents.capturePage()).toPNG(),
+        );
+      }
+    }
+    browser.setContentSize(1600, 1000);
+    await evaluate(
+      "window.pidev.setZoom(1); document.getElementById('terminal-sessions').style.height = ''",
+    );
+    report.cases.push(
+      'Resizing and zooming keep the final terminal rows visible after scrolling to the bottom',
+    );
     await evaluate("document.getElementById('prompt-tab').click()");
     assert.equal(await evaluate('document.activeElement.id'), 'parent-prompt');
     assert.equal(
@@ -194,7 +277,7 @@ app
     assert.deepEqual(calls, ['first']);
     assert.equal(
       await evaluate(
-        "document.querySelector('.project-terminal').textContent.includes('embedded-ready')",
+        "document.querySelector('.project-terminal').textContent.includes('bottom-visible')",
       ),
       true,
     );
@@ -239,7 +322,7 @@ app
     );
     assert.equal(
       await evaluate(
-        "document.querySelector('.project-terminal:not([hidden])').textContent.includes('embedded-ready')",
+        "document.querySelector('.project-terminal:not([hidden])').textContent.includes('bottom-visible')",
       ),
       true,
     );

@@ -1,6 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
 import {open, realpath, rename, unlink} from 'node:fs/promises';
+import {homedir} from 'node:os';
 import {basename, dirname, extname, join, resolve} from 'node:path';
 import {DashboardInputError} from './errors.ts';
 
@@ -23,7 +24,12 @@ function inputPath(cwd: string, value: unknown): string {
     value.includes('\0')
   )
     throw new DashboardInputError('Choose a valid Markdown file path.');
-  const path = resolve(cwd, value);
+  const target = value.startsWith('~\\')
+    ? `~/${value.slice(2).replaceAll('\\', '/')}`
+    : value;
+  const path = target.startsWith('~/')
+    ? resolve(homedir(), target.slice(2))
+    : resolve(cwd, target);
   if (extname(path).toLowerCase() !== '.md')
     throw new DashboardInputError(
       'Choose a Markdown file with a .md extension.',

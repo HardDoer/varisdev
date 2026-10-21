@@ -1,5 +1,5 @@
 /* global document, window, localStorage, setInterval, clearInterval */
-import {fileLinkPath} from './file-links.js';
+import {externalLinkURL, fileLinkPath, markdownLinks} from './file-links.js';
 import {createDraftStore} from './draft-storage.js';
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'varisdev.markdown-pins.v1';
@@ -74,8 +74,7 @@ function node(tag, text, className) {
 function inline(target, text, linkFiles) {
   const candidates = /[`*_[]/g;
   let start = 0;
-  let bracketEnd = -1;
-  let parenEnd = -1;
+  const links = markdownLinks(text);
   let lineEnd = -1;
   for (let match; (match = candidates.exec(text));) {
     const index = match.index;
@@ -83,8 +82,6 @@ function inline(target, text, linkFiles) {
     if (lineEnd <= index) {
       lineEnd = text.indexOf('\n', index);
       if (lineEnd < 0) lineEnd = text.length;
-      bracketEnd = -1;
-      parenEnd = -1;
     }
     let end;
     let content;
@@ -127,37 +124,25 @@ function inline(target, text, linkFiles) {
         kind = 'strong';
       }
     } else if (marker === '[') {
-      if (bracketEnd <= index) {
-        bracketEnd = text.indexOf(']', index + 1);
-        if (bracketEnd < 0 || bracketEnd >= lineEnd) bracketEnd = lineEnd;
-      }
-      if (
-        bracketEnd > index + 1 &&
-        bracketEnd < lineEnd &&
-        text[bracketEnd + 1] === '('
-      ) {
-        const destinationStart = bracketEnd + 2;
-        if (parenEnd < destinationStart) {
-          parenEnd = text.indexOf(')', destinationStart);
-          if (parenEnd < 0 || parenEnd >= lineEnd) parenEnd = lineEnd;
-        }
-        if (parenEnd > destinationStart && parenEnd < lineEnd) {
-          content = text.slice(index + 1, bracketEnd);
-          destination = text.slice(destinationStart, parenEnd);
-          end = parenEnd + 1;
-          kind = 'link';
-        }
+      const link = links.get(index);
+      if (link) {
+        content = link.label;
+        destination = link.target;
+        end = link.end;
+        kind = 'link';
       }
     }
     if (!end) continue;
     target.append(document.createTextNode(text.slice(start, index)));
     if (kind === 'link') {
       const path = linkFiles && fileLinkPath(destination);
-      if (path) {
+      const url = linkFiles && externalLinkURL(destination);
+      if (path || url) {
         const link = document.createElement('a');
-        link.href = '#';
-        link.dataset.filePath = path;
-        link.title = path;
+        link.href = url || '#';
+        if (path) link.dataset.filePath = path;
+        else link.dataset.externalUrl = url;
+        link.title = path || url;
         try {
           link.textContent = decodeURIComponent(content);
         } catch {

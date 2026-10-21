@@ -49,6 +49,8 @@ Choose **Cane** to swing at robots by waving the mouse, or **Gun** to aim and cl
 
 ## Browsing and files
 
+In conversations, click file links or filenames in inline code, such as `src/main.js`, to open them; relative paths use the selected workspace. Markdown files open in VarisDev's editor, other files use their default application, and HTTP(S) links open in your browser.
+
 | Tool              | Purpose                                                            |
 | ----------------- | ------------------------------------------------------------------ |
 | `browse`          | Read web pages, links, raw text, or selected JSON fields.          |

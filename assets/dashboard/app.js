@@ -1,7 +1,7 @@
 /* global document, window, localStorage, setInterval, clearInterval, setTimeout, clearTimeout */
 import {createTerminalTabs} from './terminal.js';
 import {createRenderScheduler} from './render-scheduler.js';
-import {renderFileLinks} from './file-links.js';
+import {bindConversationLinks, renderFileLinks} from './file-links.js';
 import {createThemeScene} from './theme-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createFactoryCane} from './factory-cane.js';
@@ -2418,17 +2418,12 @@ $('prompt-form').addEventListener('submit', event => {
   if (terminalTabs.isSelected()) event.preventDefault();
   else void sendPrompt(event);
 });
-$('conversation').addEventListener('click', async event => {
-  const link = event.target.closest('a[data-file-path]');
-  if (!link) return;
-  event.preventDefault();
-  try {
-    if (/\.md$/i.test(link.dataset.filePath))
-      await openMarkdownFile(link.dataset.filePath);
-    else await api.openFile(state.sessionId, link.dataset.filePath);
-  } catch (error) {
-    showError(error);
-  }
+bindConversationLinks($('conversation'), {
+  sessionId: () => state.sessionId,
+  openFile: (id, path) => api.openFile(id, path),
+  openMarkdown: openMarkdownFile,
+  openExternal: url => api.openExternal(url),
+  onError: showError,
 });
 initTextareaResize($('parent-prompt-resize'), $('parent-prompt'));
 for (const event of ['input', 'select', 'keyup', 'pointerup', 'scroll', 'blur'])

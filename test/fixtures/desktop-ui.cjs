@@ -817,6 +817,15 @@ ipcMain.handle('fixture:close-session', async (_event, sessionId) => {
   window.webContents.send('fixture:snapshot', hub);
 });
 
+ipcMain.handle('fixture:open-file', (_event, sessionId, path) => {
+  calls.push({method: 'openFile', sessionId, path});
+});
+ipcMain.handle('fixture:open-external', (_event, url) => {
+  calls.push({method: 'openExternal', url});
+  if (url === 'https://example.com/failure')
+    throw new Error('Browser unavailable');
+});
+
 ipcMain.handle('fixture:read-markdown', (_event, sessionId, path) => {
   assert.ok(hub.sessions.some(item => item.session.id === sessionId));
   return {
@@ -7590,6 +7599,131 @@ async function main() {
         ),
         [],
         'Viewing usage must not change a conversation',
+      );
+    },
+  );
+
+  await run(
+    'conversation code filenames and web links use the active workspace and desktop routes',
+    async () => {
+      const source =
+        '**`src/ai-worker.js`** contains the chess AI logic.\n\n`src/main.js` starts the AI worker.\n\nSee https://example.com/chess and `PLAN.md`.';
+      for (const parent of hub.sessions)
+        parent.conversation = [
+          {
+            id: 'linked-answer',
+            role: 'assistant',
+            text: source,
+            at,
+            streaming: true,
+          },
+        ];
+      await publish();
+      await evaluate(() =>
+        [...document.querySelectorAll('#parents button')]
+          .find(button => button.textContent.includes('Beta'))
+          .click(),
+      );
+      await settle();
+      const waitForCall = async method => {
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const call = calls.find(item => item.method === method);
+          if (call) return call;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        throw new Error(`No ${method} call received`);
+      };
+      assert.deepEqual(
+        await evaluate(() =>
+          [
+            ...document.querySelectorAll('#conversation .conversation-text a'),
+          ].map(link => link.dataset.filePath || link.dataset.externalUrl),
+        ),
+        [
+          'src/ai-worker.js',
+          'src/main.js',
+          'https://example.com/chess',
+          'PLAN.md',
+        ],
+      );
+      await evaluate(() => {
+        const link = document.querySelector(
+          '#conversation a[data-file-path="src/main.js"]',
+        );
+        window.fixtureLink = link;
+        link.click();
+      });
+      assert.deepEqual(await waitForCall('openFile'), {
+        method: 'openFile',
+        sessionId: hub.sessions[1].session.id,
+        path: 'src/main.js',
+      });
+      await evaluate(() => {
+        const range = document.createRange();
+        range.selectNodeContents(window.fixtureLink.firstChild);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+      hub.sessions[1].conversation[0].text += '\nMore streamed text.';
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          sameLink:
+            document.querySelector(
+              '#conversation a[data-file-path="src/main.js"]',
+            ) === window.fixtureLink,
+          selection: window.getSelection().toString(),
+        })),
+        {sameLink: true, selection: 'src/main.js'},
+      );
+      await evaluate(() =>
+        document.querySelector('#conversation a[data-external-url]').click(),
+      );
+      assert.deepEqual(await waitForCall('openExternal'), {
+        method: 'openExternal',
+        url: 'https://example.com/chess',
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('conversation-links');
+      hub.sessions[1].conversation[0].text += '\nhttps://example.com/failure';
+      await publish();
+      await evaluate(() =>
+        document
+          .querySelector(
+            '#conversation a[data-external-url="https://example.com/failure"]',
+          )
+          .click(),
+      );
+      await until(
+        () =>
+          !document.getElementById('app-error').hidden &&
+          document
+            .getElementById('app-error')
+            .textContent.includes('Browser unavailable'),
+        'Browser failure did not reach the application error handler',
+      );
+      await evaluate(() => {
+        document.getElementById('app-error').hidden = true;
+      });
+      await evaluate(() =>
+        document
+          .querySelector('#conversation a[data-file-path="PLAN.md"]')
+          .click(),
+      );
+      await until(
+        () =>
+          !document.getElementById('markdown-panel').hidden &&
+          document
+            .getElementById('markdown-preview')
+            .textContent.includes('Agent tasks'),
+        'Markdown code link did not open the in-app reader',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('markdown-file-path').textContent,
+        ),
+        'PLAN.md',
       );
     },
   );

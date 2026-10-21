@@ -104,7 +104,9 @@ void test(
       !process.env.WAYLAND_DISPLAY,
   },
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-terminal-ui-'));
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'varisdev-terminal-ui-')),
+    );
     t.after(() => rm(directory, {recursive: true, force: true}));
     const reportPath = join(directory, 'report.json');
     const env: NodeJS.ProcessEnv = {
@@ -137,6 +139,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(error);
-    assert.equal(report.cases.length, 6);
+    assert.equal(report.cases.length, 7);
   },
 );

@@ -6,6 +6,9 @@ import {renderMarkdown} from '../assets/dashboard/markdown-files.js';
 class TestNode {
   readonly children: TestNode[] = [];
   readonly style: Record<string, string> = {};
+  readonly dataset: Record<string, string> = {};
+  href = '';
+  title = '';
   className = '';
   textContent = '';
   tagName: string;
@@ -28,7 +31,7 @@ class TestNode {
   }
 }
 
-void test('Markdown preview scans long unclosed delimiter runs linearly', () => {
+function withDocument(check: () => void) {
   const previous = globalThis.document;
   const document = {
     createElement: (tag: string) => new TestNode(tag),
@@ -41,6 +44,14 @@ void test('Markdown preview scans long unclosed delimiter runs linearly', () => 
   };
   Object.assign(globalThis, {document});
   try {
+    check();
+  } finally {
+    Object.assign(globalThis, {document: previous});
+  }
+}
+
+void test('Markdown preview scans long unclosed delimiter runs linearly', () => {
+  withDocument(() => {
     for (const content of [
       '['.repeat(80_000),
       `plain ${'`'.repeat(80_000)}`,
@@ -63,7 +74,31 @@ void test('Markdown preview scans long unclosed delimiter runs linearly', () => 
         .some(item => item.tagName === 'STRONG' || item.className),
       false,
     );
-  } finally {
-    Object.assign(globalThis, {document: previous});
-  }
+  });
+});
+
+void test('Markdown conversation links preserve Windows targets and route web links', () => {
+  withDocument(() => {
+    const target = new TestNode();
+    const content =
+      '[copy](C:/Project/src/main(copy).js) [angle](<C:/Project Files/a (copy).js>) [web](https://example.com/guide_(Windows)) [unsafe](javascript:alert(1))';
+    renderMarkdown(target, content, true);
+    const links = target.descendants().filter(item => item.tagName === 'A');
+    assert.deepEqual(
+      links.map(link => ({text: link.text, ...link.dataset})),
+      [
+        {text: 'copy', filePath: 'C:/Project/src/main(copy).js'},
+        {text: 'angle', filePath: 'C:/Project Files/a (copy).js'},
+        {text: 'web', externalUrl: 'https://example.com/guide_(Windows)'},
+      ],
+    );
+    assert.equal(links[2].href, 'https://example.com/guide_(Windows)');
+    assert.equal(target.text, 'copy angle web unsafe');
+    renderMarkdown(target, content);
+    assert.equal(
+      target.descendants().filter(item => item.tagName === 'A').length,
+      0,
+    );
+    assert.equal(target.text, 'copy angle web unsafe');
+  });
 });

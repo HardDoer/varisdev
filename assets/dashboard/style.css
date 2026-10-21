@@ -2885,13 +2885,13 @@ select:focus-visible {
 #terminal-sessions {
   height: 240px;
   min-height: 120px;
+  padding: 8px;
   resize: vertical;
   overflow: hidden;
   background: #10171d;
 }
 .project-terminal {
   height: 100%;
-  padding: 8px;
 }
 .project-terminal .xterm {
   height: 100%;

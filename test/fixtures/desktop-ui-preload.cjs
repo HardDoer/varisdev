@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('pidev', {
   workspace: sessionId => ipcRenderer.invoke('fixture:workspace', sessionId),
   readMarkdown: (sessionId, path) =>
     ipcRenderer.invoke('fixture:read-markdown', sessionId, path),
+  openFile: (sessionId, path) =>
+    ipcRenderer.invoke('fixture:open-file', sessionId, path),
+  openExternal: url => ipcRenderer.invoke('fixture:open-external', url),
   sessionFeatures: sessionId =>
     ipcRenderer.invoke('fixture:features', sessionId),
   configureSession: (sessionId, input) =>

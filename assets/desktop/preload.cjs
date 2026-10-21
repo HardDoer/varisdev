@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld('pidev', {
     return () => ipcRenderer.removeListener('pidev:terminal', listener);
   },
   openFile: (id, path) => invoke('pidev:open-file', id, path),
+  openExternal: url => invoke('pidev:open-external', url),
   readMarkdown: (sessionId, path) =>
     invoke('pidev:read-markdown', sessionId, path),
   saveMarkdown: (sessionId, path, content, version) =>

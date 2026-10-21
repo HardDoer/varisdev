@@ -53,7 +53,7 @@ import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopCommands} from './commands.ts';
 import {DesktopPreferences} from './preferences.ts';
 import {DesktopTerminals} from './terminal.ts';
-import {openConversationFile} from './files.ts';
+import {openConversationFile, openConversationURL} from './files.ts';
 import {DesktopAccounts} from './accounts.ts';
 import {DesktopToolSettings} from './tool-settings.ts';
 import {getToolModels, saveToolModel} from '../tools/model-selection.ts';
@@ -435,6 +435,11 @@ function installHandlers(): void {
     terminals.resize(id(sessionId), cols, rows),
   );
   handle('pidev:terminal-close', sessionId => terminals.close(id(sessionId)));
+  handle('pidev:open-external', url =>
+    openConversationURL(url, target =>
+      openBrowser(target, {fallback: value => shell.openExternal(value)}),
+    ),
+  );
   handle('pidev:open-file', (sessionId, path) => {
     const selected = hub
       .deliverySnapshot()
