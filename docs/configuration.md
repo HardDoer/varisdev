@@ -50,6 +50,14 @@ Interactive Pi settings commands keep their existing global or repository save b
 - **Menu → Close workspace** closes the selected workspace and stops all of its agents without deleting saved history. A workspace connected from a terminal is only dismissed from the app.
 - **Remove agent** clears a stopped or finished additional agent from the dashboard. It reappears if it resumes.
 
+## Panel sizes
+
+Drag the dividers to resize the conversation and live view, the workspace list, or the active agents and history panels. Drag the divider above the composer to adjust the space used by the conversation and the prompt or terminal. Sizes are remembered across app restarts.
+
+Focus a divider with **Tab** and use the arrow keys to resize it; hold **Shift** for larger steps. **Home** and **End** select its smallest and largest sizes. Double-click a divider or press **Enter** to reset it. **Esc** cancels a drag.
+
+Panel sizes adjust to fit the window and zoom level. In short windows, **Agents & history** opens the agent panels in a drawer.
+
 ## Models
 
 Use **Menu → Accounts** to connect providers. For server setup, see Pi's [custom models](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) and [llama.cpp](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/llama-cpp.md) documentation.

@@ -442,6 +442,15 @@ function reset() {
   featureErrors = new Map();
 }
 
+ipcMain.handle('fixture:terminal', (_event, action, sessionId, request) => {
+  calls.push({method: 'terminal', action, sessionId, request});
+  if (action === 'open')
+    return {
+      generation: 1,
+      sequence: 1,
+      data: 'Fixture shell ready\r\n$ ',
+    };
+});
 ipcMain.handle('fixture:state', () => hub);
 ipcMain.handle('fixture:recent-projects', async () => {
   const folders = [...recentProjects];
@@ -1142,6 +1151,285 @@ async function screenshot(name) {
   writeFileSync(join(output, `${name}.png`), image.toPNG());
 }
 
+async function resizePoint(selector) {
+  return evaluate(selector => {
+    const element = document.querySelector(selector);
+    if (!element?.checkVisibility())
+      throw new Error(`Resize control is hidden: ${selector}`);
+    const rect = element.getBoundingClientRect();
+    const point = {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+    if (!element.contains(document.elementFromPoint(point.x, point.y)))
+      throw new Error(`Resize control is covered: ${selector}`);
+    return point;
+  }, selector);
+}
+
+async function resizeMouse(type, point, clickCount = 1, modifiers = []) {
+  const zoom = window.webContents.getZoomFactor();
+  window.webContents.sendInputEvent({
+    type,
+    x: Math.round(point.x * zoom),
+    y: Math.round(point.y * zoom),
+    button: 'left',
+    clickCount,
+    modifiers,
+  });
+  await settle();
+}
+
+async function dragResize(selector, dx, dy, cancel = false) {
+  const start = await resizePoint(selector);
+  await resizeMouse('mouseMove', start);
+  await resizeMouse('mouseDown', start);
+  for (const fraction of [0.25, 0.5, 1])
+    await resizeMouse(
+      'mouseMove',
+      {
+        x: start.x + dx * fraction,
+        y: start.y + dy * fraction,
+      },
+      1,
+      ['leftButtonDown'],
+    );
+  if (cancel) await press('Escape');
+  await resizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
+}
+
+async function resizeKey(selector, key, modifiers = []) {
+  await evaluate(
+    selector => document.querySelector(selector).focus(),
+    selector,
+  );
+  await press(key, modifiers);
+}
+
+async function resetResize(selector) {
+  const point = await resizePoint(selector);
+  await resizeMouse('mouseMove', point);
+  for (const count of [1, 2]) {
+    await resizeMouse('mouseDown', point, count);
+    await resizeMouse('mouseUp', point, count);
+  }
+}
+
+async function resizeLayout({drawer = false, terminal = false} = {}) {
+  return evaluate(
+    ({drawer, terminal}) => {
+      const rect = selector => {
+        const element = document.querySelector(selector);
+        if (!element?.checkVisibility()) throw new Error(`Hidden ${selector}`);
+        const r = element.getBoundingClientRect();
+        if (
+          r.width <= 0 ||
+          r.height <= 0 ||
+          r.left < -1 ||
+          r.top < -1 ||
+          r.right > innerWidth + 1 ||
+          r.bottom > innerHeight + 1
+        )
+          throw new Error(`Clipped ${selector}: ${JSON.stringify(r.toJSON())}`);
+        return r.toJSON();
+      };
+      for (const element of [
+        document.documentElement,
+        document.body,
+        document.querySelector('main'),
+      ])
+        if (
+          element.scrollWidth > element.clientWidth + 1 ||
+          element.scrollHeight > element.clientHeight + 1 ||
+          element.scrollTop !== 0 ||
+          element.scrollLeft !== 0
+        )
+          throw new Error(`Page overflow: ${element.tagName}`);
+      const scene = rect('#scene');
+      if (scene.width < 180 || scene.height < 90)
+        throw new Error(`Scene too small: ${JSON.stringify(scene)}`);
+      const conversation = rect('#panel-conversation');
+      if (conversation.height < 60)
+        throw new Error(
+          `Conversation too small: ${JSON.stringify(conversation)}`,
+        );
+      rect('#composer-slot');
+      const selector = terminal ? '#terminal-sessions' : '#parent-prompt';
+      const editor = rect(selector);
+      if (editor.height < 40) throw new Error('Composer is too small');
+      if (!drawer) {
+        const element = document.querySelector(selector);
+        if (
+          !element.contains(
+            document.elementFromPoint(editor.left + 8, editor.top + 8),
+          )
+        )
+          throw new Error(`Composer is covered: ${selector}`);
+        const sceneElement = document.getElementById('scene');
+        if (
+          !sceneElement.contains(
+            document.elementFromPoint(
+              scene.left + scene.width / 2,
+              scene.top + scene.height / 2,
+            ),
+          )
+        )
+          throw new Error('Scene is covered');
+        const action = terminal ? '#terminal-close' : '#send-prompt';
+        const button = document.querySelector(action);
+        const r = rect(action);
+        if (
+          !button.contains(
+            document.elementFromPoint(
+              r.left + r.width / 2,
+              r.top + r.height / 2,
+            ),
+          )
+        )
+          throw new Error(`Composer action is covered: ${action}`);
+      }
+      return {
+        scene,
+        conversation,
+        editor,
+        factory: rect('.factory-column'),
+        inspector: rect('#inspector'),
+      };
+    },
+    {drawer, terminal},
+  );
+}
+
+async function populateResizePanels() {
+  const data = hub.sessions[0];
+  data.agents = Array.from({length: 12}, (_, index) => ({
+    id: `resize-worker-${index}`,
+    name: `Resize worker ${index}`,
+    task: 'Inspect panel resizing and report findings',
+    status: index < 6 ? 'running' : 'completed',
+    createdAt: at,
+    startedAt: at,
+    ...(index >= 6 ? {finishedAt: at} : {}),
+  }));
+  data.totalAgents = data.agents.length;
+  data.conversation = Array.from({length: 20}, (_, index) => ({
+    id: `resize-message-${index}`,
+    role: index % 2 ? 'assistant' : 'user',
+    text: `Panel resizing review ${index}\n${'Keep the editor and live scene accessible.\n'.repeat(3)}`,
+    at,
+  }));
+  await publish();
+  await until(
+    () =>
+      document.querySelectorAll('#active-workers button').length >= 6 &&
+      document.querySelectorAll('#history-workers button').length >= 6 &&
+      document
+        .getElementById('panel-conversation')
+        .textContent.includes('Panel resizing review'),
+    'Resize scenario did not populate conversation and agents',
+  );
+}
+
+async function assertResizeMarkers() {
+  const markers = await evaluate(() => {
+    const scene = document.getElementById('scene').getBoundingClientRect();
+    return [...document.querySelectorAll('#scene .agent-work-marker')].map(
+      marker => {
+        const r = marker.getBoundingClientRect();
+        return {
+          id: marker.dataset.agentId,
+          title: marker.title,
+          visible: marker.checkVisibility() && r.width > 0 && r.height > 0,
+          inside:
+            r.left >= scene.left &&
+            r.top >= scene.top &&
+            r.right <= scene.right &&
+            r.bottom <= scene.bottom,
+          rect: r.toJSON(),
+        };
+      },
+    );
+  });
+  assert.equal(markers.length, 6, 'All six working agents keep a scene marker');
+  for (const [index, marker] of markers.entries()) {
+    assert.ok(
+      marker.visible && marker.inside,
+      `Working marker remains visible in the scene: ${JSON.stringify(marker)}`,
+    );
+    assert.ok(
+      marker.title.includes('Resize worker'),
+      'Compact markers retain their agent name',
+    );
+    for (const other of markers.slice(index + 1)) {
+      const width =
+        Math.min(marker.rect.right, other.rect.right) -
+        Math.max(marker.rect.left, other.rect.left);
+      const height =
+        Math.min(marker.rect.bottom, other.rect.bottom) -
+        Math.max(marker.rect.top, other.rect.top);
+      assert.ok(
+        width <= 0.5 || height <= 0.5,
+        `Working markers overlap: ${JSON.stringify({first: marker, second: other})}`,
+      );
+    }
+  }
+}
+
+async function resizeValue(handle, target, axis = 'height') {
+  return evaluate(
+    (handle, target, axis) => {
+      const separator = document.querySelector(handle);
+      return {
+        value: document.querySelector(target).getBoundingClientRect()[axis],
+        min: Number(separator.getAttribute('aria-valuemin')),
+        max: Number(separator.getAttribute('aria-valuemax')),
+        now: Number(separator.getAttribute('aria-valuenow')),
+        controls: separator.getAttribute('aria-controls'),
+        saved: window.localStorage.getItem('varisdev.panel-sizes.v1'),
+      };
+    },
+    handle,
+    target,
+    axis,
+  );
+}
+
+async function resizeThemes(name, options) {
+  if (!process.env.DESKTOP_UI_SCREENSHOT_DIR) return;
+  const {themes, selected} = await evaluate(() => {
+    const select = document.getElementById('factory-theme');
+    return {
+      themes: [...select.options].map(option => option.value),
+      selected: select.value,
+    };
+  });
+  for (const theme of themes) {
+    await evaluate(theme => {
+      const select = document.getElementById('factory-theme');
+      select.value = theme;
+      select.dispatchEvent(new Event('change', {bubbles: true}));
+    }, theme);
+    await settle();
+    await resizeLayout(options);
+    await screenshot(`${name}-${theme}`);
+  }
+  await evaluate(theme => {
+    const select = document.getElementById('factory-theme');
+    select.value = theme;
+    select.dispatchEvent(new Event('change', {bubbles: true}));
+  }, selected);
+  await settle();
+}
+
+async function resizeZoom(factor) {
+  await evaluate(factor => {
+    const control = document.getElementById('app-zoom');
+    control.value = String(factor);
+    control.dispatchEvent(new Event('change', {bubbles: true}));
+  }, factor);
+  await settle();
+}
+
 function rgbChannels(color) {
   return color
     .match(/[\d.]+/g)
@@ -1197,6 +1485,895 @@ async function main() {
       callback({cancel: true});
     } else callback({});
   });
+
+  await run(
+    'panel resizing conversation supports mouse, keyboard, cancellation and saved bounds across reload and zoom',
+    async () => {
+      await populateResizePanels();
+      const value = () =>
+        resizeValue('#conversation-resize', '.factory-column', 'width');
+      const baseline = await value();
+      const normal = await resizeLayout();
+      await dragResize('#conversation-resize', -150, 0);
+      const widened = await resizeLayout();
+      assert.ok(
+        widened.inspector.width > normal.inspector.width + 100,
+        'Dragging left widens the conversation',
+      );
+      const committed = await value();
+      await resizeMouse('mouseMove', {
+        x: widened.factory.right + 80,
+        y: widened.factory.top + 80,
+      });
+      assert.ok(
+        Math.abs((await value()).value - committed.value) <= 1,
+        'Mouse movement after release must not resize',
+      );
+      await dragResize('#conversation-resize', 90, 0, true);
+      const cancelled = await value();
+      assert.ok(
+        Math.abs(cancelled.value - committed.value) <= 1,
+        'Escape restores the previous width',
+      );
+      assert.equal(
+        cancelled.saved,
+        committed.saved,
+        'Cancelled drag must not replace the saved width',
+      );
+      assert.equal(
+        await evaluate(() => document.body.dataset.panelResizing || ''),
+        '',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-widened-conversation-populated');
+      await resizeThemes('panel-resizing-widened-theme');
+
+      await resizeKey('#conversation-resize', 'Home');
+      const minimum = await value();
+      assert.equal(
+        minimum.now,
+        minimum.min,
+        'Home reaches the minimum factory width',
+      );
+      await resizeLayout();
+      await assertResizeMarkers();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-conversation-max-width');
+      await dragResize('#conversation-resize', -100, 0);
+      assert.ok(
+        Math.abs((await value()).value - minimum.value) <= 1,
+        'Dragging cannot pass the minimum width',
+      );
+      await resizeKey('#conversation-resize', 'Right');
+      assert.ok(
+        (await value()).value > minimum.value + 10,
+        'Right arrow grows the factory column',
+      );
+      await resizeKey('#conversation-resize', 'Left');
+      assert.ok(
+        Math.abs((await value()).value - minimum.value) <= 1,
+        'Left arrow reverses the width change',
+      );
+      await resizeKey('#conversation-resize', 'End');
+      const maximum = await value();
+      assert.equal(
+        maximum.now,
+        maximum.max,
+        'End reaches the maximum factory width',
+      );
+      assert.ok(maximum.value > minimum.value + 100);
+      await resizeLayout();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-conversation-min-width');
+      await dragResize('#conversation-resize', 150, 0);
+      assert.ok(
+        Math.abs((await value()).value - maximum.value) <= 1,
+        'Dragging cannot pass the maximum width',
+      );
+      await resizeKey('#conversation-resize', 'Return');
+      assert.ok(
+        Math.abs((await value()).value - baseline.value) <= 2,
+        'Enter restores the default split',
+      );
+      assert.equal(JSON.parse((await value()).saved).conversation, undefined);
+      await dragResize('#conversation-resize', -100, 0);
+      await resetResize('#conversation-resize');
+      assert.ok(
+        Math.abs((await value()).value - baseline.value) <= 2,
+        'Double click restores the default split',
+      );
+
+      await dragResize('#conversation-resize', 120, 0);
+      const preferred = await value();
+      await reloadPage();
+      assert.ok(
+        Math.abs((await value()).value - preferred.value) <= 2,
+        'Width survives reload',
+      );
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      const compact = await value();
+      assert.ok(
+        compact.now >= compact.min && compact.now <= compact.max,
+        'Compact width stays within its current bounds',
+      );
+      assert.equal(
+        compact.saved,
+        preferred.saved,
+        'Clamping at a narrow zoomed window must retain the preferred width',
+      );
+      await resizeLayout();
+      await assertResizeMarkers();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-compact-zoom');
+      await reloadPage();
+      assert.equal(
+        (await value()).saved,
+        preferred.saved,
+        'Compact reload must not overwrite the preferred split',
+      );
+      await resizeLayout();
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      assert.ok(
+        Math.abs((await value()).value - preferred.value) <= 2,
+        'Returning to the normal window restores the preferred width',
+      );
+      await resizeLayout();
+    },
+  );
+
+  await run(
+    'panel resizing workspaces, workers and active history split persists inline and in the agents drawer',
+    async () => {
+      await populateResizePanels();
+      const overview = () => resizeValue('#workspaces-resize', '.overview');
+      const workers = () => resizeValue('#agents-resize', '#worker-panels');
+      const history = () =>
+        resizeValue('#history-resize', '#active-agents-panel', 'width');
+      const baselineOverview = await overview();
+      await dragResize('#workspaces-resize', 0, 36);
+      assert.ok(
+        (await overview()).value > baselineOverview.value + 20,
+        'Dragging down grows workspaces',
+      );
+      const baselineWorkers = await workers();
+      await dragResize('#agents-resize', 0, -56);
+      assert.ok(
+        (await workers()).value > baselineWorkers.value + 35,
+        'Dragging up grows workers',
+      );
+      const baselineHistory = await history();
+      await dragResize('#history-resize', 45, 0);
+      assert.ok(
+        (await history()).value > baselineHistory.value + 25,
+        'Dragging right grows active agents',
+      );
+      await resizeLayout();
+      const savedOverview = await overview();
+      const savedWorkers = await workers();
+      const savedHistory = await history();
+      await reloadPage();
+      for (const [read, saved] of [
+        [overview, savedOverview],
+        [workers, savedWorkers],
+        [history, savedHistory],
+      ])
+        assert.ok(
+          Math.abs((await read()).value - saved.value) <= 2,
+          'Panel dimensions survive reload',
+        );
+
+      for (const [selector, read, forward, backward] of [
+        ['#workspaces-resize', overview, 'Down', 'Up'],
+        ['#agents-resize', workers, 'Up', 'Down'],
+        ['#history-resize', history, 'Right', 'Left'],
+      ]) {
+        await resizeKey(selector, 'Home');
+        const minimum = await read();
+        assert.equal(
+          minimum.now,
+          minimum.min,
+          `${selector} Home reaches minimum`,
+        );
+        await resizeKey(selector, forward);
+        assert.ok(
+          (await read()).value > minimum.value + 8,
+          `${selector} arrow grows panel`,
+        );
+        await resizeKey(selector, backward);
+        assert.ok(
+          Math.abs((await read()).value - minimum.value) <= 2,
+          `${selector} reverse arrow shrinks panel`,
+        );
+        await resizeKey(selector, 'End');
+        const maximum = await read();
+        assert.equal(
+          maximum.now,
+          maximum.max,
+          `${selector} End reaches maximum`,
+        );
+        await resizeLayout();
+        await resizeKey(selector, 'Return');
+        assert.equal(
+          JSON.parse((await read()).saved)[selector.slice(1, -7)],
+          undefined,
+          `${selector} Enter clears its preference`,
+        );
+      }
+      await dragResize('#workspaces-resize', 0, 28);
+      await dragResize('#agents-resize', 0, -40);
+      await dragResize('#history-resize', 35, 0);
+      const inline = {
+        overview: await overview(),
+        workers: await workers(),
+        history: await history(),
+      };
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      await until(
+        () =>
+          document.getElementById('factory-agents-button').checkVisibility(),
+        'Compact agents drawer control missing',
+      );
+      const button = await resizePoint('#factory-agents-button');
+      await resizeMouse('mouseDown', button);
+      await resizeMouse('mouseUp', button);
+      await until(
+        () =>
+          document
+            .getElementById('factory-agents-drawer')
+            .matches(':popover-open'),
+        'Agents drawer did not open',
+      );
+      const drawerHistory = await history();
+      await dragResize('#history-resize', -35, 0);
+      const drawerCommitted = await history();
+      assert.ok(
+        drawerCommitted.value < drawerHistory.value - 20,
+        'Active/history split can be dragged in the drawer',
+      );
+      await dragResize('#history-resize', 30, 0, true);
+      assert.equal(
+        await evaluate(() =>
+          document
+            .getElementById('factory-agents-drawer')
+            .matches(':popover-open'),
+        ),
+        true,
+        'Escape cancels the drag before closing the drawer',
+      );
+      assert.ok(
+        Math.abs((await history()).value - drawerCommitted.value) <= 1,
+        'Escape restores the drawer split',
+      );
+      assert.equal(
+        (await history()).saved,
+        drawerCommitted.saved,
+        'Cancelled drawer drag retains its preference',
+      );
+      await resizeKey('#history-resize', 'Home');
+      assert.equal((await history()).now, (await history()).min);
+      await resizeKey('#history-resize', 'End');
+      assert.equal((await history()).now, (await history()).max);
+      await resetResize('#history-resize');
+      assert.equal(
+        JSON.parse((await history()).saved).history,
+        undefined,
+        'Drawer double click clears the split preference',
+      );
+      await dragResize('#history-resize', 25, 0);
+      const drawerPreference = JSON.parse((await history()).saved);
+      assert.equal(
+        drawerPreference.workspaces,
+        JSON.parse(inline.overview.saved).workspaces,
+        'Compact layout retains overview preference',
+      );
+      assert.equal(
+        drawerPreference.agents,
+        JSON.parse(inline.workers.saved).agents,
+        'Moving workers to drawer retains their height preference',
+      );
+      await resizeLayout({drawer: true});
+      const drawerLists = await evaluate(() =>
+        ['active-workers', 'history-workers'].map(id => {
+          const list = document.getElementById(id);
+          const r = list.getBoundingClientRect();
+          const drawer = document
+            .getElementById('factory-agents-drawer')
+            .getBoundingClientRect();
+          return {
+            id,
+            populated: list.children.length > 0,
+            usable:
+              r.height >= 90 &&
+              r.left >= drawer.left &&
+              r.right <= drawer.right &&
+              r.bottom <= drawer.bottom,
+          };
+        }),
+      );
+      for (const list of drawerLists)
+        assert.ok(list.populated && list.usable, JSON.stringify(list));
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-agents-drawer');
+      await resizeThemes('panel-resizing-drawer-theme', {drawer: true});
+      await press('Escape');
+      await resizeLayout();
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      assert.equal(
+        await evaluate(() =>
+          document
+            .getElementById('worker-panels')
+            .parentElement.classList.contains('factory-column'),
+        ),
+        true,
+        'Workers return inline at normal size',
+      );
+      assert.ok(
+        Math.abs((await overview()).value - inline.overview.value) <= 2,
+        'Overview height restored after compact layout',
+      );
+      assert.ok(
+        Math.abs((await workers()).value - inline.workers.value) <= 2,
+        'Workers height restored after compact layout',
+      );
+      assert.equal(
+        JSON.parse((await history()).saved).history,
+        drawerPreference.history,
+        'Drawer split preference follows workers inline',
+      );
+      const restored = await history();
+      await reloadPage();
+      assert.ok(
+        Math.abs((await history()).value - restored.value) <= 2,
+        'Drawer split survives reload inline',
+      );
+      await resizeLayout();
+    },
+  );
+
+  await run(
+    'panel resizing composer grows upward, restores drafts and supports keyboard reset and cancellation',
+    async () => {
+      await populateResizePanels();
+      const value = () => resizeValue('#composer-resize', '#parent-prompt');
+      const inlineHeight = () =>
+        evaluate(() => document.getElementById('parent-prompt').style.height);
+      const savedComposer = () =>
+        evaluate(() => ({
+          drafts: JSON.parse(
+            window.localStorage.getItem('varisdev.composer-drafts.v1') || '[]',
+          ),
+          heights: JSON.parse(
+            window.localStorage.getItem('varisdev.composer-heights.v1') || '[]',
+          ),
+        }));
+      assert.equal(
+        await inlineHeight(),
+        '',
+        'Editor starts with its responsive default height',
+      );
+      await dragResize('#composer-resize', 0, -40, true);
+      assert.equal(
+        await inlineHeight(),
+        '',
+        'Escape restores automatic editor sizing',
+      );
+      await dragResize('#composer-resize', 0, -45);
+      const emptyHeight = await value();
+      const emptyInlineHeight = await inlineHeight();
+      assert.deepEqual(
+        (await savedComposer()).drafts,
+        [],
+        'An empty resized prompt must not occupy unsent draft recovery',
+      );
+      assert.equal(
+        new Map((await savedComposer()).heights).get('alpha'),
+        emptyInlineHeight,
+        'Empty prompt height is saved in the separate preference map',
+      );
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '',
+        'Empty prompt stays empty on reload',
+      );
+      assert.equal(
+        await inlineHeight(),
+        emptyInlineHeight,
+        'Empty prompt retains its saved height',
+      );
+      assert.ok(
+        Math.abs((await value()).value - emptyHeight.value) <= 2,
+        'Empty prompt renders at its saved height after reload',
+      );
+      assert.deepEqual(
+        (await savedComposer()).drafts,
+        [],
+        'Restoring an empty resized prompt must not create an unsent draft record',
+      );
+      assert.equal(
+        new Map((await savedComposer()).heights).get('alpha'),
+        emptyInlineHeight,
+      );
+      await resizeKey('#composer-resize', 'Return');
+      assert.equal(
+        await inlineHeight(),
+        '',
+        'Reset restores automatic sizing for an empty prompt',
+      );
+      const draft = 'Keep this unsent resizing draft\nwith a second line';
+      await evaluate(draft => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = draft;
+        editor.setSelectionRange(5, 14);
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      }, draft);
+      const baseline = await value();
+      assert.equal(baseline.controls, 'parent-prompt');
+      const before = await resizeLayout();
+      await dragResize('#composer-resize', 0, -80);
+      const grown = await resizeLayout();
+      assert.ok(
+        grown.editor.height > before.editor.height + 50,
+        `Upward drag grows the message editor: before=${before.editor.height}, after=${grown.editor.height}`,
+      );
+      assert.ok(
+        grown.conversation.height < before.conversation.height - 50,
+        `Editor growth takes space from the conversation: before=${before.conversation.height}, after=${grown.conversation.height}`,
+      );
+      await dragResize('#composer-resize', 0, 40);
+      const shrunk = await resizeLayout();
+      assert.ok(
+        shrunk.editor.height < grown.editor.height - 25,
+        `Downward drag shrinks the editor: before=${before.editor.height}, grown=${grown.editor.height}, shrunk=${shrunk.editor.height}`,
+      );
+      assert.ok(
+        shrunk.conversation.height > grown.conversation.height + 25,
+        `Downward drag grows the conversation: before=${grown.conversation.height}, after=${shrunk.conversation.height}`,
+      );
+      const committed = await value();
+      await resizeMouse('mouseMove', {
+        x: shrunk.editor.left + 20,
+        y: shrunk.editor.top + 40,
+      });
+      assert.ok(
+        Math.abs((await value()).value - committed.value) <= 1,
+        'Composer stops resizing on release',
+      );
+      await dragResize('#composer-resize', 0, -48, true);
+      assert.ok(
+        Math.abs((await value()).value - committed.value) <= 1,
+        'Escape restores composer height',
+      );
+      assert.equal(
+        await evaluate(() => document.body.dataset.panelResizing || ''),
+        '',
+      );
+      await resizeKey('#composer-resize', 'Home');
+      const minimum = await value();
+      assert.ok(
+        Math.abs(minimum.value - minimum.min) <= 1,
+        'Home reaches editor minimum',
+      );
+      await resizeKey('#composer-resize', 'Up');
+      assert.ok(
+        (await value()).value > minimum.value + 10,
+        'Up arrow grows editor',
+      );
+      await resizeKey('#composer-resize', 'Down');
+      assert.ok(
+        Math.abs((await value()).value - minimum.value) <= 1,
+        'Down arrow shrinks editor',
+      );
+      await resizeKey('#composer-resize', 'End');
+      const maximum = await value();
+      assert.ok(
+        Math.abs(maximum.value - maximum.max) <= 2,
+        'End reaches editor maximum',
+      );
+      await resizeLayout();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-composer-max-height');
+      await resizeKey('#composer-resize', 'Return');
+      assert.ok(
+        Math.abs((await value()).value - baseline.value) <= 2,
+        'Enter restores default editor height',
+      );
+      assert.equal(
+        await inlineHeight(),
+        '',
+        'Enter restores responsive default sizing',
+      );
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      await resizeLayout();
+      assert.equal(
+        await inlineHeight(),
+        '',
+        'Temporary compact bounds do not persist a fixed default height',
+      );
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      assert.ok(
+        Math.abs((await value()).value - baseline.value) <= 2,
+        'Reset editor returns to its normal default after shrinking and growing the window',
+      );
+      await dragResize('#composer-resize', 0, -50);
+      await resetResize('#composer-resize');
+      assert.ok(
+        Math.abs((await value()).value - baseline.value) <= 2,
+        'Double click restores default editor height',
+      );
+      assert.equal(
+        await inlineHeight(),
+        '',
+        'Double click restores responsive default sizing',
+      );
+      await dragResize('#composer-resize', 0, -65);
+      const preferred = await value();
+      const preferredInlineHeight = await inlineHeight();
+      await reloadPage();
+      assert.ok(
+        Math.abs((await value()).value - preferred.value) <= 2,
+        'Editor height survives reload',
+      );
+      assert.deepEqual(
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          return {
+            draft: editor.value,
+            start: editor.selectionStart,
+            end: editor.selectionEnd,
+          };
+        }),
+        {draft, start: 5, end: 14},
+        'Resizing preserves saved draft and selection',
+      );
+      await resizeLayout();
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      await resizeLayout();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-composer-compact-zoom');
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        draft,
+      );
+      assert.equal(
+        await inlineHeight(),
+        preferredInlineHeight,
+        'Compact bounds retain the manually chosen inline height',
+      );
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      await resizeLayout();
+      assert.equal(
+        await inlineHeight(),
+        preferredInlineHeight,
+        'Normal window restores the manually chosen inline height',
+      );
+      assert.ok(
+        Math.abs((await value()).value - preferred.value) <= 2,
+        'Chosen editor height returns after compact zoom',
+      );
+      assert.equal(
+        calls.some(call => call.method === 'prompt'),
+        false,
+        'Resizing must not submit the draft',
+      );
+      const send = await resizePoint('#send-prompt');
+      await resizeMouse('mouseDown', send);
+      await resizeMouse('mouseUp', send);
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Submitting resized draft did not clear the prompt',
+      );
+      assert.equal(
+        calls.filter(call => call.method === 'prompt').length,
+        1,
+        'Explicit Send submits the resized draft once',
+      );
+      assert.equal(
+        await inlineHeight(),
+        preferredInlineHeight,
+        'Submission preserves the chosen editor height',
+      );
+      assert.deepEqual(
+        (await savedComposer()).drafts,
+        [],
+        'Submitted prompts must release their unsent draft record',
+      );
+      assert.equal(
+        new Map((await savedComposer()).heights).get('alpha'),
+        preferredInlineHeight,
+        'Submission retains height in the separate preference map',
+      );
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '',
+        'Submitted draft stays cleared after reload',
+      );
+      assert.equal(
+        await inlineHeight(),
+        preferredInlineHeight,
+        'Reload retains editor height after submission cleared its text',
+      );
+      assert.ok(Math.abs((await value()).value - preferred.value) <= 2);
+      assert.deepEqual(
+        (await savedComposer()).drafts,
+        [],
+        'Reloading a submitted resized prompt leaves recovery available for unsent text',
+      );
+      assert.equal(
+        new Map((await savedComposer()).heights).get('alpha'),
+        preferredInlineHeight,
+      );
+      await resizeLayout();
+
+      window.setContentSize(1600, 680);
+      await settle();
+      await resizeKey('#composer-resize', 'Home');
+      await dragResize('#composer-resize', 0, (await value()).value - 90);
+      assert.equal(
+        await inlineHeight(),
+        '90px',
+        'A short window allows a 90px preference',
+      );
+      assert.ok(Math.abs((await value()).value - 90) <= 1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      assert.ok(
+        Math.abs((await value()).value - 104) <= 1,
+        'Normal window displays its minimum height while retaining the 90px preference',
+      );
+      assert.equal(await inlineHeight(), '90px');
+      await dragResize('#composer-resize', 0, -40, true);
+      assert.equal(
+        await inlineHeight(),
+        '90px',
+        'Cancelling restores the exact inline preference below the current viewport minimum',
+      );
+      assert.equal(
+        new Map((await savedComposer()).heights).get('alpha'),
+        '90px',
+        'Cancelled drag preserves the saved 90px preference',
+      );
+      window.setContentSize(1600, 680);
+      await settle();
+      assert.ok(
+        Math.abs((await value()).value - 90) <= 1,
+        'Returning to the short window renders the preserved 90px preference',
+      );
+      await resizeLayout();
+      window.setContentSize(1600, 1000);
+      await settle();
+      await resizeKey('#composer-resize', 'Return');
+
+      await evaluate(() => {
+        window.localStorage.setItem(
+          'varisdev.composer-heights.v1',
+          JSON.stringify(
+            Array.from({length: 200}, (_, index) => [
+              `old-height-${index}`,
+              '150px',
+            ]),
+          ),
+        );
+      });
+      await reloadPage();
+      assert.equal(
+        (await savedComposer()).heights.length,
+        200,
+        'All 200 old height preferences load',
+      );
+      assert.deepEqual(
+        (await savedComposer()).drafts,
+        [],
+        'Height preferences do not consume the unsent draft limit',
+      );
+      const capacityDraft =
+        'Recover this new unsent draft while 200 old panel heights exist';
+      await evaluate(text => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = text;
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      }, capacityDraft);
+      await dragResize('#composer-resize', 0, -30);
+      const capacityHeight = await inlineHeight();
+      const capacityStorage = await savedComposer();
+      assert.equal(
+        capacityStorage.heights.length,
+        200,
+        'Adding a preference keeps the height map bounded to 200',
+      );
+      const heightMap = new Map(capacityStorage.heights);
+      assert.equal(
+        heightMap.has('old-height-0'),
+        false,
+        'Adding a preference drops the oldest height',
+      );
+      assert.equal(
+        heightMap.get('old-height-1'),
+        '150px',
+        'The next oldest height is retained',
+      );
+      assert.equal(
+        heightMap.get('alpha'),
+        capacityHeight,
+        'The newest height is retained',
+      );
+      assert.equal(
+        capacityStorage.drafts.length,
+        1,
+        'Only the new unsent text occupies draft recovery',
+      );
+      assert.equal(
+        new Map(capacityStorage.drafts).get('alpha').value,
+        capacityDraft,
+      );
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        capacityDraft,
+        'New unsent text remains recoverable after height map eviction',
+      );
+      assert.equal(
+        await inlineHeight(),
+        capacityHeight,
+        'New height preference survives reload alongside the unsent draft',
+      );
+      assert.equal((await savedComposer()).heights.length, 200);
+      await resizeLayout();
+    },
+  );
+
+  await run(
+    'panel resizing terminal composer saves height, cancels dragging and retains preference through compact zoom',
+    async () => {
+      await populateResizePanels();
+      const openTerminal = async () => {
+        const point = await resizePoint('#terminal-tab');
+        await resizeMouse('mouseDown', point);
+        await resizeMouse('mouseUp', point);
+        await until(
+          () =>
+            document.querySelector('#terminal-sessions .xterm') &&
+            document
+              .getElementById('composer-resize')
+              .getAttribute('aria-controls') === 'terminal-sessions',
+          'Composer separator did not select the terminal',
+        );
+      };
+      const value = () => resizeValue('#composer-resize', '#terminal-sessions');
+      const savedHeight = () =>
+        evaluate(() =>
+          window.localStorage.getItem('varisdev.composer-terminal-height.v1'),
+        );
+      await openTerminal();
+      const baseline = await value();
+      const before = await resizeLayout({terminal: true});
+      await dragResize('#composer-resize', 0, -70);
+      const grown = await resizeLayout({terminal: true});
+      assert.ok(
+        grown.editor.height > before.editor.height + 45,
+        'Upward drag grows terminal',
+      );
+      assert.ok(grown.conversation.height < before.conversation.height - 45);
+      assert.ok(
+        Number(await savedHeight()) > baseline.value + 45,
+        'Terminal drag saves its height',
+      );
+      await dragResize('#composer-resize', 0, 35);
+      const shrunk = await resizeLayout({terminal: true});
+      assert.ok(
+        shrunk.conversation.height > grown.conversation.height + 20,
+        'Downward terminal drag grows conversation',
+      );
+      const committed = await value();
+      const committedStorage = await savedHeight();
+      await resizeMouse('mouseMove', {
+        x: shrunk.editor.left + 30,
+        y: shrunk.editor.top + 50,
+      });
+      assert.ok(
+        Math.abs((await value()).value - committed.value) <= 1,
+        'Terminal stops resizing after release',
+      );
+      await dragResize('#composer-resize', 0, -45, true);
+      assert.ok(
+        Math.abs((await value()).value - committed.value) <= 1,
+        'Escape restores terminal height',
+      );
+      assert.equal(
+        await savedHeight(),
+        committedStorage,
+        'Cancelled terminal drag retains saved height',
+      );
+      await resizeKey('#composer-resize', 'Home');
+      const minimum = await value();
+      assert.ok(Math.abs(minimum.value - minimum.min) <= 1);
+      await resizeKey('#composer-resize', 'Up');
+      assert.ok((await value()).value > minimum.value + 10);
+      await resizeKey('#composer-resize', 'Down');
+      assert.ok(Math.abs((await value()).value - minimum.value) <= 1);
+      await resizeKey('#composer-resize', 'End');
+      const maximum = await value();
+      assert.ok(Math.abs(maximum.value - maximum.max) <= 2);
+      await resizeLayout({terminal: true});
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-terminal-max-height');
+      await resizeKey('#composer-resize', 'Return');
+      assert.equal(
+        await savedHeight(),
+        null,
+        'Enter clears terminal preference',
+      );
+      assert.ok(Math.abs((await value()).value - baseline.value) <= 2);
+      await dragResize('#composer-resize', 0, -45);
+      await resetResize('#composer-resize');
+      assert.equal(
+        await savedHeight(),
+        null,
+        'Double click clears terminal preference',
+      );
+      await dragResize('#composer-resize', 0, -65);
+      const preferred = await value();
+      const preference = await savedHeight();
+      await reloadPage();
+      await openTerminal();
+      assert.ok(
+        Math.abs((await value()).value - preferred.value) <= 2,
+        'Terminal height survives reload',
+      );
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      const compact = await value();
+      assert.ok(
+        compact.value <= compact.max + 2 && compact.value >= compact.min - 1,
+      );
+      assert.equal(
+        await savedHeight(),
+        preference,
+        'Compact clamp retains the terminal height preference',
+      );
+      await resizeLayout({terminal: true});
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-terminal-compact-zoom');
+      await reloadPage();
+      await openTerminal();
+      assert.equal(
+        await savedHeight(),
+        preference,
+        'Compact reload retains terminal height preference',
+      );
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      assert.ok(
+        Math.abs((await value()).value - preferred.value) <= 2,
+        'Terminal height returns with normal window size',
+      );
+      await resizeLayout({terminal: true});
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'terminal' &&
+            call.action === 'resize' &&
+            call.request.columns > 0 &&
+            call.request.rows > 0,
+        ),
+        'Resizing integrates with terminal viewport fitting',
+      );
+    },
+  );
 
   await run(
     'live view shows details and actions when space allows and preserves the scene across resizing',

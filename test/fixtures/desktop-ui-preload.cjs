@@ -2,6 +2,23 @@
 const {contextBridge, ipcRenderer, webFrame} = require('electron');
 
 contextBridge.exposeInMainWorld('pidev', {
+  openTerminal: sessionId =>
+    ipcRenderer.invoke('fixture:terminal', 'open', sessionId),
+  resizeTerminal: (sessionId, columns, rows) =>
+    ipcRenderer.invoke('fixture:terminal', 'resize', sessionId, {
+      columns,
+      rows,
+    }),
+  writeTerminal: (sessionId, data) =>
+    ipcRenderer.invoke('fixture:terminal', 'write', sessionId, {data}),
+  closeTerminal: sessionId =>
+    ipcRenderer.invoke('fixture:terminal', 'close', sessionId),
+  onTerminal: callback => {
+    const listener = (_event, event) => callback(event);
+    ipcRenderer.on('fixture:terminal-output', listener);
+    return () =>
+      ipcRenderer.removeListener('fixture:terminal-output', listener);
+  },
   getZoom: () => webFrame.getZoomFactor(),
   setZoom: factor => webFrame.setZoomFactor(factor),
   getState: () => ipcRenderer.invoke('fixture:state'),

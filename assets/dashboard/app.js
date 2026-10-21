@@ -20,6 +20,8 @@ import {initEnvironment} from './environment.js';
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
 import {initLiveView} from './live-view.js';
+import {initPanelResize} from './panel-resize.js';
+import {initComposerResize} from './composer-resize.js';
 import {initSessionHistory} from './session-history.js';
 import {initRecentProjects} from './recent-projects.js';
 import {initAgentControls} from './agent-controls.js';
@@ -150,6 +152,39 @@ const promptDrafts = new Map(
     },
   ]),
 );
+const composerHeightKey = 'varisdev.composer-heights.v1';
+const composerHeights = new Map();
+try {
+  const saved = JSON.parse(localStorage.getItem(composerHeightKey) || '[]');
+  if (Array.isArray(saved))
+    for (const entry of saved.slice(-200))
+      if (
+        Array.isArray(entry) &&
+        typeof entry[0] === 'string' &&
+        typeof entry[1] === 'string' &&
+        /^\d+(?:\.\d+)?px$/.test(entry[1])
+      )
+        composerHeights.set(entry[0], entry[1]);
+} catch {
+  // Use responsive defaults when panel preferences are unavailable.
+}
+function saveComposerHeight(id, height) {
+  if ((composerHeights.get(id) || '') === height) return;
+  composerHeights.delete(id);
+  if (height) composerHeights.set(id, height);
+  while (composerHeights.size > 200)
+    composerHeights.delete(composerHeights.keys().next().value);
+  try {
+    if (composerHeights.size)
+      localStorage.setItem(
+        composerHeightKey,
+        JSON.stringify([...composerHeights]),
+      );
+    else localStorage.removeItem(composerHeightKey);
+  } catch {
+    // Size preferences must not prevent recovery of unsent messages.
+  }
+}
 const workspaceCache = new Map();
 const workspacePending = new Set();
 const promptErrors = new Map();
@@ -465,6 +500,7 @@ function saveDraft() {
   const id = conversationId();
   const previous = promptDrafts.get(id);
   const position = editorPosition(textarea);
+  saveComposerHeight(id, position.height);
   if (
     previous?.value === textarea.value &&
     Object.keys(position).every(key => previous[key] === position[key])
@@ -492,7 +528,7 @@ function restoreDraft(id) {
     height: '',
   };
   textarea.value = draft.value;
-  textarea.style.height = draft.height;
+  textarea.style.height = composerHeights.get(id) ?? draft.height;
   const error = promptErrors.get(id) || promptDraftStorageError;
   $('prompt-error').hidden = !error;
   if (error) text($('prompt-error'), error);
@@ -576,11 +612,15 @@ function collapseEditor(focus = true) {
   sizeInspector();
 }
 function resizeTextarea(textarea, height) {
-  const style = window.getComputedStyle(textarea);
-  const min = Number.parseFloat(style.minHeight) || 0;
-  const max = Number.parseFloat(style.maxHeight) || window.innerHeight;
-  const next = Math.min(Math.max(height, min), max);
-  textarea.style.height = `${Math.round(next)}px`;
+  if (height === undefined) textarea.style.removeProperty('height');
+  else if (typeof height === 'string') textarea.style.height = height;
+  else {
+    const style = window.getComputedStyle(textarea);
+    const min = Number.parseFloat(style.minHeight) || 0;
+    const max = Number.parseFloat(style.maxHeight) || window.innerHeight;
+    const next = Math.min(Math.max(height, min), max);
+    textarea.style.height = `${Math.round(next)}px`;
+  }
   saveDraft();
   sizeInspector();
 }
@@ -2720,6 +2760,8 @@ $('open-session-settings').addEventListener('click', async () => {
 });
 const appMenu = initAppMenu();
 const liveView = initLiveView();
+const cleanupPanelResize = initPanelResize();
+const cleanupComposerResize = initComposerResize({resizeTextarea});
 const recentProjects = initRecentProjects({api, open: openFolder});
 const agentTemplates = initAgentTemplates({
   api,
@@ -2803,6 +2845,8 @@ window.addEventListener('unload', () => {
   toolSettings.dispose();
   appMenu.dispose();
   liveView.dispose();
+  cleanupPanelResize();
+  cleanupComposerResize();
   recentProjects.dispose();
   agentTemplates.dispose();
   cleanupSessionHistory();

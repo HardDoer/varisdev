@@ -1,0 +1,71 @@
+#composer-resize {
+  display: none;
+  flex: 0 0 12px;
+  height: 12px;
+  min-height: 12px;
+  background: var(--panel);
+}
+
+#inspector:has(
+    > #composer-slot:not([hidden])
+      #parent-controls:not([hidden]):not(.editor-expanded)
+  ):has(
+    #prompt-panel:not([hidden]) #parent-prompt:not(:disabled):not([readonly])
+  )
+  > #composer-resize,
+#inspector:has(
+    > #composer-slot:not([hidden])
+      #parent-controls:not([hidden]):not(.editor-expanded)
+  ):has(#terminal-panel:not([hidden]) #terminal-sessions)
+  > #composer-resize {
+  display: flex;
+}
+
+#composer-resize.dragging {
+  background: var(--panel-raised);
+}
+
+#composer-resize.dragging::after {
+  background: var(--focus, var(--accent));
+}
+
+#composer-resize[aria-disabled='false'] + #composer-slot {
+  border-top: 0;
+}
+
+#parent-controls:not(.editor-expanded) #parent-prompt {
+  max-height: min(
+    46vh,
+    max(104px, calc(var(--inspector-space, 720px) - 450px)),
+    var(--composer-prompt-max-height, 100000px)
+  );
+}
+
+@media (max-height: 700px) {
+  #parent-controls:not(.editor-expanded) #parent-prompt {
+    max-height: min(
+      max(70px, calc(var(--inspector-space, 720px) - 490px)),
+      var(--composer-prompt-max-height, 100000px)
+    );
+  }
+}
+
+#parent-controls:not(.editor-expanded) #terminal-sessions {
+  --composer-terminal-min-height: 120px;
+  height: var(--composer-terminal-height, 240px);
+  min-height: var(--composer-terminal-min-height);
+  max-height: max(
+    var(--composer-terminal-min-height),
+    var(
+      --composer-terminal-max-height,
+      calc(var(--inspector-space, 720px) - 450px)
+    )
+  );
+  resize: none;
+}
+
+@media (max-height: 700px) {
+  #parent-controls:not(.editor-expanded) #terminal-sessions {
+    --composer-terminal-min-height: 80px;
+  }
+}

@@ -32,6 +32,8 @@
       href="../../node_modules/@xterm/xterm/css/xterm.css"
     />
     <link rel="stylesheet" href="year1998.css" />
+    <link rel="stylesheet" href="panel-resize.css" />
+    <link rel="stylesheet" href="composer-resize.css" />
     <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script type="module" src="app.js"></script>
@@ -954,8 +956,12 @@
         </div>
       </section>
       <div id="factory-workspace" class="factory-workspace" hidden>
-        <div class="factory-column">
-          <section class="overview" aria-labelledby="overview-title">
+        <div id="factory-column" class="factory-column">
+          <section
+            id="workspaces-panel"
+            class="overview"
+            aria-labelledby="overview-title"
+          >
             <div class="section-heading">
               <div>
                 <h1 id="overview-title">Workspaces<span>.</span></h1>
@@ -973,6 +979,16 @@
             </div>
             <div id="parents" class="parent-grid"></div>
           </section>
+          <div
+            id="workspaces-resize"
+            class="panel-resize-handle"
+            role="separator"
+            tabindex="0"
+            aria-orientation="horizontal"
+            aria-label="Resize workspaces and live view"
+            aria-controls="workspaces-panel"
+            title="Drag to resize workspaces. Double-click to reset."
+          ></div>
           <section
             id="factory-panel"
             class="factory-panel panel"
@@ -1069,8 +1085,19 @@
               </button>
             </div>
           </section>
-          <div class="worker-panels">
+          <div
+            id="agents-resize"
+            class="panel-resize-handle"
+            role="separator"
+            tabindex="0"
+            aria-orientation="horizontal"
+            aria-label="Resize agents and live view"
+            aria-controls="worker-panels"
+            title="Drag to resize agents and history. Double-click to reset."
+          ></div>
+          <div id="worker-panels" class="worker-panels">
             <section
+              id="active-agents-panel"
               class="workers-section panel"
               aria-labelledby="workers-title"
             >
@@ -1097,6 +1124,16 @@
               <div id="active-workers" class="worker-grid"></div>
               <p id="no-workers" class="empty-state">No active agents.</p>
             </section>
+            <div
+              id="history-resize"
+              class="panel-resize-handle"
+              role="separator"
+              tabindex="0"
+              aria-orientation="vertical"
+              aria-label="Resize active agents and history"
+              aria-controls="active-agents-panel"
+              title="Drag to resize active agents and history. Double-click to reset."
+            ></div>
             <section
               class="history-section panel"
               aria-labelledby="history-title"
@@ -1131,6 +1168,16 @@
             Agents &amp; history <span aria-hidden="true">↗</span>
           </button>
         </div>
+        <div
+          id="conversation-resize"
+          class="panel-resize-handle"
+          role="separator"
+          tabindex="0"
+          aria-orientation="vertical"
+          aria-label="Resize live view and conversation"
+          aria-controls="factory-column"
+          title="Drag to resize the live view and conversation. Double-click to reset."
+        ></div>
         <aside
           id="inspector"
           class="inspector panel"
@@ -1541,6 +1588,16 @@
             </section>
           </div>
           <p id="attached-note" class="attached-note" hidden>Connected agent</p>
+          <div
+            id="composer-resize"
+            class="panel-resize-handle"
+            role="separator"
+            tabindex="0"
+            aria-orientation="horizontal"
+            aria-label="Resize conversation and composer"
+            aria-controls="composer-slot"
+            title="Drag to resize the conversation and composer. Double-click to reset."
+          ></div>
           <div id="composer-slot">
             <section
               id="agent-task-dock"

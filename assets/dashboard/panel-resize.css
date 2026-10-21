@@ -1,0 +1,198 @@
+#factory-workspace {
+  grid-template-columns: var(--factory-width, minmax(0, 1fr)) 12px minmax(
+      0,
+      1.35fr
+    );
+  gap: 0;
+}
+.factory-column {
+  container-type: inline-size;
+  grid-template-rows:
+    var(--workspaces-height, auto) 10px minmax(0, 1fr) 10px
+    var(--agents-height, minmax(148px, 23%));
+  gap: 0;
+}
+.factory-column.compact-workers {
+  grid-template-rows: var(--workspaces-height, auto) 10px minmax(0, 1fr) auto;
+  gap: 0;
+}
+.factory-column.compact-workers #agents-resize {
+  display: none;
+}
+.factory-column.compact-workers #factory-agents-button {
+  margin-top: 6px;
+}
+.overview.resized {
+  max-height: none;
+}
+.worker-panels {
+  grid-template-columns: var(--active-agents-width, minmax(0, 1fr)) 10px minmax(
+      0,
+      1fr
+    );
+  gap: 0;
+  min-width: 0;
+}
+.workers-section,
+.history-section {
+  min-width: 0;
+  container-type: inline-size;
+}
+.panel-resize-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  cursor: col-resize;
+  border-radius: 4px;
+  background: var(--panel);
+}
+.panel-resize-handle::after {
+  content: '';
+  width: 3px;
+  height: 36px;
+  max-height: 70%;
+  border-radius: 3px;
+  background: var(--muted);
+}
+.panel-resize-handle[aria-orientation='horizontal'] {
+  cursor: row-resize;
+}
+.panel-resize-handle[aria-orientation='horizontal']::after {
+  width: 36px;
+  max-width: 70%;
+  height: 3px;
+}
+.panel-resize-handle:hover,
+.panel-resize-handle:focus-visible {
+  background: var(--panel-raised);
+}
+.panel-resize-handle:hover::after,
+.panel-resize-handle:focus-visible::after {
+  background: var(--focus, var(--accent));
+}
+.panel-resize-handle:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: -2px;
+  z-index: 1;
+}
+body[data-panel-resizing],
+body[data-panel-resizing] * {
+  user-select: none !important;
+}
+body[data-panel-resizing='x'],
+body[data-panel-resizing='x'] * {
+  cursor: col-resize !important;
+}
+body[data-panel-resizing='y'],
+body[data-panel-resizing='y'] * {
+  cursor: row-resize !important;
+}
+#inspector {
+  container-type: inline-size;
+}
+.inspector-tabs {
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.inspector-tabs button {
+  white-space: nowrap;
+}
+.scene-label {
+  max-width: min(160px, 100%);
+}
+@container (max-width: 540px) {
+  .overview .section-heading {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+  .overview-counts {
+    max-width: none;
+  }
+  .parent-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@container (max-width: 420px) {
+  .agent-work-marker {
+    font-size: 0;
+    gap: 0;
+    padding: 3px;
+  }
+  .agent-work-marker[data-status='cancelling']::before {
+    border-radius: 0;
+  }
+  .overview-counts {
+    display: none;
+  }
+  .overview .section-heading {
+    justify-content: space-between;
+  }
+  .inspector-heading {
+    padding: 8px 10px;
+  }
+  .inspector-tabs {
+    padding-inline: 6px;
+  }
+  .inspector-tabs button {
+    padding: 8px 6px;
+  }
+  .conversation-kind {
+    flex-basis: 108px;
+    width: 108px;
+  }
+  .inspector-heading > .inspector-activity-row {
+    gap: 6px;
+  }
+  #application-controls {
+    gap: 6px;
+  }
+  #application-controls > button {
+    padding-inline: 6px;
+  }
+  #processing-state-text {
+    display: none;
+  }
+}
+@container (max-width: 260px) {
+  .worker-card-header,
+  .history-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .worker-card-name,
+  .history-row-info {
+    order: -1;
+    flex: 0 0 100%;
+  }
+  .worker-card,
+  .history-row {
+    padding: 6px;
+  }
+  .worker-card-meta {
+    flex-wrap: wrap;
+    gap: 2px 6px;
+  }
+  .worker-panels .status-badge {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .worker-panels .quiet-button,
+  .history-search input {
+    min-height: 28px;
+    padding: 4px 6px;
+    font-size: 0.75rem;
+  }
+}
+@media (max-height: 700px) {
+  .factory-column:not(.compact-workers) {
+    grid-template-rows:
+      var(--workspaces-height, auto) 10px minmax(0, 1fr) 10px
+      var(--agents-height, minmax(148px, 24%));
+  }
+}

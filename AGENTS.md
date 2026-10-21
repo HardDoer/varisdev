@@ -7,6 +7,7 @@
 
 # Verification
 
+- Add tests for new functionality, including user interactions and saved state when applicable. Use the existing test harness and test the application's behavior and integrations.
 - Keep verification proportional to the change and use the existing test harness where available.
 - Every verification command must have an enforced process timeout. A timed-out check must terminate its child processes too; do not rely only on a tool-call timeout or launch an unbounded synchronous Electron process.
 - Report a timeout or stalled check immediately. Investigate the failure before retrying, and stop once the relevant checks pass.
