@@ -5,18 +5,19 @@ import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {createRobotWhip, whipPose} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
+import {iso, sortOfficeObjects} from './year1998-geometry.js';
 
 const TAU = Math.PI * 2;
 const WORKING = new Set(['running', 'cancelling']);
 const BAYS = [
-  [-1.5, -3.1],
-  [2.6, -3.1],
-  [6.7, -3.1],
+  [-1.5, -3.7],
+  [2.6, -3.7],
+  [6.7, -3.7],
   [-1.5, 3.1],
   [2.6, 3.1],
   [6.7, 3.1],
-  [-7.4, 3.65],
-  [-5.3, -4.4],
+  [-7.1, 3.9],
+  [-6.5, -3.7],
 ];
 const QUEUE_SLOTS = [6, 7, 3, 4, 5, 0, 1, 2];
 const DEFAULTS = {
@@ -62,7 +63,6 @@ const DATA_KEYS = [
 ];
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const unsettled = pose => pose.phase !== 'alive' || pose.surprise > 0;
-const iso = (x, z, h = 0) => [(x - z) * 14, (x + z) * 7 - h];
 const rgb = color => `rgb(${color.map(n => Math.round(n * 255)).join(',')})`;
 
 /** A pixel office. The dashboard owns selection labels and motion preferences;
@@ -282,8 +282,8 @@ export function createYear1998Scene(
     tile(-11.65, -0.7, 20.7, 1.4, '#718992');
     tile(-10.9, -6.25, 1.25, 11.6, '#718992');
     BAYS.forEach(([x, z], slot) => {
-      tile(x - 1.22, z - 1.65, 2.65, 2.6, slot >= 6 ? '#99a5a5' : '#a5b1ad');
-      tile(x - 1.13, z - 1.56, 2.47, 2.42, '#9daaaa');
+      tile(x - 1.7, z - 2.2, 3, 3.2, slot >= 6 ? '#99a5a5' : '#a5b1ad');
+      tile(x - 1.61, z - 2.11, 2.82, 3.02, '#9daaaa');
     });
     tile(-8.8, -2.65, 4.5, 3.35, '#746d75');
     tile(-8.65, -2.5, 4.2, 3.05, '#8e8485');
@@ -316,21 +316,10 @@ export function createYear1998Scene(
     ]) {
       panel(-11.66, z, 0.65, low, low + 6, fill, 'z');
     }
-    const clock = iso(-5.7, -6.2, 36);
-    rect(clock[0] - 5, clock[1] - 5, 11, 11, '#596c70');
-    rect(clock[0] - 4, clock[1] - 4, 9, 9, '#f7f2dd');
+    panel(-6.05, -6.3, 0.7, 31, 41, '#596c70');
+    panel(-5.98, -6.28, 0.56, 32, 40, '#f7f2dd');
     line(
-      [
-        [clock[0], clock[1] - 3],
-        [clock[0], clock[1]],
-      ],
-      '#344c54',
-    );
-    line(
-      [
-        [clock[0], clock[1]],
-        [clock[0] + 2, clock[1] + 1],
-      ],
+      [iso(-5.7, -6.26, 38.5), iso(-5.7, -6.26, 35), iso(-5.5, -6.26, 35)],
       '#344c54',
     );
   }
@@ -378,89 +367,92 @@ export function createYear1998Scene(
   }
 
   function chair(x, z, executive = false) {
-    const [px, py] = iso(x, z);
-    line(
-      [
-        [px - 7, py + 2],
-        [px, py - 1],
-        [px + 7, py + 2],
-      ],
-      '#3b515b',
-      2,
-    );
-    line(
-      [
-        [px, py - 7],
-        [px, py + 3],
-      ],
-      '#5a6b6d',
-      2,
-    );
-    for (const dx of [-7, 0, 6]) rect(px + dx, py + 2, 3, 2, '#2d414c');
-    rect(px - 7, py - 10, 15, 5, '#314952');
-    rect(px - 6, py - 10, 13, 3, executive ? '#79636c' : '#688998');
-    rect(px - 7, py - 22, 14, executive ? 13 : 10, '#344d57');
-    rect(
-      px - 6,
-      py - 21,
-      12,
-      executive ? 10 : 7,
-      executive ? '#8d747b' : '#7897a3',
-    );
-    rect(px - 8, py - 12, 2, 7, '#344d57');
-    rect(px + 7, py - 12, 2, 7, '#344d57');
+    const frame = '#344d57';
+    const fabric = executive ? '#8d747b' : '#7897a3';
+    for (const [dx, dz] of [
+      [-0.45, 0],
+      [0.45, 0],
+      [0, -0.45],
+      [0, 0.45],
+    ]) {
+      line([iso(x, z, 3), iso(x + dx, z + dz, 1)], frame, 2);
+      box(x + dx, z + dz, 0.14, 0.14, 2, frame, frame, frame);
+    }
+    box(x, z, 0.12, 0.12, 8, '#7e9192', frame, frame, 2);
+    box(x, z, 0.95, 0.85, 9, fabric, '#536e7b', frame, 7);
+    panel(x - 0.4, z + 0.4, 0.8, 9, 16, frame);
+    box(x, z + 0.44, 1, 0.14, executive ? 23 : 21, fabric, fabric, frame, 13);
+    for (const dx of [-0.55, 0.55]) {
+      line([iso(x + dx, z + 0.2, 9), iso(x + dx, z + 0.2, 13)], frame, 2);
+      line([iso(x + dx, z - 0.25, 13), iso(x + dx, z + 0.35, 13)], frame, 2);
+    }
   }
 
   function drawCRT(x, z, status, manager = false) {
-    const [px, py] = iso(x, z, 13);
-    polygon(
-      [
-        [px + 8, py - 20],
-        [px + 13, py - 23],
-        [px + 13, py - 10],
-        [px + 8, py - 6],
-      ],
-      '#9c9f8c',
+    // Every component shares the desktop's plane, including the stand and keys.
+    box(x, z, 0.65, 0.5, 14, '#c7c9b1', '#8f9e8e', '#6e8078', 13);
+    box(x, z, 0.18, 0.18, 18, '#d5d2b8', '#b6baa4', '#8f9e8e', 14);
+    box(x, z - 0.1, 1.2, 0.7, 30, '#e3dfc6', '#d5d2b8', '#9c9f8c', 18);
+    const front = z + 0.26;
+    panel(x - 0.49, front, 0.98, 21, 28.5, '#5d695f');
+    panel(x - 0.42, front + 0.01, 0.84, 22, 28, '#203e4d');
+    panel(
+      x - 0.38,
+      front + 0.02,
+      0.76,
+      26.5,
+      27.5,
+      manager ? '#96b7d0' : '#7aa7b2',
     );
-    polygon(
-      [
-        [px - 8, py - 20],
-        [px - 3, py - 23],
-        [px + 13, py - 23],
-        [px + 8, py - 20],
-      ],
-      '#e3dfc6',
-    );
-    rect(px - 9, py - 21, 18, 16, '#5d695f');
-    rect(px - 8, py - 20, 16, 14, '#d5d2b8');
-    rect(px - 6, py - 18, 12, 8, '#203e4d');
-    rect(px - 5, py - 17, 10, 1, manager ? '#96b7d0' : '#7aa7b2');
     if (status && status !== 'queued') {
       for (let row = 0; row < 2; row++)
-        rect(px - 4, py - 14 + row * 2, 4 + row * 2, 1, '#a8dbbf');
-      rect(px + 3, py - 12, 1, 1, color(status));
-    } else rect(px - 3, py - 13, 6, 1, '#6e9da4');
-    rect(px - 6, py - 8, 2, 1, status ? color(status) : '#6d8e7e');
-    rect(px - 2, py - 5, 4, 5, '#b6baa4');
-    rect(px - 6, py, 12, 2, '#6e8078');
-    polygon(
-      [
-        [px - 12, py + 3],
-        [px, py + 6],
-        [px + 7, py + 2],
-        [px - 5, py - 1],
-      ],
-      '#e1dcc2',
+        panel(
+          x - 0.31,
+          front + 0.03,
+          0.38 + row * 0.1,
+          23 + row * 1.5,
+          24 + row * 1.5,
+          '#a8dbbf',
+        );
+    } else panel(x - 0.25, front + 0.03, 0.5, 24, 25, '#6e9da4');
+    panel(
+      x + 0.3,
+      front + 0.03,
+      0.1,
+      19.5,
+      20.5,
+      status ? color(status) : '#6d8e7e',
     );
-    for (let i = 0; i < 4; i++) rect(px - 8 + i * 3, py + 2, 2, 1, '#7e8d83');
-    rect(px + 10, py + 4, 3, 2, '#e3ddc1');
+    box(x, z + 0.65, 1.15, 0.38, 14, '#e1dcc2', '#a4ac98', '#8d9a8b', 13);
+    for (let row = 0; row < 2; row++)
+      for (let col = 0; col < 5; col++)
+        tile(
+          x - 0.47 + col * 0.19,
+          z + 0.51 + row * 0.14,
+          0.12,
+          0.07,
+          '#7e8d83',
+          14.1,
+        );
+    box(
+      x + 0.85,
+      z + 0.64,
+      0.18,
+      0.25,
+      15,
+      '#e3ddc1',
+      '#b6baa4',
+      '#8d9a8b',
+      13,
+    );
+  }
+
+  function deskFootprint(x, z, manager = false) {
+    return {x: x - 0.25, z: z - 1.2, w: manager ? 3.6 : 2.9, d: 1.9};
   }
 
   function drawDesk(x, z, unit = null, manager = false) {
-    const cx = x - 0.25,
-      cz = z - 0.9;
-    const w = manager ? 3.6 : 2.65,
-      d = manager ? 1.65 : 1.35;
+    const {x: cx, z: cz, w, d} = deskFootprint(x, z, manager);
     box(
       cx - w / 2 + 0.4,
       cz,
@@ -504,15 +496,14 @@ export function createYear1998Scene(
       [iso(cx - w / 2, cz + d / 2, 13), iso(cx + w / 2, cz + d / 2, 13)],
       '#e4d1a2',
     );
-    drawCRT(x + (manager ? 0.5 : 0.45), z - 1.1, unit?.status, manager);
+    drawCRT(cx + 0.1, cz - 0.3, unit?.status, manager);
     // Loose papers and a mug make the work surface recognisable at small sizes.
     tile(cx - w / 2 + 0.2, cz - 0.1, 0.55, 0.6, '#f5eed7', 14);
     tile(cx - w / 2 + 0.28, cz + 0.03, 0.4, 0.05, '#89978d', 14.5);
-    const mug = iso(cx + w / 2 - 0.25, cz + 0.3, 14);
+    const mug = iso(cx + w / 2 - 0.35, cz + 0.55, 13);
     rect(mug[0] - 2, mug[1] - 4, 4, 4, '#ede5c9');
     rect(mug[0] + 2, mug[1] - 3, 2, 2, '#c7c7b0');
     rect(mug[0] - 1, mug[1] - 4, 2, 1, '#7b6150');
-    chair(x - 0.8, z + 0.55, manager);
     if (manager) {
       const phone = iso(cx - 1.2, cz - 0.4, 14);
       rect(phone[0] - 3, phone[1] - 3, 7, 5, '#42585b');
@@ -520,12 +511,10 @@ export function createYear1998Scene(
     }
   }
 
-  function drawQueue(x, z) {
-    chair(x - 0.25, z - 0.55);
-    chair(x + 0.7, z - 0.65);
-    box(x - 1.1, z - 0.5, 0.75, 0.8, 10, '#bdaf8c', '#a1977d', '#859084');
-    box(x - 1.1, z - 0.5, 0.65, 0.65, 13, '#465f66', '#7e9192', '#5c7279', 10);
-    tile(x - 1.35, z - 0.72, 0.5, 0.5, '#f4edce', 14);
+  function queueTable(x, z) {
+    box(x, z, 0.75, 0.8, 10, '#bdaf8c', '#a1977d', '#859084');
+    box(x, z, 0.65, 0.65, 13, '#465f66', '#7e9192', '#5c7279', 10);
+    tile(x - 0.25, z - 0.22, 0.5, 0.5, '#f4edce', 14);
   }
 
   function cabinet(x, z) {
@@ -561,15 +550,15 @@ export function createYear1998Scene(
   }
 
   function waterCooler(x, z) {
-    box(x, z, 0.8, 0.7, 18, '#e0dfc9', '#c2cbb6', '#95aaa0');
+    box(x, z, 0.7, 0.8, 18, '#e0dfc9', '#95aaa0', '#c2cbb6');
     const p = iso(x, z, 18);
     rect(p[0] - 4, p[1] - 12, 9, 10, '#497984');
     rect(p[0] - 3, p[1] - 13, 7, 10, '#92c5cd');
     rect(p[0] - 2, p[1] - 12, 3, 7, '#c5e1df');
     rect(p[0] - 2, p[1] - 2, 4, 3, '#a0b4aa');
-    const tap = iso(x, z + 0.36, 12);
-    rect(tap[0] - 3, tap[1], 2, 2, '#5374a4');
-    rect(tap[0] + 2, tap[1] + 2, 2, 2, '#b96a63');
+    panel(x + 0.36, z - 0.3, 0.6, 7, 14, '#7b948c', 'z');
+    panel(x + 0.37, z - 0.2, 0.12, 12, 14, '#5374a4', 'z');
+    panel(x + 0.37, z + 0.13, 0.12, 12, 14, '#b96a63', 'z');
   }
 
   function drawStatus(x, y, status, size = 1) {
@@ -1402,62 +1391,82 @@ export function createYear1998Scene(
     drawGround();
     drawWalls();
     const occupants = new Map(units.map(unit => [slots.get(unit.id), unit]));
-    const scenery = [
-      {depth: -7.4, draw: () => drawDesk(-6.25, 0, snapshot?.session, true)},
-      ...BAYS.map(([x, z], slot) => {
-        const unit = occupants.get(slot);
-        return {
-          depth: x + z - 1.1,
-          draw: () =>
-            unit?.status === 'queued' || (!unit && slot >= 6)
-              ? drawQueue(x, z)
-              : drawDesk(x, z, unit),
-        };
-      }),
-      {depth: -14, draw: () => cabinet(-9.2, -4.8)},
-      {depth: -7.7, draw: () => printer(-2.5, -5.2)},
-      {depth: 3.4, draw: () => serverRack(8.1, -4.7)},
-      {depth: -12.7, draw: () => waterCooler(-10.2, -2.5)},
-      ...[
-        [-11, 1.8],
-        [-8.7, -5.6],
-        [8.3, 4.65],
-        [-10.8, 4.6],
-      ].map(([x, z]) => ({depth: x + z, draw: () => pottedPlant(x, z)})),
-    ];
-    scenery.sort((a, b) => a.depth - b.depth).forEach(item => item.draw());
+    const scenery = [];
+    const add = (x, z, w, d, draw) => scenery.push({x, z, w, d, draw});
+    const addDesk = (x, z, unit, manager = false) => {
+      scenery.push({
+        ...deskFootprint(x, z, manager),
+        draw: () => drawDesk(x, z, unit, manager),
+      });
+      // The main chair sits beside the desk, clear of the homecoming route.
+      const chairX = x + (manager ? 1 : -0.8);
+      add(chairX, z + 0.65, 1.1, 1.1, () => chair(chairX, z + 0.65, manager));
+    };
+    addDesk(-6.25, 0, snapshot?.session, true);
+    BAYS.forEach(([x, z], slot) => {
+      const unit = occupants.get(slot);
+      if (unit?.status === 'queued' || (!unit && slot >= 6)) {
+        add(x - 0.2, z - 0.8, 1.1, 1.1, () => chair(x - 0.2, z - 0.8));
+        add(x - 1.3, z - 0.8, 0.75, 0.8, () => queueTable(x - 1.3, z - 0.8));
+      } else addDesk(x, z, unit);
+    });
+    // Leave clearance in front of the projecting window sills at z = -6.03.
+    add(-9.7, -5.55, 1.2, 0.75, () => cabinet(-9.7, -5.55));
+    add(-4.2, -5.2, 1.6, 1.5, () => printer(-4.2, -5.4));
+    add(8.45, -5.55, 1, 0.8, () => serverRack(8.45, -5.55));
+    add(-11.35, -2.8, 0.7, 0.8, () => waterCooler(-11.35, -2.8));
+    for (const [x, z] of [
+      [-11.25, 0.8],
+      [-8.65, -5.7],
+      [8.5, 4.8],
+      [-11.25, 4.8],
+    ])
+      add(x, z, 0.56, 0.56, () => pottedPlant(x, z));
     if (away && !items.some(item => item.id === 'parent')) {
-      const [x, y] = iso(-6.25, 0);
-      diamond(x, y, 19, 9, '#365f5c');
-      line(
-        [
-          [x - 15, y],
-          [x, y + 7],
-          [x + 15, y],
-          [x, y - 7],
-          [x - 15, y],
-        ],
-        colors.amber,
-      );
-      rect(x - 7, y - 24, 15, 12, '#294851');
-      text('→', x, y - 18, colors.amber, 12);
-      const p = toScreen([x, y - 43]);
-      anchors.push({
-        id: 'parent',
-        x: p[0] / viewWidth,
-        y: p[1] / viewHeight,
-        centerX: p[0] / viewWidth,
-        centerY: (p[1] + 20 * camera.zoom) / viewHeight,
-        radius: 18 * camera.zoom,
-        visible: true,
-        selectable: true,
-        targetable: false,
+      add(-6.25, 0, 1, 1, () => {
+        const [x, y] = iso(-6.25, 0);
+        diamond(x, y, 19, 9, '#365f5c');
+        line(
+          [
+            [x - 15, y],
+            [x, y + 7],
+            [x + 15, y],
+            [x, y - 7],
+            [x - 15, y],
+          ],
+          colors.amber,
+        );
+        rect(x - 7, y - 24, 15, 12, '#294851');
+        text('→', x, y - 18, colors.amber, 12);
+        const p = toScreen([x, y - 43]);
+        anchors.push({
+          id: 'parent',
+          x: p[0] / viewWidth,
+          y: p[1] / viewHeight,
+          centerX: p[0] / viewWidth,
+          centerY: (p[1] + 20 * camera.zoom) / viewHeight,
+          radius: 18 * camera.zoom,
+          visible: true,
+          selectable: true,
+          targetable: false,
+        });
       });
     }
-    items.sort((a, b) => a.world[0] + a.world[1] - (b.world[0] + b.world[1]));
-    items.forEach(drawRobot);
-    for (const item of items)
-      drawCleaner(damageHomes.get(item.id) || item.world, damage.pose(item.id));
+    for (const item of items) {
+      const pose = damage.pose(item.id);
+      const home = damageHomes.get(item.id);
+      const [x, z] = home && unsettled(pose) ? home : item.world;
+      add(x + pose.corpseOffset[0], z + pose.corpseOffset[2], 0.8, 0.8, () =>
+        drawRobot(item),
+      );
+      if (pose.cleanup) {
+        const origin = home || item.world;
+        add(origin[0] + pose.cleanup.position[0], origin[1], 1.1, 1.1, () =>
+          drawCleaner(origin, pose),
+        );
+      }
+    }
+    sortOfficeObjects(scenery).forEach(item => item.draw());
     drawEffects(items);
     ctx.restore();
     publishLayout(away, visiting, pose, ownTravel, shown);

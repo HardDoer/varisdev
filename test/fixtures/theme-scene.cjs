@@ -1049,6 +1049,7 @@ async function main() {
       mkdirSync(output, {recursive: true});
       for (const [name, width, height, dense, zoom] of [
         ['normal', 960, 600, true, 1],
+        ['all-working', 960, 600, 'working', 1],
         ['compact', 360, 260, false, 1],
         ['compact-dense', 380, 240, true, 1],
         ['zoomed', 960, 600, true, 1.5],
@@ -1073,7 +1074,7 @@ async function main() {
               ].map((status, index) => ({
                 id: 'city-agent-' + index,
                 name: status,
-                status,
+                status: dense === 'working' ? 'running' : status,
               }))
             : [];
           f.host().update(snapshot, dense ? 'city-agent-4' : 'parent');

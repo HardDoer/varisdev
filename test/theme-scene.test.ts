@@ -66,7 +66,7 @@ void test(
     );
     for (const result of report.cases)
       await t.test(result.name, () => assert.ifError(result.error));
-    assert.equal(report.screenshots.length, 5);
+    assert.equal(report.screenshots.length, 6);
     for (const path of report.screenshots) {
       assert.ok(
         (await stat(path)).size > 1000,
