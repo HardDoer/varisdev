@@ -10,6 +10,12 @@ import {factoryIdentity} from './factory-identity.js';
 import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {drawCleanupBot} from './robot-cleanup.js';
+import {createEnvironmentDamage} from './environment-damage.js';
+import {
+  environmentPrimitives,
+  drawEnvironmentSurface,
+  drawEnvironmentRepairBot,
+} from './environment-visuals.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
@@ -68,13 +74,22 @@ function primitives(shapes, originX, ground = 0, yaw = 0, home = null) {
     return q;
   };
   const project = p =>
-    home
+    home?.iso
       ? [
-          home.x + (p[0] * 0.3 - p[2] * 0.9) * home.unit,
-          home.y - p[1] * home.unit + p[2] * home.unit * 0.1,
+          home.x + (p[0] - p[2]) * home.unit * 0.7,
+          home.y - p[1] * home.unit + (p[0] + p[2]) * home.unit * 0.28,
         ]
-      : [originX + p[0] * 6 + p[2] * 20, 143 - p[1] * 23 - p[0] * 4 + p[2] * 3];
-  const depth = p => p[0] + p[1] * 0.6 - p[2] * 0.5;
+      : home
+        ? [
+            home.x + (p[0] * 0.3 - p[2] * 0.9) * home.unit,
+            home.y - p[1] * home.unit + p[2] * home.unit * 0.1,
+          ]
+        : [
+            originX + p[0] * 6 + p[2] * 20,
+            143 - p[1] * 23 - p[0] * 4 + p[2] * 3,
+          ];
+  const depth = p =>
+    home?.iso ? p[0] + p[2] + p[1] * 0.6 : p[0] + p[1] * 0.6 - p[2] * 0.5;
   const path = (points, color, stroke = null, width = 0, shade = 0) => {
     const vertices = points.map(world);
     shapes.push({
@@ -185,6 +200,11 @@ export function createParentFallback(container) {
   const whip = createRobotWhip();
   const visitors = createFactoryVisitors();
   const damage = createRobotDamage({maxRobots: 16, maxEffects: 80});
+  const environment = createEnvironmentDamage();
+  let environmentSites = [],
+    environmentLayout = '',
+    environmentWorkstationKey = '';
+  const environmentObjects = new Map();
   const damageVisuals = new Map();
   const visitorVisuals = new Map();
   function effectLayer(className) {
@@ -197,6 +217,8 @@ export function createParentFallback(container) {
   const floorEffects = effectLayer('robot-floor-effects');
   const debrisEffects = effectLayer('robot-debris-effects');
   const cleanupEffects = effectLayer('robot-cleanup-effects');
+  const environmentFloor = effectLayer('environment-floor-effects');
+  const environmentEffects = effectLayer('environment-repair-effects');
   const overlay = document.createElementNS(NS, 'svg');
   overlay.setAttribute('class', 'robot-whip-overlay');
   overlay.setAttribute('aria-hidden', 'true');
@@ -260,6 +282,7 @@ export function createParentFallback(container) {
       session?.id,
       whipTargets().map(element => element.dataset.unitId),
       Boolean(reaction) ||
+        damage.pose('parent').panic > 0 ||
         damage.pose('parent').surprise > 0 ||
         damage.pose('parent').flinch > 0 ||
         damage.pose('parent').phase !== 'alive' ||
@@ -362,18 +385,25 @@ export function createParentFallback(container) {
       'clip-path',
       'visibility',
       '--damage-eye-height',
+      '--damage-shade',
+      '--damage-char-percent',
     ])
       element.style.removeProperty(property);
     element.classList.remove(
       'robot-damage-body',
       'robot-cane-surprised',
       'robot-damage-corpse',
+      'robot-burning',
+      'robot-charred',
     );
     for (const key of [
       'damage',
       'damagePhase',
       'damageSurprise',
       'damageFlinch',
+      'damageBurning',
+      'damageChar',
+      'damagePanic',
       'damageCollapse',
       'cleanupPhase',
       'damageVisible',
@@ -407,7 +437,201 @@ export function createParentFallback(container) {
       .map((p, i) => `${i ? 'L' : 'M'}${p.map(number).join(' ')}`)
       .join(' ') + ' Z';
 
-  function drawDamageMarks(group, bounds, severity) {
+  function clearEnvironmentVisuals() {
+    environmentFloor.remove();
+    environmentEffects.remove();
+    for (const visual of environmentObjects.values()) visual.remove();
+    environmentObjects.clear();
+    environmentLayout = '';
+    delete container.dataset.environmentDamage;
+  }
+  function syncEnvironmentLayout() {
+    const bounds = container.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return null;
+    const key = `${layoutRevision}:${bounds.width}:${bounds.height}:${agents.map(a => a.id).join(',')}`;
+    if (environmentLayout === key) return bounds;
+    environmentLayout = key;
+    const sites = [];
+    const add = (id, px, py, kind, unit = 20) =>
+      sites.push({
+        id,
+        px,
+        py,
+        x: (px / bounds.width) * 24 - 12,
+        z: (py / bounds.height) * 12 - 6,
+        kind,
+        unit,
+        h: 0,
+        radius: kind === 'floor' ? 0.75 : 0.65,
+      });
+    for (let col = 0; col < 9; col++)
+      for (let row = 0; row < 5; row++)
+        add(
+          `floor:${col}:${row}`,
+          bounds.width * (0.08 + col * 0.105),
+          bounds.height * (0.08 + row * 0.21),
+          'floor',
+          Math.min(23, bounds.width / 28),
+        );
+    const rect = svg.getBoundingClientRect();
+    const matrix = svg.getScreenCTM();
+    if (rect.width && rect.height && matrix) {
+      const point = svg.createSVGPoint();
+      point.x = 50.4;
+      point.y = 90;
+      const screen = point.matrixTransform(matrix);
+      add(
+        'workstation:parent',
+        screen.x - bounds.left,
+        screen.y - bounds.top,
+        'furniture',
+        Math.max(8, Math.hypot(matrix.a, matrix.b) * 23),
+      );
+    }
+    for (const [id, visual] of agentElements) {
+      const rect = visual.station.getBoundingClientRect();
+      const robotRect = visual.glyph.getBoundingClientRect();
+      const size = Math.max(
+        28,
+        Math.min(76, rect.width * 0.42, rect.height * 0.6),
+      );
+      const left = Math.max(
+        0,
+        Math.min(rect.width - size, robotRect.right - rect.left - 8),
+      );
+      const top = Math.max(
+        0,
+        Math.min(rect.height - size, robotRect.bottom - rect.top - size * 0.8),
+      );
+      let object = environmentObjects.get(id);
+      if (!object || object.parentNode !== visual.station) {
+        object?.remove();
+        object = effectLayer('environment-workstation');
+        object.setAttribute('viewBox', '0 0 80 80');
+        visual.station.append(object);
+        environmentObjects.set(id, object);
+      }
+      const scaleX = rect.width / Math.max(1, visual.station.offsetWidth);
+      const scaleY = rect.height / Math.max(1, visual.station.offsetHeight);
+      for (const [name, value] of Object.entries({
+        left: left / scaleX,
+        top: top / scaleY,
+        width: size / scaleX,
+        height: size / scaleY,
+      }))
+        object.style[name] = `${value}px`;
+      add(
+        `workstation:${id}`,
+        rect.left - bounds.left + left + size * 0.525,
+        rect.top - bounds.top + top + size * 0.25,
+        'machinery',
+        size * 0.5,
+      );
+    }
+    for (const [id, visual] of environmentObjects)
+      if (!agentElements.has(id)) {
+        visual.remove();
+        environmentObjects.delete(id);
+      }
+    environmentSites = sites;
+    environment.setSites(sites);
+    return bounds;
+  }
+  function drawEnvironment() {
+    const bounds = syncEnvironmentLayout();
+    if (!bounds) return;
+    const floors = [],
+      effects = [];
+    for (const site of environmentSites) {
+      const pose = environment.pose(site.id);
+      const local = {...site, x: 0, z: 0};
+      const home = {x: site.px, y: site.py, unit: site.unit, iso: true};
+      const g = primitives(floors, 0, 0, 0, home),
+        fx = primitives(effects, 0, 0, 0, home);
+      if (site.kind === 'floor' && (pose.damage || pose.scorch)) {
+        const floor = environmentPrimitives(g, local, pose);
+        floor.box([0, -0.03, 0], [1.7, 0.08, 1.3], C.edge);
+        floor.box([0, 0.015, 0], [1.58, 0.025, 1.18], C.dark);
+      } else if (site.kind !== 'floor' && site.id !== 'workstation:parent') {
+        const id = site.id.slice('workstation:'.length),
+          object = environmentObjects.get(id);
+        if (object) {
+          const shapes = [];
+          const mesh = environmentPrimitives(
+            primitives(shapes, 0, 0, 0, {x: 40, y: 63, unit: 40, iso: true}),
+            local,
+            pose,
+          );
+          mesh.box([0, 0.32, 0], [0.9, 0.65, 0.75], C.metal);
+          mesh.box([0, 0.72, 0], [1.15, 0.15, 0.95], C.shell);
+          mesh.box([0.05, 1.06, -0.15], [0.8, 0.6, 0.14], C.outline);
+          mesh.box([0.05, 1.08, -0.04], [0.65, 0.4, 0.04], C.screen);
+          if (!pose.scorch && pose.chips < 0.1)
+            for (let row = 0; row < 3; row++)
+              mesh.box(
+                [0.05, 1.21 - row * 0.12, -0.01],
+                [0.45 - row * 0.08, 0.04, 0.02],
+                C.mint,
+                1,
+              );
+          paint(object, shapes);
+        }
+      }
+      drawEnvironmentSurface(g, fx, C, local, pose, time);
+      if (['arriving', 'repairing', 'leaving'].includes(pose?.phase)) {
+        const start = site.x < 0 ? -25 : bounds.width + 25;
+        const unit = Math.max(34, Math.min(42, site.unit * 1.8));
+        const toolHeight = site.kind === 'floor' ? 0 : 0.8;
+        const destinationX = site.px + unit * 0.14;
+        const botX = start + (destinationX - start) * pose.botProgress;
+        const botHome = {
+          x: botX,
+          y: site.py + unit * (0.556 + toolHeight),
+          unit,
+          iso: true,
+        };
+        const bot = primitives(effects, 0, 0, 0, botHome);
+        drawEnvironmentRepairBot(
+          bot,
+          bot,
+          C,
+          {x: -0.95, z: -0.75, h: toolHeight},
+          pose,
+          time,
+          0,
+          [0, 0, 0],
+        );
+      }
+    }
+    for (const layer of [environmentFloor, environmentEffects]) {
+      layer.setAttribute('viewBox', `0 0 ${bounds.width} ${bounds.height}`);
+      if (layer.parentNode !== container) container.append(layer);
+    }
+    paint(environmentFloor, floors);
+    paint(environmentEffects, effects);
+    const parentPose = environment.pose('workstation:parent');
+    const key = parentPose
+      ? [
+          parentPose.damage,
+          parentPose.dent,
+          parentPose.chips,
+          parentPose.scorch,
+        ]
+          .map(n => n.toFixed(2))
+          .join(':')
+      : '';
+    if (key !== environmentWorkstationKey) {
+      environmentWorkstationKey = key;
+      drawWorkstation();
+    }
+    setData(
+      container,
+      'environmentDamage',
+      JSON.stringify(environment.poses().filter(p => p.phase !== 'intact')),
+    );
+  }
+
+  function drawDamageMarks(group, bounds, severity, pose, glyph) {
     const x = bounds.x,
       y = bounds.y,
       w = bounds.width,
@@ -462,6 +686,67 @@ export function createParentFallback(container) {
           Math.max(1, w * 0.055),
         ),
       );
+    if (pose.burning) {
+      for (let i = 0; i < 9; i++) {
+        const cycle = (pose.fireAge * 3 + i / 9) % 1,
+          a = 0.05 + i * 0.11,
+          b = 0.95 - cycle * 0.65,
+          height = (0.25 + (1 - cycle) * 0.3) * pose.burning;
+        shapes.push(
+          effectPath(
+            polygonPath([
+              p(a - 0.1, b),
+              p(a - 0.08, b - height * 0.4),
+              p(a + 0.03, b - height),
+              p(a + 0.04, b - height * 0.45),
+              p(a + 0.1, b),
+            ]),
+            '#ff4c16',
+            '#ff9c24',
+            Math.max(0.4, w * 0.008),
+          ),
+        );
+        shapes.push(
+          effectPath(
+            polygonPath([
+              p(a - 0.04, b),
+              p(a + 0.02, b - height * 0.6),
+              p(a + 0.05, b),
+            ]),
+            '#fff19b',
+            '#ffbf37',
+            0.3,
+          ),
+        );
+      }
+    }
+    if (glyph && pose.panic) {
+      const wave = Math.sin(pose.fireAge * 31) * 0.1;
+      for (const side of [-1, 1]) {
+        const a = side < 0 ? 0 : 1;
+        shapes.push(
+          effectPath(
+            `M${p(a, 0.65).join(' ')} L${p(a + side * 0.18, 0.4 + wave * side).join(' ')} L${p(a + side * 0.2, 0.03 - wave * side).join(' ')}`,
+            'none',
+            '#d7e8e5',
+            Math.max(2, w * 0.075),
+          ),
+        );
+      }
+      shapes.push(
+        effectPath(
+          polygonPath([
+            p(0.42, 0.53),
+            p(0.59, 0.53),
+            p(0.59, 0.77),
+            p(0.42, 0.77),
+          ]),
+          '#301b17',
+          '#fff2ba',
+          Math.max(1, w * 0.025),
+        ),
+      );
+    }
     paint(group, shapes);
   }
 
@@ -569,6 +854,10 @@ export function createParentFallback(container) {
         pose.phase,
         pose.surprise,
         pose.flinch,
+        pose.burning,
+        pose.char,
+        pose.panic,
+        pose.fireAge,
         pose.collapse,
         pose.offset,
         pose.corpseOffset,
@@ -606,13 +895,23 @@ export function createParentFallback(container) {
       const local = visual.local;
       const unit = visual.home.unit;
       const rect = {width: visual.rectWidth, height: visual.rectHeight};
-      drawDamageMarks(visual.marks, local, pose.damage);
+      drawDamageMarks(visual.marks, local, pose.damage, pose, !geometry);
+      geometry?.classList.add('robot-damage-material');
+      element.style.setProperty('--damage-shade', String(1 - pose.char * 0.94));
+      element.style.setProperty('--damage-char-percent', `${pose.char * 100}%`);
+      element.classList.toggle('robot-burning', pose.panic > 0);
+      element.classList.toggle('robot-charred', pose.char > 0);
+      element.dataset.damageBurning = String(number(pose.burning));
+      element.dataset.damageChar = String(number(pose.char));
+      element.dataset.damagePanic = String(number(pose.panic));
       element.classList.add('robot-damage-body');
       element.dataset.damage = String(number(pose.damage));
       element.dataset.damagePhase = pose.phase;
       element.style.visibility = pose.visible ? '' : 'hidden';
       const collapse = pose.collapse || 0;
-      const corpse = ['exploding', 'wrecked', 'cleanup'].includes(pose.phase);
+      const corpse = ['exploding', 'charring', 'wrecked', 'cleanup'].includes(
+        pose.phase,
+      );
       element.dataset.damageSurprise = String(number(pose.surprise || 0));
       element.dataset.damageFlinch = String(number(pose.flinch || 0));
       element.dataset.damageCollapse = String(number(collapse));
@@ -623,12 +922,12 @@ export function createParentFallback(container) {
         .join(',');
       element.classList.toggle(
         'robot-cane-surprised',
-        !corpse && pose.surprise > 0,
+        !corpse && (pose.surprise > 0 || pose.panic > 0),
       );
       element.classList.toggle('robot-damage-corpse', corpse);
       element.style.setProperty(
         '--damage-eye-height',
-        `${number(3 + (pose.surprise || 0) * 5)}px`,
+        `${number(3 + Math.max(pose.surprise, pose.scream) * 5)}px`,
       );
       const [x, y, z] = pose.offset.map(
         (value, axis) => value + (pose.corpseOffset?.[axis] || 0),
@@ -786,13 +1085,20 @@ export function createParentFallback(container) {
       const shapes = [];
       const g = primitives(shapes, origin, 0, visitor.yaw);
       const damagePose = damage.pose(id);
-      const corpse = ['exploding', 'wrecked', 'cleanup'].includes(
+      const corpse = ['exploding', 'charring', 'wrecked', 'cleanup'].includes(
         damagePose.phase,
       );
       const surprise = corpse
         ? 0
-        : Math.max(visitor.surprise || 0, damagePose.surprise || 0);
-      const braced = damagePose.surprise > 0 || damagePose.phase !== 'alive';
+        : Math.max(
+            visitor.surprise || 0,
+            damagePose.surprise || 0,
+            damagePose.scream,
+          );
+      const braced =
+        damagePose.panic > 0 ||
+        damagePose.surprise > 0 ||
+        damagePose.phase !== 'alive';
       const moving =
         !braced && (visitor.phase === 'arrive' || visitor.phase === 'depart');
       const running = visitor.phase === 'depart';
@@ -832,7 +1138,14 @@ export function createParentFallback(container) {
           : 0;
         g.rod(
           [0, 1.65 + jump, side * 0.62],
-          [-swing * 0.36, 1.05 + jump, side * 0.8],
+          [
+            -swing * 0.36,
+            1.05 +
+              jump +
+              damagePose.panic *
+                (1.7 + Math.sin(damagePose.fireAge * 31 + side) * 0.3),
+            side * 0.8,
+          ],
           0.1,
           C.metal,
         );
@@ -858,10 +1171,10 @@ export function createParentFallback(container) {
     syncWhip();
     drawVisitors();
     const parentDamage = damage.pose('parent');
-    const corpse = ['exploding', 'wrecked', 'cleanup'].includes(
+    const corpse = ['exploding', 'charring', 'wrecked', 'cleanup'].includes(
       parentDamage.phase,
     );
-    const caneSurprise = parentDamage.surprise || 0;
+    const caneSurprise = Math.max(parentDamage.surprise, parentDamage.scream);
     const damagePaused =
       parentDamage.phase !== 'alive' ||
       caneSurprise > 0 ||
@@ -891,6 +1204,7 @@ export function createParentFallback(container) {
     );
     if (ownAway && !ownTravel) {
       applyDamage();
+      drawEnvironment();
       setData(svg, 'mode', 'away');
       setData(svg, 'activity', '');
       setData(svg, 'eyes', AWAKE_EYE_HEIGHT);
@@ -986,7 +1300,12 @@ export function createParentFallback(container) {
     for (const [i, side] of [-1, 1].entries()) {
       const step = moving ? Math.sin(pose.stride + i * Math.PI) : 0;
       const foot = idle?.feet[i];
-      const x = step * (running ? 0.7 : 0.42) + (foot?.x || 0) * blend;
+      const x =
+        step * (running ? 0.7 : 0.42) +
+        (foot?.x || 0) * blend +
+        Math.sin(parentDamage.fireAge * 27 + (side * Math.PI) / 2) *
+          parentDamage.panic *
+          0.38;
       const y =
         jump * 1.1 +
         Math.max(0, step) * (running ? 0.34 : 0.2) +
@@ -1084,6 +1403,17 @@ export function createParentFallback(container) {
       hand = mix(hand, [0.25, base + 3.55, side * 1.95], raisedArms);
       elbow = mix(elbow, [0.5, base + 1.95, side * 1.23], caneSurprise);
       hand = mix(hand, [1.04, base + 2.65, side * 0.85], caneSurprise);
+      const wave = Math.sin(parentDamage.fireAge * 31 + side * 2);
+      elbow = mix(
+        elbow,
+        [-0.15, base + 2.6 + wave * 0.25, side * 1.65],
+        parentDamage.panic,
+      );
+      hand = mix(
+        hand,
+        [0.25, base + 3.55 + wave * 0.35, side * 1.95],
+        parentDamage.panic,
+      );
       g.octagon(shoulder, [0.48, 0.47, 0.48], C.metal);
       g.rod(shoulder, elbow, 0.18, C.shell);
       g.octagon(elbow, [0.4, 0.36, 0.4], C.outline);
@@ -1160,6 +1490,7 @@ export function createParentFallback(container) {
       }
     }
     applyDamage();
+    drawEnvironment();
     setData(
       svg,
       'mode',
@@ -1175,7 +1506,11 @@ export function createParentFallback(container) {
 
   function drawWorkstation() {
     const shapes = [];
-    const g = primitives(shapes, 39);
+    const g = environmentPrimitives(
+      primitives(shapes, 39),
+      {x: 1.85, z: 0},
+      environment.pose('workstation:parent'),
+    );
     const accent = `var(--${identity.accentKey})`;
     g.cylinder([0, 0.25, 0], [3.5, 0.25, 3.1], C.dim);
     g.box([1.95, 0.9, 0], [0.5, 1.25, 1.85], C.dim);
@@ -1232,8 +1567,9 @@ export function createParentFallback(container) {
       lastTime = null;
       return;
     }
-    const dt =
-      lastTime === null ? 0 : Math.min(0.1, (timestamp - lastTime) / 1000);
+    const elapsed =
+      lastTime === null ? 0 : Math.max(0, (timestamp - lastTime) / 1000);
+    const dt = Math.min(0.1, elapsed);
     // Keep SVG geometry updates at 30 fps while integrating real elapsed time.
     if (lastTime === null || dt >= 1 / 30) {
       lastTime = timestamp;
@@ -1246,6 +1582,7 @@ export function createParentFallback(container) {
           parentDamage.phase === 'alive' &&
           !parentDamage.surprise &&
           !parentDamage.flinch &&
+          !parentDamage.panic &&
           !parentDamage.offset.some(value => Math.abs(value) > 0.025)
         )
           controller.tick(dt);
@@ -1256,12 +1593,16 @@ export function createParentFallback(container) {
             const pose = damage.pose(
               visitor.id === session?.id ? 'parent' : visitorCaneId(visitor.id),
             );
-            return pose.surprise > 0 || pose.phase !== 'alive';
+            return (
+              pose.panic > 0 || pose.surprise > 0 || pose.phase !== 'alive'
+            );
           })
           .map(visitor => visitor.id);
         if (
           session?.id &&
-          (parentDamage.surprise > 0 || parentDamage.phase !== 'alive') &&
+          (parentDamage.panic > 0 ||
+            parentDamage.surprise > 0 ||
+            parentDamage.phase !== 'alive') &&
           !pausedVisitors.includes(session.id)
         )
           pausedVisitors.push(session.id);
@@ -1274,7 +1615,10 @@ export function createParentFallback(container) {
         reaction.age += dt;
         if (reaction.age >= STARTLE_SECONDS) reaction = null;
       }
-      if (motion) damage.tick(dt);
+      if (motion) {
+        damage.tick(dt);
+        environment.tick(elapsed);
+      }
       render();
     }
     schedule();
@@ -1312,7 +1656,7 @@ export function createParentFallback(container) {
     ? new window.ResizeObserver(() => {
         layoutRevision++;
         for (const visual of damageVisuals.values()) visual.poseKey = '';
-        if (damageActive) renderUpdate(true);
+        renderUpdate(true);
       })
     : null;
   layoutObserver?.observe(container);
@@ -1321,6 +1665,7 @@ export function createParentFallback(container) {
     whip.cancel();
     clearWhip();
     clearDamageVisuals();
+    clearEnvironmentVisuals();
     svg.remove();
     glyph?.classList.remove('parent-fallback-glyph');
     visitorNotice.remove();
@@ -1362,6 +1707,9 @@ export function createParentFallback(container) {
         damagedParentPose = null;
         clearDamageVisuals();
         damage.reset();
+        environment.reset();
+        clearEnvironmentVisuals();
+        environmentWorkstationKey = '';
         damageActive = false;
         time = 0;
         identity = factoryIdentity(data?.session?.id);
@@ -1396,6 +1744,7 @@ export function createParentFallback(container) {
       visitors.setMotion(motion);
       whip.setMotion(motion);
       damage.setMotion(motion);
+      environment.setMotion(motion);
       damagedParentPose = null;
       if (motion) reaction = null;
       clearDamageVisuals();
@@ -1436,6 +1785,53 @@ export function createParentFallback(container) {
     caneTargets() {
       return caneTargetList();
     },
+    environmentTargets() {
+      if (
+        disposed ||
+        document.hidden ||
+        !visible ||
+        container.closest('[hidden]')
+      )
+        return [];
+      const bounds = syncEnvironmentLayout();
+      if (!bounds || !session) return [];
+      return environmentSites
+        .map(site => ({
+          id: site.id,
+          x: bounds.left + site.px,
+          y: bounds.top + site.py,
+          radius: Math.max(9, site.radius * site.unit),
+        }))
+        .filter(
+          p =>
+            p.x >= Math.max(0, bounds.left) &&
+            p.x <= Math.min(window.innerWidth, bounds.right) &&
+            p.y >= Math.max(0, bounds.top) &&
+            p.y <= Math.min(window.innerHeight, bounds.bottom),
+        );
+    },
+    hitEnvironment(id, weapon, amount = 1) {
+      if (disposed || !environment.hit(id, weapon, amount)) return false;
+      render();
+      schedule();
+      return true;
+    },
+    burnRobot(id, seconds) {
+      if (
+        disposed ||
+        !Number.isFinite(seconds) ||
+        seconds <= 0 ||
+        !caneTargetList().some(target => target.id === id)
+      )
+        return false;
+      if (!damage.burn(id, seconds)) return false;
+      damageActive = true;
+      reaction = null;
+      whip.cancel();
+      render();
+      schedule();
+      return true;
+    },
     hitWithCane(id, direction = 1, strength = 1) {
       if (disposed || !caneTargetList().some(target => target.id === id))
         return false;
@@ -1458,6 +1854,8 @@ export function createParentFallback(container) {
       whip.dispose();
       clearWhip();
       damage.dispose();
+      environment.dispose();
+      clearEnvironmentVisuals();
       clearDamageVisuals();
       visitorSvg.remove();
       reaction = null;

@@ -8,6 +8,8 @@ const WRECK_SECONDS = 2.4;
 const CLEANUP_SECONDS = 6;
 const REPLACEMENT_SECONDS = 3.6;
 const SURPRISE_SECONDS = 1.15;
+const BURN_EXPOSURE_SECONDS = 3.5;
+const FIRE_SECONDS = 1.9;
 
 export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
   const limit = (n, fallback, max) =>
@@ -31,6 +33,10 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       direction: 1,
       generation: 0,
       hits: 0,
+      heat: 0,
+      fire: 0,
+      fireAge: 0,
+      deathOffset: ZERO(),
     };
   }
   function replace(robot) {
@@ -38,6 +44,8 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
     robot.age = 0;
     robot.damage = 0;
     robot.hitAge = SURPRISE_SECONDS;
+    robot.heat = robot.fire = robot.fireAge = 0;
+    robot.deathOffset = ZERO();
     robot.generation++;
   }
   function remove(id) {
@@ -111,8 +119,56 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
     }
     return true;
   }
+  // Exposure is supplied by the scene controller, never by elapsed render time.
+  // Heat persists after the visible fire goes out; brief bursts cannot self-kill.
+  function burn(id, seconds) {
+    if (
+      disposed ||
+      id === undefined ||
+      id === null ||
+      id === '' ||
+      !Number.isFinite(seconds) ||
+      seconds <= 0
+    )
+      return false;
+    let robot = robots.get(id);
+    if (!robot) {
+      if (robots.size >= maxRobots) remove(robots.keys().next().value);
+      robot = fresh(id);
+      robots.set(id, robot);
+    }
+    if (robot.phase !== 'alive') return false;
+    const exposure = Math.min(seconds, 0.25) / BURN_EXPOSURE_SECONDS;
+    robot.heat = Math.min(1, robot.heat + exposure);
+    robot.damage = Math.min(1, robot.damage + exposure);
+    if (motion) {
+      robot.fire = FIRE_SECONDS;
+      if (robot.damage >= 1 - 1e-9) {
+        robot.damage = 1;
+        robot.heat = 1;
+        robot.deathOffset = fireOffset(robot);
+        robot.phase = 'charring';
+        robot.age = 0;
+      }
+    }
+    return true;
+  }
+  function fireLevel(robot) {
+    return motion ? clamp(robot.fire / 0.6, 0, 1) : 0;
+  }
+  function fireOffset(robot) {
+    const strength = fireLevel(robot);
+    return [
+      Math.sin(robot.fireAge * 5) * 1.4 * strength,
+      0,
+      Math.sin(robot.fireAge * 7) * 0.85 * strength,
+    ];
+  }
   function step(dt) {
     for (const robot of robots.values()) {
+      robot.fire = Math.max(0, robot.fire - dt);
+      if (robot.fire > 0) robot.fireAge += dt;
+      else robot.fireAge = 0;
       if (robot.phase === 'alive') {
         robot.hitAge = Math.min(SURPRISE_SECONDS, robot.hitAge + dt);
         continue;
@@ -120,17 +176,20 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       robot.age += dt;
       const duration = {
         exploding: FALL_SECONDS,
+        charring: FALL_SECONDS,
         wrecked: WRECK_SECONDS,
         cleanup: CLEANUP_SECONDS,
         replacing: REPLACEMENT_SECONDS,
       }[robot.phase];
       if (robot.age + 1e-9 < duration) continue;
       robot.age = Math.max(0, robot.age - duration);
-      if (robot.phase === 'exploding') robot.phase = 'wrecked';
+      if (['exploding', 'charring'].includes(robot.phase))
+        robot.phase = 'wrecked';
       else if (robot.phase === 'wrecked') robot.phase = 'cleanup';
       else if (robot.phase === 'cleanup') {
         robot.phase = 'replacing';
-        robot.damage = 0;
+        robot.damage = robot.heat = robot.fire = 0;
+        robot.deathOffset = ZERO();
       } else replace(robot);
     }
     for (const piece of debris) {
@@ -187,7 +246,15 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
       alive && motion ? Math.max(0, 1 - robot.hitAge / 0.4) ** 2 : 0;
     const recoil = robot.direction * robot.strength * contact;
     const cleanup = cleanupPose(robot);
+    const burning = fireLevel(robot);
+    const panic = alive ? burning : 0;
+    const panicOffset = alive ? fireOffset(robot) : robot.deathOffset;
     return {
+      burning,
+      char: robot.heat,
+      scream: panic,
+      panic,
+      fireAge: robot.fireAge,
       damage: robot.damage,
       phase: robot.phase,
       phaseAge: robot.age,
@@ -197,10 +264,14 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
           : 0,
       flinch: (robot.strength / 2.2) * contact,
       // A short, monotonic flinch. No spring, spin or upward launch.
-      offset: [recoil * 0.025, 0, -recoil * 0.055],
+      offset: [
+        panicOffset[0] + recoil * 0.025,
+        0,
+        panicOffset[2] - recoil * 0.055,
+      ],
       rotation: [recoil * 0.025, 0, -recoil * 0.01],
       collapse: corpse
-        ? robot.phase === 'exploding'
+        ? ['exploding', 'charring'].includes(robot.phase)
           ? smooth(clamp(robot.age / FALL_SECONDS, 0, 1))
           : 1
         : 0,
@@ -223,6 +294,7 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
   }
   return {
     hit,
+    burn,
     tick,
     pose,
     effects: () =>
@@ -241,6 +313,7 @@ export function createRobotDamage({maxRobots = 16, maxEffects = 96} = {}) {
         debris = [];
         for (const robot of robots.values()) {
           robot.hitAge = SURPRISE_SECONDS;
+          robot.fire = robot.fireAge = 0;
           if (robot.phase !== 'alive') replace(robot);
         }
       }

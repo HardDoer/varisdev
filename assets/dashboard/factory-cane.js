@@ -1,4 +1,6 @@
 // A local toy: swinging never sends commands or changes a session's state.
+import {visibleSceneTargets} from './factory-targets.js';
+
 const NS = 'http://www.w3.org/2000/svg';
 const SHAFT = 'M0 6 V-92 A12 12 0 0 1 24 -92 V-82';
 const COOLDOWN = 320;
@@ -118,6 +120,8 @@ export function createFactoryCane(
   {
     holsterContainer = container,
     getTargets = () => [],
+    getEnvironmentTargets = () => [],
+    onEnvironmentHit = () => false,
     onHit = () => true,
     onEquip = () => {},
   } = {},
@@ -142,26 +146,14 @@ export function createFactoryCane(
     'aria-hidden': 'true',
     focusable: 'false',
   });
-  const stored = svg('path', {
-    d: 'M12 41 V12 A7 7 0 0 1 26 12 V17',
-    class: 'cane-stored',
-  });
-  icon.append(
-    svg('rect', {
-      x: '3',
-      y: '3',
-      width: '30',
-      height: '43',
-      rx: '5',
-      class: 'cane-rack',
-    }),
-    stored,
-    svg('path', {
-      d: 'M6 25 H25 V40 Q25 46 19 46 H12 Q6 46 6 40 Z',
-      class: 'cane-pocket',
-    }),
-    svg('path', {d: 'M10 29 H21 M11 39 H20', class: 'cane-stitch'}),
+  const stored = svg('g');
+  const storedShaft = 'M12 42 V13 A8 8 0 0 1 28 13 V19';
+  stored.append(
+    svg('path', {d: storedShaft, class: 'cane-stored-outline'}),
+    svg('path', {d: storedShaft, class: 'cane-stored'}),
+    svg('path', {d: 'M12 40 V43', class: 'cane-stored-tip'}),
   );
+  icon.append(stored);
   const label = document.createElement('span');
   const name = document.createElement('strong');
   name.textContent = 'Cane';
@@ -263,7 +255,6 @@ export function createFactoryCane(
       ? 'Return cane to holster (right-click or Esc)'
       : 'Pick up cane, then wave the mouse over a robot or drone';
     action.textContent = equipped ? 'Holster' : 'Pick up';
-    stored.style.visibility = equipped ? 'hidden' : '';
     hint.hidden = !equipped;
   }
   function paintEffects(now) {
@@ -327,8 +318,13 @@ export function createFactoryCane(
       if (samples.length > 12) samples.shift();
     }
     for (const target of result.hits) {
-      if (onHit(target.id, result.direction, result.strength) === false)
-        continue;
+      if (!equipped || disposed) return;
+      const accepted =
+        target.environmentId !== undefined
+          ? onEnvironmentHit(target.environmentId, 'cane', result.strength)
+          : onHit(target.id, result.direction, result.strength);
+      if (!equipped || disposed) return;
+      if (accepted === false) continue;
       const element = svg('path', {
         class: 'cane-impact',
         d: 'M-18 0 H-10 M10 0 H18 M0 -18 V-10 M0 10 V18 M-12 -12 L-7 -7 M7 7 L12 12 M12 -12 L7 -7 M-7 7 L-12 12',
@@ -356,17 +352,19 @@ export function createFactoryCane(
     pendingMoves = [];
     const rect = container.getBoundingClientRect();
     const visibleTargets = moves.some(move => move.inScene)
-      ? getTargets().filter(
-          target =>
-            [target.x, target.y, target.radius].every(Number.isFinite) &&
-            target.radius > 0 &&
-            target.x >= rect.left &&
-            target.x <= rect.right &&
-            target.y >= rect.top &&
-            target.y <= rect.bottom,
-        )
+      ? [
+          ...visibleSceneTargets(getTargets(), rect, window),
+          ...visibleSceneTargets(getEnvironmentTargets(), rect, window).map(
+            target => ({
+              ...target,
+              id: `environment:${target.id}`,
+              environmentId: target.id,
+            }),
+          ),
+        ]
       : [];
     for (const move of moves) {
+      if (!equipped || disposed) return;
       if (move.reset) {
         swing.reset();
         samples = [];
@@ -388,7 +386,9 @@ export function createFactoryCane(
     if (!equipped || event.pointerType === 'touch') return;
     const inScene =
       container.contains(event.target) &&
-      !event.target.closest('.factory-cane-holster, .factory-gun-holster');
+      !event.target.closest(
+        'button:not(.fallback-station), a, input, textarea, select, [role="button"]:not(.fallback-station)',
+      );
     // Stop only scene moves: the rest of the app keeps normal hover/click behavior.
     if (inScene) event.stopPropagation();
     const move = {
@@ -435,7 +435,9 @@ export function createFactoryCane(
   function onClick(event) {
     if (
       equipped &&
-      !event.target.closest('.factory-cane-holster, .factory-gun-holster') &&
+      !event.target.closest(
+        'button:not(.fallback-station), a, input, textarea, select, [role="button"]:not(.fallback-station)',
+      ) &&
       event.detail !== 0
     ) {
       event.preventDefault();

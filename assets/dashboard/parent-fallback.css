@@ -166,3 +166,60 @@
 .fallback-station:has(.robot-damage-corpse)::after {
   visibility: hidden;
 }
+
+.robot-damage-material {
+  filter: brightness(var(--damage-shade, 1));
+}
+
+.robot-glyph.robot-charred {
+  background: color-mix(
+    in srgb,
+    #171412 var(--damage-char-percent),
+    var(--robot-shell)
+  );
+  border-color: color-mix(
+    in srgb,
+    #302a24 var(--damage-char-percent),
+    var(--robot-outline)
+  );
+}
+
+.robot-glyph.robot-burning > i {
+  height: var(--damage-eye-height);
+  top: 5px;
+}
+
+.fallback-station:has(.robot-burning)::after {
+  visibility: hidden;
+}
+
+.environment-floor-effects,
+.environment-repair-effects {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.environment-floor-effects {
+  z-index: 1;
+}
+
+.environment-repair-effects {
+  z-index: 5;
+}
+
+.fallback-station .environment-workstation {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.fallback-station > strong,
+.fallback-station > p,
+.fallback-station > .status-badge {
+  position: relative;
+  z-index: 3;
+}

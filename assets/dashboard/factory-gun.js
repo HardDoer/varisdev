@@ -1,19 +1,10 @@
+import {validSceneTarget, visibleSceneTargets} from './factory-targets.js';
+
 const NS = 'http://www.w3.org/2000/svg';
 const COOLDOWN = 180;
 const EFFECT_DURATION = 260;
 const CONTROLS =
   'button, a, input, textarea, select, label, summary, [role="button"], [role="link"], [role="menuitem"], [role="slider"], [role="checkbox"], [role="switch"], [role="textbox"], [role="combobox"], [role="tab"], [contenteditable]:not([contenteditable="false"]), .factory-cane-holster, .factory-gun-holster';
-
-function validTarget(target) {
-  return (
-    target !== null &&
-    typeof target === 'object' &&
-    ((typeof target.id === 'string' && target.id.length > 0) ||
-      (typeof target.id === 'number' && Number.isFinite(target.id))) &&
-    [target.x, target.y, target.radius].every(Number.isFinite) &&
-    target.radius > 0
-  );
-}
 
 // Viewport coordinates; ties retain the first target and never mutate the list.
 export function gunTargetAt(x, y, targets = []) {
@@ -21,7 +12,7 @@ export function gunTargetAt(x, y, targets = []) {
   let nearest = null,
     distance = Infinity;
   for (const target of targets) {
-    if (!validTarget(target)) continue;
+    if (!validSceneTarget(target)) continue;
     const d = Math.hypot(target.x - x, target.y - y);
     if (d <= target.radius && d < distance) {
       nearest = target;
@@ -36,6 +27,8 @@ export function createFactoryGun(
   {
     holsterContainer = container,
     getTargets = () => [],
+    getEnvironmentTargets = () => [],
+    onEnvironmentHit = () => false,
     onHit = () => true,
     onEquip = () => {},
   } = {},
@@ -49,57 +42,81 @@ export function createFactoryGun(
       element.setAttribute(key, value);
     return element;
   };
-  function pistol() {
+  function pistol(held = false) {
     const group = svg('g');
-    // A broad rear face and grip taper to the muzzle at the local origin.
-    const perspective = svg('g', {transform: 'rotate(-60) scale(.8)'});
-    perspective.append(
-      svg('path', {
-        d: 'M5 48 L29 40 L44 74 L15 83 Z',
-        class: 'gun-grip',
-      }),
-      svg('path', {
-        d: 'M29 40 L35 39 L49 69 L44 74 Z',
-        class: 'gun-side',
-      }),
-      svg('path', {
-        d: 'M10 58 L31 51 M12 65 L34 58 M15 72 L37 65',
-        class: 'gun-grip-lines',
-      }),
-      svg('path', {
-        d: 'M-5 0 L5 -2 L37 31 L38 45 L2 57 L-7 7 Z',
-        class: 'gun-body',
-      }),
-      svg('path', {
-        d: 'M-5 0 L5 -2 L37 31 L1 43 Z',
-        class: 'gun-slide',
-      }),
-      svg('path', {
-        d: 'M-1 2 L2 1 L25 28 L17 31 Z',
-        class: 'gun-rail',
-      }),
-      svg('path', {
-        d: 'M1 43 L37 31 L38 45 L2 57 Z',
-        class: 'gun-rear',
-      }),
-      svg('path', {
-        d: 'M9 45 L29 38 L30 43 L10 50 Z',
-        class: 'gun-cell',
-      }),
-      svg('path', {
-        d: 'M-2 36 L-3 30 L7 27 L10 33 L22 29 L20 23 L30 20 L34 32 Z',
-        class: 'gun-sight',
-      }),
-      svg('path', {
-        d: 'M-2 1 L-3 -6 L1 -7 L3 0 Z',
-        class: 'gun-sight',
-      }),
-      svg('path', {
-        d: 'M2 32 L5 31 M25 25 L28 24',
-        class: 'gun-sight-dots',
-      }),
-    );
-    group.append(perspective);
+    if (held) {
+      // The slide recedes toward the aim; the rear sight and grip face the user.
+      group.append(
+        svg('path', {
+          d: 'M12 61 L34 54 L40 93 L18 100 Z',
+          class: 'gun-grip',
+        }),
+        svg('path', {
+          d: 'M16 71 L35 65 M17 79 L36 73 M18 87 L37 81 M19 95 L38 89',
+          class: 'gun-grip-lines',
+        }),
+        svg('path', {
+          d: 'M3 43 L40 32 L38 62 L12 70 Z',
+          class: 'gun-body',
+        }),
+        svg('path', {
+          d: 'M8 -4 L14 0 L44 28 L40 47 L37 27 Z',
+          class: 'gun-side',
+        }),
+        svg('path', {
+          d: 'M-10 0 L8 -4 L38 26 L4 37 Z',
+          class: 'gun-slide',
+        }),
+        svg('path', {
+          d: 'M-5 1 L4 -1 L26 25 L17 28 Z',
+          class: 'gun-slide-highlight',
+        }),
+        svg('path', {
+          d: 'M4 37 L38 26 L40 47 L6 58 Z',
+          class: 'gun-rear',
+        }),
+        svg('path', {
+          d: 'M12 41 L31 35 L32 43 L13 49 Z',
+          class: 'gun-backplate',
+        }),
+        svg('path', {
+          d: 'M3 36 V27 L13 24 L16 30 L25 27 L23 21 L33 18 L38 27 Z',
+          class: 'gun-sight',
+        }),
+        svg('path', {d: 'M-3 0 L-4 -7 L1 -8 L3 -1 Z', class: 'gun-sight'}),
+        svg('path', {d: 'M8 29 L11 28 M28 23 L31 22', class: 'gun-sight-dots'}),
+      );
+    } else {
+      group.append(
+        svg('path', {
+          d: 'M27 19 H44 V27 Q44 31 39 31 H27 Z',
+          class: 'gun-trigger-guard',
+        }),
+        svg('path', {d: 'M34 21 V25 L32 27', class: 'gun-trigger'}),
+        svg('path', {
+          d: 'M12 18 H33 L30 25 H26 L22 43 H8 L14 25 H10 Z',
+          class: 'gun-body',
+        }),
+        svg('path', {d: 'M15 26 H25 L21 41 H10 Z', class: 'gun-grip'}),
+        svg('path', {
+          d: 'M14 30 H23 M13 34 H22 M12 38 H21',
+          class: 'gun-grip-lines',
+        }),
+        svg('path', {
+          d: 'M7 8 H57 V20 H6 V12 Z',
+          class: 'gun-slide',
+        }),
+        svg('path', {
+          d: 'M9 5 H14 V8 H9 Z M50 5 H54 V8 H50 Z',
+          class: 'gun-sight',
+        }),
+        svg('path', {
+          d: 'M12 11 V17 M17 11 V17 M22 11 V17',
+          class: 'gun-serrations',
+        }),
+        svg('path', {d: 'M57 11 V17', class: 'gun-trigger'}),
+      );
+    }
     return group;
   }
   const holster = document.createElement('button');
@@ -113,7 +130,6 @@ export function createFactoryGun(
     focusable: 'false',
   });
   const stored = pistol();
-  stored.setAttribute('transform', 'translate(6 18) scale(.74)');
   icon.append(stored);
   const label = document.createElement('span');
   const name = document.createElement('strong');
@@ -134,7 +150,7 @@ export function createFactoryGun(
     focusable: 'false',
   });
   const effects = svg('g');
-  const held = pistol();
+  const held = pistol(true);
   held.setAttribute('class', 'gun-held');
   const crosshair = svg('g', {class: 'gun-crosshair'});
   crosshair.append(
@@ -231,13 +247,13 @@ export function createFactoryGun(
   function paintPointer(now) {
     if (!pointer) return null;
     const {x, y} = pointer;
-    const sx = x + 100 < window.innerWidth ? 1 : -1,
-      sy = y + 90 < window.innerHeight ? 1 : -1;
-    const ux = sx * 0.8,
-      uy = sy * 0.6;
+    const sx = x + 100 < window.innerWidth ? 1 : -1;
     const recoil = motion && shot ? Math.max(0, 1 - (now - shot.at) / 120) : 0;
-    const muzzle = {x: x + ux * 30, y: y + uy * 30};
-    const angle = (Math.atan2(uy, ux) * 180) / Math.PI;
+    const muzzle = {
+      x: x + sx * 26,
+      y: Math.min(y + 24, window.innerHeight - 110),
+    };
+    const angle = (Math.atan2(y - muzzle.y, x - muzzle.x) * 180) / Math.PI;
     overlay.setAttribute(
       'viewBox',
       `0 0 ${window.innerWidth} ${window.innerHeight}`,
@@ -245,7 +261,7 @@ export function createFactoryGun(
     held.style.display = crosshair.style.display = '';
     held.setAttribute(
       'transform',
-      `translate(${muzzle.x + ux * recoil * 6} ${muzzle.y + uy * recoil * 6}) rotate(${angle + sx * recoil * 7}) scale(1 ${sx * sy})`,
+      `translate(${muzzle.x} ${muzzle.y + recoil * 5}) scale(${sx * (1 + recoil * 0.04)} ${1 + recoil * 0.04})`,
     );
     crosshair.setAttribute('transform', `translate(${x} ${y})`);
     document.documentElement.classList.add('factory-gun-active');
@@ -278,24 +294,21 @@ export function createFactoryGun(
     pointer = {x, y};
     const muzzle = paintPointer(now);
     const rect = container.getBoundingClientRect();
-    const targets = getTargets();
-    // Scene APIs supply viewport circles; reject stale centers outside the scene.
-    const visibleTargets = Array.isArray(targets)
-      ? targets.filter(
-          target =>
-            validTarget(target) &&
-            target.x >= Math.max(0, rect.left) &&
-            target.x <= Math.min(window.innerWidth, rect.right) &&
-            target.y >= Math.max(0, rect.top) &&
-            target.y <= Math.min(window.innerHeight, rect.bottom),
-        )
-      : [];
+    const visibleTargets = visibleSceneTargets(getTargets(), rect, window);
     const target = gunTargetAt(x, y, visibleTargets);
-    const hit =
-      target && onHit(target.id, target.x < muzzle.x ? -1 : 1, 2) !== false;
+    const environment = target
+      ? null
+      : gunTargetAt(
+          x,
+          y,
+          visibleSceneTargets(getEnvironmentTargets(), rect, window),
+        );
+    const hit = target
+      ? onHit(target.id, target.x < muzzle.x ? -1 : 1, 2) !== false
+      : environment && onEnvironmentHit(environment.id, 'gun', 1) !== false;
     if (!equipped || disposed) return;
     clearEffects();
-    if (hit) container.dataset.gunHit = String(target.id);
+    if (hit) container.dataset.gunHit = String((target || environment).id);
 
     const tracer = svg('g');
     const line = `M${muzzle.x} ${muzzle.y} L${x} ${y}`;

@@ -76,25 +76,24 @@
   color: var(--muted, #afbdc5);
   font-size: 0.625rem;
 }
-.cane-rack {
-  fill: var(--bg, #101c27);
-  stroke: var(--line, #36505c);
+.cane-stored-outline,
+.cane-stored,
+.cane-stored-tip {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.cane-stored-outline {
+  stroke: var(--panel, #12232c);
+  stroke-width: 7;
 }
 .cane-stored {
-  fill: none;
   stroke: var(--amber, #ffcb7a);
   stroke-width: 4;
-  stroke-linecap: round;
 }
-.cane-pocket {
-  fill: var(--robot-screen, #071f26);
-  stroke: var(--robot-outline, #0b1318);
-}
-.cane-stitch {
-  fill: none;
-  stroke: var(--robot-eyes, #edf4f6);
-  stroke-width: 1;
-  stroke-dasharray: 2 2;
+.cane-stored-tip {
+  stroke: var(--text, #edf4f6);
+  stroke-width: 5;
 }
 .factory-cane-hint {
   position: absolute;

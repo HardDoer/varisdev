@@ -75,6 +75,14 @@ export interface ThemeScene {
   clearStartle?(): void;
   caneTargets?(): SceneCaneTarget[];
   hitWithCane?(id: string, direction?: number, strength?: number): boolean;
+  /** Apply flame exposure in seconds; return whether the robot was hit. */
+  burnRobot?(id: string, seconds: number): boolean;
+  environmentTargets?(): SceneCaneTarget[];
+  hitEnvironment?(
+    id: string,
+    weapon: 'cane' | 'gun' | 'flame',
+    amount: number,
+  ): boolean;
 }
 
 export interface ParentMotionPose {
@@ -128,6 +136,11 @@ export interface FactoryVisitors {
   dispose(): void;
 }
 export interface RobotDamagePose {
+  burning: number;
+  char: number;
+  scream: number;
+  panic: number;
+  fireAge: number;
   damage: number;
   phase: string;
   phaseAge: number;
@@ -152,6 +165,7 @@ export interface RobotDamagePose {
 }
 export interface RobotDamage {
   hit(id: string, direction?: number, strength?: number): boolean;
+  burn(id: string, seconds: number): boolean;
   tick(seconds: number): void;
   pose(id: string): RobotDamagePose;
   effects(): Array<{

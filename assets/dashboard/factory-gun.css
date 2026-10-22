@@ -122,45 +122,51 @@
   stroke-width: 1.8;
 }
 .gun-grip {
-  fill: var(--violet, #d1b7ff);
+  fill: var(--amber, #ffcb7a);
   stroke: var(--panel, #101c27);
-  stroke-width: 2.5;
+  stroke-width: 2;
 }
-.gun-side,
-.gun-rear,
+.gun-slide {
+  fill: color-mix(in srgb, var(--text, #edf4f6) 65%, var(--panel, #101c27));
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1.5;
+}
 .gun-sight {
   fill: var(--panel, #101c27);
   stroke: var(--text, #edf4f6);
   stroke-width: 1.5;
 }
-.gun-slide {
-  fill: color-mix(
-    in srgb,
-    var(--panel-raised, #172532) 65%,
-    var(--cyan, #75d9ff)
-  );
-  stroke: var(--text, #edf4f6);
-  stroke-width: 1.5;
-}
-.gun-rail {
-  fill: var(--cyan, #75d9ff);
-  stroke: var(--panel, #101c27);
-  stroke-width: 1;
-}
-.gun-sight-dots {
+.gun-trigger-guard {
   fill: none;
-  stroke: var(--cyan, #75d9ff);
+  stroke: var(--text, #edf4f6);
   stroke-width: 2.5;
 }
-.gun-cell {
-  fill: var(--amber, #ffcb7a);
-  stroke: var(--panel, #101c27);
-  stroke-width: 1;
-}
+.gun-trigger,
+.gun-serrations,
 .gun-grip-lines {
   fill: none;
   stroke: var(--panel, #101c27);
   stroke-width: 1.5;
+}
+.gun-side,
+.gun-rear {
+  fill: color-mix(in srgb, var(--text, #edf4f6) 30%, var(--panel, #101c27));
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1.5;
+}
+.gun-slide-highlight {
+  fill: var(--text, #edf4f6);
+  fill-opacity: 0.4;
+}
+.gun-backplate {
+  fill: var(--panel, #101c27);
+  stroke: var(--text, #edf4f6);
+  stroke-width: 1;
+}
+.gun-sight-dots {
+  fill: none;
+  stroke: var(--text, #edf4f6);
+  stroke-width: 2;
 }
 .gun-reticle-backing {
   fill: var(--panel, #101c27);

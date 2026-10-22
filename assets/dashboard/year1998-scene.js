@@ -3,6 +3,8 @@ import {createParentMotion} from './parent-motion.js';
 import {AWAKE_EYE_HEIGHT} from './parent-activities.js';
 import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
+import {createEnvironmentDamage} from './environment-damage.js';
+import {repairBotPosition} from './environment-visuals.js';
 import {createRobotWhip, whipPose} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
 import {iso, sortOfficeObjects} from './year1998-geometry.js';
@@ -58,11 +60,13 @@ const DATA_KEYS = [
   'robotDamage',
   'robotDebris',
   'robotCleanup',
+  'environmentDamage',
   'agentStatuses',
   'sceneEvents',
 ];
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
-const unsettled = pose => pose.phase !== 'alive' || pose.surprise > 0;
+const unsettled = pose =>
+  pose.phase !== 'alive' || pose.surprise > 0 || pose.panic > 0;
 const rgb = color => `rgb(${color.map(n => Math.round(n * 255)).join(',')})`;
 
 /** A pixel office. The dashboard owns selection labels and motion preferences;
@@ -82,6 +86,60 @@ export function createYear1998Scene(
   const parent = createParentMotion();
   const visitors = createFactoryVisitors();
   const damage = createRobotDamage();
+  const environment = createEnvironmentDamage();
+  let environmentSites = [],
+    objectDamage = null;
+  function syncEnvironmentSites() {
+    const sites = [];
+    for (let x = -11; x <= 9; x += 2)
+      for (let z = -5; z <= 5; z += 2)
+        sites.push({
+          id: `floor:${x}:${z}`,
+          x,
+          z,
+          h: 0,
+          radius: 0.95,
+          kind: 'floor',
+        });
+    const desk = (x, z, id, manager = false) => {
+      const f = deskFootprint(x, z, manager);
+      sites.push({
+        id: `desk:${id}`,
+        x: f.x,
+        z: f.z,
+        h: 22,
+        radius: 1.2,
+        kind: 'furniture',
+        w: f.w,
+        d: f.d,
+      });
+    };
+    desk(-6.25, 0, 'parent', true);
+    BAYS.forEach(([x, z], i) => {
+      const unit = units.find(unit => slots.get(unit.id) === i);
+      if (unit?.status === 'queued' || (!unit && i >= 6))
+        sites.push({
+          id: `desk:${i}`,
+          x: x - 1.3,
+          z: z - 0.8,
+          h: 14,
+          radius: 0.6,
+          kind: 'furniture',
+          w: 0.75,
+          d: 0.8,
+        });
+      else desk(x, z, i);
+    });
+    for (const [id, x, z, h, radius] of [
+      ['cabinet', -9.7, -5.55, 28, 0.7],
+      ['printer', -4.2, -5.4, 20, 0.9],
+      ['server', 8.45, -5.55, 35, 0.65],
+      ['cooler', -11.35, -2.8, 30, 0.55],
+    ])
+      sites.push({id, x, z, h, radius, kind: 'machinery'});
+    environmentSites = sites;
+    environment.setSites(sites);
+  }
   const whip = createRobotWhip();
   const damageHomes = new Map();
   let colors = {...DEFAULTS};
@@ -182,8 +240,18 @@ export function createYear1998Scene(
     initialized = true;
   }
 
+  function environmentColor(fill) {
+    const scorch = objectDamage?.scorch || 0;
+    if (!scorch) return fill;
+    const hex = /^#([0-9a-f]{6})$/i.exec(fill);
+    const values = hex
+      ? hex[1].match(/../g).map(n => parseInt(n, 16))
+      : /^rgb\(([^)]+)\)$/.exec(fill)?.[1].split(',').map(Number);
+    if (!values) return fill;
+    return `rgb(${values.map((n, i) => Math.round(n + ([19, 16, 14][i] - n) * scorch * 0.94)).join(',')})`;
+  }
   function rect(x, y, w, h, fill) {
-    ctx.fillStyle = fill;
+    ctx.fillStyle = environmentColor(fill);
     ctx.fillRect(
       Math.round(x),
       Math.round(y),
@@ -192,7 +260,7 @@ export function createYear1998Scene(
     );
   }
   function polygon(points, fill) {
-    ctx.fillStyle = fill;
+    ctx.fillStyle = environmentColor(fill);
     ctx.beginPath();
     points.forEach(([x, y], index) =>
       index
@@ -203,7 +271,7 @@ export function createYear1998Scene(
     ctx.fill();
   }
   function line(points, stroke, weight = 1) {
-    ctx.strokeStyle = stroke;
+    ctx.strokeStyle = environmentColor(stroke);
     ctx.lineWidth = weight;
     ctx.lineJoin = 'miter';
     ctx.beginPath();
@@ -265,6 +333,187 @@ export function createYear1998Scene(
       ],
       fill,
     );
+  }
+
+  function drawEnvironmentObject(id, draw) {
+    const site = environmentSites.find(s => s.id === id),
+      pose = environment.pose(id);
+    if (!site || !pose) return draw();
+    ctx.save();
+    objectDamage = pose;
+    const [x, y] = iso(site.x, site.z, site.h);
+    if (pose.chips > 0.12) {
+      // Clip an irregular section out of the actual furniture silhouette.
+      const r = 5 + pose.chips * 9;
+      ctx.beginPath();
+      ctx.rect(-2000, -2000, 4000, 4000);
+      ctx.moveTo(x + r * 0.15, y - 9);
+      ctx.lineTo(x + r * 1.3, y - 9);
+      ctx.lineTo(x + r * 1.3, y + r * 1.6);
+      ctx.lineTo(x + r * 0.4, y + r * 1.6);
+      ctx.lineTo(x + r * 0.4, y + r * 0.6);
+      ctx.lineTo(x - r * 0.1, y + r * 0.4);
+      ctx.closePath();
+      ctx.clip('evenodd');
+    }
+    if (pose.dent) {
+      ctx.translate(x, y);
+      ctx.transform(
+        1,
+        pose.dent * 0.035,
+        -pose.dent * 0.025,
+        1 - pose.dent * 0.035,
+        0,
+        0,
+      );
+      ctx.translate(-x, -y);
+    }
+    draw();
+    objectDamage = null;
+    ctx.restore();
+    drawEnvironmentMarks(site, pose);
+  }
+  function drawEnvironmentMarks(site, pose) {
+    if (!pose || (!pose.damage && !pose.scorch && !pose.fire)) return;
+    const [x, y] = iso(site.x, site.z, site.kind === 'floor' ? 0 : site.h);
+    const r = site.kind === 'floor' ? 11 : 8;
+    if (site.kind === 'floor' && (pose.scorch || pose.chips)) {
+      diamond(x, y, r * 2, r, '#282c29');
+      if (pose.chips > 0.12) {
+        polygon(
+          [
+            [x - 9, y],
+            [x - 4, y + 5],
+            [x + 7, y + 2],
+            [x + 4, y - 3],
+            [x, y - 1],
+          ],
+          '#233a42',
+        );
+        line(
+          [
+            [x - 9, y],
+            [x - 4, y + 5],
+            [x + 7, y + 2],
+          ],
+          '#c3c3aa',
+        );
+      }
+    }
+    if (pose.dent || pose.chips) {
+      const e = 0.4 + Math.max(pose.dent, pose.chips) * 0.7;
+      const crack = [
+        [x - r * e, y - 3],
+        [x - 2, y],
+        [x - 5, y + 3],
+        [x + 3, y + 4],
+        [x + r * e, y + 7],
+      ];
+      line(crack, '#e1d8b5', 3);
+      line(crack, '#293b3c', 1);
+      line(
+        [
+          [x - 2, y],
+          [x + 2, y - 4],
+        ],
+        '#293b3c',
+      );
+      if (pose.chips > 0.12)
+        for (let i = 0; i < 4; i++) {
+          const [px, py] = iso(
+            site.x + Math.cos(i * 2.4) * 0.8,
+            site.z + Math.sin(i * 2.4) * 0.7,
+          );
+          polygon(
+            [
+              [px - 2, py],
+              [px, py - 2],
+              [px + 3, py + 1],
+              [px, py + 3],
+            ],
+            '#b3b8a5',
+          );
+        }
+    }
+    if (pose.fire)
+      for (let i = 0; i < 7; i++) {
+        const cycle = (time * 3 + i / 7) % 1,
+          px = x - r + (i * r) / 3;
+        const h = (10 + (1 - cycle) * 13) * pose.fire;
+        polygon(
+          [
+            [px - 4, y + 3],
+            [px - 5, y - h * 0.3],
+            [px + 2, y - h],
+            [px + 1, y - h * 0.3],
+            [px + 5, y + 3],
+          ],
+          '#f14c16',
+        );
+        polygon(
+          [
+            [px - 2, y + 2],
+            [px + 1, y - h * 0.65],
+            [px + 3, y + 2],
+          ],
+          '#ffe28a',
+        );
+        if (i < 2)
+          rect(
+            px + cycle * 6,
+            y - 20 - cycle * 14,
+            4 + cycle * 3,
+            4 + cycle * 3,
+            '#454641',
+          );
+      }
+  }
+  function drawEnvironmentBot(site, pose) {
+    if (
+      !pose?.botProgress ||
+      !['arriving', 'repairing', 'leaving'].includes(pose.phase)
+    )
+      return;
+    const p = repairBotPosition(site, pose),
+      [x, y] = iso(p[0], p[2]);
+    diamond(x, y + 1, 20, 9, '#344e52');
+    rect(x - 10, y - 5, 20, 6, '#263e47');
+    for (let i = 0; i < 4; i++) rect(x - 9 + i * 5, y - 3, 3, 3, '#aabcb2');
+    rect(x - 8, y - 11, 15, 8, '#32bba9');
+    rect(x - 6, y - 16, 10, 7, '#d4e1cb');
+    rect(x - 7, y - 14, 5, 4, '#263e47');
+    rect(x - 6, y - 13, 1, 1, '#c5fff0');
+    rect(x - 3, y - 13, 1, 1, '#c5fff0');
+    rect(x + 5, y - 14, 4, 7, '#729c9c');
+    const working = pose.phase === 'repairing',
+      target = iso(site.x, site.z, site.h + 1);
+    const tip = working ? target : [x - 13, y - 10];
+    line([[x - 5, y - 8], [x - 10, y - 20], tip], '#263f47', 3);
+    line([[x - 5, y - 8], [x - 10, y - 20], tip], '#bce9dc');
+    rect(tip[0] - 2, tip[1] - 1, 4, 3, '#263f47');
+    if (working) {
+      if (pose.repairProgress < 0.3)
+        for (let i = 0; i < 5; i++) {
+          const t = (time * 3 + i / 5) % 1;
+          rect(
+            tip[0] + Math.sin(i * 2.5) * t * 8,
+            tip[1] - t * 10,
+            3 + t * 3,
+            3,
+            '#dcfff1',
+          );
+        }
+      else {
+        rect(tip[0] - 2, tip[1] - 2, 5, 5, '#e3fff4');
+        for (let i = 0; i < 5; i++) {
+          const angle = (i * TAU) / 5 + time * 8;
+          line(
+            [tip, [tip[0] + Math.cos(angle) * 8, tip[1] + Math.sin(angle) * 8]],
+            '#43ffe0',
+          );
+        }
+      }
+    }
   }
 
   function drawGround() {
@@ -926,6 +1175,14 @@ export function createYear1998Scene(
     }
   }
 
+  function charColor(hex, amount) {
+    const rgb = hex
+      .replace('#', '')
+      .match(/../g)
+      .map(c => parseInt(c, 16));
+    return `rgb(${rgb.map(c => Math.round(c * (1 - amount * 0.93) + 7 * amount)).join(',')})`;
+  }
+
   function drawRobot(item) {
     const pose = damage.pose(item.id);
     const home = damageHomes.get(item.id);
@@ -933,8 +1190,12 @@ export function createYear1998Scene(
     const [wx, wz] = frozen ? home : item.world;
     const [px, py] = iso(wx + pose.corpseOffset[0], wz + pose.corpseOffset[2]);
     const parentSize = item.parent ? 1.24 : 1;
-    const walking = item.stride && motion;
-    const stride = walking ? Math.sin(item.stride) : 0;
+    const walking = item.stride && motion && !unsettled(pose);
+    const stride = pose.panic
+      ? Math.sin(pose.fireAge * 27) * 2
+      : walking
+        ? Math.sin(item.stride)
+        : 0;
     const working =
       item.status === 'running' ||
       item.status === 'compacting' ||
@@ -947,6 +1208,7 @@ export function createYear1998Scene(
         : 0;
     const surprise = Math.max(
       pose.surprise,
+      pose.scream,
       item.surprise || 0,
       item.id === 'parent' && reaction ? 1 : 0,
     );
@@ -954,9 +1216,16 @@ export function createYear1998Scene(
       item.id === 'parent' && reaction?.animated
         ? Math.sin(clamp(reaction.age / 0.7) * Math.PI) * 2
         : 0;
-    const jump = motion ? Math.min(4, (item.jump || 0) * 3) + hop + stopHop : 0;
-    const bodyX = px + pose.offset[0] * 14;
-    const bodyY = py - jump - pose.lift * 7;
+    const jump =
+      motion && !unsettled(pose)
+        ? Math.min(4, (item.jump || 0) * 3) + hop + stopHop
+        : 0;
+    const [movedX, movedY] = iso(
+      wx + pose.corpseOffset[0] + pose.offset[0],
+      wz + pose.corpseOffset[2] + pose.offset[2],
+    );
+    const bodyX = movedX;
+    const bodyY = movedY - jump - pose.lift * 7;
     if (selected === item.id && item.selectable !== false) {
       diamond(
         px,
@@ -1013,10 +1282,22 @@ export function createYear1998Scene(
     ctx.rotate((pose.collapse * Math.PI) / 2);
     if (pose.visible) {
       const dead = pose.phase !== 'alive' && pose.phase !== 'replacing';
-      const shell = dead ? '#929e90' : colors.shell;
-      const ink = colors.outline;
+      const shell =
+        pose.char > 0
+          ? charColor(dead ? '#929e90' : colors.shell, pose.char)
+          : dead
+            ? '#929e90'
+            : colors.shell;
+      const ink =
+        pose.char > 0
+          ? charColor(colors.outline, pose.char * 0.8)
+          : colors.outline;
       const accent = item.accent || colors.cyan;
-      const arm = motion && working ? Math.floor(time * 5) % 2 : 0;
+      const arm = pose.panic
+        ? Math.sin(pose.fireAge * 31) * 3
+        : motion && working && !unsettled(pose)
+          ? Math.floor(time * 5) % 2
+          : 0;
       rect(-7, -4 + Math.max(0, stride), 5, 4, ink);
       rect(3, -4 + Math.max(0, -stride), 5, 4, ink);
       rect(-6, -4 + Math.max(0, stride), 3, 1, '#a4b5ac');
@@ -1032,10 +1313,10 @@ export function createYear1998Scene(
       rect(-4, -11, 8, 3, workAccent || accent);
       rect(-3, -7, 3, 1, '#436570');
       rect(3, -7, 2, 1, dead ? colors.dim : color(item.status));
-      rect(-10, -13 + arm - stride, 3, 8, ink);
-      rect(-9, -13 + arm - stride, 2, 5, shell);
-      rect(8, -13 - arm + stride, 3, 8, ink);
-      rect(8, -13 - arm + stride, 2, 5, shell);
+      rect(-10, -13 + arm - stride - pose.panic * 10, 3, 8, ink);
+      rect(-9, -13 + arm - stride - pose.panic * 10, 2, 5, shell);
+      rect(8, -13 - arm + stride - pose.panic * 10, 3, 8, ink);
+      rect(8, -13 - arm + stride - pose.panic * 10, 2, 5, shell);
       rect(-9, -24, 18, 12, ink);
       rect(-10, -22, 20, 7, ink);
       rect(-8, -24, 16, 10, shell);
@@ -1083,6 +1364,10 @@ export function createYear1998Scene(
         rect(-5, -20, 3, 3, eyes);
         rect(2, -20, 3, 3, eyes);
       }
+      if (pose.scream) {
+        rect(-2, -17, 4, 4, '#fff1b6');
+        rect(-1, -16, 2, 2, '#301b17');
+      }
       if (item.parent) {
         rect(-7, -27, 14, 2, ink);
         rect(-6, -28, 2, 3, accent);
@@ -1110,12 +1395,23 @@ export function createYear1998Scene(
           );
         if (pose.damage > 0.65) rect(-7, -24, 4, 2, colors.amber);
       }
-      if (item.work && !dead) drawWork(item.work);
+      if (item.work && !dead && !unsettled(pose)) drawWork(item.work);
       if (activity && motion) drawActivity(activity, item.elapsed || 0);
-      if (surprise && !dead) {
+      if (surprise && !dead && !pose.panic) {
         rect(13, -32, 5, 10, '#24414a');
         rect(15, -31, 1, 5, '#fff1bd');
         rect(15, -24, 1, 1, '#fff1bd');
+      }
+    }
+    if (pose.visible && pose.burning) {
+      for (let i = 0; i < 9; i++) {
+        const cycle = (pose.fireAge * 3 + i / 9) % 1,
+          x = -11 + i * 2.6,
+          y = -3 - cycle * 24,
+          h = (8 + (1 - cycle) * 8) * pose.burning;
+        rect(x - 2, y - h, 5, h, '#f94a16');
+        rect(x - 1, y - h * 0.7, 3, h * 0.7, '#ffb52b');
+        rect(x, y - h * 0.35, 1, h * 0.35, '#fff4b0');
       }
     }
     ctx.restore();
@@ -1389,14 +1685,20 @@ export function createYear1998Scene(
     ctx.scale(camera.zoom, camera.zoom);
     ctx.translate(-camera.x, -camera.y);
     drawGround();
+    for (const site of environmentSites)
+      if (site.kind === 'floor')
+        drawEnvironmentMarks(site, environment.pose(site.id));
     drawWalls();
     const occupants = new Map(units.map(unit => [slots.get(unit.id), unit]));
     const scenery = [];
     const add = (x, z, w, d, draw) => scenery.push({x, z, w, d, draw});
-    const addDesk = (x, z, unit, manager = false) => {
+    const addDesk = (x, z, unit, manager = false, id = 'parent') => {
       scenery.push({
         ...deskFootprint(x, z, manager),
-        draw: () => drawDesk(x, z, unit, manager),
+        draw: () =>
+          drawEnvironmentObject(`desk:${id}`, () =>
+            drawDesk(x, z, unit, manager),
+          ),
       });
       // The main chair sits beside the desk, clear of the homecoming route.
       const chairX = x + (manager ? 1 : -0.8);
@@ -1407,14 +1709,26 @@ export function createYear1998Scene(
       const unit = occupants.get(slot);
       if (unit?.status === 'queued' || (!unit && slot >= 6)) {
         add(x - 0.2, z - 0.8, 1.1, 1.1, () => chair(x - 0.2, z - 0.8));
-        add(x - 1.3, z - 0.8, 0.75, 0.8, () => queueTable(x - 1.3, z - 0.8));
-      } else addDesk(x, z, unit);
+        add(x - 1.3, z - 0.8, 0.75, 0.8, () =>
+          drawEnvironmentObject(`desk:${slot}`, () =>
+            queueTable(x - 1.3, z - 0.8),
+          ),
+        );
+      } else addDesk(x, z, unit, false, slot);
     });
     // Leave clearance in front of the projecting window sills at z = -6.03.
-    add(-9.7, -5.55, 1.2, 0.75, () => cabinet(-9.7, -5.55));
-    add(-4.2, -5.2, 1.6, 1.5, () => printer(-4.2, -5.4));
-    add(8.45, -5.55, 1, 0.8, () => serverRack(8.45, -5.55));
-    add(-11.35, -2.8, 0.7, 0.8, () => waterCooler(-11.35, -2.8));
+    add(-9.7, -5.55, 1.2, 0.75, () =>
+      drawEnvironmentObject('cabinet', () => cabinet(-9.7, -5.55)),
+    );
+    add(-4.2, -5.2, 1.6, 1.5, () =>
+      drawEnvironmentObject('printer', () => printer(-4.2, -5.4)),
+    );
+    add(8.45, -5.55, 1, 0.8, () =>
+      drawEnvironmentObject('server', () => serverRack(8.45, -5.55)),
+    );
+    add(-11.35, -2.8, 0.7, 0.8, () =>
+      drawEnvironmentObject('cooler', () => waterCooler(-11.35, -2.8)),
+    );
     for (const [x, z] of [
       [-11.25, 0.8],
       [-8.65, -5.7],
@@ -1466,6 +1780,13 @@ export function createYear1998Scene(
         );
       }
     }
+    for (const site of environmentSites) {
+      const envPose = environment.pose(site.id);
+      if (!['arriving', 'repairing', 'leaving'].includes(envPose?.phase))
+        continue;
+      const p = repairBotPosition(site, envPose);
+      add(p[0], p[2], 1, 0.8, () => drawEnvironmentBot(site, envPose));
+    }
     sortOfficeObjects(scenery).forEach(item => item.draw());
     drawEffects(items);
     ctx.restore();
@@ -1509,6 +1830,10 @@ export function createYear1998Scene(
       ),
     );
     data('robotDebris', damage.effects().length);
+    data(
+      'environmentDamage',
+      JSON.stringify(environment.poses().filter(p => p.phase !== 'intact')),
+    );
     data(
       'robotCleanup',
       JSON.stringify(
@@ -1586,10 +1911,12 @@ export function createYear1998Scene(
       lastFrame = 0;
       return;
     }
-    const dt = lastFrame ? Math.min((now - lastFrame) / 1000, 0.05) : 0;
+    const elapsed = lastFrame ? Math.max(0, (now - lastFrame) / 1000) : 0;
+    const dt = Math.min(elapsed, 0.05);
     lastFrame = now;
     time += dt;
     damage.tick(dt);
+    environment.tick(elapsed);
     syncWhip();
     if (!whip.pose() && !unsettled(damage.pose('parent'))) parent.tick(dt);
     visitors.observeLocalPose(sessionId, parent.pose());
@@ -1727,6 +2054,7 @@ export function createYear1998Scene(
           onVisibility();
         });
   intersectionObserver?.observe(canvas);
+  syncEnvironmentSites();
   resize();
 
   return {
@@ -1751,6 +2079,7 @@ export function createYear1998Scene(
         reaction = null;
         whip.cancel();
         damage.reset();
+        environment.reset();
         damageHomes.clear();
       }
       snapshot = value;
@@ -1760,6 +2089,7 @@ export function createYear1998Scene(
       visitors.observeLocalPose(id, parent.pose());
       parent.setAway(visitors.isAway(id));
       reconcile(value);
+      syncEnvironmentSites();
       syncWhip();
       refresh();
     },
@@ -1784,6 +2114,7 @@ export function createYear1998Scene(
       visitors.setMotion(motion);
       whip.setMotion(motion);
       damage.setMotion(motion);
+      environment.setMotion(motion);
       parent.setAway(visitors.isAway(sessionId));
       if (!motion) {
         effects = [];
@@ -1817,6 +2148,52 @@ export function createYear1998Scene(
       refresh();
     },
     caneTargets,
+    environmentTargets() {
+      if (!visible()) return [];
+      const bounds = canvas.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return [];
+      return environmentSites
+        .map(site => {
+          const [x, y] = toScreen(iso(site.x, site.z, site.h));
+          return {
+            id: site.id,
+            x: bounds.left + (x / viewWidth) * bounds.width,
+            y: bounds.top + (y / viewHeight) * bounds.height,
+            radius: Math.max(
+              9,
+              (site.radius * 12 * camera.zoom * bounds.width) / viewWidth,
+            ),
+          };
+        })
+        .filter(
+          p =>
+            p.x >= Math.max(0, bounds.left) &&
+            p.x <= Math.min(window.innerWidth, bounds.right) &&
+            p.y >= Math.max(0, bounds.top) &&
+            p.y <= Math.min(window.innerHeight, bounds.bottom),
+        );
+    },
+    hitEnvironment(id, weapon, amount = 1) {
+      if (disposed || !environment.hit(id, weapon, amount)) return false;
+      refresh();
+      return true;
+    },
+    burnRobot(id, seconds) {
+      if (
+        disposed ||
+        !Number.isFinite(seconds) ||
+        seconds <= 0 ||
+        !caneTargets().some(target => target.id === id)
+      )
+        return false;
+      const anchor = anchors.find(anchor => anchor.id === id);
+      if (!unsettled(damage.pose(id))) damageHomes.set(id, [...anchor.world]);
+      if (!damage.burn(id, seconds)) return false;
+      reaction = null;
+      whip.cancel();
+      refresh();
+      return true;
+    },
     hitWithCane(id, direction = 1, strength = 1) {
       if (disposed || !caneTargets().some(target => target.id === id))
         return false;
@@ -1836,6 +2213,8 @@ export function createYear1998Scene(
       visitors.dispose();
       whip.dispose();
       damage.dispose();
+      environment.dispose();
+      environmentSites = [];
       damageHomes.clear();
       effects = [];
       anchors = [];

@@ -407,3 +407,275 @@ void test('concurrent deaths keep separate cleaners and lifecycle timing is fram
   assert.equal(fine.pose('first').generation, 1);
   assert.equal(fine.pose('second').generation, 1);
 });
+
+function expose(damage: Damage, seconds: number, id = 'robot', dt = 1 / 60) {
+  const frames = Math.ceil(seconds / dt);
+  for (let i = 0; i < frames; i++) {
+    assert.equal(damage.burn(id, seconds / frames), true);
+    damage.tick(seconds / frames);
+  }
+}
+
+void test('short fire bursts immediately engulf and distress robots then expire with lasting heat', () => {
+  const damage = createRobotDamage();
+  assert.equal(damage.burn('robot', 0.1), true);
+  const first = damage.pose('robot');
+  assert.equal(first.burning, 1);
+  assert.equal(first.panic, 1);
+  assert.equal(first.scream, 1);
+  assert.ok(first.char > 0 && first.char < 0.1);
+  assert.equal(first.damage, first.char);
+  assert.equal(first.phase, 'alive');
+  assert.equal(first.blast, 0);
+  assert.equal(damage.effects().length, 0);
+  advance(damage, 1.5);
+  const fading = damage.pose('robot');
+  assert.ok(fading.burning > 0 && fading.burning < 1);
+  advance(damage, 1);
+  const cooled = damage.pose('robot');
+  assert.equal(cooled.phase, 'alive');
+  assert.equal(cooled.burning, 0);
+  assert.equal(cooled.scream, 0);
+  assert.equal(cooled.panic, 0);
+  assert.equal(cooled.damage, first.damage);
+  assert.equal(cooled.char, first.char);
+  assert.deepEqual(cooled.offset, [0, 0, 0]);
+  advance(damage, 60);
+  assert.deepEqual(damage.pose('robot'), cooled);
+});
+
+void test('3.5 seconds of exposure chars and collapses without blast then cleaner replaces it', () => {
+  const damage = createRobotDamage();
+  expose(damage, 3.25);
+  assert.equal(damage.pose('robot').phase, 'alive');
+  expose(damage, 0.25);
+  const burnt = damage.pose('robot');
+  assert.equal(burnt.phase, 'charring');
+  assert.equal(burnt.char, 1);
+  assert.equal(burnt.damage, 1);
+  assert.equal(burnt.scream, 0);
+  assert.equal(burnt.panic, 0);
+  assert.equal(burnt.visible, true);
+  assert.equal(burnt.blast, 0);
+  assert.equal(damage.effects().length, 0);
+  assert.equal(damage.burn('robot', 0.25), false);
+  assert.equal(damage.hit('robot'), false);
+  advance(damage, 0.5);
+  assert.ok(damage.pose('robot').collapse > burnt.collapse);
+  assert.equal(damage.pose('robot').blast, 0);
+  advance(damage, 0.5);
+  const corpse = damage.pose('robot');
+  assert.equal(corpse.phase, 'wrecked');
+  assert.equal(corpse.collapse, 1);
+  assert.equal(corpse.char, 1);
+  assert.ok(corpse.burning > 0);
+  assert.deepEqual(
+    corpse.offset,
+    burnt.offset,
+    'Corpse stays where fire felled it',
+  );
+  advance(damage, 2.4);
+  assert.equal(damage.pose('robot').phase, 'cleanup');
+  advance(damage, 3.9);
+  assert.equal(damage.pose('robot').cleanup?.phase, 'leave');
+  assert.ok(damage.pose('robot').corpseOffset[0] > 0);
+  assert.equal(damage.pose('robot').char, 1);
+  advance(damage, 2.2);
+  assert.equal(damage.pose('robot').phase, 'replacing');
+  assert.equal(damage.pose('robot').char, 0);
+  advance(damage, 3.6);
+  const replacement = damage.pose('robot');
+  assert.equal(replacement.phase, 'alive');
+  assert.equal(replacement.generation, 1);
+  assert.equal(replacement.damage, 0);
+  assert.equal(replacement.char, 0);
+  assert.equal(replacement.burning, 0);
+  assert.deepEqual(replacement.offset, [0, 0, 0]);
+  assert.equal(damage.burn('robot', 0.1), true);
+});
+
+void test('fire panic moves frantically on the floor within home bounds and stops after expiry', () => {
+  const damage = createRobotDamage();
+  const positions = new Set();
+  const path: number[][] = [];
+  for (let i = 0; i < 120; i++) {
+    damage.burn('robot', 1 / 60);
+    damage.tick(1 / 60);
+    const pose = damage.pose('robot');
+    assert.equal(pose.phase, 'alive');
+    assert.equal(pose.offset[1], 0);
+    assert.ok(Math.abs(pose.offset[0]) <= 1.4);
+    assert.ok(Math.abs(pose.offset[2]) <= 0.85);
+    assert.ok(pose.rotation.every(n => Math.abs(n) <= 0.2));
+    assert.equal(pose.panic, 1);
+    positions.add(pose.offset.map(n => n.toFixed(2)).join(','));
+    path.push(pose.offset);
+  }
+  assert.ok(positions.size > 100);
+  assert.ok(
+    Math.max(...path.map(p => p[0])) - Math.min(...path.map(p => p[0])) > 2.7,
+  );
+  assert.ok(
+    Math.max(...path.map(p => p[2])) - Math.min(...path.map(p => p[2])) > 1.6,
+  );
+  advance(damage, 1);
+  assert.ok(
+    damage.pose('robot').panic > 0,
+    'The run and scream remain readable after release',
+  );
+  advance(damage, 2);
+  assert.deepEqual(damage.pose('robot').offset, [0, 0, 0]);
+  assert.equal(damage.pose('robot').panic, 0);
+});
+
+void test('repeated separated bursts accumulate heat and cane damage remains additive', () => {
+  const damage = createRobotDamage();
+  for (let i = 0; i < 13; i++) {
+    damage.burn('robot', 0.25);
+    advance(damage, 2);
+    assert.equal(damage.pose('robot').phase, 'alive');
+    assert.equal(damage.pose('robot').burning, 0);
+  }
+  assert.ok(damage.pose('robot').char > 0.92);
+  damage.burn('robot', 0.25);
+  assert.equal(damage.pose('robot').phase, 'charring');
+  const mixed = createRobotDamage();
+  mixed.hit('robot', 1, 1);
+  advance(mixed, 2);
+  expose(mixed, 3);
+  assert.equal(mixed.pose('robot').phase, 'alive');
+  assert.ok(mixed.pose('robot').damage > mixed.pose('robot').char);
+  mixed.burn('robot', 0.1);
+  assert.equal(mixed.pose('robot').phase, 'charring');
+  assert.equal(mixed.pose('robot').blast, 0);
+});
+
+void test('Motion off retains static heat and damage with no fire, panic or deferred animation', () => {
+  const damage = createRobotDamage();
+  damage.burn('robot', 0.25);
+  damage.tick(0.2);
+  damage.setMotion(false);
+  const still = damage.pose('robot');
+  assert.ok(still.char > 0);
+  assert.equal(still.burning, 0);
+  assert.equal(still.panic, 0);
+  assert.equal(still.scream, 0);
+  assert.deepEqual(still.offset, [0, 0, 0]);
+  advance(damage, 10);
+  assert.deepEqual(damage.pose('robot'), still);
+  for (let i = 0; i < 20; i++) assert.equal(damage.burn('robot', 0.25), true);
+  const crisp = damage.pose('robot');
+  assert.equal(crisp.damage, 1);
+  assert.equal(crisp.char, 1);
+  assert.equal(crisp.phase, 'alive');
+  assert.equal(crisp.burning, 0);
+  assert.equal(crisp.panic, 0);
+  assert.equal(crisp.generation, 0);
+  assert.deepEqual(crisp.offset, [0, 0, 0]);
+  damage.setMotion(true);
+  advance(damage, 20);
+  assert.deepEqual(damage.pose('robot'), crisp);
+  damage.burn('robot', 0.01);
+  assert.equal(damage.pose('robot').phase, 'charring');
+  damage.setMotion(false);
+  assert.equal(damage.pose('robot').generation, 1);
+  assert.equal(damage.pose('robot').char, 0);
+});
+
+void test('invalid exposures are rejected without state and long exposures are capped per call', () => {
+  const damage = createRobotDamage();
+  for (const seconds of [NaN, Infinity, -Infinity, -1, 0])
+    assert.equal(damage.burn('robot', seconds), false);
+  for (const id of [null, undefined, ''])
+    assert.equal(damage.burn(id, 0.1), false);
+  assert.equal(damage.pose('robot').damage, 0);
+  const comparison = createRobotDamage();
+  damage.burn('robot', 10000);
+  comparison.burn('robot', 0.25);
+  assert.deepEqual(damage.pose('robot'), comparison.pose('robot'));
+  for (const dt of [NaN, Infinity, -1, 0]) damage.tick(dt);
+  assert.deepEqual(damage.pose('robot'), comparison.pose('robot'));
+  damage.tick(99999);
+  comparison.tick(0.25);
+  assert.deepEqual(damage.pose('robot'), comparison.pose('robot'));
+});
+
+void test('fire state is isolated by retain, bounded capacity, reset and disposal', () => {
+  const damage = createRobotDamage({maxRobots: 2});
+  damage.burn('one', 0.2);
+  damage.burn('two', 0.25);
+  advance(damage, 0.2);
+  const retained = damage.pose('one');
+  damage.retain(['one']);
+  assert.deepEqual(damage.pose('one'), retained);
+  assert.equal(damage.pose('two').char, 0);
+  assert.equal(damage.pose('two').burning, 0);
+  damage.burn('two', 0.01);
+  assert.ok(damage.pose('two').char < 0.01);
+  damage.burn('three', 0.1);
+  assert.equal(damage.pose('one').char, 0);
+  assert.equal(damage.pose('one').panic, 0);
+  damage.reset();
+  for (const id of ['one', 'two', 'three']) {
+    assert.equal(damage.pose(id).char, 0);
+    assert.equal(damage.pose(id).burning, 0);
+  }
+  damage.burn('new', 0.25);
+  damage.dispose();
+  assert.equal(damage.pose('new').char, 0);
+  assert.equal(damage.burn('new', 0.2), false);
+  assert.equal(damage.burn('other', 0.2), false);
+});
+
+void test('fire exposure and lifecycle timing match across frame rates', () => {
+  const fine = createRobotDamage();
+  const coarse = createRobotDamage();
+  expose(fine, 2.5, 'robot', 1 / 120);
+  expose(coarse, 2.5, 'robot', 1 / 20);
+  const compare = () => {
+    const a = fine.pose('robot');
+    const b = coarse.pose('robot');
+    assert.equal(a.phase, b.phase);
+    assert.equal(a.generation, b.generation);
+    assert.ok(Math.abs(a.char - b.char) < 1e-8);
+    assert.ok(Math.abs(a.phaseAge - b.phaseAge) < 1e-8);
+    assert.ok(Math.abs(a.burning - b.burning) < 1e-8);
+    for (let i = 0; i < 3; i++)
+      assert.ok(Math.abs(a.offset[i] - b.offset[i]) < 1e-8);
+  };
+  compare();
+  advance(fine, 2, 1 / 120);
+  advance(coarse, 2, 1 / 20);
+  compare();
+  // Apply the lethal last exposure at the same time; then vary tick cadence.
+  for (const model of [fine, coarse])
+    for (let i = 0; i < 4; i++) model.burn('robot', 0.25);
+  for (const seconds of [0.3, 0.7, 2.5, 1.5, 3.2, 1.8, 4]) {
+    advance(fine, seconds, 1 / 120);
+    advance(coarse, seconds, 1 / 20);
+    compare();
+  }
+  assert.equal(fine.pose('robot').generation, 1);
+});
+
+void test('removing or resetting burnt corpses cancels their cleaner and replacement', () => {
+  for (const elapsed of [0, 1, 4, 10]) {
+    for (const reset of [false, true]) {
+      const damage = createRobotDamage();
+      for (let i = 0; i < 14; i++) damage.burn('robot', 0.25);
+      advance(damage, elapsed);
+      assert.notEqual(damage.pose('robot').phase, 'alive');
+      if (reset) damage.reset();
+      else damage.retain([]);
+      assert.equal(damage.pose('robot').burning, 0);
+      assert.equal(damage.pose('robot').char, 0);
+      assert.equal(damage.pose('robot').cleanup, null);
+      assert.equal(damage.burn('robot', 0.1), true);
+      advance(damage, 20);
+      assert.equal(damage.pose('robot').phase, 'alive');
+      assert.equal(damage.pose('robot').generation, 0);
+      assert.ok(damage.pose('robot').char > 0);
+      assert.equal(damage.pose('robot').cleanup, null);
+    }
+  }
+});

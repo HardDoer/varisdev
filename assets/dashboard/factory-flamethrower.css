@@ -1,0 +1,168 @@
+.factory-flamethrower-holster {
+  position: absolute;
+  z-index: 7;
+  top: 66px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 3px 11px 3px 5px;
+  border: 1px solid var(--line, #577383);
+  border-radius: 9px;
+  background: var(--panel, #101c27);
+  color: var(--text, #edf4f6);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.factory-flamethrower-holster[hidden] {
+  display: none;
+}
+#application-controls > .factory-flamethrower-holster,
+.factory-flamethrower-holster.factory-flamethrower-toolbar {
+  position: static;
+  flex: 0 0 auto;
+  min-height: 32px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  gap: 5px;
+}
+.factory-flamethrower-holster svg {
+  width: 40px;
+  height: 40px;
+}
+.factory-flamethrower-holster.factory-flamethrower-toolbar svg {
+  width: 24px;
+  height: 24px;
+}
+.factory-flamethrower-holster strong,
+.factory-flamethrower-holster small {
+  display: block;
+}
+.factory-flamethrower-holster strong {
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.factory-flamethrower-holster small {
+  margin-top: 2px;
+  color: var(--muted, #a0b5c3);
+  font-size: 0.625rem;
+}
+.factory-flamethrower-holster.factory-flamethrower-toolbar small {
+  display: none;
+}
+.factory-flamethrower-holster:hover,
+.factory-flamethrower-holster[aria-pressed='true'] {
+  border-color: var(--amber, #ffcb7a);
+  background: var(--hover, #203442);
+}
+.factory-flamethrower-holster:focus-visible {
+  outline: 2px solid var(--focus, var(--cyan, #75d9ff));
+  outline-offset: 3px;
+}
+.factory-flamethrower-layer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+.factory-flamethrower-layer[hidden] {
+  display: none;
+}
+.factory-flamethrower-layer::backdrop {
+  background: transparent;
+  pointer-events: none;
+}
+.factory-flamethrower-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+.factory-flamethrower-overlay *,
+.factory-flamethrower-holster svg * {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.scene[data-flamethrower-equipped='true'] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.factory-flamethrower-active,
+.factory-flamethrower-active *,
+.factory-flamethrower-active *::before,
+.factory-flamethrower-active *::after,
+.factory-flamethrower-active *::backdrop {
+  cursor: none !important;
+}
+.flamethrower-held {
+  filter: drop-shadow(0 2px 2px #0009);
+}
+.flame-body {
+  fill: #63717c;
+  stroke: #e9f2f5;
+  stroke-width: 1.8;
+}
+.flame-tank {
+  fill: #e77e29;
+  stroke: #18212b;
+  stroke-width: 2;
+}
+.flame-grip {
+  fill: #293440;
+  stroke: #c3cdd5;
+  stroke-width: 1.5;
+}
+.flame-nozzle {
+  fill: #293440;
+  stroke: #f8d58f;
+  stroke-width: 2;
+}
+.flame-vents {
+  fill: none;
+  stroke: #17202a;
+  stroke-width: 2;
+}
+.flame-hose {
+  fill: none;
+  stroke: var(--text, #edf4f6);
+  stroke-width: 4;
+}
+.flame-reticle-back {
+  fill: #18212b;
+  fill-opacity: 0.85;
+  stroke: #fff1cf;
+  stroke-width: 1;
+}
+.flame-reticle-lines {
+  fill: none;
+  stroke: #ffd273;
+  stroke-width: 2;
+}
+.flame-jet-outer {
+  fill: #f36b19;
+  fill-opacity: 0.92;
+  stroke: #8c2a09;
+  stroke-width: 1.5;
+}
+.flame-jet-inner {
+  fill: #fff0a0;
+}
+.flame-ember {
+  fill: none;
+  stroke: #fff4ba;
+  stroke-width: 2.5;
+}

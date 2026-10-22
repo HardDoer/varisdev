@@ -45,7 +45,9 @@ Resuming a saved conversation replaces other open workspaces in the same folder,
 
 Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
-Choose **Cane** to swing at robots by waving the mouse, or **Gun** to aim and click to shoot. Right-click or press **Esc** to holster either tool. Hits affect the scene's robots without interrupting agent work.
+Choose **Cane** to swing at robots by waving the mouse, **Gun** to aim and click to shoot, or **Flamethrower** to spray flames while holding the left mouse button. Burning robots scream and run around; sustained flames leave a charred wreck for the cleaner. Right-click or press **Esc** to put away a weapon.
+
+The weapons also damage scenery: the cane leaves dents, gunshots break surfaces, and flames scorch and ignite nearby objects. Small repair robots arrive after a delay to extinguish fires and restore damaged areas. These effects do not interrupt agent work.
 
 ## Browsing and files
 

@@ -6,6 +6,7 @@ import {createThemeScene} from './theme-scene.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createFactoryCane} from './factory-cane.js';
 import {createFactoryGun} from './factory-gun.js';
+import {createFactoryFlamethrower} from './factory-flamethrower.js';
 import {createProcessingEffects} from './processing-effects.js';
 import {initThemes} from './themes.js';
 import {initZoom} from './zoom.js';
@@ -901,6 +902,7 @@ function setSceneMotion(enabled) {
   animation.setMotion(enabled);
   factoryCane.setMotion(enabled);
   factoryGun.setMotion(enabled);
+  factoryFlamethrower.setMotion(enabled);
 }
 function activityPhase(data) {
   if (stopping.has(data.session.id)) return 'Stopping';
@@ -1967,6 +1969,7 @@ function render() {
   $('factory-workspace').hidden = !hasSession;
   factoryCane.setSession(hasSession ? state.sessionId : null);
   factoryGun.setSession(hasSession ? state.sessionId : null);
+  factoryFlamethrower.setSession(hasSession ? state.sessionId : null);
   appMenu.place(hasSession);
   renderSessionActions();
   agentTemplates.render?.();
@@ -2637,19 +2640,39 @@ const scene = createThemeScene($('factory-canvas'), {
 const factoryToyOptions = {
   holsterContainer: $('application-controls'),
   getTargets: () => scene.caneTargets(),
+  getEnvironmentTargets: () => scene.environmentTargets(),
+  onEnvironmentHit: (id, weapon, amount) =>
+    scene.hitEnvironment(id, weapon, amount),
   onHit: (id, direction, strength) =>
     scene.hitWithCane(id, direction, strength),
 };
 const factoryGun = createFactoryGun($('scene'), {
   ...factoryToyOptions,
-  onEquip: () => factoryCane.stow(),
+  onEquip: () => {
+    factoryCane.stow();
+    factoryFlamethrower.stow();
+  },
 });
 const factoryCane = createFactoryCane($('scene'), {
   ...factoryToyOptions,
-  onEquip: () => factoryGun.stow(),
+  onEquip: () => {
+    factoryGun.stow();
+    factoryFlamethrower.stow();
+  },
+});
+const factoryFlamethrower = createFactoryFlamethrower($('scene'), {
+  ...factoryToyOptions,
+  onBurn: (id, seconds) => scene.burnRobot(id, seconds),
+  onEquip: () => {
+    factoryGun.stow();
+    factoryCane.stow();
+  },
 });
 const cleanupThemes = initThemes(
-  (palette, entry) => void scene.setTheme(entry, palette),
+  (palette, entry) => {
+    factoryFlamethrower.stow();
+    void scene.setTheme(entry, palette);
+  },
   {deferDiscovery: true},
 );
 reportSceneError = cleanupThemes.reportSceneError;
@@ -2853,6 +2876,7 @@ window.addEventListener('unload', () => {
   cleanupSessionSelection?.();
   factoryCane.dispose();
   factoryGun.dispose();
+  factoryFlamethrower.dispose();
   scene?.dispose();
   processingEffects.dispose();
 });

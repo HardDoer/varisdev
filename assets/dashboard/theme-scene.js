@@ -219,6 +219,10 @@ export function createThemeScene(
     caneTargets: () => invoke('caneTargets') || [],
     hitWithCane: (id, direction, strength) =>
       invoke('hitWithCane', id, direction, strength) || false,
+    burnRobot: (id, seconds) => invoke('burnRobot', id, seconds) || false,
+    environmentTargets: () => invoke('environmentTargets') || [],
+    hitEnvironment: (id, weapon, amount) =>
+      invoke('hitEnvironment', id, weapon, amount) || false,
     dispose() {
       if (disposed) return;
       disposed = true;
