@@ -32,16 +32,6 @@ export interface ConversationSnapshot {
   conversationTruncated: boolean;
 }
 
-const textLimit = 16000;
-function preview(text: string, limit = textLimit): string {
-  return text.length > limit
-    ? `${text.slice(0, limit)}\n[Preview truncated]`
-    : text;
-}
-
-const outputLimit = 16000;
-const inputLimit = 8000;
-
 export function publicText(text: string): string {
   return text.replace(
     /data:image\/[^;\s]+;base64,[a-z0-9+/=]+/gi,
@@ -51,116 +41,115 @@ export function publicText(text: string): string {
 
 /** Read only public text blocks, with no thinking, images or result details. */
 export function messageText(message: {content?: unknown}): string {
-  if (typeof message.content === 'string')
-    return publicText(message.content).slice(0, outputLimit + 1);
+  if (typeof message.content === 'string') return publicText(message.content);
   if (!Array.isArray(message.content)) return '';
-  let text = '';
-  for (const part of message.content) {
-    if (part?.type !== 'text' || typeof part.text !== 'string') continue;
-    text +=
-      (text ? '\n' : '') + publicText(part.text).slice(0, outputLimit + 1);
-    if (text.length > outputLimit) return text.slice(0, outputLimit + 1);
-  }
-  return text;
+  return message.content
+    .filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => publicText(part.text))
+    .join('\n');
 }
 
-/** Keep arguments as bounded, public JSON so the view can render their real values. */
+/** Preserve public JSON arguments without calling getters or user serializers. */
 export function toolInput(args: unknown): string {
-  const marker = '[Arguments truncated]';
-  const encodedMarker = JSON.stringify(marker);
-  const objectMarker = `${JSON.stringify('_truncated')}:${encodedMarker}`;
-  let nodes = 0;
+  const unavailable = JSON.stringify('[Arguments unavailable]');
+  const omitted = JSON.stringify('[Omitted]');
+  const privateKey =
+    /^(?:base64|thinking|thoughtSignature|signature|providerMetadata)$/i;
+  const summaryKeys = new Set(['command', 'path', 'file_path', 'url']);
+  type Frame = {
+    value: object;
+    keys: string[];
+    index: number;
+    array: boolean;
+  };
+  const frames: Frame[] = [];
+  const ancestors = new WeakSet<object>();
+  const parts: string[] = [];
 
-  function string(value: string, budget: number): string {
-    const text = publicText(value);
-    const limit = Math.min(budget, 6000);
-    if (limit < JSON.stringify(`\n${marker}`).length) return encodedMarker;
-    if (text.length < limit) {
-      const encoded = JSON.stringify(text);
-      if (encoded.length <= limit) return encoded;
-    }
-    let low = 0;
-    let high = Math.min(text.length, limit);
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      if (JSON.stringify(`${text.slice(0, middle)}\n${marker}`).length <= limit)
-        low = middle;
-      else high = middle - 1;
-    }
-    return JSON.stringify(`${text.slice(0, low)}\n${marker}`);
+  function ownValue(value: object, key: string): unknown {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && !('value' in descriptor))
+      throw new Error('Argument accessors are unavailable');
+    return descriptor?.value;
   }
 
-  function encode(value: unknown, budget: number, depth = 0): string {
-    if (++nodes > 100 || depth > 6) return encodedMarker;
-    if (typeof value === 'string') return string(value, budget);
-    if (!value || typeof value !== 'object')
-      return JSON.stringify(value) ?? 'null';
-    if (Array.isArray(value)) {
-      if (budget < encodedMarker.length + 2) return encodedMarker;
-      const parts: string[] = [];
-      let remaining = budget - 2;
-      for (let index = 0; index < value.length; index++) {
-        const comma = parts.length ? 1 : 0;
-        // Keep room for a marker if more array elements must be omitted.
-        const reserve = index < value.length - 1 ? encodedMarker.length + 1 : 0;
-        if (index >= 30 || remaining - comma - reserve < encodedMarker.length) {
-          parts.push(encodedMarker);
-          break;
+  function encode(value: unknown): void {
+    if (typeof value === 'string') {
+      parts.push(JSON.stringify(publicText(value)));
+      return;
+    }
+    if (!value || typeof value !== 'object') {
+      parts.push(
+        typeof value === 'bigint'
+          ? unavailable
+          : typeof value === 'number' || typeof value === 'boolean'
+            ? JSON.stringify(value)
+            : 'null',
+      );
+      return;
+    }
+    if (ancestors.has(value)) {
+      parts.push(JSON.stringify('[Circular]'));
+      return;
+    }
+    try {
+      const array = Array.isArray(value);
+      if (!array) {
+        const type = ownValue(value, 'type');
+        const mimeType = ownValue(value, 'mimeType');
+        if (
+          type === 'image' ||
+          (typeof mimeType === 'string' && mimeType.startsWith('image/'))
+        ) {
+          parts.push(JSON.stringify('[Image omitted]'));
+          return;
         }
-        const part = encode(
-          value[index],
-          remaining - comma - reserve,
-          depth + 1,
-        );
-        parts.push(part);
-        remaining -= part.length + comma;
+        if (type === 'thinking') {
+          parts.push(JSON.stringify('[Thinking omitted]'));
+          return;
+        }
       }
-      return `[${parts.join(',')}]`;
+      const keys = array
+        ? Array.from({length: (value as unknown[]).length}, (_, index) =>
+            String(index),
+          )
+        : Object.keys(value).sort(
+            (a, b) =>
+              Number(summaryKeys.has(b)) - Number(summaryKeys.has(a)) ||
+              a.localeCompare(b),
+          );
+      ancestors.add(value);
+      frames.push({value, keys, index: 0, array});
+      parts.push(array ? '[' : '{');
+    } catch {
+      parts.push(unavailable);
     }
-    const record = value as Record<string, unknown>;
-    if (
-      record.type === 'image' ||
-      (typeof record.mimeType === 'string' &&
-        record.mimeType.startsWith('image/'))
-    )
-      return JSON.stringify('[Image omitted]');
-    if (record.type === 'thinking') return JSON.stringify('[Thinking omitted]');
-    if (budget < objectMarker.length + 2) return encodedMarker;
-    const parts: string[] = [];
-    let remaining = budget - 2;
-    const summaryKeys = ['command', 'path', 'file_path', 'url'];
-    const entries = Object.entries(record).sort(([a], [b]) => {
-      const priority = (key: string) => (summaryKeys.includes(key) ? 0 : 1);
-      return priority(a) - priority(b) || a.localeCompare(b);
-    });
-    for (let index = 0; index < entries.length; index++) {
-      const [key, item] = entries[index];
-      const name = JSON.stringify(key.slice(0, 200));
-      const overhead = name.length + 1 + (parts.length ? 1 : 0);
-      const reserve = index < entries.length - 1 ? objectMarker.length + 1 : 0;
-      if (
-        index >= 40 ||
-        remaining - overhead - reserve < encodedMarker.length
-      ) {
-        parts.push(objectMarker);
-        break;
-      }
-      const part =
-        /^(?:base64|thinking|thoughtSignature|signature|providerMetadata)$/i.test(
-          key,
-        )
-          ? JSON.stringify('[Omitted]')
-          : encode(item, remaining - overhead - reserve, depth + 1);
-      parts.push(`${name}:${part}`);
-      remaining -= overhead + part.length;
+  }
+
+  encode(args);
+  // An explicit stack handles deeply nested JSON and only marks ancestor cycles.
+  while (frames.length) {
+    const frame = frames[frames.length - 1];
+    if (frame.index === frame.keys.length) {
+      parts.push(frame.array ? ']' : '}');
+      ancestors.delete(frame.value);
+      frames.pop();
+      continue;
     }
-    return `{${parts.join(',')}}`;
+    if (frame.index) parts.push(',');
+    const key = frame.keys[frame.index++];
+    if (!frame.array) parts.push(`${JSON.stringify(publicText(key))}:`);
+    if (!frame.array && privateKey.test(key)) {
+      parts.push(omitted);
+      continue;
+    }
+    try {
+      encode(ownValue(frame.value, key));
+    } catch {
+      parts.push(unavailable);
+    }
   }
-  try {
-    return encode(args, inputLimit);
-  } catch {
-    return JSON.stringify('[Arguments unavailable]');
-  }
+  return parts.join('');
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -328,90 +317,84 @@ export function projectMessage(
 ): ConversationMessage {
   return {
     ...message,
-    text: preview(publicText(message.text)),
+    text: publicText(message.text),
     visualizations: message.visualizations
       ?.slice(0, MAX_VISUALIZATION_BLOCKS)
       .map(block => ({...block})),
     visualizationErrors: message.visualizationErrors
       ?.slice(0, MAX_VISUALIZATION_BLOCKS)
       .map(error => publicText(error).slice(0, 200)),
-    input:
-      message.input === undefined ? undefined : preview(message.input, 8000),
-    error:
-      message.error === undefined ? undefined : preview(message.error, 4000),
+    input: message.input === undefined ? undefined : publicText(message.input),
+    error: message.error === undefined ? undefined : publicText(message.error),
     toolName:
-      message.toolName === undefined
-        ? undefined
-        : preview(message.toolName, 200),
-    truncated:
-      !!message.truncated ||
-      message.text.length > textLimit ||
-      (message.input?.length ?? 0) > 8000 ||
-      !!message.input?.includes('[Arguments truncated]') ||
-      (message.error?.length ?? 0) > 4000,
+      message.toolName === undefined ? undefined : publicText(message.toolName),
+    truncated: !!message.truncated,
   };
 }
 
-function messageSize(message: ConversationMessage): number {
-  return (
-    message.text.length +
-    (message.input?.length ?? 0) +
-    (message.error?.length ?? 0) +
-    (message.visualizations?.reduce(
-      (size, block) =>
-        size + (block.type === 'markdown' ? block.text.length : 400),
-      0,
-    ) ?? 0) +
-    (message.visualizationErrors?.join('').length ?? 0)
-  );
+function copyMessage(message: ConversationMessage): ConversationMessage {
+  return {
+    ...message,
+    visualizations: message.visualizations?.map(block => ({...block})),
+    visualizationErrors: message.visualizationErrors?.slice(),
+  };
 }
 
-/** Keeps only bounded public conversation text and returns independent snapshots. */
+/** Retains public conversation history and returns independent snapshots. */
 export class ConversationState {
   private messages: ConversationMessage[] = [];
+  private indices = new Map<string, number>();
   private truncated = false;
 
-  private trim(): void {
-    let size = this.messages.reduce(
-      (total, message) => total + messageSize(message),
-      0,
-    );
-    while (this.messages.length > 100 || size > 160000) {
-      size -= messageSize(this.messages.shift()!);
-      this.truncated = true;
-    }
-  }
-
   replace(messages: Iterable<ConversationMessage>, truncated = false): boolean {
-    const previousMessages = this.messages;
-    const previousTruncated = this.truncated;
-    this.messages = [];
-    this.truncated = truncated;
+    const replacement = new ConversationState();
+    replacement.truncated = truncated;
     for (const message of messages) {
-      const previous = this.get(message.id);
-      this.update({...previous, ...message, at: previous?.at ?? message.at});
+      const previous = replacement.get(message.id);
+      const candidate = {
+        ...previous,
+        ...message,
+        at: previous?.at ?? message.at,
+      };
+      const index = this.indices.get(message.id);
+      const retained = index === undefined ? undefined : this.messages[index];
+      // Worker snapshots resend unchanged history alongside the updated row.
+      replacement.store(
+        retained && isDeepStrictEqual(retained, candidate)
+          ? retained
+          : projectMessage(candidate),
+      );
     }
-    return (
-      previousTruncated !== this.truncated ||
-      !isDeepStrictEqual(previousMessages, this.messages)
-    );
+    if (
+      this.truncated === truncated &&
+      isDeepStrictEqual(this.messages, replacement.messages)
+    )
+      return false;
+    this.messages = replacement.messages;
+    this.indices = replacement.indices;
+    this.truncated = truncated;
+    return true;
   }
 
   update(message: ConversationMessage): boolean {
-    const entry = projectMessage(message);
-    const index = this.messages.findIndex(item => item.id === entry.id);
-    if (index < 0) this.messages.push(entry);
-    else {
+    return this.store(projectMessage(message));
+  }
+
+  private store(entry: ConversationMessage): boolean {
+    const index = this.indices.get(entry.id);
+    if (index === undefined) {
+      this.indices.set(entry.id, this.messages.length);
+      this.messages.push(entry);
+    } else {
       if (isDeepStrictEqual(this.messages[index], entry)) return false;
       this.messages[index] = entry;
     }
-    this.trim();
     return true;
   }
 
   get(id: string): ConversationMessage | undefined {
-    const message = this.messages.find(item => item.id === id);
-    return message ? projectMessage(message) : undefined;
+    const index = this.indices.get(id);
+    return index === undefined ? undefined : copyMessage(this.messages[index]);
   }
 
   settle(
@@ -428,7 +411,7 @@ export class ConversationState {
       if (message.role === 'tool' && message.status === 'running') {
         message.status = status;
         message.finishedAt = now;
-        if (error) message.error = publicText(error).slice(0, 4000);
+        if (error) message.error = publicText(error);
         changed = true;
       }
     }
@@ -437,7 +420,7 @@ export class ConversationState {
 
   snapshot(): ConversationSnapshot {
     return {
-      conversation: this.messages.map(projectMessage),
+      conversation: this.messages.map(copyMessage),
       conversationTruncated: this.truncated,
     };
   }

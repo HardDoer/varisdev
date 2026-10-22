@@ -3,6 +3,7 @@ import {test} from 'node:test';
 import {ConversationState, toolInput} from '../src/conversation.ts';
 import {
   formatToolInput,
+  formatToolResult,
   toolInputPreview,
 } from '../assets/dashboard/tool-display.js';
 
@@ -87,14 +88,116 @@ void test('production commands, queries and agent messages keep useful labeled f
   assert.doesNotThrow(() => JSON.parse(agent.input));
 });
 
-void test('oversized production input remains bounded valid JSON after snapshot projection', () => {
-  const operation = displayedOperation('write', {
-    path: '/project/large.md',
-    content: 'Line with "quotes" and \\\n'.repeat(10_000),
-  });
-  assert.ok(operation.input.length <= 8000);
-  assert.doesNotThrow(() => JSON.parse(operation.input));
+void test('large production input retains exact multiline content through snapshot rendering', () => {
+  const content =
+    'Line with "quotes" and \\\n  Indented\r\n\nLiteral \\n stays literal 🛠️\n'.repeat(
+      10_000,
+    ) + 'Final file line\n';
+  const args = {path: '/project/large.md', content};
+  const operation = displayedOperation('write', args);
+  assert.ok(content.length > 64 * 1024);
+  assert.deepEqual(JSON.parse(operation.input), args);
   assert.equal(operation.summary, '/project/large.md');
-  assert.ok(operation.text.includes('Content:'));
-  assert.ok(operation.text.includes('[Arguments truncated]'));
+  assert.equal(
+    operation.text,
+    `Write file\n\nPath: /project/large.md\n\nContent:\n${content}`,
+  );
+});
+
+void test('large plain and JSON-encoded strings retain exact tool input and result text', () => {
+  const text =
+    'First "line"\r\n  Second line\n\nLiteral \\n and \\t stay literal 🛠️\n'.repeat(
+      2000,
+    ) + 'Final message line\n';
+  assert.ok(text.length > 64 * 1024);
+  for (const value of [text, JSON.stringify(text)]) {
+    assert.equal(
+      formatToolInput('agent_send', value),
+      `Send agent message\n\n${text}`,
+    );
+    assert.equal(formatToolResult(value), text);
+  }
+});
+
+void test('large arrays keep readable numbering and every entry through the tail', () => {
+  const values = Array.from(
+    {length: 128},
+    (_, index) =>
+      `Entry ${index + 1}\n${'Details '.repeat(128)}\nEnd ${index + 1}\n`,
+  );
+  const expected = values
+    .map((value, index) => `${index + 1}.\n${value}`)
+    .join('\n\n');
+  assert.ok(expected.length > 64 * 1024);
+  assert.equal(
+    formatToolInput('json_query', JSON.stringify(values)),
+    `Inspect JSON\n\n${expected}`,
+  );
+  assert.equal(formatToolResult(values), expected);
+});
+
+void test('large objects keep labeled multiline fields and their final sibling', () => {
+  const entries = Array.from({length: 128}, (_, index) => {
+    const value = `Field ${index + 1}\n${'Details '.repeat(128)}\nEnd ${index + 1}\n`;
+    return [`field_${index + 1}`, value];
+  });
+  const value = Object.fromEntries([...entries, ['tail', 'Final sibling']]);
+  const expected = `${entries
+    .map(([, text], index) => `Field ${index + 1}:\n${text}`)
+    .join('\n\n')}\n\nTail: Final sibling`;
+  assert.ok(expected.length > 64 * 1024);
+  assert.equal(
+    formatToolInput('json_query', value),
+    `Inspect JSON\n\n${expected}`,
+  );
+  assert.equal(formatToolResult(JSON.stringify(value)), expected);
+});
+
+void test('20,000 nested public tool arguments retain their full serialized input and result', () => {
+  const content =
+    'Deep "quoted" line\nLiteral \\n stays literal\n'.repeat(2000) +
+    'Final deep content line\n';
+  for (const shape of ['object', 'array']) {
+    let value: unknown = {content, tail: 'Final deep field'};
+    for (let depth = 0; depth < 20_000; depth++)
+      value = shape === 'array' ? [value] : {child: value};
+    const operation = displayedOperation('json_query', {
+      data: value,
+      tail: 'Final root field',
+    });
+    assert.ok(operation.input.includes(JSON.stringify(content)));
+    assert.ok(operation.input.endsWith(',"tail":"Final root field"}'));
+    assert.equal(operation.text, `Inspect JSON\n\n${operation.input}`);
+    assert.equal(formatToolResult(operation.input), operation.input);
+    assert.equal(operation.summary, 'Inspect JSON');
+  }
+});
+
+void test('previews of 20,000 nested array arguments use the tool label without overflowing', () => {
+  let command: unknown = 'Final command value';
+  for (let depth = 0; depth < 20_000; depth++) command = [command];
+  const input = toolInput({command, tail: 'Final root field'});
+  assert.equal(toolInputPreview('bash', input), 'Run command');
+  const operation = displayedOperation('bash', {
+    command,
+    tail: 'Final root field',
+  });
+  assert.equal(operation.summary, 'Run command');
+  assert.equal(operation.text, `Run command\n\n${input}`);
+  assert.equal(formatToolResult(input), input);
+});
+
+void test('deep structures use the existing JSON depth fallback without losing their tail', () => {
+  const leaf = {
+    content: 'Deep content\n'.repeat(6000),
+    tail: 'Final deep field',
+  };
+  let value: unknown = leaf;
+  for (let depth = 0; depth < 20; depth++) value = {child: value};
+  const text = formatToolResult(JSON.stringify(value));
+  assert.ok(text.startsWith('Child:\n  Child:\n'));
+  assert.ok(text.includes('"child": {'));
+  assert.ok(text.includes(`"content": ${JSON.stringify(leaf.content)}`));
+  assert.ok(text.includes('"tail": "Final deep field"'));
+  assert.ok(!text.includes('[Display truncated]'));
 });

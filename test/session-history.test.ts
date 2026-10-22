@@ -19,7 +19,7 @@ import {createDashboardParent} from '../src/dashboard/parent.ts';
 
 for (const extensionProvider of [false, true])
   void test(
-    `folder history resumes the same Pi session, model and conversation${extensionProvider ? ' with an extension provider' : ''}`,
+    `folder history restores the session, model and full large conversation${extensionProvider ? ' after compaction with an extension provider' : ''}`,
     {timeout: 20000},
     async t => {
       const root = await realpath(
@@ -121,6 +121,76 @@ for (const extensionProvider of [false, true])
       }
       const older = save(cwd, 'Older work', 1000);
       const saved = save(cwd, 'Current work', 2000);
+      const longUser = 'Saved user text\n'.repeat(2000);
+      const longAssistant = 'Saved assistant text\n'.repeat(2000);
+      const longResult = 'Saved tool failure\n'.repeat(2000);
+      const arguments_ = {
+        path: 'history.txt',
+        content: 'Full saved arguments\n'.repeat(2000),
+      };
+      const expected: Array<[string, string]> = [
+        ['user', 'Remember the blue door'],
+        ['assistant', 'The door is blue.'],
+        ['user', longUser],
+        ['assistant', longAssistant],
+        ['tool', longResult],
+      ];
+      saved.appendMessage({role: 'user', content: longUser, timestamp: 2010});
+      saved.appendMessage({
+        role: 'assistant',
+        content: [
+          {type: 'text', text: longAssistant},
+          {type: 'thinking', thinking: 'private saved reasoning'},
+          {
+            type: 'toolCall',
+            id: 'saved-tool',
+            name: 'write',
+            arguments: {...arguments_, thinking: 'private saved arguments'},
+          },
+        ],
+        api: 'openai-completions',
+        provider: 'history-fixture',
+        model: 'saved-model',
+        stopReason: 'toolUse',
+        usage,
+        timestamp: 2011,
+      });
+      saved.appendMessage({
+        role: 'toolResult',
+        toolCallId: 'saved-tool',
+        toolName: 'write',
+        content: [{type: 'text', text: longResult}],
+        details: {private: 'private saved provider details'},
+        isError: true,
+        timestamp: 2012,
+      });
+      let lastUserEntryId: string | undefined;
+      for (let index = 0; index < 60; index++) {
+        const prompt = `Saved prompt ${index}`;
+        const response = `Saved response ${index}`;
+        lastUserEntryId = saved.appendMessage({
+          role: 'user',
+          content: prompt,
+          timestamp: 2020 + index * 2,
+        });
+        saved.appendMessage({
+          role: 'assistant',
+          content: [{type: 'text', text: response}],
+          api: 'openai-completions',
+          provider: 'history-fixture',
+          model: 'saved-model',
+          stopReason: 'stop',
+          usage,
+          timestamp: 2021 + index * 2,
+        });
+        expected.push(['user', prompt], ['assistant', response]);
+      }
+      if (extensionProvider)
+        saved.appendCompaction(
+          'Remember the blue door\nThe door is blue.',
+          lastUserEntryId!,
+          25000,
+        );
       const unrelated = save(other, 'Other folder', 3000);
       const listed = await hub.listSessions(cwd);
       assert.deepEqual(
@@ -129,7 +199,7 @@ for (const extensionProvider of [false, true])
       );
       assert.equal(listed[0].name, 'Current work');
       assert.equal(listed[0].firstMessage, 'Remember the blue door');
-      assert.equal(listed[0].messageCount, 2);
+      assert.equal(listed[0].messageCount, 125);
       await assert.rejects(hub.listSessions('.'), /absolute/);
       await assert.rejects(
         hub.createSession({cwd, sessionId: unrelated.getSessionId()}),
@@ -159,8 +229,25 @@ for (const extensionProvider of [false, true])
       assert.equal(snapshot.session.status, 'idle');
       assert.equal(snapshot.session.model, 'history-fixture/saved-model');
       assert.equal(snapshot.session.thinkingLevel, 'high');
-      assert.ok(
-        snapshot.conversation.some(item => item.text === 'The door is blue.'),
+      assert.equal(snapshot.conversation.length, 125);
+      assert.equal(snapshot.conversationTruncated, false);
+      assert.deepEqual(
+        snapshot.conversation.map(item => [item.role, item.text]),
+        expected,
+      );
+      assert.ok(snapshot.conversation.every(item => !item.truncated));
+      const restoredTool = snapshot.conversation.find(
+        item => item.toolCallId === 'saved-tool',
+      )!;
+      assert.deepEqual(JSON.parse(restoredTool.input!), {
+        ...arguments_,
+        thinking: '[Omitted]',
+      });
+      assert.equal(restoredTool.status, 'failed');
+      assert.equal(restoredTool.error, longResult);
+      assert.doesNotMatch(
+        JSON.stringify(snapshot.conversation),
+        /private saved/,
       );
 
       const requests: Array<{model: string; messages: unknown[]}> = [];

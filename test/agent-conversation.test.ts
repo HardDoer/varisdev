@@ -17,7 +17,6 @@ import {WorkerConversation} from '../src/agents/conversation.ts';
 import {AgentOrchestrator} from '../src/agents/orchestrator.ts';
 import {createSessionWorker} from '../src/agents/session.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
-import type {ConversationMessage} from '../src/conversation.ts';
 
 async function until(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -514,7 +513,7 @@ void test('worker history reconciles failed, cancelled and orphan tool results a
   );
 });
 
-void test('worker custom message IDs restore without changing ordinary IDs and public history stays bounded', () => {
+void test('worker custom message IDs restore without changing ordinary IDs and retain all public history', () => {
   const conversation = new WorkerConversation([]);
   const custom = (display: boolean, value: string) =>
     message('custom', [text(value)], {display, customType: 'fixture'});
@@ -566,16 +565,17 @@ void test('worker custom message IDs restore without changing ordinary IDs and p
     });
   }
   const snapshot = conversation.snapshot();
-  assert.ok(snapshot.conversationTruncated);
-  assert.ok(snapshot.conversation.length <= 100);
-  const size = (message: ConversationMessage) =>
-    message.text.length +
-    (message.input?.length ?? 0) +
-    (message.error?.length ?? 0);
-  assert.ok(
-    snapshot.conversation.reduce((sum, message) => sum + size(message), 0) <=
-      160000,
+  assert.equal(snapshot.conversationTruncated, false);
+  assert.equal(snapshot.conversation.length, 152);
+  assert.deepEqual(
+    snapshot.conversation.slice(0, 2).map(message => message.text),
+    ['Visible custom message', 'Task'],
   );
-  assert.ok(snapshot.conversation.every(message => message.truncated));
+  for (const [index, entry] of snapshot.conversation.slice(2).entries()) {
+    assert.equal(entry.toolCallId, String(index));
+    assert.equal(entry.text, 'O'.repeat(20000));
+    assert.equal(JSON.parse(entry.input!).content, 'I'.repeat(12000));
+    assert.equal(entry.truncated, false);
+  }
   assert.doesNotMatch(JSON.stringify(snapshot), /private/);
 });

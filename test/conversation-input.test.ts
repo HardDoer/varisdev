@@ -40,9 +40,7 @@ void test('JSON operation inputs omit private reasoning, image payloads and prov
   assert.doesNotMatch(input, /secret|data:image|AAAA/);
 });
 
-void test('large and nested inputs remain parseable within the stored input budget and show truncation', () => {
-  const cycle: Record<string, unknown> = {path: 'cycle.json'};
-  cycle.next = cycle;
+void test('large JSON inputs retain every string, argument, array item and long key', () => {
   for (const args of [
     {path: 'large.md', content: '\n\t"\\\u0000'.repeat(10000)},
     {
@@ -61,12 +59,9 @@ void test('large and nested inputs remain parseable within the stored input budg
         newText: 'New\n'.repeat(1000),
       })),
     },
-    cycle,
   ]) {
     const input = toolInput(args);
-    assert.ok(input.length <= 8000, `Input length ${input.length}`);
-    assert.equal(JSON.parse(input).path, args.path);
-    assert.match(input, /Arguments truncated/);
+    assert.deepEqual(JSON.parse(input), args);
     const state = new ConversationState();
     state.update({
       id: 'tool',
@@ -76,7 +71,72 @@ void test('large and nested inputs remain parseable within the stored input budg
       at: new Date().toISOString(),
     });
     const stored = state.snapshot().conversation[0];
-    assert.equal(stored.truncated, true);
-    assert.deepEqual(JSON.parse(stored.input!), JSON.parse(input));
+    assert.equal(stored.truncated, false);
+    assert.deepEqual(JSON.parse(stored.input!), args);
   }
+});
+
+void test('deep JSON inputs retain their values without recursive traversal', () => {
+  let nested: unknown = 'Complete value';
+  for (let index = 0; index < 20000; index++) nested = {next: [nested]};
+  let restored = JSON.parse(toolInput(nested));
+  for (let index = 0; index < 20000; index++) {
+    assert.deepEqual(Object.keys(restored), ['next']);
+    assert.equal(restored.next.length, 1);
+    restored = restored.next[0];
+  }
+  assert.equal(restored, 'Complete value');
+});
+
+void test('circular and nonserializable inputs preserve neighboring arguments and never invoke accessors', () => {
+  const cycle: Record<string, unknown> = {path: 'cycle.json'};
+  cycle.next = cycle;
+  const shared = {text: 'Shared valid value'};
+  let getterCalls = 0;
+  const accessors = Object.defineProperty({path: 'accessor.json'}, 'next', {
+    enumerable: true,
+    get() {
+      getterCalls++;
+      return {next: this};
+    },
+  });
+  const throwing = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw new Error('Unavailable');
+      },
+    },
+  );
+  const callback = Object.assign(() => {}, {
+    toJSON() {
+      throw new Error('Argument serializers must not run');
+    },
+  });
+  const input = JSON.parse(
+    toolInput({
+      cycle,
+      shared: [shared, shared],
+      accessors,
+      throwing,
+      largeInteger: 1n,
+      missing: undefined,
+      callback,
+      symbol: Symbol('private'),
+    }),
+  );
+  assert.deepEqual(input.cycle, {path: 'cycle.json', next: '[Circular]'});
+  assert.deepEqual(input.shared, [shared, shared]);
+  assert.deepEqual(input.accessors, {
+    path: 'accessor.json',
+    next: '[Arguments unavailable]',
+  });
+  assert.equal(getterCalls, 0);
+  assert.equal(input.throwing, '[Arguments unavailable]');
+  assert.equal(input.largeInteger, '[Arguments unavailable]');
+  assert.equal(input.missing, null);
+  assert.equal(input.callback, null);
+  assert.equal(input.symbol, null);
+  assert.equal(JSON.parse(toolInput(1n)), '[Arguments unavailable]');
+  assert.equal(JSON.parse(toolInput(callback)), null);
 });

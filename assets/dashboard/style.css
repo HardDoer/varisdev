@@ -1542,7 +1542,7 @@ dialog::backdrop {
   margin-top: 15px;
   white-space: pre-wrap;
 }
-/* Conversation nodes remain mounted while assistant text streams. */
+/* Keep native selection and find while skipping layout and paint offscreen. */
 .conversation {
   list-style: none;
   margin: 0;
@@ -1552,6 +1552,8 @@ dialog::backdrop {
   scroll-padding-bottom: 12px;
 }
 .conversation-message {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 160px;
   margin-bottom: 18px;
   padding: 16px;
   border: 1px solid var(--line);
@@ -1658,16 +1660,6 @@ dialog::backdrop {
   color: var(--message-assistant);
   font-size: 0.75rem;
 }
-.conversation-notice,
-.conversation-preview {
-  margin-bottom: 10px;
-  overflow-wrap: anywhere;
-}
-.conversation-preview {
-  margin-top: 10px;
-  margin-bottom: 0;
-  font-size: 0.75rem;
-}
 .conversation-error {
   color: var(--red);
   margin-top: 10px;
@@ -1676,6 +1668,7 @@ dialog::backdrop {
   overflow-wrap: anywhere;
 }
 .conversation-tool {
+  contain-intrinsic-block-size: auto 84px;
   padding: 0;
   margin-left: 0;
   background: var(--input, var(--panel));

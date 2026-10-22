@@ -51,6 +51,8 @@ The weapons also damage scenery: the cane leaves dents, gunshots break surfaces,
 
 ## Browsing and files
 
+Scroll up in a conversation to read its full history, including after resuming a saved session. Tool entries expand to show their inputs and results. **Follow** returns to the latest messages as they arrive.
+
 In conversations, click file links or filenames in inline code, such as `src/main.js`, to open them; relative paths use the selected workspace. Markdown files open in VarisDev's editor, other files use their default application, and HTTP(S) links open in your browser.
 
 | Tool              | Purpose                                                            |

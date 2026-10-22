@@ -62,25 +62,19 @@ export function observeDashboardSession(
   let userMessage: MessageIdentity | undefined;
   let messageSequence = 0;
   let customSequence = 0;
-  const messageIdentities: Array<{
-    message: WeakRef<object>;
-    entry: MessageIdentity;
-  }> = [];
+  let messageIdentities = new WeakMap<object, MessageIdentity>();
 
   function rememberMessage(message: object, entry: MessageIdentity): void {
-    messageIdentities.push({message: new WeakRef(message), entry});
-    if (messageIdentities.length > 100) messageIdentities.shift();
+    messageIdentities.set(message, entry);
   }
 
   function knownMessage(
     message: object,
     ctx: ExtensionContext,
   ): MessageIdentity | undefined {
-    const known = messageIdentities.findLast(
-      item => item.message.deref() === message,
-    )?.entry;
+    const known = messageIdentities.get(message);
     if (known) return known;
-    // SDK history supplies the identity of old completions after the small cache expires.
+    // SDK history supplies identities when a completion uses another message object.
     let sequence = 0;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== 'message') continue;
@@ -118,9 +112,7 @@ export function observeDashboardSession(
     persisted = true,
   ): void {
     if (!state) return;
-    let identity = messageIdentities.findLast(
-      item => item.message.deref() === message,
-    )?.entry;
+    let identity = messageIdentities.get(message);
     if (!identity && persisted) {
       let sequence = 0;
       for (const entry of ctx.sessionManager.getBranch()) {
@@ -235,7 +227,7 @@ export function observeDashboardSession(
     userMessage = undefined;
     messageSequence = 0;
     customSequence = 0;
-    messageIdentities.length = 0;
+    messageIdentities = new WeakMap();
     let prompt = '';
     let response = '';
     const branch = ctx.sessionManager.getBranch();
@@ -503,7 +495,6 @@ export function observeDashboardSession(
     const previous = assistantMessage
       ? state?.conversationMessage(assistantMessage.id)
       : undefined;
-    if (delta?.type === 'text_delta' && previous?.truncated) return;
     const text = messageText(event.message);
     const visuals = delta
       ? {
@@ -582,9 +573,9 @@ export function observeDashboardSession(
       const call = modelUsage(message, entry);
       if (call) state!.recordUsage(call, entry.sequence);
       if (message.errorMessage) {
-        lastError = publicText(message.errorMessage).slice(0, 4000);
+        lastError = publicText(message.errorMessage);
         state!.record('error', lastError);
-        state!.updateSession({error: lastError.slice(0, 4000)});
+        state!.updateSession({error: lastError});
       }
       state!.updateSession({
         ...metadata(ctx),
@@ -754,7 +745,7 @@ export function observeDashboardSession(
       state!.record('session', 'Session closed');
     });
     state = undefined;
-    messageIdentities.length = 0;
+    messageIdentities = new WeakMap();
     assistantMessage = undefined;
     userMessage = undefined;
     sessionId = undefined;

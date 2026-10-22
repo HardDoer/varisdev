@@ -253,24 +253,24 @@ void test('conversation streams parallel tools in call order and reconciles thei
 void test('same-millisecond messages retain distinct IDs through completion and history restoration', async () => {
   const fixture = observer();
   await fixture.emit('session_start');
-  const messages = [
+  const messages = Array.from({length: 60}, () => [
     message('user', 1, 'Same input'),
     message('assistant', 2, [text('Same reply')]),
-    message('user', 1, 'Same input'),
-    message('assistant', 2, [text('Same reply')]),
-  ];
+  ]).flat();
   for (const item of messages) {
     await fixture.emit('message_start', {message: item});
     await fixture.emit('message_end', {message: item});
     await fixture.emit('message_end', {message: item});
   }
   const completed = fixture.state.snapshot().conversation;
-  assert.equal(completed.length, 4);
-  assert.equal(new Set(completed.map(item => item.id)).size, 4);
+  assert.equal(completed.length, 120);
+  assert.equal(new Set(completed.map(item => item.id)).size, 120);
   assert.deepEqual(
     completed.map(item => item.role),
-    ['user', 'assistant', 'user', 'assistant'],
+    messages.map(item => item.role),
   );
+  await fixture.emit('message_end', {message: messages[0]});
+  assert.equal(fixture.state.snapshot().conversation.length, 120);
   fixture.history(messages);
   await fixture.emit('session_tree');
   assert.deepEqual(
@@ -278,7 +278,7 @@ void test('same-millisecond messages retain distinct IDs through completion and 
     completed.map(item => item.id),
   );
   await fixture.emit('message_end', {message: messages.at(-1)});
-  assert.equal(fixture.state.snapshot().conversation.length, 4);
+  assert.equal(fixture.state.snapshot().conversation.length, 120);
 });
 
 void test('tool errors, aborted calls, incomplete streams and shutdown settle without running rows', async () => {
@@ -735,7 +735,7 @@ void test('agent wait flushes a throttled terminal worker state with its result'
   );
 });
 
-void test('conversation bounds stored input, output, errors and total history and isolates snapshots', () => {
+void test('conversation retains complete input, output, errors and history in independent snapshots', () => {
   const state = new DashboardState({
     id: 'bounds',
     cwd: '/fixture',
@@ -755,13 +755,14 @@ void test('conversation bounds stored input, output, errors and total history an
     toolName: 'bash',
     status: 'running' as const,
   };
+  const original = {...source};
   state.updateConversation(source);
   source.text = 'mutated input';
   const snapshot = state.snapshot();
-  assert.ok(snapshot.conversation[0].text.length < 16100);
-  assert.ok(snapshot.conversation[0].input!.length < 8100);
-  assert.ok(snapshot.conversation[0].error!.length < 4100);
-  assert.ok(snapshot.conversation[0].truncated);
+  assert.equal(snapshot.conversation[0].text, original.text);
+  assert.equal(snapshot.conversation[0].input, original.input);
+  assert.equal(snapshot.conversation[0].error, original.error);
+  assert.equal(snapshot.conversation[0].truncated, false);
   snapshot.conversation[0].text = 'mutated snapshot';
   state.conversationMessage('tool-a')!.text = 'mutated read';
   assert.match(state.snapshot().conversation[0].text, /^Output line/);
@@ -772,20 +773,24 @@ void test('conversation bounds stored input, output, errors and total history an
       text: 'Output line\n'.repeat(3000),
     })),
   );
-  const bounded = state.snapshot();
-  assert.ok(bounded.conversation.length <= 100);
-  assert.ok(
-    bounded.conversation.reduce(
-      (sum, item) =>
-        sum +
-        item.text.length +
-        (item.input?.length ?? 0) +
-        (item.error?.length ?? 0),
-      0,
-    ) <= 160000,
-  );
-  assert.equal(bounded.conversationTruncated, true);
-  const last = bounded.conversation.at(-1)!;
+  const retained = state.snapshot();
+  assert.equal(retained.conversation.length, 500);
+  assert.equal(retained.conversationTruncated, false);
+  for (const [index, entry] of retained.conversation.entries()) {
+    assert.equal(entry.id, String(index));
+    assert.equal(entry.text, original.text);
+    assert.equal(entry.input, original.input);
+    assert.equal(entry.error, original.error);
+    assert.equal(entry.truncated, false);
+  }
+  assert.equal(state.conversationMessage('tool-a'), undefined);
+  state.updateConversation({
+    ...retained.conversation[0],
+    text: 'Updated oldest',
+  });
+  assert.equal(state.conversationMessage('0')?.text, 'Updated oldest');
+  assert.equal(retained.conversation[0].text, original.text);
+  const last = retained.conversation.at(-1)!;
   state.updateConversation({
     ...last,
     text: 'Finished',
@@ -841,7 +846,7 @@ void test('state batches publications, caches delivery snapshots and suppresses 
   assert.equal(state.deliverySnapshot().conversation[0].text, 'Partial answer');
 });
 
-void test('assistant stream ignores non-display deltas and stops publishing after its preview is full', async () => {
+void test('assistant stream ignores private deltas and retains every public update beyond the former preview limit', async () => {
   const fixture = observer();
   await fixture.emit('session_start');
   const assistant = message('assistant', 1, []);
@@ -892,7 +897,11 @@ void test('assistant stream ignores non-display deltas and stops publishing afte
     },
   });
   assert.equal(notifications, 2);
-  assert.equal(fixture.state.snapshot().conversation[0].truncated, true);
+  assert.equal(fixture.state.snapshot().conversation[0].truncated, false);
+  assert.equal(
+    fixture.state.snapshot().conversation[0].text,
+    'x'.repeat(17000),
+  );
   assistant.content = [text('x'.repeat(18000))];
   await fixture.emit('message_update', {
     message: assistant,
@@ -903,10 +912,20 @@ void test('assistant stream ignores non-display deltas and stops publishing afte
       partial: assistant,
     },
   });
-  assert.equal(notifications, 2);
+  assert.equal(notifications, 3);
+  assert.equal(
+    fixture.state.snapshot().conversation[0].text,
+    'x'.repeat(18000),
+  );
+  await fixture.emit('message_end', {message: assistant});
+  assert.equal(
+    fixture.state.snapshot().conversation[0].text,
+    'x'.repeat(18000),
+  );
+  assert.equal(fixture.state.snapshot().conversation[0].streaming, false);
 });
 
-void test('agent conversations project separate bounded copies and preserve history truncation across team updates', () => {
+void test('agent conversations project separate full copies and preserve history truncation across team updates', () => {
   const state = new DashboardState({
     id: 'agent-parent',
     name: 'Parent',
@@ -963,10 +982,19 @@ void test('agent conversations project separate bounded copies and preserve hist
   conversation[0].text = 'Mutated source';
   const projected = state.snapshot();
   assert.equal(projected.agents[0].conversationTruncated, true);
-  assert.ok(projected.agents[0].conversation[0].truncated);
-  assert.ok(projected.agents[0].conversation[0].text.length < 16100);
-  assert.ok(projected.agents[0].conversation[0].input!.length < 8100);
-  assert.ok(projected.agents[0].conversation[0].error!.length < 4100);
+  assert.equal(projected.agents[0].conversation[0].truncated, false);
+  assert.equal(
+    projected.agents[0].conversation[0].text,
+    'Agent output\n'.repeat(2000),
+  );
+  assert.equal(
+    projected.agents[0].conversation[0].input,
+    'Agent input\n'.repeat(1000),
+  );
+  assert.equal(
+    projected.agents[0].conversation[0].error,
+    'Agent error\n'.repeat(1000),
+  );
   projected.agents[0].conversation[0].text = 'Mutated snapshot';
   projected.agents[0].conversation.length = 0;
   assert.match(
@@ -978,4 +1006,74 @@ void test('agent conversations project separate bounded copies and preserve hist
   assert.equal(state.snapshot().conversation[0].text, 'Parent task');
   state.updateTeam([state.snapshot().agents[0]], []);
   assert.equal(state.snapshot().agents[0].conversationTruncated, true);
+});
+
+void test('all finished agents retain accessible full conversations in independent snapshots', () => {
+  const longText = 'Oldest retained conversation line\n'.repeat(2000);
+  for (const conversationsArePublic of [false, true]) {
+    const state = new DashboardState({
+      id: 'finished-agent-history',
+      name: 'Parent',
+      cwd: '/fixture',
+      status: 'idle',
+      activity: 'Ready',
+      startedAt: at(0),
+      updatedAt: at(0),
+    });
+    const oldestConversation = Array.from({length: 125}, (_, index) => ({
+      id: `oldest-message-${index}`,
+      role: 'assistant' as const,
+      text: index === 0 ? longText : `Oldest conversation message ${index}`,
+      at: at(index),
+    }));
+    const records = Array.from({length: 175}, (_, index) => ({
+      id: `finished-agent-${index}`,
+      name: `Agent ${index}`,
+      task: `Task ${index}`,
+      cwd: '/fixture',
+      model: 'test/model',
+      status: 'completed' as const,
+      activity: 'Completed',
+      createdAt: at(index),
+      finishedAt: at(index + 1000),
+      conversation:
+        index === 0
+          ? oldestConversation
+          : [
+              {
+                id: `agent-message-${index}`,
+                role: 'assistant' as const,
+                text: `Completed task ${index}`,
+                at: at(index),
+              },
+            ],
+    }));
+    state.updateTeam(records, [], conversationsArePublic);
+    const snapshot = state.snapshot();
+    assert.equal(snapshot.totalAgents, 175);
+    assert.equal(snapshot.agents.length, 175);
+    assert.equal(snapshot.agents[0].id, 'finished-agent-174');
+    assert.equal(snapshot.events.length, 160);
+    const oldest = snapshot.agents.at(-1)!;
+    assert.equal(oldest.id, 'finished-agent-0');
+    assert.equal(oldest.conversationTruncated, false);
+    assert.deepEqual(
+      oldest.conversation.map(message => [message.id, message.text]),
+      oldestConversation.map(message => [message.id, message.text]),
+    );
+    oldestConversation[0].text = 'Mutated source';
+    oldest.conversation[0].text = 'Mutated snapshot';
+    oldest.conversation.pop();
+    snapshot.agents.pop();
+    const independent = state.snapshot();
+    assert.equal(independent.agents.length, 175);
+    assert.equal(independent.agents.at(-1)!.conversation.length, 125);
+    assert.equal(independent.agents.at(-1)!.conversation[0].text, longText);
+    state.updateTeam(records, [], conversationsArePublic);
+    assert.equal(
+      state.snapshot().agents.at(-1)!.conversation[0].text,
+      'Mutated source',
+    );
+    assert.equal(independent.agents.at(-1)!.conversation[0].text, longText);
+  }
 });

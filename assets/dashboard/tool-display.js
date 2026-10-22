@@ -1,5 +1,4 @@
 // Text-only tool presentation keeps native selection stable while output streams.
-const LIMIT = 64 * 1024;
 const names = {
   read: 'Read file',
   write: 'Write file',
@@ -66,34 +65,27 @@ function label(key) {
 }
 function structured(value) {
   const parts = [];
-  let size = 0;
-  function append(text) {
-    if (size > LIMIT) return;
-    parts.push(text.slice(0, LIMIT + 1 - size));
-    size += text.length;
-  }
   function visit(item, depth) {
-    if (size > LIMIT) return;
     const pad = '  '.repeat(Math.min(depth, 16));
     if (item === null || typeof item !== 'object') {
-      append(String(item));
+      parts.push(String(item));
     } else if (depth >= 16) {
-      append(JSON.stringify(item, null, 2));
+      parts.push(JSON.stringify(item, null, 2));
     } else if (Array.isArray(item)) {
-      if (!item.length) append('[]');
-      for (let i = 0; i < item.length && size <= LIMIT; i++) {
-        if (i) append('\n\n');
-        append(`${pad}${i + 1}.\n`);
+      if (!item.length) parts.push('[]');
+      for (let i = 0; i < item.length; i++) {
+        if (i) parts.push('\n\n');
+        parts.push(`${pad}${i + 1}.\n`);
         visit(item[i], depth + 1);
       }
     } else {
       const keys = Object.keys(item);
-      if (!keys.length) append('{}');
-      for (let i = 0; i < keys.length && size <= LIMIT; i++) {
-        if (i) append('\n\n');
+      if (!keys.length) parts.push('{}');
+      for (let i = 0; i < keys.length; i++) {
+        if (i) parts.push('\n\n');
         const key = keys[i];
         const value = item[key];
-        append(
+        parts.push(
           `${pad}${label(key)}:${typeof value === 'object' || String(value).includes('\n') ? '\n' : ' '}`,
         );
         visit(value, depth + 1);
@@ -103,27 +95,25 @@ function structured(value) {
   visit(value, 0);
   return parts.join('');
 }
-function bounded(value) {
-  return value.length > LIMIT
-    ? `${value.slice(0, LIMIT)}\n[Display truncated]`
-    : value;
-}
-export function formatToolInput(name, input) {
-  const decoded = decode(input ?? '');
-  const title = names[toolName(name)] || name || 'Operation';
-  const result =
-    typeof decoded === 'object' && decoded !== null
+function displayText(value) {
+  const decoded = decode(value ?? '');
+  try {
+    return typeof decoded === 'object' && decoded !== null
       ? structured(decoded)
       : String(decoded);
-  return bounded(`${title}\n\n${result || 'No input'}`);
+  } catch (error) {
+    // Preserve the public JSON if native serialization cannot handle its depth.
+    if (typeof value === 'string') return value;
+    throw error;
+  }
+}
+export function formatToolInput(name, input) {
+  const title = names[toolName(name)] || name || 'Operation';
+  const result = displayText(input);
+  return `${title}\n\n${result || 'No input'}`;
 }
 export function formatToolResult(output) {
-  const decoded = decode(output ?? '');
-  return bounded(
-    typeof decoded === 'object' && decoded !== null
-      ? structured(decoded)
-      : String(decoded),
-  );
+  return displayText(output);
 }
 export function toolInputPreview(name, input) {
   const decoded = decode(input ?? '');
@@ -136,7 +126,12 @@ export function toolInputPreview(name, input) {
         decoded.message ??
         decoded.id)
       : decoded;
-  return String(value ?? names[toolName(name)] ?? name ?? 'No input')
-    .split('\n')[0]
-    .slice(0, 240);
+  const fallback = names[toolName(name)] ?? name ?? 'No input';
+  let text;
+  try {
+    text = String(value ?? fallback);
+  } catch {
+    text = fallback;
+  }
+  return text.split('\n')[0].slice(0, 240);
 }

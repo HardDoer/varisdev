@@ -70,7 +70,6 @@ export interface DashboardSnapshot {
 
 const textLimit = 16000;
 const eventLimit = 160;
-const historyLimit = 100;
 
 function preview(text: string, limit = textLimit): string {
   return text.length > limit
@@ -80,17 +79,17 @@ function preview(text: string, limit = textLimit): string {
 
 function projectAgent(
   agent: AgentRecord & Partial<ConversationSnapshot>,
-  conversationIsBounded = false,
+  conversationIsPublic = false,
 ): DashboardAgent {
   let conversation: ConversationSnapshot;
-  if (conversationIsBounded && agent.conversation) {
+  if (conversationIsPublic && agent.conversation) {
     conversation = {
       conversation: agent.conversation.map(message => ({...message})),
       conversationTruncated: !!agent.conversationTruncated,
     };
   } else {
-    const bounded = new ConversationState();
-    bounded.replace(
+    const projected = new ConversationState();
+    projected.replace(
       agent.conversation ?? [
         {
           id: `task-${agent.id}`,
@@ -101,7 +100,7 @@ function projectAgent(
       ],
       agent.conversationTruncated,
     );
-    conversation = bounded.snapshot();
+    conversation = projected.snapshot();
   }
   return {
     ...agent,
@@ -121,7 +120,7 @@ function projectAgent(
   };
 }
 
-/** A bounded view of the live session and public conversation text. */
+/** Live session state and retained public conversation history. */
 export class DashboardState {
   private session: DashboardSession;
   private agents: DashboardAgent[] = [];
@@ -263,7 +262,7 @@ export class DashboardState {
   updateTeam(
     records: (AgentRecord & Partial<ConversationSnapshot>)[],
     messages: ParentMessage[],
-    conversationsAreBounded = false,
+    conversationsArePublic = false,
   ): void {
     const nextTotalAgents = records.length;
     const active = records.filter(agent => !isAgentFinished(agent.status));
@@ -273,10 +272,9 @@ export class DashboardState {
         (b.finishedAt ?? b.createdAt).localeCompare(
           a.finishedAt ?? a.createdAt,
         ),
-      )
-      .slice(0, historyLimit);
+      );
     const nextAgents = [...active, ...history].map(agent =>
-      projectAgent(agent, conversationsAreBounded),
+      projectAgent(agent, conversationsArePublic),
     );
     this.totalAgents = nextTotalAgents;
     this.agents = nextAgents;

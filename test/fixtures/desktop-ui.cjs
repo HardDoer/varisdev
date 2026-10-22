@@ -7021,7 +7021,7 @@ async function main() {
         activity: `Working on ${name}`,
         createdAt: at,
         startedAt: at,
-        conversationTruncated: true,
+        conversationTruncated: false,
         sessionFile: `/fixture/${id}.jsonl`,
         conversation: [
           {id: 'shared-user', role: 'user', at, text: `Task for ${name}`},
@@ -7241,7 +7241,6 @@ async function main() {
             .hidden,
           statuses: document.getElementById('extension-statuses').hidden,
           back: document.getElementById('back-to-parent').textContent.trim(),
-          preview: !document.getElementById('conversation-truncated').hidden,
           activity: document.getElementById('conversation-activity-text')
             .textContent,
         })),
@@ -7267,7 +7266,6 @@ async function main() {
           notifications: true,
           statuses: true,
           back: 'Back',
-          preview: true,
           activity: 'Working on First agent',
         },
       );
@@ -7795,6 +7793,284 @@ async function main() {
   );
 
   await run(
+    'full conversation history skips offscreen rendering and preserves scrolling, selection and disclosures',
+    async () => {
+      const parent = hub.sessions[0];
+      const first = 'Beginning of the complete conversation';
+      const input = `${'Original file line\n'.repeat(5000)}End of original file`;
+      const output = `${'Full output line\n'.repeat(5000)}End of complete output`;
+      parent.conversation = Array.from({length: 320}, (_, index) => ({
+        id: `history-${index}`,
+        role: index % 3 === 1 ? 'tool' : index % 3 === 0 ? 'user' : 'assistant',
+        at,
+        text:
+          index === 0
+            ? first
+            : index === 319
+              ? 'Latest conversation message'
+              : `Message ${index}\n${'Conversation content. '.repeat(40 + (index % 10))}`,
+        ...(index % 3 === 1
+          ? {
+              toolName: 'read',
+              input: JSON.stringify({path: `file-${index}.md`}),
+              status: 'completed',
+            }
+          : {}),
+      }));
+      parent.conversation[1].input = JSON.stringify({
+        path: 'original.md',
+        content: input,
+      });
+      parent.conversation[1].text = output;
+      parent.conversation[319].role = 'assistant';
+      await publish();
+      await until(() => {
+        const body = document.getElementById('panel-conversation');
+        return body.scrollHeight - body.scrollTop - body.clientHeight < 5;
+      }, 'Full history must open at the latest message');
+      const rendering = await evaluate(() => {
+        const rows = [...document.querySelectorAll('#conversation > li')];
+        return {
+          count: rows.length,
+          rendered: rows.filter(row =>
+            row.firstElementChild.checkVisibility({
+              contentVisibilityAuto: true,
+            }),
+          ).length,
+          latest: rows.at(-1).textContent,
+        };
+      });
+      assert.equal(rendering.count, 320);
+      assert.ok(
+        rendering.rendered > 0 && rendering.rendered < 40,
+        `Only nearby messages should render, got ${rendering.rendered}`,
+      );
+      assert.match(rendering.latest, /Latest conversation message/);
+      await evaluate(() => {
+        const follow = document.getElementById('follow-conversation');
+        follow.checked = false;
+        follow.dispatchEvent(new Event('change'));
+        document.getElementById('panel-conversation').scrollTop = 0;
+      });
+      await until(
+        () =>
+          document
+            .querySelector('#conversation .conversation-text')
+            .checkVisibility({contentVisibilityAuto: true}),
+        'Oldest message must render on scroll',
+      );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .conversation-text')
+              .textContent,
+        ),
+        first,
+      );
+      await evaluate(() =>
+        document.querySelector('#conversation details summary').click(),
+      );
+      await settle();
+      assert.deepEqual(
+        await evaluate(() => ({
+          input: document.querySelector('#conversation .tool-input')
+            .textContent,
+          output: document.querySelector('#conversation .tool-output')
+            .textContent,
+        })),
+        {input: `Read file\n\nPath: original.md\n\nContent:\n${input}`, output},
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('full-history-oldest');
+
+      await evaluate(() => {
+        const text = document.querySelector(
+          '#conversation .conversation-text',
+        ).firstChild;
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        window.historyRow = document.querySelector('#conversation > li');
+        window.historyText = text;
+        window.historyScroll =
+          document.getElementById('panel-conversation').scrollTop;
+      });
+      parent.conversation[319].text += '\nNew streamed content';
+      parent.conversation[319].streaming = true;
+      parent.conversation.push({
+        id: 'history-new',
+        role: 'assistant',
+        at,
+        text: 'Newest answer',
+      });
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          selection: window.getSelection().toString(),
+          row:
+            document.querySelector('#conversation > li') === window.historyRow,
+          text:
+            document.querySelector('#conversation .conversation-text')
+              .firstChild === window.historyText,
+          scroll:
+            Math.abs(
+              document.getElementById('panel-conversation').scrollTop -
+                window.historyScroll,
+            ) < 2,
+        })),
+        {selection: first, row: true, text: true, scroll: true},
+      );
+      await evaluate(() => {
+        window.getSelection().removeAllRanges();
+        document
+          .querySelectorAll('#conversation > li')[159]
+          .scrollIntoView({block: 'start'});
+      });
+      await until(
+        () =>
+          document
+            .querySelectorAll('#conversation > li')[159]
+            .firstElementChild.checkVisibility({contentVisibilityAuto: true}),
+        'Middle history must render on scroll',
+      );
+      assert.match(
+        await evaluate(
+          () =>
+            document.querySelectorAll('#conversation > li')[159].textContent,
+        ),
+        /Message 159/,
+      );
+      await evaluate(() => {
+        const follow = document.getElementById('follow-conversation');
+        follow.checked = true;
+        follow.dispatchEvent(new Event('change'));
+      });
+      await until(() => {
+        const body = document.getElementById('panel-conversation');
+        return body.scrollHeight - body.scrollTop - body.clientHeight < 5;
+      }, 'Follow must return to the end of full history');
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('full-history-latest');
+      await reloadPage();
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#conversation > li').length,
+        ),
+        321,
+      );
+      await evaluate(() => {
+        const follow = document.getElementById('follow-conversation');
+        follow.checked = false;
+        follow.dispatchEvent(new Event('change'));
+        document.getElementById('panel-conversation').scrollTop = 0;
+      });
+      await settle();
+      assert.equal(
+        await evaluate(
+          () => document.querySelector('#conversation details').open,
+        ),
+        true,
+        'Expanded historical tools survive reload',
+      );
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      assert.equal(
+        await evaluate(() => {
+          const body = document.getElementById('panel-conversation');
+          const rect = body.getBoundingClientRect();
+          return (
+            rect.height > 100 &&
+            rect.width > 200 &&
+            rect.bottom <= innerHeight &&
+            rect.right <= innerWidth
+          );
+        }),
+        true,
+        'Full history remains usable in a compact zoomed window',
+      );
+      await evaluate(() => {
+        document
+          .querySelector('#conversation .conversation-text')
+          .scrollIntoView({block: 'start'});
+      });
+      await settle();
+      assert.equal(
+        await evaluate(() => {
+          const body = document
+            .getElementById('panel-conversation')
+            .getBoundingClientRect();
+          const text = document
+            .querySelector('#conversation .conversation-text')
+            .getBoundingClientRect();
+          return text.top >= body.top - 1 && text.bottom <= body.bottom + 1;
+        }),
+        true,
+        'Historical text can be read in the compact viewport',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('full-history-compact');
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      parent.agents = Array.from({length: 125}, (_, index) => ({
+        id: `historical-worker-${index}`,
+        name: `Historical worker ${index}`,
+        cwd: directory,
+        model: 'fixture/small',
+        task: `Worker task ${index}`,
+        status: 'completed',
+        activity: 'Completed',
+        createdAt: at,
+        finishedAt: new Date(Date.parse(at) + index * 1000).toISOString(),
+        conversation: index === 0 ? structuredClone(parent.conversation) : [],
+      }));
+      parent.totalAgents = parent.agents.length;
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#history-workers button').length,
+        ),
+        125,
+      );
+      await evaluate(() => {
+        const search = document.getElementById('history-search');
+        search.value = 'Historical worker 0';
+        search.dispatchEvent(new Event('input', {bubbles: true}));
+        document.querySelector('#history-workers button').click();
+      });
+      await settle();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('inspector-title').textContent,
+        ),
+        'Historical worker 0',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#conversation > li').length,
+        ),
+        321,
+      );
+      await evaluate(() => {
+        const follow = document.getElementById('follow-conversation');
+        follow.checked = false;
+        follow.dispatchEvent(new Event('change'));
+        document.getElementById('panel-conversation').scrollTop = 0;
+      });
+      await settle();
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .conversation-text')
+              .textContent,
+        ),
+        first,
+      );
+    },
+  );
+
+  await run(
     'readable operations decode compact JSON fields and results, preserve selection and keep HTML inert',
     async () => {
       const html = '<script>window.operationInjected = true</script>';
@@ -7948,13 +8224,13 @@ async function main() {
         ),
         'decoded line\nsecond line',
       );
-      assert.match(
+      assert.equal(
         await evaluate(
           () =>
             document.querySelectorAll('#conversation .tool-output')[1]
               .textContent,
         ),
-        /\n\[Display truncated\]$/,
+        'x'.repeat(100_000),
       );
     },
   );
@@ -8621,8 +8897,8 @@ async function main() {
               return {
                 visible:
                   document.getElementById('usage-context').checkVisibility() &&
-                  context.top >= viewport.top &&
-                  context.bottom <= viewport.bottom,
+                  context.top >= viewport.top - 1 &&
+                  context.bottom <= viewport.bottom + 1,
                 scrollTop: panel.scrollTop,
                 context: {top: context.top, bottom: context.bottom},
                 viewport: {top: viewport.top, bottom: viewport.bottom},

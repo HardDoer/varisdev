@@ -233,7 +233,6 @@ const messageFields = [
   'finishedAt',
   'status',
   'streaming',
-  'truncated',
   'error',
 ];
 
@@ -1380,7 +1379,6 @@ function conversationData(data = snapshot()) {
     agent && {
       session: agent,
       conversation: agent.conversation || [],
-      conversationTruncated: agent.conversationTruncated,
     }
   );
 }
@@ -1504,11 +1502,6 @@ function conversationEntry(message) {
   const content = node('pre', tool ? 'tool-output' : 'prose conversation-text');
   const textNode = document.createTextNode('');
   content.append(textNode);
-  const truncated = node(
-    'p',
-    'muted conversation-preview',
-    'Preview truncated; full text is in the session file.',
-  );
   const error = node('p', 'conversation-error');
   const visualizations = conversationVisualizations.create();
   let inputNode;
@@ -1532,13 +1525,12 @@ function conversationEntry(message) {
       outputLabel,
       content,
       visualizations.element,
-      truncated,
       error,
     );
     details.append(summary, body);
     element.append(details);
   } else {
-    element.append(header, content, visualizations.element, truncated, error);
+    element.append(header, content, visualizations.element, error);
   }
   return {
     element,
@@ -1550,7 +1542,6 @@ function conversationEntry(message) {
     inputNode,
     inputPreview,
     outputLabel,
-    truncated,
     error,
     visualizations,
     status: undefined,
@@ -1582,10 +1573,6 @@ function renderConversation(snapshot) {
   }
   let changed = sessionChanged || messages.length !== conversationNodes.size;
   text($('conversation-recipient'), `Agent · ${data.session.name}`);
-  $('conversation-truncated').hidden = !data.conversationTruncated;
-  $('conversation-session-file').hidden =
-    !data.conversationTruncated || !data.session.sessionFile;
-  text($('conversation-session-file'), data.session.sessionFile);
   reconcile(
     $('conversation'),
     conversationNodes,
@@ -1599,6 +1586,7 @@ function renderConversation(snapshot) {
         messageFields.every(field => entry.message[field] === message[field])
       )
         return;
+      const previous = entry.message;
       entry.message = message;
       changed = true;
       const tool = message.role === 'tool';
@@ -1632,16 +1620,21 @@ function renderConversation(snapshot) {
         changed = changed || status !== entry.status;
         entry.status = status;
         entry.streaming.hidden = false;
-        text(
-          entry.inputPreview,
-          toolInputPreview(message.toolName, message.input),
-        );
-        changed =
+        if (
+          !previous ||
+          previous.input !== message.input ||
+          previous.toolName !== message.toolName
+        ) {
+          text(
+            entry.inputPreview,
+            toolInputPreview(message.toolName, message.input),
+          );
           updateStreamText(
             entry.inputNode,
             formatToolInput(message.toolName, message.input),
             selection,
-          ) || changed;
+          );
+        }
         text(
           entry.outputLabel,
           message.text
@@ -1654,17 +1647,18 @@ function renderConversation(snapshot) {
         entry.streaming.hidden = !message.streaming;
         text(entry.streaming, 'Streaming');
       }
-      const outputChanged = tool
-        ? updateStreamText(
+      if (!previous || previous.text !== message.text) {
+        if (tool)
+          updateStreamText(
             entry.textNode,
             formatToolResult(message.text),
             selection,
-          )
-        : renderFileLinks(entry.content, message.text || '', (target, value) =>
+          );
+        else
+          renderFileLinks(entry.content, message.text || '', (target, value) =>
             updateStreamText(target, value, selection),
           );
-      changed = outputChanged || changed;
-      entry.truncated.hidden = !message.truncated;
+      }
       entry.error.hidden =
         !message.error || (tool && message.error === message.text);
       text(entry.error, message.error);
@@ -2825,9 +2819,7 @@ initUsage(call => {
   const entry =
     message && conversationNodes.get(`${conversationScope()}:${message.id}`);
   if (!entry) {
-    showError(
-      'This call is outside the recent conversation preview. Its token counts remain in this view.',
-    );
+    showError('No conversation message is available for this call.');
     return;
   }
   setTab('conversation');
