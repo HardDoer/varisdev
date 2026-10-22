@@ -47,7 +47,7 @@ Each workspace factory has a stable, theme-aware color and architectural variati
 
 Choose **Cane** to swing at robots by waving the mouse, **Gun** to aim and click to shoot, or **Flamethrower** to spray flames while holding the left mouse button. Burning robots scream and run around; sustained flames leave a charred wreck for the cleaner. Right-click or press **Esc** to put away a weapon.
 
-The weapons also damage scenery: the cane leaves dents, gunshots break surfaces, and flames scorch and ignite nearby objects. Small repair robots arrive after a delay to extinguish fires and restore damaged areas. These effects do not interrupt agent work.
+The weapons also damage scenery: the cane leaves dents, gunshots leave bullet holes and chips, and flames scorch and ignite nearby objects. Up to three repair robots work at a time, arriving after a delay to extinguish fires and restore damaged areas. In Year1998, shots mark the wall or furniture surface they strike, and repair and cleanup drones descend from above the office. Cleanup drones lift wrecks out of view. These effects do not interrupt agent work.
 
 ## Browsing and files
 

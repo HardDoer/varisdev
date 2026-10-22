@@ -61,12 +61,12 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      13,
+      15,
       'All host and renderer scenarios execute',
     );
     for (const result of report.cases)
       await t.test(result.name, () => assert.ifError(result.error));
-    assert.equal(report.screenshots.length, 6);
+    assert.equal(report.screenshots.length, 12);
     for (const path of report.screenshots) {
       assert.ok(
         (await stat(path)).size > 1000,

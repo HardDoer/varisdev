@@ -1,13 +1,45 @@
 import {createFactoryFireAudio} from './factory-fire-audio.js';
-import {validSceneTarget, visibleSceneTargets} from './factory-targets.js';
+import {
+  validSceneTarget,
+  visibleSceneTargets,
+  sceneTargetContains,
+  exposedPolygonContact,
+  polygonOcclusion,
+} from './factory-targets.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const CONTROLS =
   'button, a, input, textarea, select, label, summary, [role="button"], [role="link"], [role="menuitem"], [role="slider"], [role="checkbox"], [role="switch"], [role="textbox"], [role="combobox"], [role="tab"], [contenteditable]:not([contenteditable="false"])';
 const SPREAD = 25;
 
+export function flameTargetContact(muzzle, aim, target, covers = []) {
+  if (!target.polygon) return null;
+  const dx = aim.x - muzzle.x,
+    dy = aim.y - muzzle.y;
+  const length = Math.hypot(dx, dy);
+  if (!length) return null;
+  if (
+    sceneTargetContains(target, aim.x, aim.y) &&
+    !covers.some(polygon => sceneTargetContains({polygon}, aim.x, aim.y))
+  )
+    return {x: aim.x, y: aim.y};
+  const x = (-dy / length) * SPREAD,
+    y = (dx / length) * SPREAD;
+  return exposedPolygonContact(
+    target.polygon,
+    [muzzle, {x: aim.x + x, y: aim.y + y}, {x: aim.x - x, y: aim.y - y}],
+    0,
+    covers,
+  );
+}
+
 // The widening flame jet can catch more than one robot along its length.
-export function flameTargetsAt(muzzle, aim, targets = []) {
+export function flameTargetsAt(
+  muzzle,
+  aim,
+  targets = [],
+  contacts = new Map(),
+) {
   if (
     !muzzle ||
     !aim ||
@@ -19,8 +51,19 @@ export function flameTargetsAt(muzzle, aim, targets = []) {
     dy = aim.y - muzzle.y;
   const length = Math.hypot(dx, dy);
   if (!length) return [];
+  const occlusion = polygonOcclusion(targets);
   return targets.filter(target => {
     if (!validSceneTarget(target)) return false;
+    if (target.polygon) {
+      const contact = flameTargetContact(
+        muzzle,
+        aim,
+        target,
+        occlusion.get(target),
+      );
+      if (contact) contacts.set(target, contact);
+      return Boolean(contact);
+    }
     const along =
       ((target.x - muzzle.x) * dx + (target.y - muzzle.y) * dy) / length;
     if (along < -target.radius || along > length + target.radius) return false;
@@ -260,11 +303,19 @@ export function createFactoryFlamethrower(
         rect,
         window,
       );
-      for (const target of flameTargetsAt(muzzle, pointer, environment)) {
+      const contacts = new Map();
+      for (const target of flameTargetsAt(
+        muzzle,
+        pointer,
+        environment,
+        contacts,
+      )) {
         if (!firing || disposed) return;
         if (environmentIds.has(target.id)) continue;
         environmentIds.add(target.id);
-        onEnvironmentHit(target.id, 'flame', seconds);
+        const contact = contacts.get(target);
+        if (contact) onEnvironmentHit(target.id, 'flame', seconds, contact);
+        else onEnvironmentHit(target.id, 'flame', seconds);
       }
     }
     if (firing && !disposed) frame = window.requestAnimationFrame(spray);

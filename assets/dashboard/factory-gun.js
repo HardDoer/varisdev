@@ -1,4 +1,8 @@
-import {validSceneTarget, visibleSceneTargets} from './factory-targets.js';
+import {
+  validSceneTarget,
+  visibleSceneTargets,
+  sceneTargetContains,
+} from './factory-targets.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const COOLDOWN = 180;
@@ -6,15 +10,18 @@ const EFFECT_DURATION = 260;
 const CONTROLS =
   'button, a, input, textarea, select, label, summary, [role="button"], [role="link"], [role="menuitem"], [role="slider"], [role="checkbox"], [role="switch"], [role="textbox"], [role="combobox"], [role="tab"], [contenteditable]:not([contenteditable="false"]), .factory-cane-holster, .factory-gun-holster';
 
-// Viewport coordinates; ties retain the first target and never mutate the list.
+// Viewport coordinates. Polygon faces follow front-to-back paint order;
+// circular targets retain nearest-center selection and stable ties.
 export function gunTargetAt(x, y, targets = []) {
   if (![x, y].every(Number.isFinite) || !Array.isArray(targets)) return null;
   let nearest = null,
     distance = Infinity;
   for (const target of targets) {
     if (!validSceneTarget(target)) continue;
+    if (!sceneTargetContains(target, x, y)) continue;
+    if (target.polygon) return target;
     const d = Math.hypot(target.x - x, target.y - y);
-    if (d <= target.radius && d < distance) {
+    if (d < distance) {
       nearest = target;
       distance = d;
     }
@@ -305,7 +312,8 @@ export function createFactoryGun(
         );
     const hit = target
       ? onHit(target.id, target.x < muzzle.x ? -1 : 1, 2) !== false
-      : environment && onEnvironmentHit(environment.id, 'gun', 1) !== false;
+      : environment &&
+        onEnvironmentHit(environment.id, 'gun', 1, {x, y}) !== false;
     if (!equipped || disposed) return;
     clearEffects();
     if (hit) container.dataset.gunHit = String((target || environment).id);

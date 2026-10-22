@@ -2635,8 +2635,8 @@ const factoryToyOptions = {
   holsterContainer: $('application-controls'),
   getTargets: () => scene.caneTargets(),
   getEnvironmentTargets: () => scene.environmentTargets(),
-  onEnvironmentHit: (id, weapon, amount) =>
-    scene.hitEnvironment(id, weapon, amount),
+  onEnvironmentHit: (id, weapon, amount, contact) =>
+    scene.hitEnvironment(id, weapon, amount, contact),
   onHit: (id, direction, strength) =>
     scene.hitWithCane(id, direction, strength),
 };

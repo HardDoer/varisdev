@@ -78,7 +78,7 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      64,
+      65,
       'Every flamethrower and environment scenario must run',
     );
     for (const result of report.cases)

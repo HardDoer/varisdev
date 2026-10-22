@@ -219,7 +219,7 @@ export function drawEnvironmentRepairBot(
     g.box(at(-0.1 + side * 0.09, 0.65, 0.263), [0.065, 0.06, 0.02], white, 1);
   g.cylinder(at(0.23, 0.62, 0.1), [0.19, 0.38, 0.19], C.metal);
   g.box(at(0.23, 0.83, 0.1), [0.21, 0.045, 0.21], teal);
-  const working = pose.phase === 'repairing';
+  const working = pose.phase === 'repairing' && !pose.repairWaiting;
   const elbow = at(-0.42, 0.75, -0.22);
   const target = [site.x, (site.h || 0) + 0.08, site.z];
   const tip = working ? target : at(-0.6, 0.7, -0.23);

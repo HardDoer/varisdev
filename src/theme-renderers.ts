@@ -61,6 +61,16 @@ export interface SceneCaneTarget {
   radius: number;
 }
 
+/** A contact in viewport CSS pixels. */
+export interface SceneContact {
+  x: number;
+  y: number;
+}
+/** Faces are ordered front to back. Omit polygon for circular targeting. */
+export interface SceneEnvironmentTarget extends SceneCaneTarget {
+  polygon?: readonly SceneContact[];
+}
+
 export interface ThemeScene {
   update(snapshot: SceneSnapshot | null, selectedId: string): void;
   setPalette(palette: ScenePalette): void;
@@ -77,11 +87,12 @@ export interface ThemeScene {
   hitWithCane?(id: string, direction?: number, strength?: number): boolean;
   /** Apply flame exposure in seconds; return whether the robot was hit. */
   burnRobot?(id: string, seconds: number): boolean;
-  environmentTargets?(): SceneCaneTarget[];
+  environmentTargets?(): SceneEnvironmentTarget[];
   hitEnvironment?(
     id: string,
     weapon: 'cane' | 'gun' | 'flame',
     amount: number,
+    contact?: SceneContact,
   ): boolean;
 }
 

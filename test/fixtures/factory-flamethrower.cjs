@@ -153,7 +153,7 @@ async function installFixture(moduleUrl, applicationHtml) {
   const {createFactoryCane} = await import(
     new URL('./factory-cane.js', moduleUrl)
   );
-  const {createFactoryGun} = await import(
+  const {createFactoryGun, gunTargetAt} = await import(
     new URL('./factory-gun.js', moduleUrl)
   );
   const {createFactoryFlamethrower} = await import(
@@ -330,9 +330,16 @@ async function installFixture(moduleUrl, applicationHtml) {
         environment
           ? (overrideEnvironmentTargets ?? scene.environmentTargets?.() ?? [])
           : [],
-      onEnvironmentHit: (id, weapon, amount) => {
-        const accepted = scene.hitEnvironment(id, weapon, amount);
-        environmentHits.push({id, weapon, amount, accepted, time: clock});
+      onEnvironmentHit: (id, weapon, amount, contact) => {
+        const accepted = scene.hitEnvironment(id, weapon, amount, contact);
+        environmentHits.push({
+          id,
+          weapon,
+          amount,
+          contact,
+          accepted,
+          time: clock,
+        });
         environmentHook?.();
         return accepted;
       },
@@ -501,21 +508,22 @@ async function installFixture(moduleUrl, applicationHtml) {
   function environmentTarget(f, furniture = false) {
     const bounds = f.host.getBoundingClientRect(),
       robots = f.scene.caneTargets();
-    const targets = f.scene
-      .environmentTargets()
-      .filter(
-        target =>
-          target.id.startsWith('floor:') !== furniture &&
-          target.x > bounds.left + 110 &&
-          target.x < bounds.right - 110 &&
-          target.y > bounds.top + 40 &&
-          target.y < bounds.bottom - 100 &&
-          robots.every(
-            robot =>
-              Math.hypot(robot.x - target.x, robot.y - target.y) >
-              robot.radius + (furniture ? 4 : target.radius + 24),
-          ),
-      );
+    const all = f.scene.environmentTargets();
+    const targets = all.filter(
+      target =>
+        target.id.startsWith('floor:') !== furniture &&
+        !target.id.startsWith('wall:') &&
+        gunTargetAt(target.x, target.y, all)?.id === target.id &&
+        target.x > bounds.left + 110 &&
+        target.x < bounds.right - 110 &&
+        target.y > bounds.top + 40 &&
+        target.y < bounds.bottom - 100 &&
+        robots.every(
+          robot =>
+            Math.hypot(robot.x - target.x, robot.y - target.y) >
+            robot.radius + (furniture ? 4 : target.radius + 24),
+        ),
+    );
     targets.sort(
       (a, b) =>
         Math.hypot(
@@ -600,6 +608,55 @@ async function installFixture(moduleUrl, applicationHtml) {
         gunHits: f.gunHits,
         unchanged: f.unchanged(),
         selections: f.selections,
+      };
+    },
+    async officeWallShots() {
+      const f = await setup('host', 'year1998', false, true);
+      f.scene.setMotion(false);
+      const targets = f.scene.environmentTargets();
+      const robots = f.scene.caneTargets();
+      const bounds = f.canvas.getBoundingClientRect();
+      const points = [];
+      for (const id of ['wall:back', 'wall:left']) {
+        const target = targets.find(
+          t =>
+            t.id === id &&
+            t.polygon &&
+            gunTargetAt(t.x, t.y, targets)?.id === id &&
+            !gunTargetAt(t.x, t.y, robots) &&
+            t.x > bounds.left + 20 &&
+            t.x < bounds.right - 20 &&
+            t.y > bounds.top + 20 &&
+            t.y < bounds.bottom - 20,
+        );
+        if (!target) throw new Error('No exposed wall face: ' + id);
+        points.push({id, x: Math.floor(target.x), y: Math.floor(target.y)});
+      }
+      const context = f.canvas.getContext('2d');
+      const sample = point => {
+        const sx = f.canvas.width / bounds.width,
+          sy = f.canvas.height / bounds.height;
+        return [
+          ...context.getImageData(
+            Math.round((point.x - bounds.left - 8) * sx),
+            Math.round((point.y - bounds.top - 8) * sy),
+            Math.round(16 * sx),
+            Math.round(16 * sy),
+          ).data,
+        ];
+      };
+      const before = points.map(sample);
+      for (const point of points) shootEnvironment(f, point);
+      const after = points.map(sample);
+      return {
+        points,
+        hits: f.environmentHits,
+        poses: environmentState(f),
+        changed: after.map((pixels, i) =>
+          pixels.reduce((n, value, p) => n + Number(value !== before[i][p]), 0),
+        ),
+        robotHits: f.gunHits,
+        unchanged: f.unchanged(),
       };
     },
     async environmentParentAnchor() {
@@ -727,7 +784,7 @@ async function installFixture(moduleUrl, applicationHtml) {
       const robot = f.target(),
         site = environmentTarget(f);
       f.overrideEnvironment([
-        {...site, x: robot.x, y: robot.y, radius: robot.radius + 10},
+        {id: site.id, x: robot.x, y: robot.y, radius: robot.radius + 10},
       ]);
       shootEnvironment(f, robot);
       const gun = {
@@ -1590,6 +1647,39 @@ async function main() {
       );
     },
   );
+  await run(
+    'Year1998 gun clicks mark the struck wall faces through the theme host',
+    async () => {
+      const r = await evaluate('officeWallShots');
+      assert.deepEqual(
+        r.hits.map(hit => hit.id),
+        r.points.map(point => point.id),
+      );
+      assert.ok(r.hits.every(hit => hit.accepted && hit.contact));
+      for (let i = 0; i < r.hits.length; i++) {
+        assert.equal(r.hits[i].contact.x, r.points[i].x);
+        assert.equal(r.hits[i].contact.y, r.points[i].y);
+        assert.ok(
+          r.changed[i] > 4,
+          'Bullet hole changes pixels at its contact point',
+        );
+      }
+      assert.deepEqual(r.robotHits, []);
+      assert.equal(r.unchanged, true);
+      assert.ok(
+        r.poses.some(pose => pose.id === 'wall:back' && pose.chips > 0),
+      );
+      assert.ok(
+        r.poses.some(pose => pose.id === 'wall:left' && pose.chips > 0),
+      );
+      await capture(
+        'environment-year1998-wall-shots.png',
+        {renderer: 'year1998', theme: 'year1998', environment: true},
+        false,
+      );
+    },
+  );
+
   for (const renderer of ['webgl', 'year1998', 'fallback']) {
     await run(
       renderer + ': repair delay follows elapsed time at 10fps and 60fps',

@@ -4,7 +4,15 @@ import {AWAKE_EYE_HEIGHT} from './parent-activities.js';
 import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {createEnvironmentDamage} from './environment-damage.js';
-import {repairBotPosition} from './environment-visuals.js';
+import {
+  createOfficeImpacts,
+  officeSurface,
+  officeMaterial,
+} from './year1998-damage.js';
+import {
+  officeRepairFlight,
+  officeCleanupFlight,
+} from './office-service-flight.js';
 import {createRobotWhip, whipPose} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
 import {iso, sortOfficeObjects} from './year1998-geometry.js';
@@ -87,6 +95,7 @@ export function createYear1998Scene(
   const visitors = createFactoryVisitors();
   const damage = createRobotDamage();
   const environment = createEnvironmentDamage();
+  const impacts = createOfficeImpacts();
   let environmentSites = [],
     objectDamage = null;
   function syncEnvironmentSites() {
@@ -100,6 +109,18 @@ export function createYear1998Scene(
           h: 0,
           radius: 0.95,
           kind: 'floor',
+          variant: 'floor',
+          surfaces: [
+            officeSurface(
+              [
+                iso(Math.max(-11.8, x - 1), z === -5 ? -6.4 : z - 1),
+                iso(Math.min(9.2, x + 1), z === -5 ? -6.4 : z - 1),
+                iso(Math.min(9.2, x + 1), Math.min(5.5, z + 1)),
+                iso(Math.max(-11.8, x - 1), Math.min(5.5, z + 1)),
+              ],
+              'carpet',
+            ),
+          ],
         });
     const desk = (x, z, id, manager = false) => {
       const f = deskFootprint(x, z, manager);
@@ -110,6 +131,7 @@ export function createYear1998Scene(
         h: 22,
         radius: 1.2,
         kind: 'furniture',
+        variant: manager ? 'manager' : 'desk',
         w: f.w,
         d: f.d,
       });
@@ -125,6 +147,7 @@ export function createYear1998Scene(
           h: 14,
           radius: 0.6,
           kind: 'furniture',
+          variant: 'queue',
           w: 0.75,
           d: 0.8,
         });
@@ -137,11 +160,19 @@ export function createYear1998Scene(
       ['cooler', -11.35, -2.8, 30, 0.55],
     ])
       sites.push({id, x, z, h, radius, kind: 'machinery'});
+    sites.push(
+      {id: 'wall:back', x: -1.3, z: -6.4, h: 22, radius: 10.5, kind: 'wall'},
+      {id: 'wall:left', x: -11.8, z: -0.45, h: 22, radius: 5.95, kind: 'wall'},
+    );
     environmentSites = sites;
     environment.setSites(sites);
+    impacts.setSites(sites, sessionId);
+    for (const site of sites)
+      if (site.surfaces) impacts.setSurfaces(site.id, site.surfaces, true);
   }
   const whip = createRobotWhip();
   const damageHomes = new Map();
+  const serviceRoutes = new Map();
   let colors = {...DEFAULTS};
   let disposed = false,
     motion = true,
@@ -240,27 +271,41 @@ export function createYear1998Scene(
     initialized = true;
   }
 
-  function environmentColor(fill) {
-    const scorch = objectDamage?.scorch || 0;
-    if (!scorch) return fill;
-    const hex = /^#([0-9a-f]{6})$/i.exec(fill);
-    const values = hex
-      ? hex[1].match(/../g).map(n => parseInt(n, 16))
-      : /^rgb\(([^)]+)\)$/.exec(fill)?.[1].split(',').map(Number);
-    if (!values) return fill;
-    return `rgb(${values.map((n, i) => Math.round(n + ([19, 16, 14][i] - n) * scorch * 0.94)).join(',')})`;
+  function captureSurface(points, fill) {
+    if (!objectDamage) return;
+    const {site, surfaces} = objectDamage;
+    const material = officeMaterial(site, fill);
+    const previous = site.surfaces?.[surfaces.length];
+    const face =
+      previous?.material === material &&
+      points.length === previous.points.length &&
+      points.every(
+        (p, i) =>
+          p[0] === previous.points[i][0] && p[1] === previous.points[i][1],
+      )
+        ? previous
+        : officeSurface(points, material);
+    if (face) surfaces.push(face);
   }
   function rect(x, y, w, h, fill) {
-    ctx.fillStyle = environmentColor(fill);
-    ctx.fillRect(
-      Math.round(x),
-      Math.round(y),
-      Math.max(1, Math.round(w)),
-      Math.max(1, Math.round(h)),
+    x = Math.round(x);
+    y = Math.round(y);
+    w = Math.max(1, Math.round(w));
+    h = Math.max(1, Math.round(h));
+    ctx.fillStyle = fill;
+    ctx.fillRect(x, y, w, h);
+    captureSurface(
+      [
+        [x, y],
+        [x + w, y],
+        [x + w, y + h],
+        [x, y + h],
+      ],
+      fill,
     );
   }
   function polygon(points, fill) {
-    ctx.fillStyle = environmentColor(fill);
+    ctx.fillStyle = fill;
     ctx.beginPath();
     points.forEach(([x, y], index) =>
       index
@@ -269,9 +314,10 @@ export function createYear1998Scene(
     );
     ctx.closePath();
     ctx.fill();
+    captureSurface(points, fill);
   }
   function line(points, stroke, weight = 1) {
-    ctx.strokeStyle = environmentColor(stroke);
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = weight;
     ctx.lineJoin = 'miter';
     ctx.beginPath();
@@ -339,157 +385,95 @@ export function createYear1998Scene(
     const site = environmentSites.find(s => s.id === id),
       pose = environment.pose(id);
     if (!site || !pose) return draw();
-    ctx.save();
-    objectDamage = pose;
-    const [x, y] = iso(site.x, site.z, site.h);
-    if (pose.chips > 0.12) {
-      // Clip an irregular section out of the actual furniture silhouette.
-      const r = 5 + pose.chips * 9;
-      ctx.beginPath();
-      ctx.rect(-2000, -2000, 4000, 4000);
-      ctx.moveTo(x + r * 0.15, y - 9);
-      ctx.lineTo(x + r * 1.3, y - 9);
-      ctx.lineTo(x + r * 1.3, y + r * 1.6);
-      ctx.lineTo(x + r * 0.4, y + r * 1.6);
-      ctx.lineTo(x + r * 0.4, y + r * 0.6);
-      ctx.lineTo(x - r * 0.1, y + r * 0.4);
-      ctx.closePath();
-      ctx.clip('evenodd');
+    const captured = {site, surfaces: []};
+    objectDamage = captured;
+    try {
+      draw();
+    } finally {
+      objectDamage = null;
     }
-    if (pose.dent) {
-      ctx.translate(x, y);
-      ctx.transform(
-        1,
-        pose.dent * 0.035,
-        -pose.dent * 0.025,
-        1 - pose.dent * 0.035,
-        0,
-        0,
-      );
-      ctx.translate(-x, -y);
-    }
-    draw();
-    objectDamage = null;
-    ctx.restore();
+    site.surfaces = captured.surfaces;
+    impacts.setSurfaces(id, captured.surfaces);
     drawEnvironmentMarks(site, pose);
   }
   function drawEnvironmentMarks(site, pose) {
-    if (!pose || (!pose.damage && !pose.scorch && !pose.fire)) return;
-    const [x, y] = iso(site.x, site.z, site.kind === 'floor' ? 0 : site.h);
-    const r = site.kind === 'floor' ? 11 : 8;
-    if (site.kind === 'floor' && (pose.scorch || pose.chips)) {
-      diamond(x, y, r * 2, r, '#282c29');
-      if (pose.chips > 0.12) {
-        polygon(
-          [
-            [x - 9, y],
-            [x - 4, y + 5],
-            [x + 7, y + 2],
-            [x + 4, y - 3],
-            [x, y - 1],
-          ],
-          '#233a42',
-        );
-        line(
-          [
-            [x - 9, y],
-            [x - 4, y + 5],
-            [x + 7, y + 2],
-          ],
-          '#c3c3aa',
-        );
-      }
+    impacts.draw(ctx, site.id, pose, time);
+  }
+  function flightViewTop() {
+    return camera.y - viewHeight / (2 * camera.zoom);
+  }
+
+  function serviceRoute(id) {
+    if (!serviceRoutes.has(id)) serviceRoutes.set(id, {exited: false});
+    return serviceRoutes.get(id);
+  }
+  function repairFlight(site, pose) {
+    return officeRepairFlight(
+      site,
+      pose,
+      flightViewTop(),
+      serviceRoute(`repair:${site.id}`),
+    );
+  }
+  function cleanupFlight(id, home, pose) {
+    if (!pose.cleanup) {
+      serviceRoutes.delete(`cleanup:${id}`);
+      return null;
     }
-    if (pose.dent || pose.chips) {
-      const e = 0.4 + Math.max(pose.dent, pose.chips) * 0.7;
-      const crack = [
-        [x - r * e, y - 3],
-        [x - 2, y],
-        [x - 5, y + 3],
-        [x + 3, y + 4],
-        [x + r * e, y + 7],
-      ];
-      line(crack, '#e1d8b5', 3);
-      line(crack, '#293b3c', 1);
+    return officeCleanupFlight(
+      home,
+      pose,
+      flightViewTop(),
+      serviceRoute(`cleanup:${id}`),
+    );
+  }
+
+  function drawRotors(x, y, span, tint) {
+    for (const side of [-1, 1]) {
+      const rx = x + side * span;
       line(
         [
-          [x - 2, y],
-          [x + 2, y - 4],
+          [x, y - 7],
+          [rx, y - 9],
         ],
-        '#293b3c',
+        '#263e47',
+        3,
       );
-      if (pose.chips > 0.12)
-        for (let i = 0; i < 4; i++) {
-          const [px, py] = iso(
-            site.x + Math.cos(i * 2.4) * 0.8,
-            site.z + Math.sin(i * 2.4) * 0.7,
-          );
-          polygon(
-            [
-              [px - 2, py],
-              [px, py - 2],
-              [px + 3, py + 1],
-              [px, py + 3],
-            ],
-            '#b3b8a5',
-          );
-        }
+      diamond(rx, y - 9, 8, 4, '#263e47');
+      diamond(rx, y - 10, 6, 2, '#b6c9c3');
+      const blade = 3 + Math.sin(time * 48) * 3;
+      line(
+        [
+          [rx - blade, y - 10],
+          [rx + blade, y - 10],
+        ],
+        tint,
+      );
+      rect(rx - 2, y - 5, 4, 2 + Math.sin(time * 25 + side), '#8fffe8');
     }
-    if (pose.fire)
-      for (let i = 0; i < 7; i++) {
-        const cycle = (time * 3 + i / 7) % 1,
-          px = x - r + (i * r) / 3;
-        const h = (10 + (1 - cycle) * 13) * pose.fire;
-        polygon(
-          [
-            [px - 4, y + 3],
-            [px - 5, y - h * 0.3],
-            [px + 2, y - h],
-            [px + 1, y - h * 0.3],
-            [px + 5, y + 3],
-          ],
-          '#f14c16',
-        );
-        polygon(
-          [
-            [px - 2, y + 2],
-            [px + 1, y - h * 0.65],
-            [px + 3, y + 2],
-          ],
-          '#ffe28a',
-        );
-        if (i < 2)
-          rect(
-            px + cycle * 6,
-            y - 20 - cycle * 14,
-            4 + cycle * 3,
-            4 + cycle * 3,
-            '#454641',
-          );
-      }
   }
+
   function drawEnvironmentBot(site, pose) {
     if (
       !pose?.botProgress ||
       !['arriving', 'repairing', 'leaving'].includes(pose.phase)
     )
       return;
-    const p = repairBotPosition(site, pose),
-      [x, y] = iso(p[0], p[2]);
-    diamond(x, y + 1, 20, 9, '#344e52');
-    rect(x - 10, y - 5, 20, 6, '#263e47');
-    for (let i = 0; i < 4; i++) rect(x - 9 + i * 5, y - 3, 3, 3, '#aabcb2');
+    const p = repairFlight(site, pose),
+      [x, y] = iso(p[0], p[2], p[1]);
+    drawRotors(x, y, 15, '#32bba9');
+    rect(x - 8, y - 4, 15, 3, '#263e47');
     rect(x - 8, y - 11, 15, 8, '#32bba9');
     rect(x - 6, y - 16, 10, 7, '#d4e1cb');
     rect(x - 7, y - 14, 5, 4, '#263e47');
     rect(x - 6, y - 13, 1, 1, '#c5fff0');
     rect(x - 3, y - 13, 1, 1, '#c5fff0');
     rect(x + 5, y - 14, 4, 7, '#729c9c');
-    const working = pose.phase === 'repairing',
+    const working = pose.phase === 'repairing' && !pose.repairWaiting,
       target = iso(site.x, site.z, site.h + 1);
     const tip = working ? target : [x - 13, y - 10];
-    line([[x - 5, y - 8], [x - 10, y - 20], tip], '#263f47', 3);
-    line([[x - 5, y - 8], [x - 10, y - 20], tip], '#bce9dc');
+    line([[x - 5, y - 8], [x - 11, y + 2], tip], '#263f47', 3);
+    line([[x - 5, y - 8], [x - 11, y + 2], tip], '#bce9dc');
     rect(tip[0] - 2, tip[1] - 1, 4, 3, '#263f47');
     if (working) {
       if (pose.repairProgress < 0.3)
@@ -540,37 +524,51 @@ export function createYear1998Scene(
   }
 
   function drawWalls() {
-    panel(-11.8, -6.4, 21, 0, 44, '#dddac6');
-    panel(-11.8, -6.4, 11.9, 0, 44, '#b5c0b9', 'z');
-    panel(-11.78, -6.36, 20.96, 0, 4, '#939d97');
-    panel(-11.76, -6.36, 11.84, 0, 4, '#788b86', 'z');
-    panel(-11.8, -6.4, 21, 43, 45, '#f5f0dc');
-    panel(-11.8, -6.4, 11.9, 43, 45, '#d8dfcf', 'z');
-    for (const x of [-9.8, -4.4, 1.0, 6.0]) {
-      // Deep sills, blue glass and cream mullions read as indoor windows.
-      panel(x, -6.35, 2.9, 14, 36, '#f5efd9');
-      panel(x + 0.14, -6.33, 2.62, 16, 34, '#76a5b4');
-      panel(x + 0.24, -6.31, 0.8, 17, 33, '#b5d3d4');
-      panel(x + 1.4, -6.29, 0.11, 16, 34, '#f4efdb');
-      panel(x + 0.14, -6.29, 2.62, 24, 25, '#e7e9d5');
-      panel(x - 0.05, -6.27, 3, 36, 38, '#9aa99e');
-      box(x + 1.45, -6.19, 3.04, 0.32, 14, '#e8e7d4', '#aeb8a8', '#8d9f97', 12);
-    }
-    panel(-11.74, -3.9, 2.8, 13, 33, '#766859', 'z');
-    panel(-11.7, -3.75, 2.5, 15, 31, '#baa67a', 'z');
-    for (const [z, low, fill] of [
-      [-3.55, 22, '#fff4cf'],
-      [-2.65, 23, '#b5ccd5'],
-      [-3.2, 16, '#eac0a5'],
-    ]) {
-      panel(-11.66, z, 0.65, low, low + 6, fill, 'z');
-    }
-    panel(-6.05, -6.3, 0.7, 31, 41, '#596c70');
-    panel(-5.98, -6.28, 0.56, 32, 40, '#f7f2dd');
-    line(
-      [iso(-5.7, -6.26, 38.5), iso(-5.7, -6.26, 35), iso(-5.5, -6.26, 35)],
-      '#344c54',
-    );
+    drawEnvironmentObject('wall:back', () => {
+      panel(-11.8, -6.4, 21, 0, 44, '#dddac6');
+      panel(-11.78, -6.36, 20.96, 0, 4, '#939d97');
+      panel(-11.8, -6.4, 21, 43, 45, '#f5f0dc');
+      for (const x of [-9.8, -4.4, 1.0, 6.0]) {
+        // Deep sills, blue glass and cream mullions read as indoor windows.
+        panel(x, -6.35, 2.9, 14, 36, '#f5efd9');
+        panel(x + 0.14, -6.33, 2.62, 16, 34, '#76a5b4');
+        panel(x + 0.24, -6.31, 0.8, 17, 33, '#b5d3d4');
+        panel(x + 1.4, -6.29, 0.11, 16, 34, '#f4efdb');
+        panel(x + 0.14, -6.29, 2.62, 24, 25, '#e7e9d5');
+        panel(x - 0.05, -6.27, 3, 36, 38, '#9aa99e');
+        box(
+          x + 1.45,
+          -6.19,
+          3.04,
+          0.32,
+          14,
+          '#e8e7d4',
+          '#aeb8a8',
+          '#8d9f97',
+          12,
+        );
+      }
+      panel(-6.05, -6.3, 0.7, 31, 41, '#596c70');
+      panel(-5.98, -6.28, 0.56, 32, 40, '#f7f2dd');
+      line(
+        [iso(-5.7, -6.26, 38.5), iso(-5.7, -6.26, 35), iso(-5.5, -6.26, 35)],
+        '#344c54',
+      );
+    });
+    drawEnvironmentObject('wall:left', () => {
+      panel(-11.8, -6.4, 11.9, 0, 44, '#b5c0b9', 'z');
+      panel(-11.76, -6.36, 11.84, 0, 4, '#788b86', 'z');
+      panel(-11.8, -6.4, 11.9, 43, 45, '#d8dfcf', 'z');
+      panel(-11.74, -3.9, 2.8, 13, 33, '#766859', 'z');
+      panel(-11.7, -3.75, 2.5, 15, 31, '#baa67a', 'z');
+      for (const [z, low, fill] of [
+        [-3.55, 22, '#fff4cf'],
+        [-2.65, 23, '#b5ccd5'],
+        [-3.2, 16, '#eac0a5'],
+      ]) {
+        panel(-11.66, z, 0.65, low, low + 6, fill, 'z');
+      }
+    });
   }
 
   function pottedPlant(x, z) {
@@ -1188,7 +1186,8 @@ export function createYear1998Scene(
     const home = damageHomes.get(item.id);
     const frozen = home && unsettled(pose);
     const [wx, wz] = frozen ? home : item.world;
-    const [px, py] = iso(wx + pose.corpseOffset[0], wz + pose.corpseOffset[2]);
+    const flight = cleanupFlight(item.id, [wx, wz], pose);
+    const [px, py] = iso(wx, wz);
     const parentSize = item.parent ? 1.24 : 1;
     const walking = item.stride && motion && !unsettled(pose);
     const stride = pose.panic
@@ -1221,12 +1220,17 @@ export function createYear1998Scene(
         ? Math.min(4, (item.jump || 0) * 3) + hop + stopHop
         : 0;
     const [movedX, movedY] = iso(
-      wx + pose.corpseOffset[0] + pose.offset[0],
-      wz + pose.corpseOffset[2] + pose.offset[2],
+      wx + pose.offset[0],
+      wz + pose.offset[2],
+      flight?.wreckLift || 0,
     );
     const bodyX = movedX;
     const bodyY = movedY - jump - pose.lift * 7;
-    if (selected === item.id && item.selectable !== false) {
+    if (
+      !flight?.wreckLift &&
+      selected === item.id &&
+      item.selectable !== false
+    ) {
       diamond(
         px,
         py + 1,
@@ -1244,7 +1248,7 @@ export function createYear1998Scene(
         ],
         colors.selection,
       );
-    } else
+    } else if (!flight?.wreckLift)
       diamond(
         px + 1,
         py + 1,
@@ -1421,7 +1425,7 @@ export function createYear1998Scene(
         py - (item.parent ? 22 : 19),
         item.status,
       );
-    if (item.visitorName) {
+    if (item.visitorName && !pose.cleanup) {
       const name =
         item.visitorName.length > 15
           ? `${item.visitorName.slice(0, 14)}…`
@@ -1451,31 +1455,43 @@ export function createYear1998Scene(
     });
   }
 
-  function drawCleaner(home, pose) {
+  function drawCleaner(home, pose, id) {
     const cleanup = pose.cleanup;
     if (!cleanup) return;
-    const [x, y] = iso(home[0] + cleanup.position[0], home[1]);
-    diamond(x, y, 12, 5, '#596b73');
-    rect(x - 12, y - 4, 24, 5, '#253f49');
+    const flight = cleanupFlight(id, home, pose);
+    const [x, y] = iso(
+      flight.position[0],
+      flight.position[2],
+      flight.position[1],
+    );
+    drawRotors(x, y, 19, '#ffd36d');
+    rect(x - 10, y - 4, 20, 3, '#253f49');
     rect(x - 10, y - 9, 20, 7, '#d7b15e');
     rect(x - 8, y - 14, 11, 9, '#f1d181');
     rect(x - 6, y - 13, 7, 5, '#24515d');
     rect(x - 4, y - 12, 2, 2, colors.cyan);
     rect(x + 7, y - 7, 5, 4, '#ebdfac');
     rect(x - 5, y - 17, 3, 3, colors.amber);
+    const cable = flight.cableLength;
     line(
       [
-        [x - 10, y - 8],
-        [x - 17, y - 9 + cleanup.grip * 5],
-        [x - 20, y - 3],
+        [x, y - 2],
+        [x, y + cable],
+      ],
+      '#dce4cd',
+      2,
+    );
+    const spread = 7 - cleanup.grip * 3;
+    line(
+      [
+        [x - spread, y + cable - 3],
+        [x - spread, y + cable],
+        [x + spread, y + cable],
+        [x + spread, y + cable - 3],
       ],
       '#344b50',
       2,
     );
-    for (let i = -1; i <= 1; i++) {
-      rect(x + i * 7 - 2, y - 3, 5, 5, '#29454b');
-      rect(x + i * 7, y - 2, 1, 2, '#99aba1');
-    }
   }
   function drawEffects(items) {
     for (const effect of effects) {
@@ -1624,7 +1640,10 @@ export function createYear1998Scene(
     ]);
     damage.retain(shown);
     for (const id of damageHomes.keys())
-      if (!shown.has(id)) damageHomes.delete(id);
+      if (!shown.has(id)) {
+        damageHomes.delete(id);
+        serviceRoutes.delete(`cleanup:${id}`);
+      }
     const items = units.map(unit => ({
       id: unit.id,
       status: unit.status,
@@ -1690,7 +1709,8 @@ export function createYear1998Scene(
         drawEnvironmentMarks(site, environment.pose(site.id));
     drawWalls();
     const occupants = new Map(units.map(unit => [slots.get(unit.id), unit]));
-    const scenery = [];
+    const scenery = [],
+      airborne = [];
     const add = (x, z, w, d, draw) => scenery.push({x, z, w, d, draw});
     const addDesk = (x, z, unit, manager = false, id = 'parent') => {
       scenery.push({
@@ -1770,25 +1790,21 @@ export function createYear1998Scene(
       const pose = damage.pose(item.id);
       const home = damageHomes.get(item.id);
       const [x, z] = home && unsettled(pose) ? home : item.world;
-      add(x + pose.corpseOffset[0], z + pose.corpseOffset[2], 0.8, 0.8, () =>
-        drawRobot(item),
-      );
-      if (pose.cleanup) {
-        const origin = home || item.world;
-        add(origin[0] + pose.cleanup.position[0], origin[1], 1.1, 1.1, () =>
-          drawCleaner(origin, pose),
-        );
-      }
+      const flight = cleanupFlight(item.id, [x, z], pose);
+      if (flight?.wreckLift > 0) airborne.push(() => drawRobot(item));
+      else add(x, z, 0.8, 0.8, () => drawRobot(item));
+      if (pose.cleanup)
+        airborne.push(() => drawCleaner(home || item.world, pose, item.id));
     }
     for (const site of environmentSites) {
       const envPose = environment.pose(site.id);
       if (!['arriving', 'repairing', 'leaving'].includes(envPose?.phase))
         continue;
-      const p = repairBotPosition(site, envPose);
-      add(p[0], p[2], 1, 0.8, () => drawEnvironmentBot(site, envPose));
+      airborne.push(() => drawEnvironmentBot(site, envPose));
     }
     sortOfficeObjects(scenery).forEach(item => item.draw());
     drawEffects(items);
+    airborne.forEach(draw => draw());
     ctx.restore();
     publishLayout(away, visiting, pose, ownTravel, shown);
   }
@@ -1832,14 +1848,39 @@ export function createYear1998Scene(
     data('robotDebris', damage.effects().length);
     data(
       'environmentDamage',
-      JSON.stringify(environment.poses().filter(p => p.phase !== 'intact')),
+      JSON.stringify(
+        environment
+          .poses()
+          .filter(p => p.phase !== 'intact')
+          .map(p => {
+            const site = environmentSites.find(site => site.id === p.id);
+            const position = repairFlight(site, p);
+            return {
+              ...p,
+              botPosition: position,
+              botScreen: toScreen(iso(position[0], position[2], position[1])),
+            };
+          }),
+      ),
     );
     data(
       'robotCleanup',
       JSON.stringify(
         [...shown]
           .filter(id => damage.pose(id).cleanup)
-          .map(id => ({id, ...damage.pose(id).cleanup})),
+          .map(id => {
+            const pose = damage.pose(id);
+            const home = damageHomes.get(id);
+            const flight = cleanupFlight(id, home, pose);
+            return {
+              id,
+              ...pose.cleanup,
+              ...flight,
+              screen: toScreen(
+                iso(flight.position[0], flight.position[2], flight.position[1]),
+              ),
+            };
+          }),
       ),
     );
     data(
@@ -2081,6 +2122,7 @@ export function createYear1998Scene(
         damage.reset();
         environment.reset();
         damageHomes.clear();
+        serviceRoutes.clear();
       }
       snapshot = value;
       selected = selectedId;
@@ -2152,29 +2194,51 @@ export function createYear1998Scene(
       if (!visible()) return [];
       const bounds = canvas.getBoundingClientRect();
       if (bounds.width <= 0 || bounds.height <= 0) return [];
-      return environmentSites
-        .map(site => {
-          const [x, y] = toScreen(iso(site.x, site.z, site.h));
-          return {
-            id: site.id,
-            x: bounds.left + (x / viewWidth) * bounds.width,
-            y: bounds.top + (y / viewHeight) * bounds.height,
-            radius: Math.max(
-              9,
-              (site.radius * 12 * camera.zoom * bounds.width) / viewWidth,
-            ),
-          };
-        })
-        .filter(
-          p =>
-            p.x >= Math.max(0, bounds.left) &&
-            p.x <= Math.min(window.innerWidth, bounds.right) &&
-            p.y >= Math.max(0, bounds.top) &&
-            p.y <= Math.min(window.innerHeight, bounds.bottom),
-        );
+      return impacts.targets(point => {
+        const [x, y] = toScreen([point.x, point.y]);
+        return {
+          x: bounds.left + (x / viewWidth) * bounds.width,
+          y: bounds.top + (y / viewHeight) * bounds.height,
+        };
+      });
     },
-    hitEnvironment(id, weapon, amount = 1) {
-      if (disposed || !environment.hit(id, weapon, amount)) return false;
+    hitEnvironment(id, weapon, amount = 1, contact) {
+      if (disposed) return false;
+      let point;
+      if (contact !== undefined) {
+        if (
+          !contact ||
+          !Number.isFinite(contact.x) ||
+          !Number.isFinite(contact.y)
+        )
+          return false;
+        const bounds = canvas.getBoundingClientRect();
+        if (
+          bounds.width <= 0 ||
+          bounds.height <= 0 ||
+          contact.x < bounds.left ||
+          contact.x > bounds.right ||
+          contact.y < bounds.top ||
+          contact.y > bounds.bottom
+        )
+          return false;
+        point = {
+          x:
+            (((contact.x - bounds.left) / bounds.width) * viewWidth -
+              viewWidth / 2) /
+              camera.zoom +
+            camera.x,
+          y:
+            (((contact.y - bounds.top) / bounds.height) * viewHeight -
+              viewHeight / 2) /
+              camera.zoom +
+            camera.y,
+        };
+      }
+      const at = impacts.contact(id, point);
+      const before = environment.pose(id);
+      if (!at || !environment.hit(id, weapon, amount)) return false;
+      impacts.hit(id, weapon, amount, at, before);
       refresh();
       return true;
     },
@@ -2216,6 +2280,7 @@ export function createYear1998Scene(
       environment.dispose();
       environmentSites = [];
       damageHomes.clear();
+      serviceRoutes.clear();
       effects = [];
       anchors = [];
       resizeObserver?.disconnect();

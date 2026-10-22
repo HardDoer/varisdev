@@ -1,5 +1,9 @@
 // A local toy: swinging never sends commands or changes a session's state.
-import {visibleSceneTargets} from './factory-targets.js';
+import {
+  visibleSceneTargets,
+  exposedPolygonContact,
+  polygonOcclusion,
+} from './factory-targets.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const SHAFT = 'M0 6 V-92 A12 12 0 0 1 24 -92 V-82';
@@ -46,7 +50,31 @@ function triangleContains(p, a, b, c) {
 
 // Sweep the whole shaft and crook, not just the cursor, so a quick wave cannot
 // tunnel through a drone between pointer events.
+export function caneSweepContact(before, after, target, covers = []) {
+  if (!target.polygon) return null;
+  for (let i = 1; i < before.length; i++) {
+    const a = before[i - 1],
+      b = before[i],
+      c = after[i],
+      d = after[i - 1];
+    for (const triangle of [
+      [a, b, c],
+      [a, c, d],
+    ]) {
+      const contact = exposedPolygonContact(
+        target.polygon,
+        triangle.map(([x, y]) => ({x, y})),
+        4,
+        covers,
+      );
+      if (contact) return contact;
+    }
+  }
+  return null;
+}
+
 export function caneSweepHits(before, after, target) {
+  if (target.polygon) return Boolean(caneSweepContact(before, after, target));
   const p = [target.x, target.y],
     radius = target.radius + 4;
   for (let i = 1; i < before.length; i++) {
@@ -99,13 +127,24 @@ export function createCaneSwing() {
       const struck = [];
       for (const [id, at] of hits) if (now - at >= COOLDOWN) hits.delete(id);
       if (continuous && distance >= 1.5 && speed >= MIN_SWING_SPEED) {
+        const occlusion = polygonOcclusion(targets);
         for (const target of targets) {
+          if (hits.has(target.id)) continue;
+          const contact = target.polygon
+            ? caneSweepContact(
+                previous.points,
+                points,
+                target,
+                occlusion.get(target),
+              )
+            : null;
           if (
-            !hits.has(target.id) &&
-            caneSweepHits(previous.points, points, target)
+            target.polygon
+              ? contact
+              : caneSweepHits(previous.points, points, target)
           ) {
             hits.set(target.id, now);
-            struck.push(target);
+            struck.push(contact ? {...target, contact} : target);
           }
         }
       }
@@ -321,7 +360,14 @@ export function createFactoryCane(
       if (!equipped || disposed) return;
       const accepted =
         target.environmentId !== undefined
-          ? onEnvironmentHit(target.environmentId, 'cane', result.strength)
+          ? target.contact
+            ? onEnvironmentHit(
+                target.environmentId,
+                'cane',
+                result.strength,
+                target.contact,
+              )
+            : onEnvironmentHit(target.environmentId, 'cane', result.strength)
           : onHit(target.id, result.direction, result.strength);
       if (!equipped || disposed) return;
       if (accepted === false) continue;
@@ -332,8 +378,8 @@ export function createFactoryCane(
       impacts.append(element);
       sparks.push({
         element,
-        x: target.x,
-        y: target.y,
+        x: target.contact?.x ?? target.x,
+        y: target.contact?.y ?? target.y,
         at: now,
         strength: result.strength,
       });

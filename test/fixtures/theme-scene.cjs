@@ -216,7 +216,12 @@ async function setupRenderer(moduleUrl) {
       host.update(snapshot(status), 'builder');
       host.setMotion(false);
       await host.setTheme({scene: 'year1998'}, palette);
-      return inspect();
+      const state = inspect();
+      if (state.renderer !== 'year1998')
+        throw new Error(
+          'Year1998 failed to initialize: ' + state.errors.join('; '),
+        );
+      return state;
     },
     click(id) {
       const anchor = layouts.at(-1).find(item => item.id === id);
@@ -983,6 +988,149 @@ async function main() {
         state.stopped.eyes.lit > state.cancelledEyes.lit,
         'Awake eye area is visible in the Canvas2D pixels',
       );
+    },
+  );
+
+  await run(
+    'Year1998 limits repair crews and flies them down from above the viewport',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        await f.year('running');
+        f.host().setMotion(true);
+        f.advance();
+        const targets = [
+          ...new Map(
+            f
+              .host()
+              .environmentTargets()
+              .filter(t => !t.id.startsWith('wall:'))
+              .map(t => [t.id, t]),
+          ).values(),
+        ].slice(0, 12);
+        for (const target of targets)
+          f.host().hitEnvironment(target.id, 'gun', 1);
+        const poses = () => JSON.parse(f.inspect().data.environmentDamage);
+        const image = () => document.querySelector('canvas').toDataURL();
+        const damaged = image();
+        f.advance(101);
+        const arrival = poses().filter(p => p.phase === 'arriving');
+        f.advance(20);
+        const descending = image();
+        f.advance(30);
+        const working = poses().filter(p => p.phase === 'repairing');
+        const repairing = image();
+        let peak = 0;
+        for (let i = 0; i < 1200; i++) {
+          f.advance();
+          peak = Math.max(
+            peak,
+            poses().filter(p =>
+              ['arriving', 'repairing', 'leaving'].includes(p.phase),
+            ).length,
+          );
+        }
+        return {
+          count: targets.length,
+          arrival,
+          working,
+          peak,
+          remaining: poses(),
+          images: {damaged, descending, repairing},
+        };
+      });
+      assert.equal(state.count, 12);
+      assert.equal(state.arrival.length, 3);
+      assert.ok(
+        state.arrival.every(p => p.botScreen[1] < 0),
+        'Crews enter from above the visible canvas',
+      );
+      assert.equal(state.working.length, 3);
+      for (const working of state.working) {
+        const arrival = state.arrival.find(p => p.id === working.id);
+        assert.equal(working.botPosition[0], arrival.botPosition[0]);
+        assert.equal(working.botPosition[2], arrival.botPosition[2]);
+        assert.ok(working.botPosition[1] < arrival.botPosition[1]);
+      }
+      assert.equal(state.peak, 3);
+      assert.deepEqual(state.remaining, [], 'Queued repairs eventually finish');
+      const output = resolve(__dirname, '../../.pi/tmp/year1998-scenes');
+      mkdirSync(output, {recursive: true});
+      for (const [name, image] of Object.entries(state.images)) {
+        const path = join(output, 'repair-' + name + '.png');
+        writeFileSync(path, Buffer.from(image.split(',')[1], 'base64'));
+        report.screenshots.push(path);
+      }
+    },
+  );
+
+  await run(
+    'Year1998 cleanup descends to the wreck and carries it upward out of view',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        await f.year('running');
+        f.host().setMotion(true);
+        f.advance();
+        for (let i = 0; i < 4; i++) f.host().hitWithCane('parent', 1, 2.2);
+        const samples = {},
+          images = {};
+        for (let frame = 0; frame < 220; frame++) {
+          f.advance();
+          const data = f.inspect().data;
+          const pose = JSON.parse(data.robotDamage).parent;
+          const cleanup = JSON.parse(data.robotCleanup).find(
+            p => p.id === 'parent',
+          );
+          if (cleanup) {
+            const stage =
+              pose.phaseAge < 0.1
+                ? 'entry'
+                : pose.phaseAge >= 1 && pose.phaseAge < 1.1
+                  ? 'descending'
+                  : pose.phaseAge >= 2.9 && pose.phaseAge < 3
+                    ? 'loading'
+                    : pose.phaseAge >= 4.2 && pose.phaseAge < 4.3
+                      ? 'leaving'
+                      : pose.phaseAge > 5.9
+                        ? 'exit'
+                        : null;
+            if (stage && !samples[stage]) {
+              samples[stage] = cleanup;
+              if (['descending', 'loading', 'leaving'].includes(stage))
+                images[stage] = document.querySelector('canvas').toDataURL();
+            }
+          }
+        }
+        return {
+          samples,
+          images,
+          final: JSON.parse(f.inspect().data.robotDamage).parent.phase,
+        };
+      });
+      const {entry, descending, loading, leaving, exit} = state.samples;
+      assert.ok(entry && descending && loading && leaving && exit);
+      assert.ok(entry.screen[1] < 0);
+      assert.ok(
+        exit.screen[1] < -40,
+        'Crane and suspended wreck clear the viewport',
+      );
+      assert.ok(descending.position[1] < entry.position[1]);
+      assert.ok(leaving.position[1] > loading.position[1]);
+      assert.ok(loading.wreckLift > 0);
+      assert.ok(leaving.wreckLift > loading.wreckLift);
+      for (const sample of Object.values(state.samples)) {
+        assert.equal(sample.position[0], entry.position[0]);
+        assert.equal(sample.position[2], entry.position[2]);
+      }
+      assert.equal(state.final, 'replacing');
+      const output = resolve(__dirname, '../../.pi/tmp/year1998-scenes');
+      mkdirSync(output, {recursive: true});
+      for (const [name, image] of Object.entries(state.images)) {
+        const path = join(output, 'cleanup-' + name + '.png');
+        writeFileSync(path, Buffer.from(image.split(',')[1], 'base64'));
+        report.screenshots.push(path);
+      }
     },
   );
 

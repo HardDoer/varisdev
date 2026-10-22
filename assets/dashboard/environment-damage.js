@@ -14,11 +14,18 @@ const SPREAD_HOPS = 2;
 const SPREAD_SITES = 8;
 
 /** Register world-space {id, x, z} sites before applying weapon contacts. */
-export function createEnvironmentDamage({maxSites = 128} = {}) {
+export function createEnvironmentDamage({
+  maxSites = 128,
+  maxRepairBots = 3,
+} = {}) {
   maxSites = Number.isFinite(maxSites)
     ? clamp(Math.floor(maxSites), 1, 256)
     : 128;
+  maxRepairBots = Number.isFinite(maxRepairBots)
+    ? clamp(Math.floor(maxRepairBots), 1, maxSites)
+    : Math.min(3, maxSites);
   let sites = new Map();
+  let waiting = [];
   let motion = true;
   let disposed = false;
   let pending = 0;
@@ -42,6 +49,7 @@ export function createEnvironmentDamage({maxSites = 128} = {}) {
       spreadDepth: 0,
       spreadDone: false,
       repairStart: null,
+      repairDelay: 0,
     };
   }
 
@@ -78,13 +86,53 @@ export function createEnvironmentDamage({maxSites = 128} = {}) {
       next.set(site.id, site);
     }
     sites = next;
+    waiting = waiting.filter(site => sites.get(site.id) === site);
     if (!hasActivity()) pending = 0;
   }
 
   function postpone(site) {
-    site.phase = 'damaged';
-    site.phaseAge = 0;
+    site.repairDelay = DELAY;
     site.repairStart = null;
+    if (site.phase === 'intact') {
+      waiting.push(site);
+      site.phase = 'damaged';
+      site.phaseAge = 0;
+    } else if (site.phase === 'leaving') {
+      // Turn the dispatched bot back along its route at its current position.
+      site.phaseAge = ARRIVAL * clamp(1 - site.phaseAge / DEPARTURE, 0, 1);
+      site.phase = 'arriving';
+    } else if (site.phase !== 'arriving') {
+      site.phaseAge = 0;
+    }
+  }
+
+  function startRepair(site) {
+    site.phase = 'repairing';
+    site.phaseAge = 0;
+    if (site.repairDelay > EPSILON) return;
+    site.repairStart = {
+      damage: site.damage,
+      dent: site.dent,
+      chips: site.chips,
+      scorch: site.scorch,
+      fire: site.fire,
+    };
+  }
+
+  function dispatch() {
+    let slots = maxRepairBots;
+    for (const site of sites.values())
+      if (['arriving', 'repairing', 'leaving'].includes(site.phase)) slots--;
+    // One queue entry per waiting site. Further hits reset its quiet period,
+    // but retain its place ahead of newer damage once it is ready for repair.
+    for (let i = 0; i < waiting.length && slots > 0; i++) {
+      const site = waiting[i];
+      if (site.repairDelay > EPSILON) continue;
+      site.phase = 'arriving';
+      site.phaseAge = 0;
+      waiting.splice(i--, 1);
+      slots--;
+    }
   }
 
   function ignite(site, incident = null, depth = 0) {
@@ -178,32 +226,23 @@ export function createEnvironmentDamage({maxSites = 128} = {}) {
     for (const site of sites.values()) {
       if (site.phase === 'intact') continue;
       site.phaseAge += STEP;
+      site.repairDelay = Math.max(0, site.repairDelay - STEP);
       if (site.fire > 0) site.fireAge += STEP;
       else site.heat = Math.max(0, site.heat - STEP * 0.08);
-      if (site.phase === 'damaged' || site.phase === 'arriving') {
+      const holding = site.phase === 'repairing' && !site.repairStart;
+      if (site.phase === 'damaged' || site.phase === 'arriving' || holding) {
         if (site.fire > 0) {
           site.damage = clamp(site.damage + STEP * 0.045, 0, 1);
           site.scorch = clamp(site.scorch + STEP * 0.1, 0, 1);
           if (!site.spreadDone && site.fireAge + EPSILON >= SPREAD_DELAY)
             spreading.push(site);
         }
-        if (site.phase === 'damaged' && site.phaseAge + EPSILON >= DELAY) {
-          site.phase = 'arriving';
-          site.phaseAge = Math.max(0, site.phaseAge - DELAY);
-        } else if (
+        if (holding) startRepair(site);
+        else if (
           site.phase === 'arriving' &&
           site.phaseAge + EPSILON >= ARRIVAL
-        ) {
-          site.phase = 'repairing';
-          site.phaseAge = Math.max(0, site.phaseAge - ARRIVAL);
-          site.repairStart = {
-            damage: site.damage,
-            dent: site.dent,
-            chips: site.chips,
-            scorch: site.scorch,
-            fire: site.fire,
-          };
-        }
+        )
+          startRepair(site);
       } else if (site.phase === 'repairing') {
         const start = site.repairStart;
         site.fire = start.fire * clamp(1 - site.phaseAge / EXTINGUISH, 0, 1);
@@ -227,6 +266,7 @@ export function createEnvironmentDamage({maxSites = 128} = {}) {
     }
     // New fires begin together after this substep, independent of Map order.
     for (const source of spreading) spread(source);
+    dispatch();
   }
 
   function tick(seconds) {
@@ -270,6 +310,7 @@ export function createEnvironmentDamage({maxSites = 128} = {}) {
       weapon: site.weapon,
       phase: site.phase,
       phaseAge: site.phaseAge,
+      repairWaiting: repairing && !site.repairStart,
       repairProgress: repairing
         ? clamp(site.phaseAge / REPAIR, 0, 1)
         : leaving
@@ -303,11 +344,13 @@ export function createEnvironmentDamage({maxSites = 128} = {}) {
     reset() {
       if (disposed) return;
       for (const site of sites.values()) Object.assign(site, fresh(site));
+      waiting = [];
       pending = 0;
     },
     dispose() {
       disposed = true;
       sites.clear();
+      waiting = [];
       pending = 0;
     },
   };

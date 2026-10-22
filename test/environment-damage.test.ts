@@ -6,8 +6,11 @@ type Damage = ReturnType<typeof createEnvironmentDamage>;
 type Site = {id: string | number; x: number; z: number};
 const origin = {id: 'wall', x: 0, z: 0};
 
-function model(sites: Site[] = [origin]) {
-  const damage = createEnvironmentDamage();
+function model(
+  sites: Site[] = [origin],
+  options: Parameters<typeof createEnvironmentDamage>[0] = {},
+) {
+  const damage = createEnvironmentDamage(options);
   damage.setSites(sites);
   return damage;
 }
@@ -16,6 +19,14 @@ function pose(damage: Damage, id: string | number = 'wall') {
   const result = damage.pose(id);
   assert.ok(result, `Registered site ${id}`);
   return result;
+}
+
+function bots(damage: Damage) {
+  return damage
+    .poses()
+    .filter(
+      site => site && ['arriving', 'repairing', 'leaving'].includes(site.phase),
+    );
 }
 
 function advance(damage: Damage, seconds: number, frame = 1 / 60) {
@@ -99,21 +110,158 @@ void test('repair robots wait five seconds, arrive, restore damage and depart', 
   assert.equal(damage.active(), false);
 });
 
-void test('further weapon contacts postpone repair during every active phase', () => {
-  for (const elapsed of [4, 6, 8.5, 10.5]) {
-    const damage = model();
-    damage.hit('wall', 'gun');
-    damage.tick(elapsed);
-    const previous = pose(damage).damage;
-    assert.equal(damage.hit('wall', 'cane'), true);
-    assert.equal(pose(damage).phase, 'damaged');
-    assert.ok(pose(damage).damage > previous);
-    damage.tick(4.9);
-    assert.equal(pose(damage).phase, 'damaged');
-    damage.tick(0.1);
-    assert.equal(pose(damage).phase, 'arriving');
+void test('three repair slots cover arrival, work and departure before draining the queue', () => {
+  const sites = Array.from({length: 8}, (_, id) => ({id, x: id * 10, z: 0}));
+  const damage = model(sites);
+  for (const {id} of sites) damage.hit(id, 'gun');
+  const dispatched: (string | number)[] = [];
+  const phases = new Set<string>();
+  for (let frame = 1; frame <= 26 * 60; frame++) {
+    damage.tick(1 / 60);
+    const active = bots(damage);
+    assert.ok(
+      active.length <= 3,
+      `At most three dispatched bots at frame ${frame}`,
+    );
+    for (const site of active) {
+      assert.ok(site);
+      phases.add(site.phase);
+      if (!dispatched.includes(site.id)) dispatched.push(site.id);
+    }
+    if ([5, 7, 10, 11].includes(frame / 60)) {
+      assert.equal(active.length, 3);
+      assert.ok(
+        damage
+          .poses()
+          .slice(3)
+          .every(site => site?.phase === 'damaged'),
+      );
+    }
+    if (frame === 11 * 60)
+      assert.ok(active.every(site => site?.phase === 'leaving'));
+  }
+  assert.deepEqual(
+    dispatched,
+    sites.map(site => site.id),
+  );
+  assert.deepEqual(phases, new Set(['arriving', 'repairing', 'leaving']));
+  assert.ok(damage.poses().every(site => site?.phase === 'intact'));
+  assert.equal(damage.active(), false);
+});
+
+void test('older waiting damage keeps its queue position through more hits and registration changes', () => {
+  const sites = ['newest', 'middle', 'oldest', 'busy'].map((id, i) => ({
+    id,
+    x: i * 10,
+    z: 0,
+  }));
+  const damage = model(sites, {maxRepairBots: 1});
+  damage.hit('busy', 'gun');
+  damage.tick(1);
+  damage.hit('oldest', 'gun');
+  damage.tick(1);
+  damage.hit('middle', 'gun');
+  damage.tick(1);
+  damage.hit('newest', 'gun');
+  damage.tick(3);
+  for (let i = 0; i < 20; i++) damage.hit('oldest', 'cane');
+  damage.setSites([...sites].reverse());
+  damage.tick(6);
+  for (const id of ['oldest', 'middle', 'newest']) {
+    assert.deepEqual(
+      bots(damage).map(site => site?.id),
+      [id],
+    );
+    assert.equal(pose(damage, id).phase, 'arriving');
     damage.tick(7);
+    assert.equal(pose(damage, id).phase, 'intact');
+  }
+  assert.equal(damage.active(), false);
+});
+
+void test('an older site still receiving hits allows ready queued damage to use a free slot', () => {
+  const sites = ['busy', 'older', 'ready'].map((id, x) => ({id, x, z: 0}));
+  const damage = model(sites, {maxRepairBots: 1});
+  for (const {id} of sites) damage.hit(id, 'gun');
+  damage.tick(11);
+  damage.hit('older', 'cane');
+  damage.tick(1);
+  assert.equal(pose(damage, 'ready').phase, 'arriving');
+  assert.equal(pose(damage, 'older').phase, 'damaged');
+  damage.tick(7);
+  assert.equal(pose(damage, 'older').phase, 'arriving');
+  damage.tick(7);
+  assert.equal(damage.active(), false);
+});
+
+void test('further contacts postpone dispatch until five quiet seconds have elapsed', () => {
+  const damage = model();
+  damage.hit('wall', 'gun');
+  damage.tick(4);
+  damage.hit('wall', 'cane');
+  damage.tick(4.9);
+  assert.equal(pose(damage).phase, 'damaged');
+  assert.equal(pose(damage).botProgress, 0);
+  damage.tick(0.1);
+  assert.equal(pose(damage).phase, 'arriving');
+  damage.tick(7);
+  assert.equal(damage.active(), false);
+});
+
+void test('renewed damage preserves dispatched bots and restarts repair after a quiet period', () => {
+  for (const elapsed of [6, 8.5, 10.5]) {
+    const damage = model([origin, {id: 'queued', x: 10, z: 0}], {
+      maxRepairBots: 1,
+    });
+    damage.hit('wall', 'gun');
+    damage.hit('queued', 'gun');
+    damage.tick(elapsed);
+    const before = pose(damage);
+    assert.equal(damage.hit('wall', 'cane'), true);
+    const renewed = pose(damage);
+    near(renewed.botProgress, before.botProgress);
+    assert.equal(
+      renewed.phase,
+      before.phase === 'leaving' ? 'arriving' : before.phase,
+    );
+    if (before.phase === 'arriving') near(renewed.phaseAge, before.phaseAge);
+    assert.equal(renewed.repairProgress, 0);
+    assert.ok(renewed.damage > before.damage);
+    let previous = renewed;
+    for (let frame = 0; frame < 294; frame++) {
+      damage.tick(1 / 60);
+      const current = pose(damage);
+      assert.ok(current.botProgress > 0, 'The dispatched bot stays visible');
+      assert.ok(
+        Math.abs(current.botProgress - previous.botProgress) <= 1 / 120 + 1e-8,
+      );
+      assert.equal(bots(damage).length, 1);
+      assert.equal(pose(damage, 'queued').phase, 'damaged');
+      near(current.damage, renewed.damage);
+      previous = current;
+    }
+    assert.equal(pose(damage).phase, 'repairing');
+    assert.equal(pose(damage).repairWaiting, true);
+    assert.equal(pose(damage).botProgress, 1);
+    damage.hit('wall', 'gun');
+    const held = pose(damage);
+    damage.tick(4.9);
+    assert.equal(pose(damage).repairWaiting, true);
+    near(pose(damage).damage, held.damage);
+    damage.tick(0.1);
+    assert.equal(pose(damage).repairWaiting, false);
+    near(pose(damage).repairProgress, 0);
+    damage.tick(1.5);
+    near(pose(damage).damage, (held.damage * 2) / 3);
+    near(pose(damage).chips, (held.chips * 2) / 3);
+    damage.tick(1.5);
+    assert.equal(pose(damage).phase, 'leaving');
+    assert.equal(pose(damage, 'queued').phase, 'damaged');
+    damage.tick(2);
     assert.equal(pose(damage).phase, 'intact');
+    assert.equal(pose(damage, 'queued').phase, 'arriving');
+    damage.tick(7);
+    assert.equal(damage.active(), false);
   }
 });
 
@@ -222,8 +370,74 @@ void test('dense fire clusters have a finite spread budget and do not cross gaps
   assert.ok(damage.poses().every(site => site?.phase === 'intact'));
 });
 
+void test('spreading fire queues repairs without a swarm and every burned site is restored', () => {
+  const sites = Array.from({length: 20}, (_, i) => ({
+    id: i === 0 ? 'wall' : `neighbor-${i}`,
+    x: (i % 5) * 0.3,
+    z: Math.floor(i / 5) * 0.3,
+  }));
+  const damage = model(sites);
+  ignite(damage);
+  const burned = new Set<string | number>();
+  const repaired = new Set<string | number>();
+  let queuedFire = false;
+  for (let frame = 0; frame < 35 * 60 && damage.active(); frame++) {
+    damage.tick(1 / 60);
+    const active = bots(damage);
+    assert.ok(active.length <= 3);
+    for (const site of damage.poses()) {
+      assert.ok(site);
+      if (site.fire > 0) burned.add(site.id);
+      if (site.phase === 'damaged' && site.fire > 0 && active.length === 3)
+        queuedFire = true;
+      if (site.phase === 'intact' && burned.has(site.id)) repaired.add(site.id);
+    }
+  }
+  assert.ok(
+    queuedFire,
+    'Fire waits for bots already arriving, repairing or leaving',
+  );
+  assert.ok(burned.size > 3 && burned.size <= 8);
+  assert.deepEqual(repaired, burned);
+  assert.equal(damage.active(), false);
+  assert.ok(
+    damage.poses().every(site => site?.phase === 'intact' && site.fire === 0),
+  );
+});
+
+void test('a newly ignited fire keeps its dispatched bot and is extinguished after renewed damage settles', () => {
+  const damage = model();
+  damage.hit('wall', 'gun');
+  damage.tick(8.5);
+  ignite(damage);
+  assert.equal(pose(damage).phase, 'repairing');
+  assert.equal(pose(damage).repairWaiting, true);
+  assert.equal(pose(damage).botProgress, 1);
+  const renewed = pose(damage);
+  damage.tick(5);
+  const restart = pose(damage);
+  assert.equal(restart.repairWaiting, false);
+  assert.equal(restart.fire, 1);
+  assert.ok(restart.damage > renewed.damage);
+  damage.tick(0.75);
+  near(pose(damage).fire, 0);
+  near(pose(damage).damage, restart.damage);
+  damage.tick(2.25);
+  assert.equal(pose(damage).phase, 'leaving');
+  assert.equal(pose(damage).scorch, 0);
+  damage.tick(2);
+  assert.equal(damage.active(), false);
+});
+
 void test('frame partitions retain fractional time and produce identical lifecycle and spreading poses', () => {
-  const sites = [origin, {id: 'neighbor', x: 2, z: 0}];
+  const sites = [
+    origin,
+    ...Array.from({length: 6}, (_, i) => ({
+      id: `neighbor-${i}`,
+      x: i + 1,
+      z: 0,
+    })),
+  ];
   const coarse = model(sites);
   const smooth = model(sites);
   const uneven = model(sites);
@@ -279,6 +493,74 @@ void test('setSites retains same-session damage, lifecycle and updated positions
   assert.deepEqual(damage.poses(), []);
   damage.setSites([origin]);
   assert.equal(pose(damage).damage, 0);
+});
+
+void test('pruned waiting sites release queue entries and removed dispatched bots release slots', () => {
+  const sites = ['busy', 'removed', 'waiting'].map((id, x) => ({id, x, z: 0}));
+  const damage = model(sites, {maxRepairBots: 1});
+  for (const {id} of sites) damage.hit(id, 'gun');
+  damage.tick(6);
+  assert.equal(pose(damage, 'busy').phase, 'arriving');
+  damage.setSites([sites[2]]);
+  assert.equal(damage.pose('busy'), null);
+  assert.equal(damage.pose('removed'), null);
+  damage.tick(1 / 60);
+  assert.equal(pose(damage, 'waiting').phase, 'arriving');
+  damage.setSites([...sites].reverse());
+  assert.equal(pose(damage, 'busy').phase, 'intact');
+  assert.equal(pose(damage, 'removed').phase, 'intact');
+  damage.tick(7);
+  assert.equal(damage.active(), false);
+  damage.hit('removed', 'gun');
+  damage.hit('busy', 'gun');
+  damage.tick(5);
+  assert.deepEqual(
+    bots(damage).map(site => site?.id),
+    ['removed'],
+  );
+  damage.tick(7);
+  assert.deepEqual(
+    bots(damage).map(site => site?.id),
+    ['busy'],
+  );
+  damage.tick(7);
+  assert.equal(damage.active(), false);
+});
+
+void test('repair limits stay finite and a long tick drains the largest scene with one bot', () => {
+  const sites = Array.from({length: 256}, (_, id) => ({id, x: id, z: 0}));
+  const damage = model(sites, {maxSites: 256, maxRepairBots: 1});
+  for (const {id} of sites) damage.hit(id, 'gun');
+  damage.tick(5);
+  assert.equal(bots(damage).length, 1);
+  damage.tick(Number.MAX_VALUE);
+  assert.equal(damage.active(), false);
+  assert.ok(damage.poses().every(site => site?.phase === 'intact'));
+  damage.hit(255, 'cane');
+  damage.tick(4.9);
+  assert.equal(
+    pose(damage, 255).phase,
+    'damaged',
+    'Suspended time was discarded',
+  );
+  damage.tick(0.1);
+  assert.equal(pose(damage, 255).phase, 'arriving');
+
+  for (const [maxRepairBots, expected] of [
+    [0, 1],
+    [-1, 1],
+    [1.9, 1],
+    [NaN, 3],
+    [Infinity, 3],
+    [Number.MAX_VALUE, 5],
+  ]) {
+    const limited = model(sites.slice(0, 5), {maxSites: 5, maxRepairBots});
+    for (let id = 0; id < 5; id++) limited.hit(id, 'gun');
+    limited.tick(5);
+    assert.equal(bots(limited).length, expected);
+    limited.tick(Number.MAX_VALUE);
+    assert.equal(limited.active(), false);
+  }
 });
 
 void test('registration and invalid contacts cannot grow or corrupt bounded scene state', () => {
@@ -340,6 +622,37 @@ void test('Motion off keeps static damage, freezes fire propagation and resumes 
   damage.setMotion(true);
   assert.equal(pose(damage).botProgress, 1);
   damage.tick(10);
+  assert.equal(damage.active(), false);
+});
+
+void test('Motion freezes queued and dispatched repairs and reset clears both without stale work', () => {
+  const sites = ['busy', 'first', 'second'].map((id, x) => ({id, x, z: 0}));
+  const damage = model(sites, {maxRepairBots: 1});
+  for (const {id} of sites) damage.hit(id, 'gun');
+  damage.tick(6);
+  const traveling = pose(damage, 'busy');
+  damage.setMotion(false);
+  const frozen = damage.poses();
+  damage.tick(Number.MAX_VALUE);
+  assert.deepEqual(damage.poses(), frozen);
+  damage.setMotion(true);
+  assert.deepEqual(pose(damage, 'busy'), traveling);
+  damage.tick(6);
+  assert.equal(pose(damage, 'busy').phase, 'intact');
+  assert.equal(pose(damage, 'first').phase, 'arriving');
+  assert.equal(pose(damage, 'second').phase, 'damaged');
+  damage.reset();
+  damage.tick(Number.MAX_VALUE);
+  assert.equal(damage.active(), false);
+  assert.equal(bots(damage).length, 0);
+  damage.hit('second', 'cane');
+  damage.hit('busy', 'gun');
+  damage.tick(5);
+  assert.deepEqual(
+    bots(damage).map(site => site?.id),
+    ['second'],
+  );
+  damage.tick(Number.MAX_VALUE);
   assert.equal(damage.active(), false);
 });
 
