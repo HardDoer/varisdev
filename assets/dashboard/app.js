@@ -751,18 +751,18 @@ function renderOverview() {
       text(entry.name, session.name);
       parentBadge(entry.status, session);
       const needsInput = !!data.ui?.dialogs?.length;
-      entry.element.classList.toggle(
-        'attention',
-        Boolean(session.error) || needsInput,
-      );
+      const hasError = parentHasError(session);
+      entry.element.classList.toggle('attention', hasError || needsInput);
       text(entry.path, session.cwd);
       text(
         entry.activity,
         needsInput
           ? `Needs input: ${data.ui.dialogs[0].title}`
-          : session.error || session.activity || 'Waiting for a task',
+          : (hasError && session.error) ||
+              session.activity ||
+              'Waiting for a task',
       );
-      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${data.agents.length + 1} agents${session.error ? `\n${session.error}` : ''}`;
+      entry.element.title = `${session.name}\n${session.cwd}\n${session.activity || ''}\n${data.agents.length + 1} agents${hasError ? `\n${session.error}` : ''}`;
     },
   );
   const working = workspaces.reduce(
@@ -1857,12 +1857,13 @@ function renderInspectorPanel(data, unit, parent) {
     $('unit-task'),
     parent ? unit.prompt || 'No prompt recorded yet.' : unit.task,
   );
+  const active = conversationHasWork(data, unit);
   const result = parent ? unit.response : unit.output;
   text($('unit-result'), result);
-  $('result-section').hidden = !result;
+  $('result-section').hidden = active || Boolean(unit.error) || !result;
   $('result-truncated').hidden = !unit.outputTruncated;
   text($('unit-error'), unit.error);
-  $('error-section').hidden = !unit.error;
+  $('error-section').hidden = active || !unit.error;
   facts($('unit-paths'), [
     ['Folder', unit.cwd],
     ...(parent ? [['Session', unit.sessionFile]] : []),

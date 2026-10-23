@@ -232,6 +232,7 @@ export function observeDashboardSession(
     messageIdentities = new WeakMap();
     let prompt = '';
     let response = '';
+    lastError = undefined;
     const branch = ctx.sessionManager.getBranch();
     function* messages(): Generator<ConversationMessage> {
       for (const entry of branch) {
@@ -282,11 +283,12 @@ export function observeDashboardSession(
               at,
               error,
             };
+          lastError = error ? publicText(error) : undefined;
           if (message.role === 'user') {
             prompt = text;
             response = '';
           } else {
-            if (text) response = text;
+            response = text;
             for (const part of message.content) {
               if (part.type !== 'toolCall') continue;
               yield {
@@ -341,7 +343,18 @@ export function observeDashboardSession(
     state?.batch(() => {
       state!.replaceConversation(messages());
       restoreUsage(ctx);
-      state!.updateSession({prompt, response});
+      state!.updateSession({
+        prompt,
+        response,
+        error: lastError,
+        ...(ctx.isIdle()
+          ? {
+              activity: lastError
+                ? `Error: ${lastError.slice(0, 1000)}`
+                : 'Ready for a task',
+            }
+          : {}),
+      });
     });
   }
 
@@ -453,10 +466,13 @@ export function observeDashboardSession(
   });
   pi.on('agent_start', (_event, ctx) => {
     state?.batch(() => {
+      lastError = undefined;
       state!.updateSession({
         ...metadata(ctx),
         status: 'running',
         activity: 'Working',
+        error: undefined,
+        response: '',
       });
       state!.record('session', 'Main agent started working');
     });
@@ -475,8 +491,11 @@ export function observeDashboardSession(
     state?.batch(() => {
       if (message.role === 'assistant') {
         assistantMessage = entry;
+        lastError = undefined;
         state!.updateSession({
           activity: activity(text ? 'Responding' : 'Thinking'),
+          error: undefined,
+          response: text,
         });
       } else userMessage = entry;
       if (text || visuals.visualizations || visuals.visualizationErrors)
@@ -574,14 +593,14 @@ export function observeDashboardSession(
       showCalls(message, entry.at, error, message.stopReason);
       const call = modelUsage(message, entry);
       if (call) state!.recordUsage(call, entry.sequence);
-      if (message.errorMessage) {
-        lastError = publicText(message.errorMessage);
-        state!.record('error', lastError);
-        state!.updateSession({error: lastError});
-      }
+      lastError = message.errorMessage
+        ? publicText(message.errorMessage)
+        : undefined;
+      if (lastError) state!.record('error', lastError);
       state!.updateSession({
         ...metadata(ctx),
-        ...(text ? {response: text} : {}),
+        error: lastError,
+        response: text,
       });
     });
     if (message.role === 'assistant') assistantMessage = undefined;

@@ -375,6 +375,120 @@ void test('tool errors, aborted calls, incomplete streams and shutdown settle wi
   assert.equal(fixture.state.snapshot().session.status, 'closed');
 });
 
+void test('recovered assistant errors stop marking the current run as failed', async () => {
+  const fixture = observer();
+  await fixture.emit('session_start');
+  await fixture.emit('agent_start');
+  const failed = message('assistant', 1, [text('Incomplete response')], {
+    stopReason: 'error',
+    errorMessage: 'Provider temporarily unavailable',
+  });
+  await fixture.emit('message_start', {message: failed});
+  await fixture.emit('message_end', {message: failed});
+  assert.equal(
+    fixture.state.snapshot().session.error,
+    'Provider temporarily unavailable',
+  );
+
+  // Recovery can continue within the same run, without before_agent_start.
+  const retry = message('assistant', 2, []);
+  await fixture.emit('message_start', {message: retry});
+  const running = fixture.state.snapshot();
+  assert.equal(running.session.status, 'running');
+  assert.equal(running.session.activity, 'Thinking');
+  assert.equal(running.session.error, undefined);
+  assert.equal(running.session.response, '');
+  retry.content = [text('Recovered successfully.')];
+  await fixture.emit('message_update', {message: retry});
+  await fixture.emit('message_end', {message: retry});
+  await fixture.emit('agent_settled');
+  const recovered = fixture.state.snapshot();
+  assert.equal(recovered.session.status, 'idle');
+  assert.equal(recovered.session.activity, 'Ready for a task');
+  assert.equal(recovered.session.error, undefined);
+  assert.equal(recovered.session.response, 'Recovered successfully.');
+  assert.equal(recovered.events.at(-1)?.message, 'Main agent finished');
+  assert.equal(
+    recovered.conversation[0].error,
+    'Provider temporarily unavailable',
+  );
+
+  fixture.history([failed, retry]);
+  await fixture.emit('session_tree');
+  assert.equal(fixture.state.snapshot().session.error, undefined);
+  assert.equal(
+    fixture.state.snapshot().session.response,
+    'Recovered successfully.',
+  );
+});
+
+void test('an empty successful response cannot restore a failed partial as the result', async () => {
+  const fixture = observer();
+  await fixture.emit('session_start');
+  const failed = message('assistant', 1, [text('Failed partial response')], {
+    stopReason: 'error',
+    errorMessage: 'Provider failed',
+  });
+  const recovered = message('assistant', 2, []);
+  for (const item of [failed, recovered])
+    await fixture.emit('message_end', {message: item});
+  await fixture.emit('agent_settled');
+  assert.equal(fixture.state.snapshot().session.error, undefined);
+  assert.equal(fixture.state.snapshot().session.response, '');
+  fixture.history([failed, recovered]);
+  await fixture.emit('session_tree');
+  assert.equal(fixture.state.snapshot().session.error, undefined);
+  assert.equal(fixture.state.snapshot().session.response, '');
+  assert.equal(
+    fixture.state.snapshot().conversation[0].error,
+    'Provider failed',
+  );
+});
+
+void test('unresolved errors remain visible until continuation or history recovery', async () => {
+  const fixture = observer();
+  await fixture.emit('session_start');
+  const failed = message('assistant', 1, [text('Incomplete response')], {
+    stopReason: 'error',
+    errorMessage: 'Provider failed',
+  });
+  await fixture.emit('message_end', {message: failed});
+  await fixture.emit('agent_settled');
+  assert.equal(fixture.state.snapshot().session.error, 'Provider failed');
+  assert.equal(
+    fixture.state.snapshot().session.activity,
+    'Error: Provider failed',
+  );
+  assert.equal(
+    fixture.state.snapshot().events.at(-1)?.message,
+    'Run ended with an error',
+  );
+
+  await fixture.emit('agent_start');
+  assert.equal(fixture.state.snapshot().session.error, undefined);
+  assert.equal(fixture.state.snapshot().session.response, '');
+  const failedAgain = message('assistant', 2, [], {
+    stopReason: 'error',
+    errorMessage: 'Still unavailable',
+  });
+  await fixture.emit('message_end', {message: failedAgain});
+  await fixture.emit('agent_settled');
+  assert.equal(fixture.state.snapshot().session.error, 'Still unavailable');
+
+  const recovered = message('assistant', 3, [text('Completed.')]);
+  fixture.history([failed, failedAgain, recovered]);
+  await fixture.emit('session_tree');
+  assert.equal(fixture.state.snapshot().session.error, undefined);
+  assert.equal(fixture.state.snapshot().session.activity, 'Ready for a task');
+  fixture.history([failed, failedAgain]);
+  await fixture.emit('session_tree');
+  assert.equal(fixture.state.snapshot().session.error, 'Still unavailable');
+  await fixture.emit('message_end', {message: recovered});
+  await fixture.emit('agent_settled');
+  assert.equal(fixture.state.snapshot().session.error, undefined);
+  assert.equal(fixture.state.snapshot().session.activity, 'Ready for a task');
+});
+
 void test('restores tool results without calls and cancels unfinished history calls', async () => {
   const fixture = observer();
   fixture.history([

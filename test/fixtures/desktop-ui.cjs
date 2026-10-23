@@ -3463,6 +3463,159 @@ async function main() {
     },
   );
 
+  await run(
+    'results and errors reflect completed work while resumed conversations show activity',
+    async () => {
+      const data = hub.sessions[0];
+      Object.assign(data.session, {
+        status: 'idle',
+        activity: 'Error: Provider unavailable',
+        error: 'Provider unavailable',
+        response: 'Incomplete response',
+      });
+      data.conversation.push({
+        id: 'failed-response',
+        role: 'assistant',
+        text: 'Incomplete response',
+        error: 'Provider unavailable',
+        at,
+      });
+      await publish();
+      await evaluate(() => document.getElementById('tab-details').click());
+      const details = () => ({
+        resultVisible: document
+          .getElementById('result-section')
+          .checkVisibility(),
+        errorVisible: document
+          .getElementById('error-section')
+          .checkVisibility(),
+        result: document.getElementById('unit-result').textContent,
+        error: document.getElementById('unit-error').textContent,
+        status: document.getElementById('inspector-status').textContent,
+      });
+      assert.deepEqual(await evaluate(details), {
+        resultVisible: false,
+        errorVisible: true,
+        result: 'Incomplete response',
+        error: 'Provider unavailable',
+        status: 'Error',
+      });
+      for (const status of ['running', 'compacting']) {
+        Object.assign(data.session, {status, activity: 'Continuing the task'});
+        await publish();
+        const current = await evaluate(details);
+        assert.equal(current.resultVisible, false);
+        assert.equal(current.errorVisible, false);
+        assert.notEqual(current.status, 'Error');
+        assert.deepEqual(
+          await evaluate(() => {
+            const card = document.querySelector(
+              '#parents .parent-card.selected',
+            );
+            return {
+              attention: card.classList.contains('attention'),
+              activity: card.querySelector('.parent-card-activity').textContent,
+              errorInTitle: card.title.includes('Provider unavailable'),
+            };
+          }),
+          {
+            attention: false,
+            activity: 'Continuing the task',
+            errorInTitle: false,
+          },
+        );
+      }
+      Object.assign(data.session, {
+        status: 'running',
+        activity: 'Thinking',
+        error: undefined,
+        response: '',
+      });
+      await publish();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('result-recovery-running-details');
+      await evaluate(() => document.getElementById('tab-conversation').click());
+      assert.equal(
+        await evaluate(() =>
+          document.getElementById('conversation-activity').checkVisibility(),
+        ),
+        true,
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('conversation').textContent,
+        ),
+        /Provider unavailable/,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('result-recovery-running-conversation');
+
+      Object.assign(data.session, {
+        status: 'idle',
+        activity: 'Ready for a task',
+        response: 'Task completed successfully.',
+      });
+      await publish();
+      await evaluate(() => document.getElementById('tab-details').click());
+      assert.deepEqual(await evaluate(details), {
+        resultVisible: true,
+        errorVisible: false,
+        result: 'Task completed successfully.',
+        error: '—',
+        status: 'Ready',
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('result-recovery-completed');
+      data.queue.followUp = ['Next task'];
+      await publish();
+      assert.equal((await evaluate(details)).resultVisible, false);
+      data.queue.followUp = [];
+
+      const agent = {
+        id: 'resumed-agent',
+        name: 'Resumed agent',
+        task: 'Continue working',
+        cwd: directory,
+        model: 'fixture/small',
+        createdAt: at,
+        status: 'failed',
+        activity: 'Failed',
+        output: 'Previous result',
+        error: 'Previous error',
+        conversation: [],
+      };
+      data.agents = [agent];
+      data.totalAgents = 1;
+      await publish();
+      await evaluate(() =>
+        document.querySelector('#history-workers .history-row').click(),
+      );
+      await evaluate(() => document.getElementById('tab-details').click());
+      assert.equal((await evaluate(details)).errorVisible, true);
+      for (const status of ['queued', 'running', 'cancelling']) {
+        Object.assign(agent, {status, activity: 'Continuing the task'});
+        await publish();
+        const current = await evaluate(details);
+        assert.equal(current.resultVisible, false, status);
+        assert.equal(current.errorVisible, false, status);
+      }
+      Object.assign(agent, {
+        status: 'completed',
+        activity: 'Completed',
+        output: 'New result',
+        error: undefined,
+      });
+      await publish();
+      assert.deepEqual(await evaluate(details), {
+        resultVisible: true,
+        errorVisible: false,
+        result: 'New result',
+        error: '—',
+        status: 'Completed',
+      });
+    },
+  );
+
   await run('live activity events disclose linked details', async () => {
     hub.sessions[0].changes = [
       {
