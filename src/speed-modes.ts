@@ -252,6 +252,14 @@ export function registerSpeedModes(pi: ExtensionAPI): void {
           : {}),
       };
     }
-    return {...payload, service_tier: mode === 'regular' ? 'default' : mode};
+    // Codex maps its Fast setting to "priority" on the wire. The public
+    // OpenAI API also documents "priority" as equivalent to "fast".
+    // https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs
+    // https://developers.openai.com/api/docs/guides/fast-mode
+    return {
+      ...payload,
+      service_tier:
+        mode === 'regular' ? 'default' : mode === 'fast' ? 'priority' : mode,
+    };
   });
 }

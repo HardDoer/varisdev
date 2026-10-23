@@ -44,6 +44,7 @@ import {
   initSessionFeatures,
   renderSessionFeatures,
   refreshContext,
+  refreshSpeed,
 } from './session-features.js';
 
 const $ = id => document.getElementById(id);
@@ -59,6 +60,7 @@ const TABS = [
   'changes',
   'tokens',
   'context',
+  'speed',
 ];
 const STATUS = {
   idle: 'Ready',
@@ -1773,7 +1775,7 @@ function renderInspector() {
   text($('conversation-kind-label'), conversationKindLabel(kind));
   const key = `${state.sessionId}:${state.unitId}`;
   if (inspectorKey !== key) {
-    for (const tab of ['details', 'feed', 'changes', 'tokens'])
+    for (const tab of ['details', 'feed', 'changes', 'tokens', 'speed'])
       $(`panel-${tab}`).scrollTop = 0;
     inspectorKey = key;
   }
@@ -1977,6 +1979,7 @@ function setTab(tab) {
   const unit = selectedUnit();
   if (data && unit) renderInspectorPanel(data, unit, state.unitId === 'parent');
   if (tab === 'context') refreshContext();
+  if (tab === 'speed') refreshSpeed();
   if (tab === 'conversation' && previousTab !== 'conversation')
     followConversationBottom();
   if (tab === 'feed' && $('follow-feed').checked)

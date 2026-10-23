@@ -1542,7 +1542,7 @@ async function resizeValue(handle, target, axis = 'height') {
   );
 }
 
-async function resizeThemes(name, options) {
+async function resizeThemes(name, options, check = resizeLayout) {
   if (!process.env.DESKTOP_UI_SCREENSHOT_DIR) return;
   const {themes, selected} = await evaluate(() => {
     const select = document.getElementById('factory-theme');
@@ -1558,7 +1558,7 @@ async function resizeThemes(name, options) {
       select.dispatchEvent(new Event('change', {bubbles: true}));
     }, theme);
     await settle();
-    await resizeLayout(options);
+    await check(options);
     await screenshot(`${name}-${theme}`);
   }
   await evaluate(theme => {
@@ -2041,6 +2041,151 @@ async function main() {
       await settle();
       await resizeKey('#workspaces-resize', 'Return');
       await resizeLayout();
+    },
+  );
+
+  await run(
+    'panel visibility reclaims space after resizing and restores saved splits',
+    async () => {
+      await populateResizePanels();
+      const dimensions = () =>
+        evaluate(() => {
+          const rect = id =>
+            document.getElementById(id).getBoundingClientRect().toJSON();
+          return {
+            column: rect('factory-column'),
+            workspaces: rect('workspaces-panel'),
+            agents: rect('worker-panels'),
+            history: rect('active-agents-panel'),
+            saved: localStorage.getItem('varisdev.panel-sizes.v1'),
+          };
+        });
+      const toggle = async key => {
+        await evaluate(key => {
+          document.getElementById(`layout-${key}`).click();
+        }, key);
+        await settle();
+      };
+      const assertFilled = async () => {
+        const layout = await evaluate(() => {
+          const column = document.getElementById('factory-column');
+          const rect = column.getBoundingClientRect();
+          return {
+            top: rect.top,
+            bottom: rect.bottom,
+            children: [...column.children]
+              .filter(child => child.checkVisibility())
+              .map(child => ({
+                id: child.id,
+                ...child.getBoundingClientRect().toJSON(),
+              })),
+            overflow: [document.documentElement, document.body].some(
+              element =>
+                element.scrollWidth > element.clientWidth + 1 ||
+                element.scrollHeight > element.clientHeight + 1,
+            ),
+          };
+        });
+        assert.equal(layout.overflow, false, 'The page must fit the window');
+        let bottom = layout.top;
+        for (const child of layout.children) {
+          assert.ok(
+            Math.abs(child.top - bottom) <= 1,
+            `Panels must meet without gaps or overlap: ${JSON.stringify(layout)}`,
+          );
+          assert.ok(child.height > 0, `Visible panel has height: ${child.id}`);
+          bottom = child.bottom;
+        }
+        assert.ok(
+          Math.abs(bottom - layout.bottom) <= 1,
+          `Panels fill the column: ${JSON.stringify(layout)}`,
+        );
+      };
+      await dragResize('#agents-resize', 0, -60);
+      await dragResize('#history-resize', 40, 0);
+      const preferred = await dimensions();
+      await toggle('visualization');
+      const hidden = await dimensions();
+      assert.ok(
+        hidden.workspaces.height <= preferred.workspaces.height + 1,
+        `Hiding the scene must not expand the workspace list into empty space: ${JSON.stringify({preferred, hidden})}`,
+      );
+      assert.ok(
+        hidden.agents.height > preferred.agents.height + 100,
+        'Agents and history expand into the space released by the scene',
+      );
+      await assertFilled();
+      await reloadPage();
+      assert.equal((await dimensions()).saved, preferred.saved);
+      await assertFilled();
+      await resizeThemes('panel-visibility-agents-expanded', {}, assertFilled);
+
+      await toggle('workspaces');
+      await assertFilled();
+      await toggle('agents');
+      const conversationOnly = await evaluate(() => ({
+        workspace: document.getElementById('factory-workspace').clientWidth,
+        conversation: document.getElementById('inspector').clientWidth,
+      }));
+      assert.ok(
+        conversationOnly.workspace - conversationOnly.conversation <= 2,
+        'Conversation fills the window when all side panels are hidden',
+      );
+      await toggle('workspaces');
+      await assertFilled();
+      await toggle('visualization');
+      await assertFilled();
+      await toggle('agents');
+      await resizeLayout();
+      const restored = await dimensions();
+      for (const key of ['workspaces', 'agents', 'history'])
+        assert.ok(
+          Math.abs(restored[key].height - preferred[key].height) <= 2 &&
+            Math.abs(restored[key].width - preferred[key].width) <= 2,
+          `Showing panels restores the preferred split for ${key}`,
+        );
+      assert.equal(restored.saved, preferred.saved);
+
+      await dragResize('#workspaces-resize', 0, 36);
+      const resized = await dimensions();
+      await toggle('visualization');
+      await assertFilled();
+      await reloadPage();
+      await assertFilled();
+      assert.equal((await dimensions()).saved, resized.saved);
+      await toggle('visualization');
+      const shown = await dimensions();
+      for (const key of ['workspaces', 'agents'])
+        assert.ok(
+          Math.abs(shown[key].height - resized[key].height) <= 2,
+          `Showing the scene restores the resized ${key} height`,
+        );
+
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      await resizeLayout();
+      await toggle('visualization');
+      await assertFilled();
+      await reloadPage();
+      await assertFilled();
+      assert.equal((await dimensions()).saved, resized.saved);
+      await resizeThemes(
+        'panel-visibility-compact-agents-expanded',
+        {},
+        assertFilled,
+      );
+      await toggle('workspaces');
+      await assertFilled();
+      await toggle('visualization');
+      await resizeLayout();
+      await evaluate(() => document.getElementById('layout-reset').click());
+      await settle();
+      await resizeLayout();
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      await assertFilled();
+      assert.equal((await dimensions()).saved, resized.saved);
     },
   );
 
@@ -5207,6 +5352,40 @@ async function main() {
             call.request.prompt === '/fast on',
         ),
       );
+      await reloadPage();
+      await evaluate(() => document.getElementById('tab-speed').click());
+      await until(
+        () =>
+          !document.getElementById('session-speed').disabled &&
+          document.getElementById('session-speed').value === 'fast',
+        'Speed tab must display the saved mode after reload',
+      );
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      assert.equal(
+        await evaluate(() => {
+          const control = document
+            .getElementById('session-speed')
+            .getBoundingClientRect();
+          const panel = document
+            .getElementById('panel-speed')
+            .getBoundingClientRect();
+          return (
+            control.top >= panel.top &&
+            control.bottom <= panel.bottom &&
+            control.right <= panel.right &&
+            document.getElementById('parent-prompt').checkVisibility()
+          );
+        }),
+        true,
+        'The Speed control fits alongside the composer at compact zoom',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('speed-tab-parent-compact');
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      await evaluate(() => document.getElementById('tab-conversation').click());
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Owner draft during speed changes';
@@ -5223,17 +5402,52 @@ async function main() {
           call.method === 'prompt' ||
           (call.method === 'agentSession' && call.request.action === 'prompt'),
       ).length;
-      const reopenSpeedMenu = async () => {
+      const reopenSpeedTab = async () => {
         await evaluate(() => {
-          const button = document.getElementById('app-menu-button');
-          if (
-            document.getElementById('app-menu-panel').matches(':popover-open')
-          )
-            button.click();
-          button.click();
+          document.getElementById('tab-conversation').click();
+          document.getElementById('tab-speed').click();
         });
       };
-      await reopenSpeedMenu();
+      await reopenSpeedTab();
+      assert.deepEqual(
+        await evaluate(() => ({
+          selected: document
+            .getElementById('tab-speed')
+            .getAttribute('aria-selected'),
+          panels: [...document.querySelectorAll('.inspector-body')]
+            .filter(panel => !panel.hidden)
+            .map(panel => panel.id),
+          menuOpen: document
+            .getElementById('app-menu-panel')
+            .matches(':popover-open'),
+          inPanel: !!document.querySelector('#panel-speed #session-speed'),
+        })),
+        {
+          selected: 'true',
+          panels: ['panel-speed'],
+          menuOpen: false,
+          inPanel: true,
+        },
+        'Speed is available as an inspector tab without opening the menu',
+      );
+      await evaluate(() => document.getElementById('tab-speed').focus());
+      await press('Left');
+      assert.notEqual(
+        await evaluate(() => document.activeElement.id),
+        'tab-speed',
+      );
+      await press('Right');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'tab-speed',
+      );
+      assert.equal(
+        await evaluate(() =>
+          document.getElementById('tab-speed').getAttribute('aria-selected'),
+        ),
+        'true',
+        'Arrow navigation selects the Speed tab',
+      );
       await until(
         () => !document.getElementById('session-speed').disabled,
         'Running subagent speed control did not load',
@@ -5305,7 +5519,7 @@ async function main() {
           `Speed control must be visible in ${theme}`,
         );
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-          await screenshot(`speed-menu-${theme}`);
+          await screenshot(`speed-tab-${theme}`);
       }
       await evaluate(theme => {
         const select = document.getElementById('factory-theme');
@@ -5315,20 +5529,15 @@ async function main() {
       window.setContentSize(1100, 760);
       window.webContents.setZoomFactor(1.5);
       await settle();
-      await evaluate(() =>
-        document
-          .getElementById('session-speed')
-          .scrollIntoView({block: 'center'}),
-      );
-      await settle();
       assert.equal(
         await evaluate(() => {
           const select = document.getElementById('session-speed');
           const bounds = select.getBoundingClientRect();
           const panel = document
-            .getElementById('app-menu-panel')
+            .getElementById('panel-speed')
             .getBoundingClientRect();
           return (
+            document.getElementById('tab-speed').checkVisibility() &&
             select.checkVisibility() &&
             bounds.top >= panel.top &&
             bounds.bottom <= panel.bottom &&
@@ -5338,15 +5547,15 @@ async function main() {
           );
         }),
         true,
-        'Speed control must fit a compact menu',
+        'Speed control and its tab must fit the compact panel',
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('speed-menu-compact');
+        await screenshot('speed-tab-compact');
       window.webContents.setZoomFactor(1);
       window.setContentSize(1600, 1000);
       await settle();
       resources.get('alpha:other').speedModes = ['regular', 'fast'];
-      await reopenSpeedMenu();
+      await reopenSpeedTab();
       await until(
         () =>
           document.querySelector('#session-speed option[value="ultrafast"]')
@@ -5363,7 +5572,7 @@ async function main() {
       );
       resources.get('alpha:other').speedModes = ['regular'];
       featureDelays.set('alpha:other', 120);
-      await reopenSpeedMenu();
+      await reopenSpeedTab();
       assert.equal(
         await evaluate(() => document.getElementById('session-speed').disabled),
         true,
@@ -5390,21 +5599,21 @@ async function main() {
         'fast',
         'ultrafast',
       ];
-      await reopenSpeedMenu();
+      await reopenSpeedTab();
       await until(
         () => !document.getElementById('session-speed').disabled,
         'Restored model speed control did not refresh',
       );
       featureErrors.set('alpha:other', 'Fixture capability refresh failed');
-      await reopenSpeedMenu();
+      await reopenSpeedTab();
       await until(
         () =>
-          !document.getElementById('context-error').hidden &&
+          document.getElementById('speed-error').checkVisibility() &&
           document.getElementById('session-speed').disabled,
         'Failed capability refresh left cached speed enabled',
       );
       featureErrors.delete('alpha:other');
-      await reopenSpeedMenu();
+      await reopenSpeedTab();
       await until(
         () => !document.getElementById('session-speed').disabled,
         'Speed control did not recover from capability refresh failure',
@@ -5417,22 +5626,27 @@ async function main() {
       });
       await until(
         () =>
-          !document.getElementById('app-error').hidden &&
+          document.getElementById('speed-error').checkVisibility() &&
           document.getElementById('session-speed').value === 'regular' &&
           !document.getElementById('session-speed').disabled,
         'Rejected speed change did not restore its confirmed mode and show an error',
       );
       assert.match(
-        await evaluate(() => document.getElementById('app-error').textContent),
+        await evaluate(
+          () => document.getElementById('speed-error').textContent,
+        ),
         /Fixture speed refused/,
       );
       assert.equal(owner.agents[1].speedMode, 'regular');
       assert.equal(owner.session.speedMode, 'fast');
       dialogErrors.delete('speed');
-      await evaluate(() => {
-        document.getElementById('app-error').hidden = true;
-        document.getElementById('app-menu-button').click();
-      });
+      await reopenSpeedTab();
+      assert.equal(
+        await evaluate(() => document.getElementById('speed-error').hidden),
+        true,
+        'Reopening Speed clears the previous command error',
+      );
+      await evaluate(() => document.getElementById('tab-conversation').click());
       await evaluate(() => document.getElementById('back-to-parent').click());
       assert.equal(
         await evaluate(() => document.getElementById('parent-prompt').value),
@@ -9282,7 +9496,7 @@ async function main() {
       await press('End');
       assert.equal(
         await evaluate(() => document.activeElement.id),
-        'tab-context',
+        'tab-speed',
       );
     },
   );

@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
+import {zstdDecompressSync} from 'node:zlib';
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -317,8 +318,14 @@ async function fixture(t: TestContext, oauth = false) {
       compaction: {enabled: false},
       retry: {enabled: false},
       cacheWarming: {enabled: false},
+      transport: 'sse',
     }),
   );
+  const codexAccess = `fixture.${Buffer.from(
+    JSON.stringify({
+      'https://api.openai.com/auth': {chatgpt_account_id: 'speed-account'},
+    }),
+  ).toString('base64')}.signature`;
   await writeFile(
     join(agentDir, 'auth.json'),
     JSON.stringify({
@@ -331,6 +338,13 @@ async function fixture(t: TestContext, oauth = false) {
             clientId: 'fixture-client',
           }
         : {type: 'api_key', key: 'sk-speed-fixture'},
+      'openai-codex': {
+        type: 'oauth',
+        access: codexAccess,
+        refresh: 'saved-codex-refresh',
+        expires: Date.now() + 3600000,
+        accountId: 'speed-account',
+      },
       anthropic: {type: 'api_key', key: 'sk-ant-speed-fixture'},
     }),
   );
@@ -341,12 +355,35 @@ async function fixture(t: TestContext, oauth = false) {
     globalThis,
     'fetch',
     async (url: RequestInfo | URL, init?: RequestInit) => {
-      requests.push({
-        url: String(url),
-        body: JSON.parse(String(init?.body)),
-        headers: new Headers(init?.headers),
-      });
+      const headers = new Headers(init?.headers);
+      const body = JSON.parse(
+        headers.get('content-encoding') === 'zstd'
+          ? zstdDecompressSync(init?.body as Uint8Array).toString()
+          : String(init?.body),
+      ) as Captured['body'];
+      requests.push({url: String(url), body, headers});
       await gate?.promise;
+      // Reproduce the reported backend rejection instead of accepting every tier.
+      if (body.service_tier === 'fast')
+        return Response.json(
+          {detail: 'Unsupported service_tier: fast'},
+          {status: 400},
+        );
+      if (String(url).endsWith('/chat/completions'))
+        return new Response(
+          `data: ${JSON.stringify({
+            id: 'fixture',
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                delta: {role: 'assistant', content: 'OK'},
+                finish_reason: 'stop',
+              },
+            ],
+          })}\n\ndata: [DONE]\n\n`,
+          {headers: {'content-type': 'text/event-stream'}},
+        );
       return response(String(url).includes('anthropic.com'));
     },
   );
@@ -377,6 +414,7 @@ async function fixture(t: TestContext, oauth = false) {
     requests,
     agentDir,
     cwd,
+    codexAccess,
     hold: () => {
       gate = Promise.withResolvers<void>();
       return gate;
@@ -399,7 +437,12 @@ void test(
     assert.equal(f.requests.length, 0, 'Commands never become model prompts');
     assert.equal(parent.state.snapshot().session.speedMode, 'fast');
     await parent.prompt('First fast response');
-    assert.equal(f.requests.at(-1)?.body.service_tier, 'fast');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
+    assert.equal(f.requests.at(-1)?.url, 'https://api.openai.com/v1/responses');
+    assert.equal(
+      f.requests.at(-1)?.headers.get('authorization'),
+      'Bearer sk-speed-fixture',
+    );
     assert.equal(parent.state.snapshot().session.error, undefined);
     const held = f.hold();
     const running = parent.prompt('Held fast response');
@@ -407,7 +450,7 @@ void test(
     while (f.requests.length < 2 && Date.now() < deadline) await delay(5);
     assert.equal(f.requests.length, 2);
     await parent.prompt('/ultrafast');
-    assert.equal(f.requests[1].body.service_tier, 'fast');
+    assert.equal(f.requests[1].body.service_tier, 'priority');
     held.resolve();
     await running;
     await parent.prompt('Next ultrafast response');
@@ -519,6 +562,19 @@ void test(
     const f = await fixture(t, true);
     const parent = await f.create('openai/gpt-6.1-sol');
     assert.equal(process.env.OPENAI_API_KEY, undefined);
+    await parent.prompt('/fast');
+    await parent.prompt('Subscription fast response');
+    assert.equal((await parent.features()).speedMode, 'fast');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
+    assert.equal(f.requests.at(-1)?.url, 'https://api.openai.com/v1/responses');
+    assert.equal(
+      f.requests.at(-1)?.headers.get('authorization'),
+      'Bearer saved-chatgpt-access',
+    );
+    assert.equal(parent.state.snapshot().session.error, undefined);
+    await parent.prompt('/fast off');
+    await parent.prompt('Subscription regular response');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'default');
     await parent.prompt('/ultrafast');
     await parent.prompt('Subscription response');
     assert.equal(f.requests.at(-1)?.body.service_tier, 'ultrafast');
@@ -533,6 +589,87 @@ void test(
     });
     assert.deepEqual((await parent.features()).speedModes, regular);
     await assert.rejects(parent.prompt('/fast'), /unavailable/);
+  },
+);
+
+void test(
+  'legacy Codex OAuth sends the Fast wire tier to the ChatGPT backend and retains saved preferences',
+  options,
+  async t => {
+    const f = await fixture(t);
+    const parent = await f.create('openai-codex/gpt-6-astra');
+    assert.equal(process.env.OPENAI_API_KEY, undefined);
+    assert.deepEqual((await parent.features()).speedModes, ultrafast);
+    await parent.prompt('/fast on');
+    await parent.prompt('Codex fast response');
+    assert.equal(f.requests.length, 1, 'Fast succeeds without retrying a 400');
+    const request = f.requests.at(-1)!;
+    assert.equal(
+      request.url,
+      'https://chatgpt.com/backend-api/codex/responses',
+    );
+    assert.equal(request.body.service_tier, 'priority');
+    assert.equal(
+      request.headers.get('authorization'),
+      `Bearer ${f.codexAccess}`,
+    );
+    assert.equal(request.headers.get('chatgpt-account-id'), 'speed-account');
+    assert.equal(parent.state.snapshot().session.error, undefined);
+    const saved = parent.state.snapshot().session;
+    await parent.close();
+    const resumed = await f.create('', {
+      id: saved.id,
+      path: saved.sessionFile!,
+    });
+    assert.equal((await resumed.features()).speedMode, 'fast');
+    await resumed.prompt('Resumed Codex fast response');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
+    await resumed.prompt('/ultrafast on');
+    await resumed.prompt('Codex ultrafast response');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'ultrafast');
+    await resumed.prompt('/ultrafast off');
+    await resumed.prompt('Codex regular response');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'default');
+    assert.equal(resumed.state.snapshot().session.error, undefined);
+  },
+);
+
+void test(
+  'OpenAI Chat Completions uses the compatible priority tier with API key authentication',
+  options,
+  async t => {
+    const f = await fixture(t);
+    await writeFile(
+      join(f.agentDir, 'models.json'),
+      JSON.stringify({
+        providers: {
+          openai: {
+            models: [
+              {id: 'gpt-5.2', api: 'openai-completions', reasoning: true},
+            ],
+          },
+        },
+      }),
+    );
+    const parent = await f.create('openai/gpt-5.2');
+    assert.deepEqual((await parent.features()).speedModes, fast);
+    await parent.prompt('/fast on');
+    await parent.prompt('Chat Completions fast response');
+    assert.equal(f.requests.length, 1);
+    assert.equal(
+      f.requests.at(-1)?.url,
+      'https://api.openai.com/v1/chat/completions',
+    );
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
+    assert.equal(
+      f.requests.at(-1)?.headers.get('authorization'),
+      'Bearer sk-speed-fixture',
+    );
+    assert.equal(parent.state.snapshot().session.error, undefined);
+    await assert.rejects(parent.prompt('/ultrafast on'), /unavailable/);
+    await parent.prompt('/fast off');
+    await parent.prompt('Chat Completions regular response');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'default');
   },
 );
 
@@ -574,7 +711,7 @@ void test(
       'fast',
     );
     await session.prompt('Terminal fast response');
-    assert.equal(f.requests.at(-1)?.body.service_tier, 'fast');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
     await session.prompt('/fast');
     await session.prompt('Terminal regular response');
     assert.equal(f.requests.at(-1)?.body.service_tier, 'default');
@@ -657,7 +794,7 @@ void test(
       new AbortController().signal,
       () => {},
     );
-    assert.equal(f.requests.at(-1)?.body.service_tier, 'fast');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
     assert.equal(
       f.requests.at(-1)?.headers.get('authorization'),
       'Bearer sk-speed-fixture',
@@ -706,7 +843,7 @@ void test(
         new AbortController().signal,
         () => {},
       );
-      assert.equal(f.requests.at(-1)?.body.service_tier, 'fast');
+      assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
       assert.equal(
         f.requests.at(-1)?.headers.get('authorization'),
         'Bearer sk-switched-api-key',

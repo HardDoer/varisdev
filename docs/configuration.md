@@ -61,7 +61,7 @@ Drag the dividers to resize the conversation and live view, the workspace list, 
 
 Focus a divider with **Tab** and use the arrow keys to resize it; hold **Shift** for larger steps. **Home** and **End** select its smallest and largest sizes. Double-click a divider or press **Enter** to reset it. **Esc** cancels a drag.
 
-Panel sizes adjust to fit the window and zoom level. In short windows, **Agents & history** opens the agent panels in a drawer.
+Panel sizes adjust to fit the window and zoom level. Hiding panels lets the remaining panels fill the available space; showing them again restores your preferred sizes. In short windows, **Agents & history** opens the agent panels in a drawer.
 
 ## Models
 
@@ -75,7 +75,7 @@ For sessions attached from a terminal, open picker dialogs in that terminal. Exa
 
 `/fast` and `/ultrafast` toggle the named mode for the agent receiving the prompt. Selecting the other mode switches to it; repeating the active command returns to regular speed. Both also accept `on` or `off`.
 
-**Menu → Speed** changes the selected agent's mode directly, including subagents. Unsupported modes are disabled; a model that supports only regular speed disables the switch. Each agent has its own setting, and newly spawned agents start at regular speed.
+The **Speed** tab beside **Conversation** and **Live feed** changes the selected agent's mode directly, including subagents. Unsupported modes are disabled; a model that supports only regular speed disables the switch. Each agent has its own setting, and newly spawned agents start at regular speed.
 
 A lightning icon beside **Effort** indicates Fast; two indicate Ultrafast. Regular speed has no icon. The selection is saved per model in the conversation and applies to the next model request without changing thinking effort. A request already in progress keeps its current mode.
 

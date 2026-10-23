@@ -914,12 +914,6 @@
                     >
                       Model &amp; thinking
                     </button>
-                    <label class="speed-control" for="session-speed">
-                      <span>Speed</span>
-                      <select id="session-speed" disabled>
-                        <option value="regular">Regular</option>
-                      </select>
-                    </label>
                     <button
                       id="open-approvals"
                       class="quiet-button"
@@ -1394,6 +1388,31 @@
             >
               Context
             </button>
+            <button
+              id="tab-speed"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-speed"
+              tabindex="-1"
+            >
+              Speed
+            </button>
+          </div>
+          <div
+            id="panel-speed"
+            class="inspector-body"
+            role="tabpanel"
+            aria-labelledby="tab-speed"
+            hidden
+          >
+            <label class="speed-control" for="session-speed">
+              <span>Speed</span>
+              <select id="session-speed" disabled>
+                <option value="regular">Regular</option>
+              </select>
+            </label>
+            <p id="speed-error" class="form-error" role="alert" hidden></p>
           </div>
           <div
             id="panel-conversation"

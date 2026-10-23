@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const cache = new Map();
 const loading = new Map();
 const contextErrors = new Map();
+const speedErrors = new Map();
 const contextDisclosures = new Map();
 let conversationView = true;
 let contextSignature;
@@ -232,6 +233,10 @@ async function load(force = false, id = current?.session.id) {
 }
 export function refreshContext() {
   renderContext();
+  void load(true);
+}
+export function refreshSpeed() {
+  speedErrors.delete(current?.session.id);
   void load(true);
 }
 function renderContext() {
@@ -513,6 +518,11 @@ function renderSettingsControls() {
     !canRunCommand('fast') ||
     !resource ||
     modes.length < 2;
+  const cause =
+    speedErrors.get(current?.session.id) ||
+    contextErrors.get(current?.session.id);
+  $('speed-error').hidden = !cause;
+  if (cause) error($('speed-error'), cause);
   $('session-maintenance').hidden = !conversationView;
   $('session-maintenance-name').textContent = current?.session.name || '';
   $('compact-session').disabled =
@@ -527,11 +537,13 @@ async function runSessionCommand(name, args = '') {
   const id = current.session.id;
   settingsBusy.add(id);
   $('session-settings-error').hidden = true;
-  const menuCommand = ['approvals', 'fast', 'ultrafast'].includes(name);
-  if (menuCommand) $('app-error').hidden = true;
+  const speedCommand = ['fast', 'ultrafast'].includes(name);
+  const directCommand = name === 'approvals' || speedCommand;
+  if (speedCommand) speedErrors.delete(id);
+  else if (directCommand) $('app-error').hidden = true;
   renderSettingsControls();
   try {
-    if (menuCommand)
+    if (directCommand)
       await api.commandSession(id, `/${name}${args ? ` ${args}` : ''}`);
     else if (current.agentId && name === 'compact')
       await api.compactSession(id, args);
@@ -542,8 +554,9 @@ async function runSessionCommand(name, args = '') {
       });
     await load(true, id);
   } catch (cause) {
-    if (current?.session.id === id)
-      error($(menuCommand ? 'app-error' : 'session-settings-error'), cause);
+    if (speedCommand) speedErrors.set(id, cause);
+    else if (current?.session.id === id)
+      error($(directCommand ? 'app-error' : 'session-settings-error'), cause);
   } finally {
     settingsBusy.delete(id);
     renderSettingsControls();
@@ -1011,7 +1024,10 @@ export function renderSessionFeatures(data, options = {parent: true}) {
     return;
   }
   const changedSession = current?.session.id !== data.session.id;
-  if (changedSession) $('session-settings-error').hidden = true;
+  if (changedSession) {
+    $('session-settings-error').hidden = true;
+    speedErrors.delete(data.session.id);
+  }
   current = data;
   renderAgentProfile();
   const conversation = JSON.stringify([

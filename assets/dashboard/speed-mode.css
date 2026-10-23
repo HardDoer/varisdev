@@ -1,3 +1,15 @@
+.speed-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.875rem;
+}
+.speed-control select {
+  flex: 1 1 140px;
+  min-width: 0;
+  max-width: 240px;
+}
 .speed-mode-icon {
   display: inline-block;
   flex: 0 0 auto;

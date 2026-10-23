@@ -18,15 +18,13 @@
   grid-template-rows: var(--workspaces-height, auto) 10px minmax(0, 1fr);
 }
 #factory-workspace[data-visualization-hidden='true'] .factory-column {
-  grid-template-rows: var(--workspaces-height, minmax(96px, 30%)) 10px minmax(
-      0,
-      1fr
-    );
+  grid-template-rows: var(--workspaces-height, auto) 10px minmax(0, 1fr);
 }
 #factory-workspace[data-visualization-hidden='true'] .worker-panels {
   height: 100%;
 }
-#factory-workspace[data-visualization-hidden='true'] .overview {
+#factory-workspace[data-agents-hidden='true'][data-visualization-hidden='true']
+  .overview {
   max-height: none;
 }
 #factory-workspace[data-workspaces-hidden='true'][data-agents-hidden='true']
