@@ -1,4 +1,5 @@
 import type {AutocompleteProvider} from '@earendil-works/pi-tui';
+import {isAbsolute} from 'node:path';
 import {agentCatalogAllows, type AgentPolicyProfile} from './policy.ts';
 import {listAgentTemplates, type AgentTemplate} from './templates.ts';
 
@@ -6,24 +7,53 @@ export interface AgentMentionCandidate {
   id: string;
   name: string;
   description?: string;
-  /** Explicit syntax for configurations whose IDs contain directory segments. */
+  /** Invocation text, including quoting when the filename needs it. */
   mention?: string;
 }
 
-// Configuration IDs only; paths, email addresses, and scoped file references
-// stay with Pi's normal input and file completion.
-const mentionId = '[a-z0-9]+(?:-[a-z0-9]+)*';
-const invocation = new RegExp(`^@(${mentionId})[ \\t]+(\\S[\\s\\S]*)$`);
-const scopedInvocation = new RegExp(
-  `^@agent:(${mentionId}(?:/${mentionId})*)[ \\t]+(\\S[\\s\\S]*)$`,
-);
-const prefix = /^@(?:[a-zA-Z0-9_-]*|agent:[a-z0-9/-]*)$/;
+// Discovery distinguishes configuration names from ordinary file mentions.
+const invocation =
+  /^@(agent:)?("(?:\\.|[^"\\])*"|(?:builtin|global|repository|workspace):"(?:\\.|[^"\\])*"|[^\s"@]+)[ \t]+(\S[\s\S]*)$/u;
+const quotedScope = /^(builtin|global|repository|workspace):("[\s\S]*")$/u;
+const prefix =
+  /^@(?:agent:)?(?:(?:(?:builtin|global|repository|workspace):)?"(?:\\.|[^"\\])*"?|[^\s"@]*)$/u;
 
 export function parseAgentMention(text: string) {
-  const match = scopedInvocation.exec(text) ?? invocation.exec(text);
-  return match && match[1].length <= 160
-    ? {id: match[1], task: match[2].trimEnd()}
-    : undefined;
+  const match = invocation.exec(text);
+  if (!match) return undefined;
+  const explicit = Boolean(match[1]);
+  const token = match[2];
+  let id = token;
+  const scoped = explicit && quotedScope.exec(token);
+  const literalId = token.startsWith('"');
+  try {
+    if (literalId) id = JSON.parse(token);
+    else if (scoped) id = `${scoped[1]}:${JSON.parse(scoped[2])}`;
+  } catch {
+    return undefined;
+  }
+  if (!explicit && !literalId && /[/:]/u.test(id)) return undefined;
+  const path = !literalId
+    ? id.replace(/^(?:builtin|global|repository|workspace):/u, '')
+    : id;
+  const parts = path.split(process.platform === 'win32' ? /[\\/]/u : '/');
+  if (
+    !path ||
+    path.includes('\0') ||
+    isAbsolute(path) ||
+    parts.some(part => !part || part === '.' || part === '..')
+  )
+    return undefined;
+  return {
+    id,
+    task: match[3].trimEnd(),
+    ...(literalId ? {literalId: true} : {}),
+  };
+}
+
+function mentionText(id: string): string | undefined {
+  if (/[\s"\\@:]/u.test(id)) return `@agent:${JSON.stringify(id)}`;
+  return id.includes('/') ? `@agent:${id}` : undefined;
 }
 
 export function eligibleAgentMentions(
@@ -38,12 +68,10 @@ export function eligibleAgentMentions(
         template.mode !== 'primary' &&
         agentCatalogAllows(parent, template.id),
     )
-    .map(({id, name, description}) => ({
-      id,
-      name,
-      description,
-      ...(id.includes('/') ? {mention: `@agent:${id}`} : {}),
-    }));
+    .map(({id, name, description}) => {
+      const mention = mentionText(id);
+      return {id, name, description, ...(mention ? {mention} : {})};
+    });
 }
 
 export async function discoverAgentMentions(

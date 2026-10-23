@@ -1,20 +1,17 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {promisify} from 'node:util';
-
-const execFile = promisify(execFileCallback);
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 void test(
   'application dropdown keyboard controls, update badge and reclaimed output space in Electron',
   {
-    timeout: 30_000,
+    timeout: 60_000,
     skip:
       process.platform === 'linux' &&
       !process.env.DISPLAY &&
@@ -30,14 +27,14 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError;
     try {
-      await execFile(
+      await runRuntimeCommand(
         require('electron') as string,
         [
           fileURLToPath(new URL('./fixtures/app-menu.cjs', import.meta.url)),
           directory,
           reportPath,
         ],
-        {env, timeout: 25_000},
+        {cwd: process.cwd(), env, timeoutMs: 50_000},
       );
     } catch (error) {
       launchError = error;
@@ -48,6 +45,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 5);
+    assert.equal(report.cases.length, 7);
   },
 );

@@ -4,14 +4,22 @@ import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 
 export interface ToolSettings {
-  agents: {allowedModels: string[] | null};
+  agents: {allowedModels: string[] | null; maxConcurrentAgents: number};
+}
+
+interface ToolSettingsUpdate {
+  agents?: {
+    allowedModels: string[] | null;
+    maxConcurrentAgents?: number;
+  };
 }
 
 const writes = new Map<string, Promise<void>>();
+const listeners = new Map<string, Set<(settings: ToolSettings) => void>>();
 const settingsPath = () =>
   join(getAgentDir(), 'varisdev', 'tool-settings.json');
 const defaults = (): ToolSettings => ({
-  agents: {allowedModels: []},
+  agents: {allowedModels: [], maxConcurrentAgents: 6},
 });
 
 function object(value: unknown, keys: string[]): Record<string, unknown> {
@@ -39,15 +47,40 @@ function modelId(value: unknown): string {
   return value;
 }
 
-function agents(value: unknown): ToolSettings['agents'] {
-  const {allowedModels} = object(value, ['allowedModels']);
-  if (allowedModels === null) return {allowedModels: null};
-  if (!Array.isArray(allowedModels) || allowedModels.length > 512)
+function agents(value: unknown): NonNullable<ToolSettingsUpdate['agents']> {
+  const keys = ['allowedModels'];
+  if (
+    value &&
+    typeof value === 'object' &&
+    Object.hasOwn(value, 'maxConcurrentAgents')
+  )
+    keys.push('maxConcurrentAgents');
+  const {allowedModels, maxConcurrentAgents} = object(value, keys);
+  if (
+    keys.includes('maxConcurrentAgents') &&
+    (!Number.isSafeInteger(maxConcurrentAgents) ||
+      Number(maxConcurrentAgents) < 1)
+  )
+    throw new Error(
+      'Maximum concurrent agents must be a whole number of at least 1, including the main conversation.',
+    );
+  if (
+    allowedModels !== null &&
+    (!Array.isArray(allowedModels) || allowedModels.length > 512)
+  )
     throw new Error('Choose up to 512 allowed models in Menu → Tool models.');
-  return {allowedModels: [...new Set(Array.from(allowedModels, modelId))]};
+  return {
+    allowedModels:
+      allowedModels === null
+        ? null
+        : [...new Set(Array.from(allowedModels as unknown[], modelId))],
+    ...(maxConcurrentAgents === undefined
+      ? {}
+      : {maxConcurrentAgents: maxConcurrentAgents as number}),
+  };
 }
 
-function toolSettings(value: unknown): ToolSettings {
+function toolSettings(value: unknown): ToolSettingsUpdate {
   const input = object(value, ['agents']);
   return {agents: agents(input.agents)};
 }
@@ -55,7 +88,7 @@ function toolSettings(value: unknown): ToolSettings {
 export function parseToolSettingsUpdate(
   section: unknown,
   value: unknown,
-): Partial<ToolSettings> {
+): ToolSettingsUpdate {
   if (section === 'all') return toolSettings(value);
   if (section === 'agents') return {agents: agents(value)};
   throw new Error('Tool settings section must be agents or all.');
@@ -70,7 +103,7 @@ async function read(path: string): Promise<ToolSettings> {
     // Discard retired settings while preserving existing agent model choices.
     if (saved && typeof saved === 'object' && !Array.isArray(saved))
       delete saved.commit;
-    return toolSettings(saved);
+    return {agents: {...defaults().agents, ...toolSettings(saved).agents}};
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaults();
     throw new Error(
@@ -86,6 +119,20 @@ export async function readToolSettings(): Promise<ToolSettings> {
   return read(path);
 }
 
+/** Observe explicit saves for the current settings directory. */
+export function subscribeToolSettings(
+  listener: (settings: ToolSettings) => void,
+): () => void {
+  const path = settingsPath();
+  let subscribers = listeners.get(path);
+  if (!subscribers) listeners.set(path, (subscribers = new Set()));
+  subscribers.add(listener);
+  return () => {
+    subscribers.delete(listener);
+    if (!subscribers.size) listeners.delete(path);
+  };
+}
+
 export async function saveToolSettings(
   section: unknown,
   value: unknown,
@@ -94,7 +141,10 @@ export async function saveToolSettings(
   const update = parseToolSettingsUpdate(section, value);
   const path = settingsPath();
   const operation = (writes.get(path) ?? Promise.resolve()).then(async () => {
-    const settings = {...(await read(path)), ...update};
+    const previous = await read(path);
+    const settings: ToolSettings = {
+      agents: {...previous.agents, ...update.agents},
+    };
     await mkdir(dirname(path), {recursive: true});
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
@@ -103,6 +153,13 @@ export async function saveToolSettings(
         mode: 0o600,
       });
       await rename(temporary, path);
+      for (const listener of listeners.get(path) ?? []) {
+        try {
+          listener(structuredClone(settings));
+        } catch (error) {
+          console.error('Tool settings observer failed:', error);
+        }
+      }
     } finally {
       await rm(temporary, {force: true});
     }

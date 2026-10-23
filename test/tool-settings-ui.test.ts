@@ -51,6 +51,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 8);
+    assert.equal(report.cases.length, 9);
   },
 );

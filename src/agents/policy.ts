@@ -263,18 +263,13 @@ function templateId(selector: string): string {
   return selector.replace(/^(builtin|global|repository|workspace):/, '');
 }
 
-/** Hidden templates are filtered by the catalog owner; ask rules remain discoverable. */
+/** Check a resolved template ID. Hidden entries are filtered by the catalog owner. */
 export function agentCatalogAllows(
   profile: AgentPolicyProfile,
   id: string,
 ): boolean {
   return (
-    decideAgentPermission(
-      profile,
-      'subagent',
-      templateId(id),
-      'agent_spawn',
-    ) !== 'deny'
+    decideAgentPermission(profile, 'subagent', id, 'agent_spawn') !== 'deny'
   );
 }
 

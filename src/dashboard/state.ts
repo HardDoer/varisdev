@@ -21,6 +21,7 @@ export interface DashboardSession {
   cwd: string;
   model?: string;
   thinkingLevel?: string;
+  speedMode?: import('../speed-modes.ts').SpeedMode;
   agentProfile?: AgentRecord['agentProfile'];
   sessionFile?: string;
   status: 'idle' | 'running' | 'compacting' | 'closed';

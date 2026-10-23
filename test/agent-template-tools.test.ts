@@ -3,6 +3,7 @@ import {mkdtemp, mkdir, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
+import {Check} from 'typebox/value';
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -485,5 +486,35 @@ void test(
         item => !item.description || item.description.length <= 180,
       ),
     );
+    const ordinaryId = `${'Team'.repeat(40)}/${'Agent (Ä)'.repeat(18)}.test`;
+    const saveOrdinary = {
+      action: 'save',
+      scope: 'global',
+      id: ordinaryId,
+      mode: 'all',
+      instructions: 'Ordinary filename tool profile.',
+    };
+    assert.ok(Check(tools.get('agent_templates')!.parameters, saveOrdinary));
+    await execute('agent_templates', saveOrdinary);
+    const getOrdinary = {action: 'get', scope: 'global', id: ordinaryId};
+    assert.ok(Check(tools.get('agent_templates')!.parameters, getOrdinary));
+    const ordinary = await execute('agent_templates', getOrdinary);
+    assert.equal((ordinary.details as {id: string}).id, ordinaryId);
+    const launchOrdinary = {
+      template: `global:${ordinaryId}`,
+      task: 'Use the ordinary filename.',
+    };
+    assert.ok(Check(tools.get('agent_spawn')!.parameters, launchOrdinary));
+    const launched = await execute('agent_spawn', launchOrdinary);
+    const launchedRecord = (launched.details as {agents: AgentRecord[]})
+      .agents[0];
+    await manager.wait([launchedRecord.id], {timeoutMs: 2000});
+    assert.equal(manager.get(launchedRecord.id).status, 'completed');
+    assert.equal(seen.at(-1)?.agentProfile?.id, ordinaryId);
+    await execute('agent_templates', {
+      action: 'delete',
+      scope: 'global',
+      id: ordinaryId,
+    });
   },
 );

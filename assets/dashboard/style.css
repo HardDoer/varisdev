@@ -1551,6 +1551,13 @@ dialog::backdrop {
 .conversation-body {
   scroll-padding-bottom: 12px;
 }
+.conversation-body > .feed-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  box-shadow: 0 -14px 0 14px var(--panel);
+}
 .conversation-message {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 160px;
@@ -1744,6 +1751,7 @@ dialog::backdrop {
   color: var(--status-cancelled, var(--muted));
 }
 .conversation-activity {
+  overflow-anchor: none;
   display: flex;
   align-items: center;
   gap: 9px;

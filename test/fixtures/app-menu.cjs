@@ -1,6 +1,6 @@
 /* global process, __dirname, document, window, getComputedStyle, setTimeout */
 const assert = require('node:assert/strict');
-const {writeFileSync} = require('node:fs');
+const {writeFileSync, mkdirSync} = require('node:fs');
 const {join, resolve} = require('node:path');
 const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
@@ -8,9 +8,15 @@ const report = {cases: []};
 let browser;
 let chosen = 0;
 let aborted = 0;
+let stateRequests = 0;
+const rendererErrors = [];
 let hub = {sessions: [], launchCwd: directory};
 app.setPath('userData', join(directory, 'profile'));
 app.setPath('sessionData', join(directory, 'session'));
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 function handle(channel, action) {
   ipcMain.handle(channel, async (event, ...args) => {
     assert.equal(event.sender, browser.webContents);
@@ -22,12 +28,24 @@ const evaluate = (fn, arg) =>
     `(${fn.toString()})(${JSON.stringify(arg)})`,
   );
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function waitFor(fn) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function waitFor(fn, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (await evaluate(fn)) return;
     await delay(20);
   }
-  throw new Error(`Timed out: ${fn}`);
+  const state = await evaluate(() => ({
+    hidden: document.hidden,
+    readyState: document.readyState,
+    workspaceHidden: document.getElementById('factory-workspace')?.hidden,
+    columnHidden: document.getElementById('factory-column')?.hidden,
+    layout: window.localStorage.getItem('varisdev.panel-layout.v1'),
+    error: document.getElementById('app-error')?.textContent,
+    url: window.location.href,
+  }));
+  throw new Error(
+    `Timed out: ${fn}\n${JSON.stringify({state, stateRequests, rendererErrors})}`,
+  );
 }
 async function key(code) {
   browser.focus();
@@ -82,7 +100,13 @@ async function main() {
       backgroundThrottling: false,
     },
   });
-  handle('pidev:get-state', () => hub);
+  browser.webContents.on('console-message', details => {
+    if (details.level === 'error') rendererErrors.push(details.message);
+  });
+  handle('pidev:get-state', () => {
+    stateRequests++;
+    return hub;
+  });
   handle('pidev:recent-projects', () => []);
   handle('varisdev:get-agent-notice', () => ({acknowledged: true}));
   handle('varisdev:get-update-status', () => ({
@@ -220,6 +244,7 @@ async function main() {
         'open-session-settings',
         'open-approvals',
         'open-model-settings',
+        'open-environment',
         'open-accounts',
       ],
       maintenance: ['open-about'],
@@ -482,6 +507,203 @@ async function main() {
   await evaluate(() => window.pidev.setZoom(1));
   report.cases.push(
     'long agent names and visible updates remain readable at 1100 pixels with 150 percent zoom',
+  );
+
+  const screenshots = resolve(__dirname, '../../.pi/tmp/panel-layout');
+  mkdirSync(screenshots, {recursive: true});
+  await menu();
+  await evaluate(() => {
+    document.querySelector('#app-menu-weapons summary').click();
+    document.querySelector('.factory-gun-holster').focus();
+  });
+  await key('Space');
+  assert.equal(
+    await evaluate(() =>
+      document
+        .querySelector('.factory-gun-holster')
+        .getAttribute('aria-pressed'),
+    ),
+    'true',
+  );
+  assert.equal(
+    await evaluate(() =>
+      document.getElementById('app-menu-panel').matches(':popover-open'),
+    ),
+    false,
+  );
+  await key('Escape');
+  await menu();
+  await evaluate(() => {
+    document.querySelector('#app-menu-layout summary').click();
+    document.getElementById('layout-visualization').focus();
+  });
+  await key('Space');
+  await waitFor(() => document.getElementById('factory-panel').hidden);
+  assert.equal(
+    await evaluate(() => document.getElementById('app-menu-weapons').hidden),
+    true,
+  );
+  await key('Escape');
+  await evaluate(() => document.getElementById('factory-info-button').click());
+  await waitFor(() =>
+    document.getElementById('factory-info').matches(':popover-open'),
+  );
+  await key('Escape');
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('factory-info').getClientRects().length,
+    ),
+    0,
+  );
+  const themes = await evaluate(() =>
+    [...document.getElementById('factory-theme').options].map(
+      option => option.value,
+    ),
+  );
+  for (const theme of themes) {
+    await evaluate(theme => {
+      const picker = document.getElementById('factory-theme');
+      picker.value = theme;
+      picker.dispatchEvent(new window.Event('change', {bubbles: true}));
+    }, theme);
+    await delay(70);
+    writeFileSync(
+      join(screenshots, `${theme}-hidden.png`),
+      (await browser.webContents.capturePage()).toPNG(),
+    );
+    await menu();
+    writeFileSync(
+      join(screenshots, `${theme}-menu.png`),
+      (await browser.webContents.capturePage()).toPNG(),
+    );
+    await key('Escape');
+  }
+  report.cases.push(
+    'menu weapons support keyboard selection and hiding the scene preserves session info',
+  );
+
+  await menu();
+  await evaluate(() => {
+    document.getElementById('layout-workspaces').click();
+    document.getElementById('layout-agents').click();
+  });
+  await key('Escape');
+  await waitFor(() => document.getElementById('factory-column').hidden);
+  assert.equal(
+    await evaluate(() => {
+      const workspace = document
+        .getElementById('factory-workspace')
+        .getBoundingClientRect();
+      const inspector = document
+        .getElementById('inspector')
+        .getBoundingClientRect();
+      return Math.abs(workspace.width - inspector.width) < 2;
+    }),
+    true,
+  );
+  await evaluate(() => document.querySelector('.skip-link').focus());
+  await key('Enter');
+  assert.equal(await evaluate(() => document.activeElement.id), 'inspector');
+  const loaded = new Promise(resolve =>
+    browser.webContents.once('did-finish-load', resolve),
+  );
+  browser.reload();
+  await loaded;
+  await waitFor(
+    () =>
+      !document.getElementById('factory-workspace').hidden &&
+      document.getElementById('factory-column').hidden,
+    5000,
+  );
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('layout-visualization').checked,
+    ),
+    false,
+  );
+  browser.setContentSize(1100, 760);
+  await evaluate(() => window.pidev.setZoom(1.5));
+  await delay(100);
+  writeFileSync(
+    join(screenshots, 'conversation-only-zoom.png'),
+    (await browser.webContents.capturePage()).toPNG(),
+  );
+  await menu();
+  await evaluate(() => document.getElementById('layout-reset').click());
+  await key('Escape');
+  await waitFor(() => !document.getElementById('factory-panel').hidden);
+  assert.equal(
+    await evaluate(
+      () =>
+        document.getElementById('factory-info').closest('#factory-panel') !==
+        null,
+    ),
+    true,
+  );
+  assert.equal(
+    await evaluate(() => {
+      const page = document.scrollingElement;
+      return (
+        page.scrollHeight <= page.clientHeight &&
+        page.scrollWidth <= page.clientWidth
+      );
+    }),
+    true,
+  );
+  await evaluate(() => window.pidev.setZoom(1));
+  for (const flags of [
+    [true, false, true],
+    [true, true, false],
+    [true, false, false],
+    [false, true, false],
+    [false, false, true],
+  ]) {
+    await menu();
+    await evaluate(flags => {
+      for (const [index, key] of [
+        'visualization',
+        'workspaces',
+        'agents',
+      ].entries()) {
+        const input = document.getElementById(`layout-${key}`);
+        if (input.checked !== flags[index]) input.click();
+      }
+    }, flags);
+    await key('Escape');
+    await delay(60);
+    const layout = await evaluate(() => {
+      const page = document.scrollingElement;
+      return {
+        fits:
+          page.scrollHeight <= page.clientHeight &&
+          page.scrollWidth <= page.clientWidth,
+        panels: ['factory-panel', 'workspaces-panel', 'worker-panels'].map(
+          id => {
+            const element = document.getElementById(id);
+            const rect = element.getBoundingClientRect();
+            return {
+              hidden: element.hidden,
+              height: rect.height,
+              bottom: rect.bottom,
+            };
+          },
+        ),
+        bottom: window.innerHeight,
+      };
+    });
+    assert.equal(layout.fits, true, JSON.stringify({flags, layout}));
+    for (const panel of layout.panels)
+      if (!panel.hidden)
+        assert.ok(
+          panel.height > 50 && panel.bottom <= layout.bottom,
+          JSON.stringify({flags, layout}),
+        );
+  }
+  await menu();
+  await evaluate(() => document.getElementById('layout-reset').click());
+  await key('Escape');
+  report.cases.push(
+    'panel layout persists across reload and can restore every panel at compact zoom',
   );
 
   hub.sessions[0].session.status = 'running';

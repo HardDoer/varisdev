@@ -1,0 +1,13 @@
+.speed-mode-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -3px;
+  padding-inline: 2px 5px;
+}
+.speed-mode-icon[hidden] {
+  display: none;
+}

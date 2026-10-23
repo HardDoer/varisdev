@@ -29,7 +29,7 @@ Agent configurations are optional. `agent_templates` is available through Pi's `
 
 Configuration permissions apply to the conversation created from that profile. The calling agent's `subagent` permission also controls which configured agents it may launch. See [agent configurations](agents.md) for scope merging, modes, defaults, and Markdown fields.
 
-Six agents run concurrently; additional agents queue. Each workspace can hold 64 additional agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
+The default concurrency limit is six agents per conversation, including its main agent; additional agents queue. Change **Menu → Tool models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional agent launches and resumptions. Each workspace can hold 64 additional agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
 
 Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
 
@@ -45,7 +45,7 @@ Resuming a saved conversation replaces other open workspaces in the same folder,
 
 Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
-Choose **Cane** to swing at robots by waving the mouse, **Gun** to aim and click to shoot, or **Flamethrower** to spray flames while holding the left mouse button. Burning robots scream and run around; sustained flames leave a charred wreck for the cleaner. Right-click or press **Esc** to put away a weapon.
+In **Menu → Appearance → Weapons**, choose **Cane** to swing at robots by waving the mouse, **Gun** to aim and click to shoot, or **Flamethrower** to spray flames while holding the left mouse button. Burning robots scream and run around; sustained flames leave a charred wreck for the cleaner. Right-click or press **Esc** to put away a weapon.
 
 The weapons also damage scenery: the cane leaves dents, gunshots leave bullet holes and chips, and flames scorch and ignite nearby objects. Up to three repair robots work at a time, arriving after a delay to extinguish fires and restore damaged areas. In Year1998, shots mark the wall or furniture surface they strike, and repair and cleanup drones descend from above the office. Cleanup drones lift wrecks out of view. These effects do not interrupt agent work.
 

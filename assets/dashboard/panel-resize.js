@@ -9,6 +9,8 @@ export function initPanelResize() {
   const overview = document.querySelector('.overview');
   const workers = document.querySelector('.worker-panels');
   const inspector = document.getElementById('inspector');
+  const factory = document.getElementById('factory-panel');
+  const scene = document.getElementById('scene');
   const sizes = {};
   const listeners = [];
   let frame;
@@ -41,6 +43,30 @@ export function initPanelResize() {
       element.style.setProperty(property, next);
   }
 
+  function visible(element) {
+    return element.getClientRects().length > 0;
+  }
+  function factoryMinimum() {
+    if (!visible(factory)) return 0;
+    const heading = factory.querySelector('.factory-heading');
+    const info = document.getElementById('factory-info');
+    let chrome = factory.offsetHeight - scene.offsetHeight;
+    if (heading.contains(info) && !info.hasAttribute('popover')) {
+      chrome -=
+        info.offsetHeight +
+        Number.parseFloat(window.getComputedStyle(heading).rowGap);
+      chrome += Math.max(
+        0,
+        32 - heading.querySelector('.factory-title-group').offsetHeight,
+      );
+    }
+    return Math.ceil(chrome + 120);
+  }
+  function dividerHeight(id) {
+    const handle = document.getElementById(id);
+    return visible(handle) ? handle.offsetHeight : 0;
+  }
+
   const splits = [
     {
       key: 'conversation',
@@ -49,8 +75,8 @@ export function initPanelResize() {
         const total = workspace.clientWidth - this.handle.offsetWidth;
         return {
           total,
-          min: Math.min(300, total * 0.4),
-          max: total - Math.min(380, total * 0.56),
+          min: Math.min(240, total * 0.4),
+          max: total - Math.min(320, total * 0.5),
           value: column.getBoundingClientRect().width,
         };
       },
@@ -63,10 +89,16 @@ export function initPanelResize() {
       axis: 'y',
       measure() {
         const total = column.clientHeight;
-        const compact = column.classList.contains('compact-workers');
-        const others = compact
-          ? document.getElementById('factory-agents-button').offsetHeight + 16
-          : workers.offsetHeight + 20;
+        const button = document.getElementById('factory-agents-button');
+        const others = visible(button)
+          ? button.offsetHeight + 6
+          : visible(workers) && workers.parentElement === column
+            ? visible(factory)
+              ? workers.offsetHeight
+              : 148
+            : 0;
+        const dividers =
+          dividerHeight('workspaces-resize') + dividerHeight('agents-resize');
         const min = Math.min(
           100,
           overview.querySelector('.section-heading').offsetHeight + 42,
@@ -74,7 +106,7 @@ export function initPanelResize() {
         return {
           total,
           min,
-          max: Math.max(min, total - others - 300),
+          max: Math.max(min, total - others - dividers - factoryMinimum()),
           value: overview.getBoundingClientRect().height,
         };
       },
@@ -92,7 +124,14 @@ export function initPanelResize() {
         return {
           total,
           min: 148,
-          max: Math.max(148, total - overview.offsetHeight - 320),
+          max: Math.max(
+            148,
+            total -
+              (visible(overview) ? overview.offsetHeight : 0) -
+              dividerHeight('workspaces-resize') -
+              dividerHeight('agents-resize') -
+              factoryMinimum(),
+          ),
           value: workers.getBoundingClientRect().height,
         };
       },
@@ -246,8 +285,17 @@ export function initPanelResize() {
     true,
   );
   listen(window, 'blur', () => finish(false));
+  listen(document, 'varisdev:panel-layout', schedule);
   const observer = new window.ResizeObserver(schedule);
-  for (const element of [workspace, column, overview, workers, inspector])
+  for (const element of [
+    workspace,
+    column,
+    overview,
+    workers,
+    inspector,
+    factory,
+    scene,
+  ])
     observer.observe(element);
   schedule();
 

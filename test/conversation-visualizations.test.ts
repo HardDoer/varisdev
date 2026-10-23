@@ -53,6 +53,7 @@ function parent(cwd: string) {
   let branch: SessionEntry[] = [];
   let state!: DashboardState;
   const pi = {
+    events: {on: () => () => {}},
     getThinkingLevel: () => 'off',
     on(name: string, handler: Handler) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);

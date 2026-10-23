@@ -20,6 +20,7 @@ export interface AgentSpec {
   timeoutMs?: number;
   autoCleanup?: boolean;
   thinkingLevel?: string;
+  speedMode?: import('../speed-modes.ts').SpeedMode;
 }
 
 export interface AgentContextUsage {
@@ -127,16 +128,32 @@ function formatDuration(ms: number): string {
 export class AgentOrchestrator {
   private readonly jobs = new Map<string, Job>();
   private readonly listeners = new Set<() => void>();
-  private readonly concurrency: number;
+  private maxConcurrentAgents: number;
   private active = 0;
   private closed = false;
   private closing?: Promise<void>;
 
-  constructor(concurrency = 6) {
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      throw new Error('Agent concurrency must be a positive integer.');
+  constructor(maxConcurrentAgents = 6) {
+    this.maxConcurrentAgents = 6;
+    this.setMaxConcurrentAgents(maxConcurrentAgents);
+  }
+
+  /** The conversation's main agent always reserves one slot. */
+  setMaxConcurrentAgents(maxConcurrentAgents: number): void {
+    if (!Number.isSafeInteger(maxConcurrentAgents) || maxConcurrentAgents < 1) {
+      throw new Error(
+        'Maximum concurrent agents must be a whole number of at least 1.',
+      );
     }
-    this.concurrency = concurrency;
+    this.maxConcurrentAgents = maxConcurrentAgents;
+    this.pump();
+  }
+
+  assertAdditionalAgentsAllowed(): void {
+    if (this.maxConcurrentAgents === 1)
+      throw new Error(
+        'Additional agents are disabled: maximum concurrent agents is 1, reserved for the main conversation. Change Menu → Tool models to allow more agents.',
+      );
   }
 
   subscribe(listener: () => void): () => void {
@@ -176,6 +193,7 @@ export class AgentOrchestrator {
     createWorker: (id: string) => Promise<AgentWorker>,
   ): AgentRecord {
     this.ensureOpen();
+    this.assertAdditionalAgentsAllowed();
     if (!spec.task.trim() || !spec.name.trim()) {
       throw new Error('Agent name and task cannot be empty.');
     }
@@ -293,6 +311,7 @@ export class AgentOrchestrator {
           await job.operation;
           continue;
         }
+        if (!job.operation) this.assertAdditionalAgentsAllowed();
         const worker = await this.prepare(job);
         ensureDelivery();
         if (
@@ -395,6 +414,7 @@ export class AgentOrchestrator {
       if (features.model)
         record.model = `${features.model.provider}/${features.model.id}`;
       record.thinkingLevel = features.thinkingLevel;
+      record.speedMode = features.speedMode;
     });
     return this.get(id);
   }
@@ -408,6 +428,7 @@ export class AgentOrchestrator {
       if (features.model)
         record.model = `${features.model.provider}/${features.model.id}`;
       record.thinkingLevel = features.thinkingLevel;
+      record.speedMode = features.speedMode;
     });
     return this.get(id);
   }
@@ -590,7 +611,12 @@ export class AgentOrchestrator {
       ) {
         job.resumeSlot = undefined;
         resume.resolve();
-      } else if (!job.waiters && this.active < this.concurrency) {
+      } else if (
+        !job.waiters &&
+        (this.maxConcurrentAgents === 1 ||
+          this.active < this.maxConcurrentAgents - 1)
+      ) {
+        // Existing runs can finish after switching to main-only workflows.
         job.ownsSlot = true;
         this.active++;
         job.resumeSlot = undefined;
@@ -599,7 +625,7 @@ export class AgentOrchestrator {
     }
     if (this.closed) return;
     for (const job of this.jobs.values()) {
-      if (this.active >= this.concurrency) break;
+      if (this.active >= this.maxConcurrentAgents - 1) break;
       if (job.record.status !== 'queued' || job.maintaining) continue;
       this.active++;
       job.ownsSlot = true;

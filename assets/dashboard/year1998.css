@@ -197,6 +197,9 @@
   > :is(button, a, [tabindex]):focus-visible,
 :root[data-appearance='year1998'] .factory-view-actions > button:focus-visible,
 :root[data-appearance='year1998']
+  .inspector-unit-controls
+  > #factory-info-button:focus-visible,
+:root[data-appearance='year1998']
   .inspector-title-row
   #application-controls
   > button:focus-visible,

@@ -11,6 +11,7 @@ Type `/` in the conversation composer or open **Commands**. Installed extensions
 | Commands                                        | Desktop behavior                                                                                              |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `/thinking [level]`, `/model [model or search]` | Open Pi's selector, or apply an exact match to this session.                                                  |
+| `/fast`, `/ultrafast`                           | Toggle a supported speed mode for the current model.                                                          |
 | `/settings`                                     | Open session settings with current values and selectors.                                                      |
 | `/scoped-models`                                | Configure the session's model selection scope, not the background-agent model allowlist.                      |
 | `/login [provider]`, `/logout`                  | Open Pi's sign-in or sign-out selector.                                                                       |
@@ -50,7 +51,11 @@ Interactive Pi settings commands keep their existing global or repository save b
 - **Menu → Close workspace** closes the selected workspace and stops all of its agents without deleting saved history. A workspace connected from a terminal is only dismissed from the app.
 - **Remove agent** clears a stopped or finished additional agent from the dashboard. It reappears if it resumes.
 
-## Panel sizes
+## Panel layout and sizes
+
+**Menu → Appearance → Panel layout** controls the visualization, workspace list, and agents and history panels. All are shown by default. Hide all three for a full-width conversation; **Info** beside the conversation title keeps session details and actions accessible. Visibility is remembered across app restarts. **Show all panels** restores the default visibility.
+
+**Menu → Appearance → Weapons** contains the Cane, Gun, and Flamethrower when the visualization is shown.
 
 Drag the dividers to resize the conversation and live view, the workspace list, or the active agents and history panels. Drag the divider above the composer to adjust the space used by the conversation and the prompt or terminal. Sizes are remembered across app restarts.
 
@@ -66,7 +71,27 @@ Use **Menu → Accounts** to connect providers. For server setup, see Pi's [cust
 
 For sessions attached from a terminal, open picker dialogs in that terminal. Exact `/model provider/model` and `/thinking level` commands also work from the desktop.
 
+### Speed modes
+
+`/fast` and `/ultrafast` toggle the named mode for the agent receiving the prompt. Selecting the other mode switches to it; repeating the active command returns to regular speed. Both also accept `on` or `off`.
+
+**Menu → Speed** changes the selected agent's mode directly, including subagents. Unsupported modes are disabled; a model that supports only regular speed disables the switch. Each agent has its own setting, and newly spawned agents start at regular speed.
+
+A lightning icon beside **Effort** indicates Fast; two indicate Ultrafast. Regular speed has no icon. The selection is saved per model in the conversation and applies to the next model request without changing thinking effort. A request already in progress keeps its current mode.
+
+| Provider                    | Fast                                                                                                               | Ultrafast                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| Anthropic API               | Claude Opus 5.5, Opus 5, and Opus 4.8                                                                              | Unavailable                                   |
+| OpenAI API                  | Models listed in OpenAI's [Fast pricing table](https://developers.openai.com/api/docs/pricing?latest-pricing=fast) | GPT-6 Astra and GPT-6.1 Sol                   |
+| OpenAI with ChatGPT sign-in | GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna, and GPT-5.6 models                                                | GPT-6 Astra and GPT-6.1 Sol on eligible plans |
+
+These modes use higher provider rates. Cost estimates in **Tokens** use configured model prices and may omit Fast or Ultrafast premiums. Anthropic's Opus 5 and 4.8 Fast mode requires preview access; ChatGPT Ultrafast requires an eligible subscription and workspace access. Unsupported model or provider combinations report an error and keep the current mode. Custom gateways are not included.
+
+Provider details: [Anthropic Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode), [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode), [OpenAI Ultrafast mode](https://developers.openai.com/api/docs/guides/ultrafast-mode), and [ChatGPT speed and plan requirements](https://learn.chatgpt.com/docs/agent-configuration/speed).
+
 ### Agent models
+
+**Menu → Tool models → Maximum concurrent agents** sets the total allowed per conversation, including its main agent. The default is **6**, leaving five slots for additional agents. Set **1** to use only the main agent. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
 
 The **Agent models** section in **Menu → Tool models** controls which models background agents may use when their configuration has no explicit model. Fresh settings start with none selected.
 

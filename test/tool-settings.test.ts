@@ -30,14 +30,16 @@ async function isolate(t: TestContext) {
 
 void test('tool settings start empty and persist deduplicated agent choices', async t => {
   const path = await isolate(t);
-  assert.deepEqual(await readToolSettings(), {agents: {allowedModels: []}});
+  assert.deepEqual(await readToolSettings(), {
+    agents: {allowedModels: [], maxConcurrentAgents: 6},
+  });
   await assert.rejects(
     assertAgentModelAllowed('p/a'),
     /No agent models selected/,
   );
   await saveToolSettings('agents', {allowedModels: ['p/a', 'p/a']});
   assert.deepEqual(await readToolSettings(), {
-    agents: {allowedModels: ['p/a']},
+    agents: {allowedModels: ['p/a'], maxConcurrentAgents: 6},
   });
   await assertAgentModelAllowed('p/a');
   await assert.rejects(assertAgentModelAllowed('p/b'), /not allowed/);
@@ -45,7 +47,7 @@ void test('tool settings start empty and persist deduplicated agent choices', as
   settings.agents.allowedModels!.push('p/b');
   await assert.rejects(assertAgentModelAllowed('p/b'), /not allowed/);
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
-    agents: {allowedModels: ['p/a']},
+    agents: {allowedModels: ['p/a'], maxConcurrentAgents: 6},
   });
   await saveToolSettings('agents', {allowedModels: null});
   await assertAgentModelAllowed('p/b');
@@ -79,7 +81,7 @@ void test('queued saves snapshot inputs and leave only the atomic destination', 
   replacement.agents.allowedModels[0] = 'mutated/model';
   await Promise.all(saves);
   assert.deepEqual(await readToolSettings(), {
-    agents: {allowedModels: ['p/b']},
+    agents: {allowedModels: ['p/b'], maxConcurrentAgents: 6},
   });
   assert.deepEqual(await readdir(join(path, '..')), ['tool-settings.json']);
 });
@@ -97,12 +99,12 @@ void test('retired commit preferences are discarded without losing agent restric
       JSON.stringify({agents: {allowedModels: ['p/a']}, commit}),
     );
     assert.deepEqual(await readToolSettings(), {
-      agents: {allowedModels: ['p/a']},
+      agents: {allowedModels: ['p/a'], maxConcurrentAgents: 6},
     });
     await assert.rejects(assertAgentModelAllowed('p/b'), /not allowed/);
     await saveToolSettings('agents', {allowedModels: ['p/b']});
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
-      agents: {allowedModels: ['p/b']},
+      agents: {allowedModels: ['p/b'], maxConcurrentAgents: 6},
     });
   }
 });
@@ -127,7 +129,7 @@ void test('invalid updates leave saved settings intact and later saves still suc
       {},
       {agents: {allowedModels: ['p/b']}, extra: true},
       {
-        agents: {allowedModels: ['p/b']},
+        agents: {allowedModels: ['p/b'], maxConcurrentAgents: 6},
         commit: {model: null, thinkingLevel: null},
       },
     ].map(value => ['all', value] as [unknown, unknown]),
@@ -191,9 +193,46 @@ void test('legacy unrestricted selections remain readable and can be cleared', a
   );
   await assertAgentModelAllowed('p/a');
   await saveToolSettings('agents', {allowedModels: []});
-  assert.deepEqual(await readToolSettings(), {agents: {allowedModels: []}});
+  assert.deepEqual(await readToolSettings(), {
+    agents: {allowedModels: [], maxConcurrentAgents: 6},
+  });
   await assert.rejects(
     assertAgentModelAllowed('p/a'),
     /No agent models selected/,
   );
+});
+
+void test('concurrency defaults migrate old settings and model-only saves preserve a saved limit', async t => {
+  const path = await isolate(t);
+  await mkdir(join(path, '..'), {recursive: true});
+  await writeFile(path, JSON.stringify({agents: {allowedModels: ['p/a']}}));
+  assert.equal((await readToolSettings()).agents.maxConcurrentAgents, 6);
+  await saveToolSettings('agents', {
+    allowedModels: ['p/a'],
+    maxConcurrentAgents: 1,
+  });
+  await saveToolSettings('agents', {allowedModels: ['p/b']});
+  assert.deepEqual((await readToolSettings()).agents, {
+    allowedModels: ['p/b'],
+    maxConcurrentAgents: 1,
+  });
+  assert.equal(
+    JSON.parse(await readFile(path, 'utf8')).agents.maxConcurrentAgents,
+    1,
+  );
+  for (const maxConcurrentAgents of [
+    0,
+    -1,
+    1.5,
+    '6',
+    null,
+    undefined,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    await assert.rejects(
+      saveToolSettings('agents', {allowedModels: ['p/a'], maxConcurrentAgents}),
+      /whole number of at least 1/,
+    );
+    assert.equal((await readToolSettings()).agents.maxConcurrentAgents, 1);
+  }
 });

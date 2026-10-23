@@ -31,9 +31,16 @@ const message = (
 
 function observer(existingState?: DashboardState) {
   const handlers = new Map<string, Handler[]>();
+  const bus = new Map<string, (data: unknown) => void>();
   let branch: SessionEntry[] = [];
   let current!: DashboardState;
   const pi = {
+    events: {
+      on(name: string, handler: (data: unknown) => void) {
+        bus.set(name, handler);
+        return () => bus.delete(name);
+      },
+    },
     getThinkingLevel: () => 'off',
     on(name: string, handler: Handler) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
@@ -87,6 +94,9 @@ function observer(existingState?: DashboardState) {
   }
   return {
     emit,
+    speed(mode: string, sessionId = 'fixture') {
+      bus.get('varisdev:speed-mode')?.({sessionId, speedMode: mode});
+    },
     history,
     customMessages,
     ctx,
@@ -1076,4 +1086,18 @@ void test('all finished agents retain accessible full conversations in independe
     );
     assert.equal(independent.agents.at(-1)!.conversation[0].text, longText);
   }
+});
+
+void test('speed updates reach the matching observed session and detach on shutdown', async () => {
+  const fixture = observer();
+  await fixture.emit('session_start');
+  fixture.speed('fast', 'another-session');
+  assert.equal(fixture.state.snapshot().session.speedMode, 'regular');
+  fixture.speed('fast');
+  assert.equal(fixture.state.snapshot().session.speedMode, 'fast');
+  fixture.speed('ultrafast');
+  assert.equal(fixture.state.snapshot().session.speedMode, 'ultrafast');
+  await fixture.emit('session_shutdown');
+  fixture.speed('regular');
+  assert.equal(fixture.state.snapshot().session.speedMode, 'ultrafast');
 });

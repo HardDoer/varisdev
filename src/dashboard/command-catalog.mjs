@@ -26,6 +26,19 @@ export const nativeCommands = [
     live: true,
   },
   {
+    name: 'fast',
+    description: 'Toggle fast mode for the current model, or use /fast on|off.',
+    target: 'session',
+    live: true,
+  },
+  {
+    name: 'ultrafast',
+    description:
+      'Toggle ultrafast mode for the current model, or use /ultrafast on|off.',
+    target: 'session',
+    live: true,
+  },
+  {
     name: 'scoped-models',
     description: 'Choose models available in the model selector.',
     target: 'session',

@@ -43,6 +43,7 @@ import {
   type SessionConfiguration,
 } from '../dashboard/features.ts';
 import {assertAgentModelAllowed, readToolSettings} from '../tools/settings.ts';
+import {refreshSpeedModeAuth, runSpeedCommand} from '../speed-modes.ts';
 import {
   modelUsage,
   sessionUsageCalls,
@@ -113,6 +114,7 @@ export function sessionWorker(
   }
   restoreUsage();
   const features = async () => {
+    await refreshSpeedModeAuth(session.extensionRunner.createContext());
     const result = sessionFeatures(
       session,
       session.resourceLoader,
@@ -207,11 +209,20 @@ export function sessionWorker(
           'scoped-models',
           'session',
           'approvals',
+          'fast',
+          'ultrafast',
         ].includes(parsed.name)
       )
         throw new Error(
           `Native command is unavailable in worker conversations: ${command}`,
         );
+      const speedMode = await runSpeedCommand(
+        parsed.name,
+        parsed.args,
+        session.extensionRunner.createContext(),
+        (type, data) => session.sessionManager.appendCustomEntry(type, data),
+      );
+      if (speedMode !== undefined) return features();
       if (!ui && !(parsed.name === 'approvals' && approvalUI))
         throw new Error('Worker native commands require an interactive UI.');
       const controller = new AbortController();

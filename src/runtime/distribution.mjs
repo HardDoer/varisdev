@@ -1,3 +1,4 @@
+/* global AbortSignal, Buffer, console, fetch, process, URL */
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
@@ -17,6 +18,7 @@ import {pathToFileURL} from 'node:url';
 export const releaseURL = 'https://joonas.ninja/varisdev/latest.json';
 
 /** @typedef {{version: string, revision: string, url: string, sha256: string}} Release */
+/** @typedef {{transferredBytes: number, totalBytes?: number}} DownloadProgress */
 
 /** @param {string} url */
 function downloadURL(url) {
@@ -65,18 +67,43 @@ export async function readRelease(url = releaseURL, timeoutMs = 15000) {
  * @param {Release} release
  * @param {string} destination
  * @param {number} [timeoutMs]
+ * @param {(progress: DownloadProgress) => void} [onProgress]
  */
 export async function downloadRelease(
   release,
   destination,
   timeoutMs = 120000,
+  onProgress,
 ) {
   const response = await fetch(downloadURL(release.url), {
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok)
     throw new Error(`Could not download VarisDev (${response.status}).`);
-  const contents = Buffer.from(await response.arrayBuffer());
+  if (!response.body) throw new Error('The VarisDev download is empty.');
+  const length = Number(response.headers.get('content-length'));
+  const encoding = response.headers.get('content-encoding');
+  const totalBytes =
+    (!encoding || encoding === 'identity') &&
+    Number.isSafeInteger(length) &&
+    length > 0
+      ? length
+      : undefined;
+  const chunks = [];
+  let transferredBytes = 0;
+  let reportedAt = 0;
+  onProgress?.({transferredBytes, totalBytes});
+  for await (const chunk of response.body) {
+    chunks.push(chunk);
+    transferredBytes += chunk.length;
+    const now = Date.now();
+    if (now - reportedAt >= 100) {
+      onProgress?.({transferredBytes, totalBytes});
+      reportedAt = now;
+    }
+  }
+  onProgress?.({transferredBytes, totalBytes});
+  const contents = Buffer.concat(chunks, transferredBytes);
   if (createHash('sha256').update(contents).digest('hex') !== release.sha256)
     throw new Error(
       'VarisDev download checksum does not match the release manifest.',

@@ -24,6 +24,7 @@ import {
   runRuntimeCommand,
   type RuntimeHooks,
   type RuntimeManagerOptions,
+  type UpdateStatus,
 } from '../src/runtime/manager.ts';
 
 const sdk = '@earendil-works/pi-coding-agent';
@@ -208,6 +209,8 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
 
 void test('full application update installs new code, dependencies and runtime and dispatches the updated CLI', async t => {
   const f = await fixture(t);
+  const events: UpdateStatus[] = [];
+  f.manager.subscribe(next => events.push(next));
   const checked = await f.manager.check();
   assert.equal(checked.phase, 'available');
   assert.equal(checked.currentVersion, '0.1.0');
@@ -217,6 +220,24 @@ void test('full application update installs new code, dependencies and runtime a
   assert.equal(updated.phase, 'ready', updated.error);
   assert.equal(updated.currentVersion, '0.2.0');
   assert.equal(updated.restartRequired, true);
+  assert.equal(updated.progress, undefined);
+  assert.deepEqual(
+    [
+      ...new Set(
+        events.flatMap(next => (next.progress ? [next.progress.stage] : [])),
+      ),
+    ],
+    [
+      'checking',
+      'waiting',
+      'preparing',
+      'downloading',
+      'installing',
+      'verifying',
+      'activating',
+    ],
+  );
+  assert.ok(events.every(next => next.progress?.totalBytes === undefined));
   const active = await f.manager.currentRoot();
   assert.notEqual(active, f.installRoot);
   assert.match(
@@ -256,6 +277,87 @@ void test('full application update installs new code, dependencies and runtime a
   assert.equal(cli.stdout.trim(), 'VarisDev 0.2.0');
   await assert.rejects(stat(join(f.dataDir, 'update.lock')));
 });
+
+void test(
+  'archive update forwards download bytes, clears failed progress and can retry',
+  {timeout: 15_000},
+  async t => {
+    const f = await fixture(t);
+    const {releaseURL} = await import('../src/runtime/distribution.mjs');
+    await put(
+      join(f.installRoot, 'build-info.json'),
+      JSON.stringify({revision: initialRevision, source: releaseURL}),
+    );
+    let failDownload = true;
+    const events: UpdateStatus[] = [];
+    const manager = new RuntimeManager({
+      ...f.options,
+      hooks: {
+        ...f.hooks,
+        readRelease: async () => ({
+          version: '0.2.0',
+          revision: nextRevision,
+          url: `${releaseURL}/app.tgz`,
+          sha256: '0'.repeat(64),
+        }),
+        downloadRelease: async (_release, destination, _timeout, progress) => {
+          progress?.({transferredBytes: 0, totalBytes: 100});
+          progress?.({transferredBytes: 40, totalBytes: 100});
+          if (failDownload) throw new Error('Download interrupted');
+          progress?.({transferredBytes: 100, totalBytes: 100});
+          await put(destination, 'archive');
+        },
+        run: async (command, args, options) => {
+          if (args[0].endsWith('install-desktop.mjs')) return;
+          const result = await f.hooks.run!(
+            command,
+            args.filter(arg => arg !== '--ignore-scripts'),
+            options,
+          );
+          if (args[1] === 'install') {
+            const root = join(
+              options.cwd,
+              process.platform === 'win32'
+                ? 'node_modules/varisdev'
+                : 'lib/node_modules/varisdev',
+            );
+            await put(
+              join(root, 'build-info.json'),
+              JSON.stringify({revision: nextRevision, source: releaseURL}),
+            );
+          }
+          return result;
+        },
+      },
+    });
+    manager.subscribe(next => events.push(next));
+    const failed = await manager.update();
+    assert.equal(failed.phase, 'error');
+    assert.match(failed.error || '', /Download interrupted/);
+    assert.equal(failed.progress, undefined);
+    assert.ok(
+      events.some(
+        next =>
+          next.progress?.stage === 'downloading' &&
+          next.progress.transferredBytes === 40 &&
+          next.progress.totalBytes === 100,
+      ),
+    );
+    assert.equal(await manager.currentRoot(), f.installRoot);
+    failDownload = false;
+    events.length = 0;
+    const completed = await manager.update();
+    assert.equal(completed.phase, 'ready', completed.error);
+    assert.equal(completed.progress, undefined);
+    assert.equal(completed.error, undefined);
+    const installing = events.find(
+      next => next.progress?.stage === 'installing',
+    );
+    assert.ok(installing);
+    assert.equal(installing.progress?.transferredBytes, undefined);
+    assert.equal(installing.progress?.totalBytes, undefined);
+  },
+);
 
 for (const configuredNode of [false, true]) {
   void test(`updates expose ${configuredNode ? 'the configured' : 'the current'} Node to lifecycle scripts without an inherited Node PATH`, async t => {

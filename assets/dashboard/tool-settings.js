@@ -142,8 +142,13 @@ export function initToolSettings({api, selectedSessionId}) {
     $('tool-settings-retry').hidden = loaded || !failure;
     $('tool-settings-retry').disabled = busy;
     $('tool-settings-close').disabled = busy;
-    $('tool-settings-save').disabled = busy || !loaded;
+    $('tool-settings-save').disabled =
+      busy ||
+      !loaded ||
+      !Number.isSafeInteger(draft?.agents.maxConcurrentAgents) ||
+      draft.agents.maxConcurrentAgents < 1;
     if (!loaded) return;
+    $('agent-max-concurrent').disabled = busy;
     $('tool-settings-search').disabled = busy;
     renderImageModels();
     const count = draft.agents.allowedModels.length;
@@ -152,7 +157,12 @@ export function initToolSettings({api, selectedSessionId}) {
   }
   function render() {
     renderControls();
-    if (state && draft) renderModels();
+    if (state && draft) {
+      $('agent-max-concurrent').value = String(
+        draft.agents.maxConcurrentAgents,
+      );
+      renderModels();
+    }
   }
   async function load() {
     if (busy || disposed) return;
@@ -296,6 +306,11 @@ export function initToolSettings({api, selectedSessionId}) {
   });
   listen($('tool-settings-retry'), 'click', () => void load());
   listen($('tool-settings-search'), 'input', renderModels);
+  listen($('agent-max-concurrent'), 'input', event => {
+    draft.agents.maxConcurrentAgents = event.target.valueAsNumber;
+    failure = '';
+    renderControls();
+  });
   listen($('image-model'), 'change', event => {
     imageModel = event.target.value;
     failure = '';

@@ -45,17 +45,19 @@ void test('mentions require a leading configuration ID and a text task', () => {
     'person@example.com',
     '@person@example.com task',
     '@src/file.ts task',
-    '@file.ts task',
     '@repository:review task',
     '@review',
     '@review ',
     '@review\ntask',
     ' @review task',
     '@review  \n',
-    '@UNKNOWN task',
-    '@unknown_word task',
-    '@agent:bad--id task',
-    `@${'a'.repeat(161)} task`,
+    '@agent:../review task',
+    '@agent:team/../review task',
+    '@agent:team/./review task',
+    '@agent:team//review task',
+    '@agent:/review task',
+    '@agent:"unterminated name task',
+    '@agent:"NUL\\u0000name" task',
   ])
     assert.equal(parseAgentMention(text), undefined, text);
 });
@@ -293,6 +295,7 @@ void test('unknown IDs, file mentions, emails and extension messages continue wi
     '@UNKNOWN task',
     '@unknown_word task',
     '@src/file.ts task',
+    '@file.ts task',
     '@review.md task',
     'email@example.com',
     'Ask @review task',
@@ -439,3 +442,221 @@ void test('stopping an idle main mention cancels pending approval before creatin
   assert.equal(f.manager.list().length, 0);
   assert.match(f.notices.at(-1)!, /cancelled.*Stopped/i);
 });
+
+void test('dotted configuration discovery and native completion select and launch the saved profile', async t => {
+  const f = await fixture(t);
+  for (const id of ['sf-agent.test', 'quality.v2/sf-agent..test'])
+    await saveAgentTemplate(f.root, {
+      scope: 'workspace',
+      id,
+      mode: 'all',
+      model: 'test/pinned',
+      instructions: `Dotted instructions for ${id}.`,
+    });
+  let delegated = 0;
+  const provider = agentMentionAutocomplete(
+    {
+      async getSuggestions() {
+        delegated++;
+        return null;
+      },
+      applyCompletion(lines, line, column) {
+        return {lines, cursorLine: line, cursorCol: column};
+      },
+    },
+    () => discoverAgentMentions(f.root),
+  );
+  for (const [query, id] of [
+    ['@sf-agent.t', 'sf-agent.test'],
+    ['@agent:quality.v2/sf-agent..t', 'quality.v2/sf-agent..test'],
+  ]) {
+    const task = `Use ${id}`;
+    const result = await provider.getSuggestions(
+      [`${query} ${task}`],
+      0,
+      query.length,
+      {signal: new AbortController().signal},
+    );
+    assert.equal(result?.items.length, 1);
+    const selected = provider.applyCompletion(
+      [`${query} ${task}`],
+      0,
+      query.length,
+      result!.items[0],
+      result!.prefix,
+    );
+    assert.equal(parseAgentMention(selected.lines[0])?.id, id);
+    assert.deepEqual(await f.input(selected.lines[0]), {action: 'handled'});
+  }
+  await f.manager.wait(f.manager.list().map(record => record.id));
+  assert.deepEqual(
+    f.workers.map(worker => worker.agentProfile?.id),
+    ['sf-agent.test', 'quality.v2/sf-agent..test'],
+  );
+  assert.deepEqual(f.runs, [
+    'Use sf-agent.test',
+    'Use quality.v2/sf-agent..test',
+  ]);
+  assert.equal(f.notices.length, 0);
+  assert.equal(delegated, 0);
+  await provider.getSuggestions(['@file.ts'], 0, 8, {
+    signal: new AbortController().signal,
+  });
+  assert.equal(delegated, 1, 'Unmatched dotted file completion stays with Pi');
+  assert.deepEqual(await f.input('@file.ts Read the source file'), {
+    action: 'continue',
+  });
+});
+
+void test('quoted ordinary filenames and scoped selections complete and launch with their exact IDs', async t => {
+  const f = await fixture(t);
+  const ids = [
+    'My Agent (Review).test',
+    'Äänekäs 助手',
+    'Uppercase.Agent',
+    '.Hidden Agent',
+    'Team Ä/My Agent (2)',
+    ' leading and trailing ',
+  ];
+  if (process.platform !== 'win32')
+    ids.push('global:My Agent', 'Name "quoted" \\ Agent');
+  for (const id of ids)
+    await saveAgentTemplate(f.root, {
+      scope: 'workspace',
+      id,
+      mode: 'all',
+      model: 'test/pinned',
+      instructions: `Exact filename: ${id}.`,
+    });
+  const candidates = await discoverAgentMentions(f.root);
+  const provider = agentMentionAutocomplete(
+    {
+      async getSuggestions() {
+        return null;
+      },
+      applyCompletion(lines, line, column) {
+        return {lines, cursorLine: line, cursorCol: column};
+      },
+    },
+    async () => candidates,
+  );
+  for (const id of ids) {
+    const candidate = candidates.find(candidate => candidate.id === id)!;
+    assert.ok(candidate, id);
+    const mention = candidate.mention || `@${candidate.id}`;
+    const query = mention.slice(0, -1);
+    const task = `Use ${id}`;
+    const suggestions = await provider.getSuggestions(
+      [query],
+      0,
+      query.length,
+      {signal: new AbortController().signal},
+    );
+    const item = suggestions?.items.find(item => item.value === mention);
+    assert.ok(item, `Completion for ${mention}`);
+    const completion = provider.applyCompletion(
+      [`${query} ${task}`],
+      0,
+      query.length,
+      item,
+      suggestions!.prefix,
+    );
+    assert.equal(parseAgentMention(completion.lines[0])?.id, id);
+    assert.deepEqual(await f.input(completion.lines[0]), {action: 'handled'});
+  }
+  await f.manager.wait(f.manager.list().map(agent => agent.id));
+  assert.deepEqual(
+    f.workers.map(worker => worker.agentProfile?.id),
+    ids,
+  );
+  assert.deepEqual(
+    f.workers.map(worker => worker.agentProfile?.instructions),
+    ids.map(id => `Exact filename: ${id}.`),
+  );
+  assert.equal(f.notices.length, 0);
+  assert.deepEqual(
+    parseAgentMention('@"My Agent (Review).test" Direct quoted task'),
+    {id: 'My Agent (Review).test', task: 'Direct quoted task', literalId: true},
+  );
+  const before = f.workers.length;
+  assert.deepEqual(
+    await f.input(
+      '@agent:workspace:"My Agent (Review).test" Scoped quoted task',
+    ),
+    {action: 'handled'},
+  );
+  await f.manager.wait(f.manager.list().map(agent => agent.id));
+  assert.equal(f.workers.length, before + 1);
+  assert.equal(f.workers.at(-1)?.agentProfile?.id, 'My Agent (Review).test');
+});
+
+void test(
+  'scoped-looking filename permissions agree across discovery, quoted launches and direct launch gates',
+  {
+    skip:
+      process.platform === 'win32'
+        ? 'Colon is not a Windows filename character'
+        : false,
+  },
+  async t => {
+    const profile = createDefaultAgentProfile();
+    profile.permissions = [
+      {action: 'subagent', resource: '*', effect: 'deny'},
+      {action: 'subagent', resource: 'global:Agent', effect: 'allow'},
+    ];
+    const f = await fixture(t, {agentProfile: profile});
+    for (const id of ['Agent', 'global:Agent'])
+      await saveAgentTemplate(f.root, {
+        scope: 'workspace',
+        id,
+        mode: 'all',
+        model: 'test/pinned',
+        instructions: `Literal profile ${id}.`,
+      });
+    assert.deepEqual(
+      (await discoverAgentMentions(f.root, profile)).map(
+        candidate => candidate.id,
+      ),
+      ['global:Agent'],
+    );
+    assert.deepEqual(
+      await f.input('@agent:"global:Agent" Use the literal filename'),
+      {action: 'handled'},
+    );
+    await f.manager.wait(f.manager.list().map(agent => agent.id));
+    assert.equal(f.notices.length, 0);
+    assert.equal(f.workers[0].agentProfile?.id, 'global:Agent');
+    profile.permissions = [
+      {action: 'subagent', resource: '*', effect: 'deny'},
+      {action: 'subagent', resource: 'Agent', effect: 'allow'},
+    ];
+    assert.deepEqual(
+      (await discoverAgentMentions(f.root, profile)).map(
+        candidate => candidate.id,
+      ),
+      ['Agent'],
+    );
+    await f.input('@agent:"global:Agent" Denied literal filename');
+    assert.match(f.notices.at(-1)!, /permission denied.*global:Agent/);
+    const spawn = f.tools.get('agent_spawn')!;
+    await assert.rejects(
+      spawn.execute(
+        'direct',
+        {
+          template: 'workspace:global:Agent',
+          task: 'Cannot bypass the catalog gate',
+        },
+        undefined,
+        undefined,
+        f.ctx as never,
+      ),
+      /does not allow launching/,
+    );
+    assert.equal(f.workers.length, 1);
+    assert.deepEqual(await f.input('@Agent Use the ordinary filename'), {
+      action: 'handled',
+    });
+    await f.manager.wait(f.manager.list().map(agent => agent.id));
+    assert.equal(f.workers.at(-1)?.agentProfile?.id, 'Agent');
+  },
+);

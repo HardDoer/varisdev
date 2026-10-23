@@ -11,6 +11,7 @@ import {
 
 import type {UnitChange} from '../dashboard/changes.ts';
 import type {ConversationSnapshot} from '../conversation.ts';
+import {subscribeToolSettings} from '../tools/settings.ts';
 
 export interface AgentMessage {
   from: {id: string; name: string};
@@ -77,10 +78,17 @@ class AgentTeam {
     this.context = ctx;
     this.publish = changed;
     this.sessionId = ctx.sessionManager.getSessionId();
-    this.unsubscribe = this.manager.subscribe(() => {
+    const stopObservingAgents = this.manager.subscribe(() => {
       this.updateStatus();
       this.changed();
     });
+    const stopObservingSettings = subscribeToolSettings(settings => {
+      this.manager.setMaxConcurrentAgents(settings.agents.maxConcurrentAgents);
+    });
+    this.unsubscribe = () => {
+      stopObservingAgents();
+      stopObservingSettings();
+    };
     this.updateStatus();
   }
 

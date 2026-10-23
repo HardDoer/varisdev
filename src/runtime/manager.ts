@@ -38,7 +38,21 @@ const sourceInputs = [
   'desktop/package-lock.json',
 ];
 
+export interface UpdateProgress {
+  stage:
+    | 'waiting'
+    | 'checking'
+    | 'downloading'
+    | 'preparing'
+    | 'installing'
+    | 'verifying'
+    | 'activating';
+  transferredBytes?: number;
+  totalBytes?: number;
+}
+
 export interface UpdateStatus {
+  progress?: UpdateProgress;
   phase: 'idle' | 'checking' | 'available' | 'updating' | 'ready' | 'error';
   currentVersion: string;
   currentRevision?: string;
@@ -398,7 +412,11 @@ export class RuntimeManager {
     return this.checking;
   }
   private async performCheck(): Promise<UpdateStatus> {
-    this.publish({phase: 'checking', error: undefined});
+    this.publish({
+      phase: 'checking',
+      progress: {stage: 'checking'},
+      error: undefined,
+    });
     try {
       const root = await this.currentRoot();
       const currentVersion = applicationVersion(root);
@@ -416,6 +434,7 @@ export class RuntimeManager {
         latestVersion: release.archive?.version,
         latestRevision: release.revision,
         checkedAt: this.now().toISOString(),
+        progress: undefined,
       });
     } catch (error) {
       return this.fail(error);
@@ -434,7 +453,11 @@ export class RuntimeManager {
   }
 
   private async performUpdate(): Promise<UpdateStatus> {
-    this.publish({phase: 'updating', error: undefined});
+    this.publish({
+      phase: 'updating',
+      progress: {stage: 'waiting'},
+      error: undefined,
+    });
     let unlock: (() => Promise<void>) | undefined;
     let stage: string | undefined;
     let pointerTemp: string | undefined;
@@ -444,6 +467,7 @@ export class RuntimeManager {
       const activeRoot = await this.currentRoot();
       const currentVersion = applicationVersion(activeRoot);
       const currentRevision = applicationRevision(activeRoot);
+      this.publish({progress: {stage: 'checking'}});
       const release = await this.latest();
       this.publish({
         currentVersion,
@@ -458,8 +482,10 @@ export class RuntimeManager {
         return this.publish({
           phase: restartRequired ? 'ready' : 'idle',
           restartRequired,
+          progress: undefined,
         });
       }
+      this.publish({progress: {stage: 'preparing'}});
       const fingerprint = await sourceFingerprint(this.installRoot);
       // Keep nested npm lifecycle working directories below Windows path limits.
       const generation = `app-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -487,13 +513,17 @@ export class RuntimeManager {
       if (release.archive) {
         version = release.archive.version;
         archive = join(stage, `varisdev-${version}.tgz`);
+        this.publish({progress: {stage: 'downloading'}});
         await (this.options.hooks?.downloadRelease || downloadRelease)(
           release.archive,
           archive,
           commandOptions.timeoutMs,
+          progress =>
+            this.publish({progress: {stage: 'downloading', ...progress}}),
         );
       } else {
         await run('git', ['init', source], {...commandOptions, cwd: stage});
+        this.publish({progress: {stage: 'downloading'}});
         await run(
           'git',
           ['fetch', '--depth=1', release.source, release.revision],
@@ -504,12 +534,14 @@ export class RuntimeManager {
           cwd: source,
         });
         version = applicationVersion(source);
+        this.publish({progress: {stage: 'preparing'}});
         await run(executable, [npm, 'pack', '--pack-destination', stage], {
           ...commandOptions,
           cwd: source,
         });
         archive = join(stage, `varisdev-${version}.tgz`);
       }
+      this.publish({progress: {stage: 'installing'}});
       await run(
         executable,
         [
@@ -537,11 +569,13 @@ export class RuntimeManager {
           throw new Error(
             'The prepared application does not match the release manifest.',
           );
+        this.publish({progress: {stage: 'preparing'}});
         await run(executable, [join(root, 'scripts/install-desktop.mjs')], {
           ...commandOptions,
           cwd: root,
         });
       }
+      this.publish({progress: {stage: 'verifying'}});
       if (applicationVersion(root) !== version)
         throw new Error(
           'The prepared VarisDev application has an unexpected version.',
@@ -578,6 +612,7 @@ export class RuntimeManager {
         throw new Error(
           'VarisDev app files changed during the update. Please retry.',
         );
+      this.publish({progress: {stage: 'activating'}});
       if (process.platform === 'darwin')
         await refreshMacLauncher(this.installRoot, root);
       const pointer: ActiveRuntime = {
@@ -602,6 +637,7 @@ export class RuntimeManager {
         latestVersion: version,
         currentRevision: release.revision,
         restartRequired: true,
+        progress: undefined,
       });
     } catch (error) {
       return this.fail(error);
@@ -619,6 +655,7 @@ export class RuntimeManager {
   private fail(error: unknown): UpdateStatus {
     return this.publish({
       phase: 'error',
+      progress: undefined,
       error: `VarisDev update: ${error instanceof Error ? error.message : String(error)}`,
     });
   }

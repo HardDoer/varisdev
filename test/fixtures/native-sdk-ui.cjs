@@ -395,7 +395,14 @@ async function captureDesktopThemes(name, marker) {
       option => option.value,
     ),
   );
-  assert.equal(themes.length, 12, 'Expected every shipped desktop theme');
+  const shippedThemes = await evaluate(async () =>
+    (await import('./themes.js')).THEMES.map(theme => theme.id),
+  );
+  assert.deepEqual(
+    themes,
+    shippedThemes,
+    'Expected every shipped desktop theme',
+  );
   for (const theme of themes) {
     await evaluate(theme => {
       const select = document.getElementById('factory-theme');
@@ -760,7 +767,7 @@ async function main() {
   );
   browser.setContentSize(900, 760);
   browser.webContents.setZoomFactor(2);
-  await waitForTerminal(/model-\d{2}.*\[native-fixture\].*(?:medium|high)/);
+  await waitForTerminal(/model-\d{2}.*\[native-fixture\]/);
   await screenshot('actual-settings-submenu-900-2');
   const settingsResize = responses
     .filter(
@@ -779,6 +786,15 @@ async function main() {
       rows: ui.snapshot().dialogs[0].terminal.rows,
     },
     settingsResize.value,
+  );
+  await press('Return');
+  await waitForTerminal(/✓\s+medium/);
+  await press('Down');
+  await press('Return');
+  await waitFor(
+    () =>
+      settings.getModelThinkingLevel('native-fixture', 'model-01') === 'high',
+    'Stock Settings override did not round-trip through xterm',
   );
   settingsController.abort();
   await settingsTask;
@@ -1106,7 +1122,7 @@ async function main() {
   browser.webContents.setZoomFactor(2);
   await waitForTerminal('Revoke approval');
   await press('End', ['control']);
-  await waitForTerminal('END OF SAVED INPUT');
+  await waitForTerminal(/END[\s│┃]*OF[\s│┃]*SAVED[\s│┃]*INPUT/);
   await waitForTerminal('Back');
   await screenshot('approval-management-input-end-light-900-2');
   browser.setContentSize(1600, 1000);

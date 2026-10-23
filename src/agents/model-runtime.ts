@@ -29,10 +29,11 @@ function bridgeProvider(
   modelRegistry: ExtensionContext['modelRegistry'],
 ): Provider {
   const authProbe = provider.getModels()[0];
-  let credentialType: 'api_key' | 'oauth' =
-    provider.auth.oauth && !provider.auth.apiKey ? 'oauth' : 'api_key';
-  if (authProbe && modelRegistry.isUsingOAuth(authProbe))
-    credentialType = 'oauth';
+  const credentialType = () =>
+    (authProbe && modelRegistry.isUsingOAuth(authProbe)) ||
+    (provider.auth.oauth && !provider.auth.apiKey)
+      ? ('oauth' as const)
+      : ('api_key' as const);
   return {
     ...provider,
     // Routers are session-local registrations. Never let their catalog metadata
@@ -52,7 +53,7 @@ function bridgeProvider(
       apiKey: {
         name: 'Current agent',
         async check() {
-          return {type: credentialType};
+          return {type: credentialType()};
         },
         async resolve() {
           const result = await modelRegistry.getProviderAuth(provider.id);

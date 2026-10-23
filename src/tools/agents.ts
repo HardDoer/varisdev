@@ -69,7 +69,6 @@ const spawnSchema = Type.Object({
   template: Type.Optional(
     Type.String({
       minLength: 1,
-      maxLength: 256,
       description:
         'Agent ID from agent_templates; defaults to Default. Workspace settings override repository, global, and built-in settings.',
     }),
@@ -359,6 +358,8 @@ function registerAgentSendTool(
           };
         }
       }
+      const settings = await readToolSettings();
+      current.setMaxConcurrentAgents(settings.agents.maxConcurrentAgents);
       const recipient = current.get(params.id);
       if (isAgentFinished(recipient.status))
         await assertAgentModelAllowed(
@@ -387,7 +388,7 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
           ['list', 'get', 'save', 'delete'].map(value => Type.Literal(value)),
         ),
       ),
-      id: Type.Optional(Type.String({minLength: 1, maxLength: 256})),
+      id: Type.Optional(Type.String({minLength: 1})),
       offset: Type.Optional(
         Type.Integer({minimum: 0, description: 'List offset; defaults to 0.'}),
       ),
@@ -602,6 +603,10 @@ export function registerAgentTools(
   ) => {
     signal?.throwIfAborted();
     const team = getTeam(ctx);
+    const current = team.getManager();
+    const settings = await readToolSettings();
+    current.setMaxConcurrentAgents(settings.agents.maxConcurrentAgents);
+    current.assertAdditionalAgentsAllowed();
     const cwd = resolve(ctx.cwd, params.cwd ?? '.');
     if (!(await stat(cwd)).isDirectory())
       throw new Error(`Agent cwd is not a directory: ${cwd}`);
@@ -633,7 +638,7 @@ export function registerAgentTools(
       throw new Error(
         'Choose a model or specify the agent model as provider/model.',
       );
-    await assertAgentModelAllowed(selectedModel, undefined, pinnedModel);
+    await assertAgentModelAllowed(selectedModel, settings, pinnedModel);
     const separator = selectedModel.indexOf('/');
     const model =
       selectedModel === inheritedModel
@@ -666,7 +671,6 @@ export function registerAgentTools(
       thinkingLevel,
     };
     signal?.throwIfAborted();
-    const current = getManager(ctx);
     const record = current.spawn(
       {
         name,
@@ -749,7 +753,11 @@ export function registerAgentTools(
         );
         const signal =
           signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-        const template = await resolveAgentTemplate(ctx.cwd, mention.id);
+        const template = await resolveAgentTemplate(
+          ctx.cwd,
+          mention.id,
+          mention.literalId,
+        );
         if (!template) return {action: 'continue' as const};
         if (mention.task.length > 64000)
           throw new Error('Agent tasks cannot exceed 64000 characters.');
@@ -757,7 +765,7 @@ export function registerAgentTools(
           throw new Error(
             'Agent mentions accept text tasks. Reference image files in the task.',
           );
-        const params = {template: mention.id, task: mention.task};
+        const params = {template: template.key, task: mention.task};
         const denied = await checkAgentPermissions(
           shared?.agentProfile ?? {id: 'default'},
           'agent_spawn',
@@ -799,6 +807,7 @@ export function registerAgentTools(
 
   const registerSpawn = (
     allowedModels: string[] | null,
+    maxConcurrentAgents = 6,
     catalog: Array<
       Pick<AgentTemplate, 'id' | 'name' | 'description' | 'model'>
     > = [],
@@ -807,7 +816,10 @@ export function registerAgentTools(
       name: 'agent_spawn',
       label: 'Spawn agent',
       description:
-        'Start an agent with its own promptable conversation, using Default or a specified configuration; returns an ID immediately. Six run concurrently, others queue. ' +
+        'Start an agent with its own promptable conversation, using Default or a specified configuration; returns an ID immediately. ' +
+        (maxConcurrentAgents === 1
+          ? 'Additional agents are disabled: the single slot is reserved for the main conversation. '
+          : `Maximum ${maxConcurrentAgents} concurrent agents including the main conversation (${maxConcurrentAgents - 1} background agent${maxConcurrentAgents === 2 ? '' : 's'}); others queue. `) +
         'An explicit configuration model is pinned and overrides the model argument and Tool models. ' +
         (allowedModels === null
           ? 'Inheriting configurations accept any model from the current model registry. '
@@ -860,7 +872,7 @@ export function registerAgentTools(
   const refreshSpawnPolicy = async (_event: unknown, ctx: ExtensionContext) => {
     const [
       {
-        agents: {allowedModels},
+        agents: {allowedModels, maxConcurrentAgents},
       },
       listing,
     ] = await Promise.all([readToolSettings(), listAgentTemplates(ctx.cwd)]);
@@ -877,9 +889,14 @@ export function registerAgentTools(
         description,
         model,
       }));
-    const policy = JSON.stringify({allowedModels, catalog});
+    getManager(ctx).setMaxConcurrentAgents(maxConcurrentAgents);
+    const policy = JSON.stringify({
+      allowedModels,
+      maxConcurrentAgents,
+      catalog,
+    });
     if (policy === spawnPolicy) return;
-    registerSpawn(allowedModels, catalog);
+    registerSpawn(allowedModels, maxConcurrentAgents, catalog);
     spawnPolicy = policy;
   };
   pi.on('before_agent_start', refreshSpawnPolicy);

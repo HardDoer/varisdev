@@ -868,7 +868,7 @@ void test('catalog and declarations preserve exceptions and reject untemplated n
     {action: 'subagent', resource: 'explore', effect: 'allow'},
     {action: 'edit', resource: '*', effect: 'deny'},
   ];
-  assert.equal(agentCatalogAllows({permissions}, 'workspace:explore'), true);
+  assert.equal(agentCatalogAllows({permissions}, 'explore'), true);
   assert.equal(agentCatalogAllows({permissions}, 'build'), false);
   assert.equal(isAgentToolWhollyDenied({permissions}, 'write'), true);
   assert.equal(isAgentToolWhollyDenied({permissions}, 'agent_spawn'), false);
@@ -1963,3 +1963,25 @@ void test(
     assert.deepEqual(resumed.getActiveToolNames(), restoredTools);
   },
 );
+
+void test('catalog permissions preserve scoped-looking filenames while tool permissions unwrap only the selector scope', async () => {
+  const permissions: AgentPermissionRule[] = [
+    {action: 'subagent', resource: '*', effect: 'deny'},
+    {action: 'subagent', resource: 'global:Agent', effect: 'allow'},
+  ];
+  assert.equal(agentCatalogAllows({permissions}, 'global:Agent'), true);
+  assert.equal(agentCatalogAllows({permissions}, 'Agent'), false);
+  assert.deepEqual(
+    agentToolPermissions('agent_spawn', {template: 'workspace:global:Agent'}),
+    [{action: 'subagent', resource: 'global:Agent'}],
+  );
+  const h = harness(createAgentPolicyExtension({permissions}));
+  assert.equal(
+    await h.call('agent_spawn', {template: 'workspace:global:Agent'}),
+    undefined,
+  );
+  assert.equal(
+    (await h.call('agent_spawn', {template: 'global:Agent'})).block,
+    true,
+  );
+});

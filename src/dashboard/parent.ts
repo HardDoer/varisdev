@@ -50,6 +50,7 @@ import {runSettingsCommand} from './settings-commands.ts';
 import {runSessionCommand} from './session-commands.ts';
 import {runReportCommand} from './report-commands.ts';
 import {runAgentSessionRequest} from './agent-session.ts';
+import {refreshSpeedModeAuth, runSpeedCommand} from '../speed-modes.ts';
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -564,6 +565,17 @@ export async function createDashboardParent(
         if (!signal.aborted) await configurationAction(options);
       },
     };
+    const speedMode = await runSpeedCommand(
+      name,
+      args,
+      session.extensionRunner.createContext(),
+      (type, data) => session.sessionManager.appendCustomEntry(type, data),
+    );
+    if (speedMode !== undefined) {
+      state!.updateSession({speedMode});
+      commandUI.context.notify(`Speed: ${speedMode}.`, 'info');
+      return;
+    }
     if (name === 'approvals') {
       if (args) throw new Error('Usage: /approvals');
       await showAgentApprovals(
@@ -659,6 +671,7 @@ export async function createDashboardParent(
         signal: AbortSignal.timeout(5000),
       });
       const failure = result.errors.get(LLAMA_PROVIDER);
+      await refreshSpeedModeAuth(session.extensionRunner.createContext());
       const features = sessionFeatures(session, loader, settingsManager, [
         ...diagnostics,
         ...(failure ? [{message: `llama.cpp: ${failure.message}`}] : []),

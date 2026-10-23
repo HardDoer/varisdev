@@ -13,6 +13,7 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import {loaderContextFiles} from './context-files.ts';
 import {nativeCommands} from './command-catalog.mjs';
+import {speedModeFeatures, type SpeedMode} from '../speed-modes.ts';
 
 // Use the public entry so Pi can supply its API through the extension loader.
 export function supportedThinkingLevels(
@@ -47,6 +48,8 @@ export interface SessionFeatures {
   model?: {id: string; provider: string};
   thinkingLevel: string;
   thinkingLevels: string[];
+  speedMode?: SpeedMode;
+  speedModes?: SpeedMode[];
   tools: Array<{name: string; description: string}>;
   diagnostics: Array<{message: string; path?: string}>;
 }
@@ -150,6 +153,7 @@ export function sessionFeatures(
       : {}),
     thinkingLevel: session.thinkingLevel,
     thinkingLevels: session.getAvailableThinkingLevels(),
+    ...speedModeFeatures(runner.createContext()),
     tools: session
       .getAllTools()
       .map(tool => ({name: tool.name, description: tool.description})),

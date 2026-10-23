@@ -1273,7 +1273,7 @@ void test(
     });
     const registry = new ModelRegistry(runtime);
     const providerId = 'worker-usage-test';
-    const manager = new AgentOrchestrator(1);
+    const manager = new AgentOrchestrator(2);
     const workers = new Map<string, AgentWorker>();
     const disposed = new Set<string>();
     const requests: string[] = [];
@@ -1582,7 +1582,7 @@ void test(
         refreshOnCreate: false,
       }),
     );
-    const manager = new AgentOrchestrator(1);
+    const manager = new AgentOrchestrator(2);
     const requests: ProviderRequest[] = [];
     const commandStarted = Promise.withResolvers<void>();
     const finishCommand = Promise.withResolvers<void>();
@@ -1836,7 +1836,7 @@ void test(
         refreshOnCreate: false,
       }),
     );
-    const manager = new AgentOrchestrator(1);
+    const manager = new AgentOrchestrator(2);
     const requests: ProviderRequest[] = [];
     const providerErrors: unknown[] = [];
     const approvalStarted = Promise.withResolvers<void>();

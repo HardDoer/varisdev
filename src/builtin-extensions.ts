@@ -7,6 +7,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import {LLAMA_PROVIDER, officialLlamaExtension} from './llama.ts';
 import {registerApprovalCommand} from './agents/approval-ui.ts';
+import {registerSpeedModes} from './speed-modes.ts';
 
 /** Match Pi's built-in identities so settings and replacements still apply. */
 export function createBuiltinExtensions(
@@ -15,6 +16,11 @@ export function createBuiltinExtensions(
   } = {},
 ): InlineExtension[] {
   return [
+    {
+      name: 'varisdev-speed-modes',
+      factory: registerSpeedModes,
+      builtin: true,
+    },
     {
       name: 'varisdev-approvals',
       factory: registerApprovalCommand,

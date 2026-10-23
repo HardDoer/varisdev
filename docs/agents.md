@@ -14,7 +14,7 @@ Every new agent has its own message history. Starting one does not copy the call
 
 ## Other agents
 
-Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The main agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`.
+Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The main agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`. Quote names containing spaces, such as `@"Review Agent" Check the changes` or `@agent:"Team/Review Agent" Check the changes`; the mention picker inserts the appropriate form.
 
 Build and Plan are optional primary agents. General and Explore are optional subagents. Plan and Explore provide restricted tools for investigation; General can work broadly but cannot delegate further. Their instructions apply only when selected.
 
@@ -37,7 +37,7 @@ Files are stored at:
 
 **Menu → Open workspace configuration** opens the personal workspace directory. It is associated with the canonical repository or worktree root, so project subdirectories and symlink aliases share it. Separate worktrees and moved repositories have separate workspace configuration. `VARISDEV_SETTINGS_DIR` changes the global settings directory.
 
-A file's relative path supplies its ID: `team/reviewer.md` becomes `team/reviewer`. Each path component must be a lowercase filename slug. A scoped reference such as `repository:team/reviewer` resolves through that scope, excluding higher overrides.
+A file's relative path supplies its ID: `team/reviewer.md` becomes `team/reviewer`, and `sf-agent.test.md` becomes `sf-agent.test`. Names use ordinary filesystem rules and preserve spaces, punctuation, uppercase letters, and Unicode. A scoped reference such as `repository:team/reviewer` resolves through that scope, excluding higher overrides.
 
 ## Markdown format
 

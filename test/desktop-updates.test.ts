@@ -168,6 +168,9 @@ void test(
           ),
           directory,
           reportPath,
+          ...(process.env.VARISDEV_TEST_UPDATE_SCREENSHOTS
+            ? [process.env.VARISDEV_TEST_UPDATE_SCREENSHOTS]
+            : []),
         ],
         {env, timeout: 25_000},
       );
@@ -180,7 +183,7 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 5);
+    assert.equal(report.cases.length, 6);
   },
 );
 

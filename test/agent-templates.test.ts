@@ -925,7 +925,7 @@ void test('reports malformed files without hiding valid templates', async t => {
   );
   await writeFile(
     join(paths.globalDirectory, 'Bad Name.md'),
-    '---\nname: Bad slug\n---\nInstructions.\n',
+    '---\nname: Ordinary filename\n---\nInstructions.\n',
   );
   await writeFile(
     join(paths.repositoryDirectory, 'broken.md'),
@@ -940,13 +940,12 @@ void test('reports malformed files without hiding valid templates', async t => {
   const result = await listAgentTemplates(paths.cwd);
   assert.deepEqual(
     result.templates.map(template => template.id),
-    [...builtinIds, 'valid'],
+    [...builtinIds, 'valid', 'Bad Name'].sort((a, b) => a.localeCompare(b)),
   );
-  assert.equal(result.diagnostics.length, 4);
-  assert.match(
-    result.diagnostics.find(item => item.sourcePath.endsWith('Bad Name.md'))!
-      .message,
-    /lowercase path of filename slugs/,
+  assert.equal(result.diagnostics.length, 3);
+  assert.equal(
+    result.templates.find(template => template.id === 'Bad Name')?.name,
+    'Ordinary filename',
   );
   assert.match(
     result.diagnostics.find(item => item.sourcePath.endsWith('broken.md'))!
@@ -1156,7 +1155,6 @@ void test('refuses invalid input and will not replace or delete unexpected files
     'template',
     {...base, extra: true},
     {...base, id: '../escape'},
-    {...base, id: 'Uppercase'},
     {...base, model: 'missing-slash'},
     {...base, model: 'p/has space'},
     {...base, thinkingLevel: 'extreme' as 'high'},
@@ -1265,3 +1263,248 @@ void test('uses cwd as the repository scope when no git ancestor exists', async 
     join(config.repositoryConfigDir, 'agents', 'local.md'),
   );
 });
+
+void test('dotted filenames save, discover, resolve by scope, and select as the primary default', async t => {
+  const paths = await isolate(t);
+  const id = 'sf-agent.test';
+  const global = await saveAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id,
+    mode: 'all',
+    instructions: 'Global dotted instructions.',
+  });
+  assert.equal(
+    global.sourcePath,
+    join(paths.globalDirectory, 'sf-agent.test.md'),
+  );
+  await mkdir(paths.repositoryDirectory, {recursive: true});
+  const repositoryPath = join(paths.repositoryDirectory, 'sf-agent.test.md');
+  await writeFile(
+    repositoryPath,
+    '---\nmode: all\n---\nRepository dotted instructions.\n',
+  );
+  const workspace = await saveAgentTemplate(paths.cwd, {
+    scope: 'workspace',
+    id,
+    instructions: 'Workspace dotted instructions.',
+  });
+  const listing = await listAgentTemplates(paths.cwd);
+  assert.deepEqual(listing.diagnostics, []);
+  assert.deepEqual(
+    listing.allTemplates
+      .filter(template => template.id === id)
+      .map(template => template.key),
+    [
+      'global:sf-agent.test',
+      'repository:sf-agent.test',
+      'workspace:sf-agent.test',
+    ],
+  );
+  assert.equal(
+    (await resolveAgentTemplate(paths.cwd, id))?.instructions,
+    'Workspace dotted instructions.',
+  );
+  const raw = await prepareAgentTemplateGet(paths.cwd, {
+    action: 'get',
+    id,
+    scope: 'repository',
+    sourcePath: repositoryPath,
+  });
+  assert.equal(raw.value.instructions, 'Repository dotted instructions.');
+  await writeFile(
+    join(paths.agentDir, 'settings.json'),
+    JSON.stringify({default_agent: 'repository:sf-agent.test'}),
+  );
+  const selected = await listAgentTemplates(paths.cwd);
+  assert.equal(selected.defaultAgentId, 'repository:sf-agent.test');
+  assert.equal(selected.defaultAgent?.sourcePath, repositoryPath);
+  assert.equal(
+    (await resolveDefaultAgentTemplate(paths.cwd))?.instructions,
+    'Repository dotted instructions.',
+  );
+  await saveAgentTemplate(paths.cwd, {
+    id,
+    scope: 'workspace',
+    sourcePath: workspace.sourcePath,
+    instructions: 'Updated dotted instructions.',
+  });
+  assert.match(
+    await readFile(workspace.sourcePath, 'utf8'),
+    /Updated dotted instructions/,
+  );
+  assert.deepEqual(await readdir(paths.workspaceDirectory), [
+    'sf-agent.test.md',
+  ]);
+  await deleteAgentTemplate(paths.cwd, {
+    scope: 'workspace',
+    id,
+    sourcePath: workspace.sourcePath,
+  });
+  assert.equal(
+    (await resolveAgentTemplate(paths.cwd, id))?.instructions,
+    'Repository dotted instructions.',
+  );
+});
+
+void test('interior repeated dots remain filenames while traversal segments and absolute paths stay invalid', async t => {
+  const paths = await isolate(t);
+  const id = 'team.v2/sf-agent..test';
+  const saved = await saveAgentTemplate(paths.cwd, {
+    scope: 'global',
+    id,
+    instructions: 'Interior dots.',
+  });
+  assert.equal(
+    saved.sourcePath,
+    join(paths.globalDirectory, 'team.v2', 'sf-agent..test.md'),
+  );
+  assert.equal(
+    (await resolveAgentTemplate(paths.cwd, id))?.instructions,
+    'Interior dots.',
+  );
+  for (const invalid of [
+    '',
+    '.',
+    '..',
+    '../escape',
+    'team/../escape',
+    'team/./escape',
+    'team//escape',
+    '/escape',
+    'team/../../escape',
+    'nul\0name',
+    join(paths.root, 'escape'),
+    ...(process.platform === 'win32'
+      ? ['..\\escape', 'team\\..\\escape', 'C:\\escape']
+      : []),
+  ]) {
+    await assert.rejects(
+      saveAgentTemplate(paths.cwd, {scope: 'global', id: invalid}),
+      /Agent template id/,
+    );
+    await assert.rejects(
+      deleteAgentTemplate(paths.cwd, {scope: 'global', id: invalid}),
+      /Agent template id/,
+    );
+    await assert.rejects(
+      resolveAgentTemplate(paths.cwd, invalid),
+      /Agent template id/,
+    );
+  }
+  await assert.rejects(readFile(join(paths.agentDir, 'escape.md')), {
+    code: 'ENOENT',
+  });
+  await deleteAgentTemplate(paths.cwd, {scope: 'global', id});
+  assert.deepEqual(await readdir(paths.globalDirectory), []);
+});
+
+void test('ordinary filename spelling, spaces, Unicode, hidden basenames and long IDs round trip without normalization', async t => {
+  const paths = await isolate(t);
+  const ids = [
+    'My Agent (Review).test',
+    'Äänekäs 助手',
+    'Uppercase.Agent',
+    '.Hidden Agent',
+    ' leading and trailing ',
+    `Long${'a'.repeat(170)}`,
+  ];
+  if (process.platform !== 'win32')
+    ids.push('Name "quoted" \\ Agent', '..\\escape');
+  for (const id of ids) {
+    const saved = await saveAgentTemplate(paths.cwd, {
+      scope: 'global',
+      id,
+      mode: 'all',
+      instructions: `Instructions for ${id}.`,
+    });
+    assert.equal(saved.id, id);
+    assert.equal(saved.sourcePath, join(paths.globalDirectory, `${id}.md`));
+    assert.equal((await resolveAgentTemplate(paths.cwd, id))?.id, id);
+    const read = await prepareAgentTemplateGet(paths.cwd, {
+      action: 'get',
+      scope: 'global',
+      id,
+      sourcePath: saved.sourcePath,
+    });
+    assert.equal(read.value.id, id);
+    await writeFile(
+      join(paths.agentDir, 'settings.json'),
+      JSON.stringify({default_agent: id}),
+    );
+    const listing = await listAgentTemplates(paths.cwd);
+    assert.deepEqual(listing.diagnostics, []);
+    assert.equal(listing.defaultAgentId, id);
+    assert.equal((await resolveDefaultAgentTemplate(paths.cwd)).id, id);
+    await saveAgentTemplate(paths.cwd, {
+      scope: 'global',
+      id,
+      sourcePath: saved.sourcePath,
+      instructions: 'Updated ordinary filename.',
+    });
+    assert.match(
+      await readFile(saved.sourcePath, 'utf8'),
+      /Updated ordinary filename/,
+    );
+  }
+  const listing = await listAgentTemplates(paths.cwd);
+  for (const id of ids)
+    assert.ok(
+      listing.templates.some(template => template.id === id),
+      id,
+    );
+  assert.deepEqual(
+    (await readdir(paths.globalDirectory)).sort(),
+    ids.map(id => `${id}.md`).sort(),
+  );
+  for (const id of ids)
+    await deleteAgentTemplate(paths.cwd, {scope: 'global', id});
+  assert.deepEqual(await readdir(paths.globalDirectory), []);
+});
+
+void test(
+  'colon filenames resolve literally or through exact scope keys without changing scoped selection',
+  {
+    skip:
+      process.platform === 'win32'
+        ? 'Colon is not a Windows filename character'
+        : false,
+  },
+  async t => {
+    const paths = await isolate(t);
+    await saveAgentTemplate(paths.cwd, {
+      scope: 'global',
+      id: 'My Agent',
+      instructions: 'Scoped ordinary profile.',
+    });
+    for (const id of ['Lab:My Agent', 'global:My Agent']) {
+      const saved = await saveAgentTemplate(paths.cwd, {
+        scope: 'global',
+        id,
+        mode: 'all',
+        instructions: `Literal ${id}.`,
+      });
+      assert.equal(
+        (await resolveAgentTemplate(paths.cwd, saved.key))?.instructions,
+        `Literal ${id}.`,
+      );
+      assert.equal(
+        (await resolveAgentTemplate(paths.cwd, id, true))?.instructions,
+        `Literal ${id}.`,
+      );
+      const raw = await prepareAgentTemplateGet(paths.cwd, {
+        action: 'get',
+        scope: 'global',
+        id,
+      });
+      assert.equal(raw.value.id, id);
+    }
+    assert.equal(
+      (await resolveAgentTemplate(paths.cwd, 'global:My Agent'))?.instructions,
+      'Scoped ordinary profile.',
+    );
+    assert.equal(
+      (await resolveAgentTemplate(paths.cwd, 'Lab:My Agent'))?.instructions,
+      'Literal Lab:My Agent.',
+    );
+  },
+);

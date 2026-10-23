@@ -60,17 +60,17 @@ void test(
       }));
     const deadline = Date.now() + 2000;
     while (
-      manager.list().filter(agent => agent.status === 'running').length < 6 &&
+      manager.list().filter(agent => agent.status === 'running').length < 5 &&
       Date.now() < deadline
     )
       await delay(5);
     assert.equal(
       manager.list().filter(agent => agent.status === 'running').length,
-      6,
+      5,
     );
     assert.equal(
       manager.list().filter(agent => agent.status === 'queued').length,
-      1,
+      2,
     );
     const before = control.deliverySnapshot()!;
     assert.ok(before.agents.every(agent => agent.resumable));

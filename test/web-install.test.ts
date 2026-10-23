@@ -88,6 +88,64 @@ void test('release downloads validate metadata and checksums and clean up failed
   assert.deepEqual(await readdir(prefix), []);
 });
 
+void test(
+  'release download progress reports received bytes and only known totals',
+  {timeout: 10_000},
+  async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'web-progress-'));
+    t.after(() => rm(directory, {recursive: true, force: true}));
+    const contents = Buffer.from('a release archive delivered in chunks');
+    const server = createServer((request, response) => {
+      if (request.url === '/known')
+        response.setHeader('Content-Length', contents.length);
+      response.write(contents.subarray(0, 4));
+      setTimeout(() => response.end(contents.subarray(4)), 150);
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(
+      () =>
+        new Promise<void>(resolve => {
+          server.close(() => resolve());
+          server.closeAllConnections();
+        }),
+    );
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    for (const kind of ['known', 'unknown']) {
+      const progress: {transferredBytes: number; totalBytes?: number}[] = [];
+      const archive = join(directory, `${kind}.tgz`);
+      await downloadRelease(
+        {
+          version: '0.1.0',
+          revision: 'a'.repeat(40),
+          url: `http://127.0.0.1:${address.port}/${kind}`,
+          sha256: createHash('sha256').update(contents).digest('hex'),
+        },
+        archive,
+        2_000,
+        next => progress.push(next),
+      );
+      assert.equal(progress[0].transferredBytes, 0);
+      assert.ok(
+        progress.some(
+          next =>
+            next.transferredBytes > 0 &&
+            next.transferredBytes < contents.length,
+        ),
+      );
+      assert.equal(progress.at(-1)?.transferredBytes, contents.length);
+      assert.ok(
+        progress.every(
+          next =>
+            next.totalBytes ===
+            (kind === 'known' ? contents.length : undefined),
+        ),
+      );
+      assert.deepEqual(await readFile(archive), contents);
+    }
+  },
+);
+
 void test('installer rejects missing values and unknown options before doing any work', async () => {
   await assert.rejects(install(['--prefix']), /Missing value/);
   await assert.rejects(install(['--unknown', 'value']), /Unknown option/);

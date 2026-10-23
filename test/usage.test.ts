@@ -50,20 +50,6 @@ void test('worker usage reports live and idle persisted cache-warming entries on
     provider: 'fixture',
     model: 'worker-model',
     content: [{type: 'text', text: 'Worker result'}],
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-      },
-    },
     stopReason: 'stop',
   };
   const session = {
@@ -72,7 +58,7 @@ void test('worker usage reports live and idle persisted cache-warming entries on
       getCwd: () => directory,
       getSessionFile: () => join(directory, 'session.jsonl'),
     },
-    messages: [assistant],
+    messages: [],
     subscribe(listener: (event: AgentSessionEvent) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -82,6 +68,18 @@ void test('worker usage reports live and idle persisted cache-warming entries on
       branch.push(entry);
       for (const listener of listeners)
         listener({type: 'entry_appended', entry} as AgentSessionEvent);
+      for (const listener of listeners)
+        listener({
+          type: 'message_end',
+          message: assistant,
+        } as AgentSessionEvent);
+      branch.push({
+        type: 'message',
+        id: 'response',
+        parentId: entry.id,
+        timestamp: new Date(assistant.timestamp).toISOString(),
+        message: assistant,
+      } as SessionEntry);
     },
     clearQueue: () => ({steering: [], followUp: []}),
     abortCompaction() {},

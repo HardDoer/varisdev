@@ -76,7 +76,7 @@
   margin: 0 0 12px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--tool-settings-card-accent);
-  color: var(--tool-settings-card-accent);
+  color: color-mix(in srgb, var(--tool-settings-card-accent) 90%, var(--text));
   font-size: 1.125rem;
   line-height: 1.3;
 }
@@ -98,10 +98,11 @@
   margin: 10px 0;
 }
 .tool-settings-card-note {
-  margin: 0 0 12px;
+  margin: 8px 0 12px;
   font-size: 0.875rem;
   line-height: 1.5;
 }
+#agent-max-concurrent,
 #tool-settings-search,
 #image-model {
   width: 100%;
@@ -118,6 +119,7 @@
 #image-model option:not([value='']) {
   color: var(--text);
 }
+#agent-max-concurrent,
 #tool-settings-search,
 #tool-settings-models {
   border-color: var(--action-agent);

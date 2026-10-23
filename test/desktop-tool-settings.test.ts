@@ -63,7 +63,7 @@ void test('app catalog uses Pi available models and refreshes local custom model
   });
   const initial = await service.getToolSettings();
   assert.deepEqual(initial.settings, {
-    agents: {allowedModels: []},
+    agents: {allowedModels: [], maxConcurrentAgents: 6},
   });
   assert.ok(
     !initial.models.some(model => model.provider === 'unconfigured-fixture'),
@@ -136,7 +136,9 @@ void test('desktop saves copy queued inputs and return live session choices', as
   const pending = service.saveToolSettings('all', replacement, 'session');
   replacement.agents.allowedModels[0] = 'unknown/mutated';
   const saved = await pending;
-  assert.deepEqual(saved.settings, {agents: {allowedModels: [firstId]}});
+  assert.deepEqual(saved.settings, {
+    agents: {allowedModels: [firstId], maxConcurrentAgents: 6},
+  });
   assert.deepEqual(saved.models, models);
   await saveToolSettings('agents', {allowedModels: [secondId]});
   assert.deepEqual(
@@ -183,7 +185,9 @@ void test('invalid IPC settings and unknown models preserve saved choices', asyn
     {agents: {allowedModels: [secondId]}},
     'session',
   );
-  assert.deepEqual(saved.settings, {agents: {allowedModels: [secondId]}});
+  assert.deepEqual(saved.settings, {
+    agents: {allowedModels: [secondId], maxConcurrentAgents: 6},
+  });
 });
 
 void test('saved unavailable choices can be retained or removed but cannot be reintroduced', async t => {
@@ -344,4 +348,35 @@ void test('no-session pickers resolve and refresh global Pi scope through regist
       assert.match(fallback.diagnostics?.join('\n') ?? '', /missing-provider/);
     else assert.equal(fallback.diagnostics, undefined);
   }
+});
+
+void test('desktop concurrency settings persist independently of allowed model choices and reject invalid limits', async t => {
+  const {service} = await fixture(t);
+  const saved = await service.saveToolSettings(
+    'all',
+    {agents: {allowedModels: [firstId], maxConcurrentAgents: 1}},
+    'session',
+  );
+  assert.equal(saved.settings.agents.maxConcurrentAgents, 1);
+  const reloaded = new DesktopToolSettings({
+    sessionFeatures: async () => ({models: [first]}),
+  });
+  assert.equal(
+    (await reloaded.getToolSettings('session')).settings.agents
+      .maxConcurrentAgents,
+    1,
+  );
+  for (const maxConcurrentAgents of [0, 2.5, '6']) {
+    await assert.rejects(
+      service.saveToolSettings(
+        'all',
+        {agents: {allowedModels: [firstId], maxConcurrentAgents}},
+        'session',
+      ),
+      /whole number of at least 1/,
+    );
+    assert.equal((await readToolSettings()).agents.maxConcurrentAgents, 1);
+  }
+  await service.saveToolSettings('agents', {allowedModels: []}, 'session');
+  assert.equal((await readToolSettings()).agents.maxConcurrentAgents, 1);
 });

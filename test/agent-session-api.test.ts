@@ -417,7 +417,7 @@ void test(
     await assert.rejects(hub.saveAgentTemplate(cwd, null), /JSON object/);
     await assert.rejects(
       hub.deleteAgentTemplate(cwd, {scope: 'global', id: '../outside'}),
-      /slug/,
+      /relative filename path/,
     );
     const plain = await hub.createSession({cwd});
     const plainRequest = created.shift();
@@ -580,6 +580,25 @@ void test(
       created[0].agentProfile?.instructions,
       'Personal instructions',
     );
+    for (const id of [
+      'My Agent (Ä).test',
+      ' leading and trailing ',
+      `${'Team'.repeat(40)}/${'Agent'.repeat(40)}`,
+    ]) {
+      await hub.saveAgentTemplate(cwd, {
+        scope: 'global',
+        id,
+        mode: 'all',
+        instructions: 'Ordinary filename profile.',
+      });
+      const started = await hub.createSession({cwd, templateId: id});
+      assert.equal(created.at(-1)?.agentProfile?.id, id);
+      assert.equal(
+        created.at(-1)?.agentProfile?.instructions,
+        'Ordinary filename profile.',
+      );
+      await hub.closeSession(started.id);
+    }
   },
 );
 

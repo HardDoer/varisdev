@@ -1,15 +1,21 @@
-/* global process, __dirname, document, window, setTimeout */
+/* global process, __dirname, document, window, setTimeout, getComputedStyle */
 const assert = require('node:assert/strict');
-const {writeFileSync} = require('node:fs');
+const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
 const {app, BrowserWindow, ipcMain} = require('electron');
-const [directory, reportPath] = process.argv.slice(2);
+const [directory, reportPath, screenshotDirectory] = process.argv.slice(2);
 const report = {cases: []};
 let browser;
 let status = {phase: 'idle', currentVersion: '0.85.1', restartRequired: false};
 let installs = 0;
 let restarts = 0;
 let updatePending;
+let checkPending;
+let initialPending;
+let installFails = true;
+const initialStatus = new Promise(resolve => {
+  initialPending = resolve;
+});
 let restartBlocked = true;
 app.setPath('userData', join(directory, 'profile'));
 app.setPath('sessionData', join(directory, 'session'));
@@ -37,6 +43,26 @@ async function waitFor(fn) {
   }
   throw new Error(`Timed out: ${fn}`);
 }
+async function captureDialog(name) {
+  if (!screenshotDirectory) return;
+  mkdirSync(screenshotDirectory, {recursive: true});
+  await browser.webContents.executeJavaScript(
+    'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+  );
+  const bounds = await evaluate(() => {
+    const rect = document
+      .getElementById('updates-dialog')
+      .getBoundingClientRect();
+    return {
+      x: Math.floor(rect.x),
+      y: Math.floor(rect.y),
+      width: Math.ceil(rect.width),
+      height: Math.ceil(rect.height),
+    };
+  });
+  const image = await browser.webContents.capturePage(bounds);
+  writeFileSync(join(screenshotDirectory, `${name}.png`), image.toPNG());
+}
 async function main() {
   await app.whenReady();
   browser = new BrowserWindow({
@@ -54,19 +80,23 @@ async function main() {
   handle('pidev:get-state', () => ({sessions: [], launchCwd: directory}));
   handle('pidev:recent-projects', () => []);
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
-  handle('varisdev:get-update-status', () => status);
-  handle('varisdev:check-updates', () => {
-    broadcast({phase: 'checking', error: undefined});
+  handle('varisdev:get-update-status', () => initialStatus);
+  handle('varisdev:check-updates', async () => {
+    broadcast({phase: 'checking', error: undefined, progress: undefined});
+    await new Promise(resolve => {
+      checkPending = resolve;
+    });
     broadcast({phase: 'idle', checkedAt: new Date().toISOString()});
     return status;
   });
   handle('varisdev:install-update', async () => {
     installs++;
-    broadcast({phase: 'updating', error: undefined});
+    broadcast({phase: 'updating', error: undefined, progress: undefined});
     await new Promise(resolve => {
       updatePending = resolve;
     });
-    broadcast({phase: 'ready', restartRequired: true});
+    if (installFails) throw new Error('Download interrupted.');
+    broadcast({phase: 'ready', restartRequired: true, progress: undefined});
     return status;
   });
   handle('varisdev:restart-update', () => {
@@ -82,8 +112,37 @@ async function main() {
   await waitFor(
     () =>
       document.getElementById('updates-message').textContent ===
-      'Check for VarisDev updates.',
+      'Loading update status…',
   );
+  browser.webContents.send('varisdev:show-updates');
+  await waitFor(() => document.getElementById('updates-dialog').open);
+  assert.deepEqual(
+    await evaluate(() => ({
+      visible: !document.getElementById('updates-progress').hidden,
+      indeterminate: document
+        .getElementById('updates-progress-bar')
+        .matches(':indeterminate'),
+      busy: document.getElementById('updates-dialog').getAttribute('aria-busy'),
+    })),
+    {visible: true, indeterminate: true, busy: 'true'},
+  );
+  const position = await evaluate(
+    () =>
+      getComputedStyle(document.getElementById('updates-progress-bar'))
+        .backgroundPosition,
+  );
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.notEqual(
+    await evaluate(
+      () =>
+        getComputedStyle(document.getElementById('updates-progress-bar'))
+          .backgroundPosition,
+    ),
+    position,
+  );
+  await captureDialog('initial');
+  initialPending(status);
+  await waitFor(() => document.getElementById('updates-progress').hidden);
   assert.equal(
     await evaluate(() => document.getElementById('updates-button').hidden),
     true,
@@ -94,7 +153,30 @@ async function main() {
   await waitFor(
     () =>
       document.getElementById('updates-message').textContent ===
+      'Checking for updates…',
+  );
+  assert.equal(
+    await evaluate(
+      () =>
+        !document.getElementById('updates-progress').hidden &&
+        document
+          .getElementById('updates-progress-bar')
+          .matches(':indeterminate'),
+    ),
+    true,
+  );
+  checkPending();
+  await waitFor(
+    () =>
+      document.getElementById('updates-message').textContent ===
       'VarisDev is up to date.',
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('updates-progress').hidden),
+    true,
+  );
+  report.cases.push(
+    'initial status loading and checking show indeterminate progress',
   );
   assert.equal(
     await evaluate(() => document.getElementById('updates-button').hidden),
@@ -128,12 +210,103 @@ async function main() {
     await evaluate(() => document.getElementById('updates-check').disabled),
     true,
   );
+  assert.equal(
+    await evaluate(
+      () =>
+        !document.getElementById('updates-progress').hidden &&
+        document
+          .getElementById('updates-progress-bar')
+          .matches(':indeterminate'),
+    ),
+    true,
+  );
+  broadcast({
+    progress: {stage: 'downloading', transferredBytes: 4096, totalBytes: 10240},
+  });
+  await waitFor(
+    () => document.getElementById('updates-progress-bar').value === 40,
+  );
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('updates-progress-detail').textContent,
+    ),
+    '40% · 4 KB of 10 KB',
+  );
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('updates-message').textContent,
+    ),
+    'Downloading update…',
+  );
+  if (screenshotDirectory) {
+    const themes = await evaluate(async () =>
+      (await import('./themes.js')).THEMES.map(theme => theme.id),
+    );
+    for (const theme of themes) {
+      await browser.webContents.executeJavaScript(
+        `document.getElementById('factory-theme').value = ${JSON.stringify(theme)}; document.getElementById('factory-theme').dispatchEvent(new Event('change'));`,
+      );
+      await captureDialog(theme);
+    }
+    browser.setContentSize(640, 480);
+    browser.webContents.setZoomFactor(1.5);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const compact = await browser.webContents.capturePage();
+    writeFileSync(join(screenshotDirectory, 'compact.png'), compact.toPNG());
+    browser.webContents.setZoomFactor(1);
+    browser.setContentSize(1300, 900);
+  }
+  broadcast({progress: {stage: 'downloading', transferredBytes: 8192}});
+  await waitFor(() =>
+    document.getElementById('updates-progress-bar').matches(':indeterminate'),
+  );
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('updates-progress-detail').textContent,
+    ),
+    '8 KB downloaded',
+  );
+  broadcast({progress: {stage: 'installing'}});
+  await waitFor(
+    () =>
+      document.getElementById('updates-message').textContent ===
+      'Installing update…',
+  );
+  assert.equal(
+    await evaluate(
+      () => document.getElementById('updates-progress-detail').hidden,
+    ),
+    true,
+  );
+  await captureDialog('installing');
+  updatePending();
+  await waitFor(
+    () =>
+      document.getElementById('updates-action').textContent === 'Retry update',
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('updates-progress').hidden),
+    true,
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('updates-error').textContent),
+    'Download interrupted.',
+  );
+  installFails = false;
+  await evaluate(() => document.getElementById('updates-action').click());
+  await waitFor(
+    () =>
+      document.getElementById('updates-button').textContent ===
+      'Updating VarisDev…',
+  );
+  assert.equal(installs, 2);
   updatePending();
   await waitFor(
     () =>
       document.getElementById('updates-button').textContent ===
       'Restart to finish update',
   );
+  await waitFor(() => document.getElementById('updates-progress').hidden);
   await evaluate(() => document.getElementById('updates-action').click());
   await waitFor(() => !document.getElementById('updates-error').hidden);
   assert.equal(restarts, 1);
@@ -212,6 +385,8 @@ async function main() {
   );
   await evaluate(() => document.getElementById('updates-check').click());
   await waitFor(() => document.getElementById('updates-error').hidden);
+  checkPending();
+  await waitFor(() => document.getElementById('updates-progress').hidden);
   assert.equal(
     await evaluate(() => document.getElementById('updates-button').hidden),
     true,

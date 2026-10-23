@@ -205,26 +205,37 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   function templateName(template) {
     return template.name || template.id;
   }
+  function createTemplateSelector(template) {
+    return template.key && template.id.includes(':')
+      ? template.key
+      : template.id;
+  }
   function populateCreateTemplates(templates) {
     const selectedTemplate = $('new-agent-template').value;
     const options = templates.map(template => {
       const option = document.createElement('option');
-      option.value = template.id;
+      option.value = createTemplateSelector(template);
       option.textContent = `${templateName(template)} · ${scopeName(template.scope)}`;
       if (template.description) option.title = template.description;
       return option;
     });
     $('new-agent-template').replaceChildren(...options);
     const preservingSelection = templates.some(
-      template => template.id === selectedTemplate,
+      template => createTemplateSelector(template) === selectedTemplate,
     );
+    const fallback =
+      templates.find(
+        template =>
+          template.id === createState.defaultAgentId ||
+          createTemplateSelector(template) === createState.defaultAgentId,
+      ) ||
+      templates.find(template => template.id === 'default') ||
+      templates[0];
     const selectedId = preservingSelection
       ? selectedTemplate
-      : templates.some(template => template.id === createState.defaultAgentId)
-        ? createState.defaultAgentId
-        : templates.some(template => template.id === 'default')
-          ? 'default'
-          : templates[0]?.id || '';
+      : fallback
+        ? createTemplateSelector(fallback)
+        : '';
     $('new-agent-template').value = selectedId;
   }
   async function loadCreateTemplates() {
@@ -986,7 +997,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     const draft = templateState.draft;
     let input;
     try {
-      const id = draft.id.trim();
+      const id = draft.id;
       const color = draft.color.trim();
       if (!id) throw new Error('ID is required.');
       if (draft.mode && !AGENT_MODES.has(draft.mode))

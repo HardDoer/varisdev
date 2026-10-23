@@ -66,7 +66,7 @@ void test(
       refreshOnCreate: false,
     });
     const registry = new ModelRegistry(runtime);
-    const manager = new AgentOrchestrator(2);
+    const manager = new AgentOrchestrator(3);
     const secondText = Promise.withResolvers<void>();
     const finishText = Promise.withResolvers<void>();
     const secondProgress = Promise.withResolvers<void>();

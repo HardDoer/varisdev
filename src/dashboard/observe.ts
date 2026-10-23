@@ -10,6 +10,7 @@ import {
 import {DashboardState, type ConversationMessage} from './state.ts';
 import {observeFileChanges} from './changes.ts';
 import {sessionAgentProfile} from './features.ts';
+import {sessionSpeedMode, type SpeedMode} from '../speed-modes.ts';
 import {modelUsage, compactionUsage, sessionUsageCalls} from '../usage.ts';
 import {
   messageText,
@@ -170,6 +171,7 @@ export function observeDashboardSession(
       sessionFile: ctx.sessionManager.getSessionFile(),
       model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
       thinkingLevel: pi.getThinkingLevel(),
+      speedMode: sessionSpeedMode(ctx),
       context: usage
         ? {
             tokens: usage.tokens,
@@ -727,11 +729,17 @@ export function observeDashboardSession(
   pi.on('thinking_level_select', event => {
     state?.updateSession({thinkingLevel: event.level});
   });
+  const releaseSpeedMode = pi.events.on('varisdev:speed-mode', data => {
+    const change = data as {sessionId: string; speedMode: SpeedMode};
+    if (change.sessionId === sessionId)
+      state?.updateSession({speedMode: change.speedMode});
+  });
   pi.on('session_info_changed', (_event, ctx) => {
     state?.updateSession(metadata(ctx));
   });
   pi.on('session_tree', (_event, ctx) => restoreConversation(ctx));
   pi.on('session_shutdown', () => {
+    releaseSpeedMode();
     clearTimeout(teamTimer);
     teamTimer = undefined;
     syncTeam();

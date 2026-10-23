@@ -1,0 +1,114 @@
+#factory-column[hidden],
+#factory-workspace [hidden].panel-resize-handle,
+#factory-workspace [hidden].overview,
+#factory-workspace [hidden].factory-panel,
+#worker-panels[hidden] {
+  display: none !important;
+}
+#factory-workspace:has(> #factory-column[hidden]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+#factory-workspace[data-workspaces-hidden='true'] .factory-column {
+  grid-template-rows: minmax(0, 1fr) 10px var(
+      --agents-height,
+      minmax(148px, 23%)
+    );
+}
+#factory-workspace[data-agents-hidden='true'] .factory-column {
+  grid-template-rows: var(--workspaces-height, auto) 10px minmax(0, 1fr);
+}
+#factory-workspace[data-visualization-hidden='true'] .factory-column {
+  grid-template-rows: var(--workspaces-height, minmax(96px, 30%)) 10px minmax(
+      0,
+      1fr
+    );
+}
+#factory-workspace[data-visualization-hidden='true'] .worker-panels {
+  height: 100%;
+}
+#factory-workspace[data-visualization-hidden='true'] .overview {
+  max-height: none;
+}
+#factory-workspace[data-workspaces-hidden='true'][data-agents-hidden='true']
+  .factory-column,
+#factory-workspace[data-workspaces-hidden='true'][data-visualization-hidden='true']
+  .factory-column,
+#factory-workspace[data-agents-hidden='true'][data-visualization-hidden='true']
+  .factory-column {
+  grid-template-rows: minmax(0, 1fr);
+}
+#factory-workspace[data-workspaces-hidden='true']
+  .factory-column.compact-workers {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+#factory-workspace[data-agents-hidden='true'] #factory-agents-button {
+  display: none;
+}
+#factory-workspace[data-agents-hidden='true'] .factory-column.compact-workers {
+  grid-template-rows: var(--workspaces-height, auto) 10px minmax(0, 1fr);
+}
+#factory-workspace[data-workspaces-hidden='true'][data-agents-hidden='true']
+  .factory-column.compact-workers {
+  grid-template-rows: minmax(0, 1fr);
+}
+#factory-info[popover]:not(:popover-open) {
+  display: none;
+}
+#inspector .inspector-unit-controls > #factory-info-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 5px 8px;
+}
+#app-menu-panel details > summary {
+  min-height: 34px;
+  padding: 8px 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+#app-menu-panel details > summary:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: -2px;
+}
+.app-menu-layout-controls,
+#app-menu-weapon-controls {
+  display: grid;
+  gap: 4px;
+}
+.app-menu-layout-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  font-size: 0.875rem;
+}
+.app-menu-layout-controls input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0 2px;
+}
+#app-menu-weapon-controls button {
+  position: static;
+  display: flex;
+  width: 100%;
+  height: auto;
+  max-width: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+}
+#app-menu-weapon-controls button[hidden] {
+  display: none;
+}
+#app-menu-weapon-controls button > svg {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+}
+#app-menu-weapon-controls button > span {
+  display: grid;
+  gap: 2px;
+}
+#app-menu-weapon-controls button small {
+  display: block;
+}

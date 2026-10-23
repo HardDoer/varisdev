@@ -58,6 +58,14 @@ export function initAppMenu() {
   function closeAbout() {
     about.close();
   }
+  const weapons = document.getElementById('app-menu-weapon-controls');
+  function equipWeapon(event) {
+    if (event.target.closest('button')) {
+      close();
+      button.focus({preventScroll: true});
+    }
+  }
+  weapons.addEventListener('click', equipWeapon);
   aboutButton.addEventListener('click', showAbout);
   aboutClose.addEventListener('click', closeAbout);
   button.addEventListener('click', toggle);
@@ -71,6 +79,13 @@ export function initAppMenu() {
   document.addEventListener('keydown', escape, true);
   return {
     place(hasSession) {
+      document.querySelector('.skip-link').href = hasSession
+        ? '#inspector'
+        : '#welcome-title';
+      document.getElementById('app-menu-weapons').hidden =
+        !hasSession ||
+        document.getElementById('factory-workspace').dataset
+          .visualizationHidden === 'true';
       start.hidden = closeSession.hidden = !hasSession;
       const slot = document.getElementById(
         hasSession ? 'inspector-actions' : 'welcome-actions',
@@ -80,6 +95,7 @@ export function initAppMenu() {
       slot.append(controls);
     },
     dispose() {
+      weapons.removeEventListener('click', equipWeapon);
       aboutButton.removeEventListener('click', showAbout);
       aboutClose.removeEventListener('click', closeAbout);
       button.removeEventListener('click', toggle);

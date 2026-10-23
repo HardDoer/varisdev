@@ -127,7 +127,7 @@ async function until(condition: () => boolean) {
   assert.fail('Expected state was not reached');
 }
 
-void test('six agents run concurrently, drain their queue, and skip cancelled work', async t => {
+void test('five background agents plus the main conversation fill the default limit and drain queued work', async t => {
   const manager = new AgentOrchestrator();
   t.after(() => manager.close());
   const workers = Array.from({length: 8}, () => controlledWorker());
@@ -138,15 +138,17 @@ void test('six agents run concurrently, drain their queue, and skip cancelled wo
       return worker;
     }),
   );
-  await until(() => workers[5].runs.length === 1);
-  assert.equal(created, 6);
-  assert.equal(manager.get(records[6].id).status, 'queued');
+  await until(() => workers[4].runs.length === 1);
+  assert.equal(created, 5);
+  assert.equal(manager.get(records[5].id).status, 'queued');
   manager.cancel(records[7].id);
   workers[0].runs[0].finish('result 0');
-  await until(() => workers[6].runs.length === 1);
-  assert.equal(created, 7);
-  for (let index = 1; index < 7; index++)
+  await until(() => workers[5].runs.length === 1);
+  assert.equal(created, 6);
+  for (let index = 1; index < 7; index++) {
+    await until(() => workers[index].runs.length === 1);
     workers[index].runs[0].finish(`result ${index}`);
+  }
   const results = await manager.wait(records.map(record => record.id));
   assert.deepEqual(
     results.map(result => result.status),
@@ -160,7 +162,7 @@ void test('six agents run concurrently, drain their queue, and skip cancelled wo
 });
 
 void test('messages steer active workers and completed workers retain their conversation', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const controlled = controlledWorker();
   let created = 0;
@@ -193,7 +195,7 @@ void test('messages steer active workers and completed workers retain their conv
 });
 
 void test('messages sent before a worker slot opens use native steering without starting a run', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const busy = controlledWorker();
   const next = controlledWorker();
@@ -213,7 +215,7 @@ void test('messages sent before a worker slot opens use native steering without 
 for (const action of ['cancel', 'timeout'] as const) {
   void test(`${action} discards pending messages and waits for active tools to stop`, async t => {
     t.mock.timers.enable({apis: ['setTimeout']});
-    const manager = new AgentOrchestrator(1);
+    const manager = new AgentOrchestrator(2);
     const first = controlledWorker(false);
     const other = controlledWorker();
     t.after(() => {
@@ -254,7 +256,7 @@ for (const action of ['cancel', 'timeout'] as const) {
 
 void test('timeouts exclude queue time and reset when completed agents resume', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   const busy = controlledWorker();
   const controlled = controlledWorker();
   const initializing = deferred<AgentWorker>();
@@ -294,7 +296,7 @@ void test('timeouts exclude queue time and reset when completed agents resume', 
 });
 
 void test('cancellation retains the worker slot until active work has stopped', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   const first = controlledWorker(false);
   const second = controlledWorker();
   t.after(() => manager.close());
@@ -316,7 +318,7 @@ void test('cancellation retains the worker slot until active work has stopped', 
 });
 
 void test('startup failures and timeouts release slots and preserve errors', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const broken = manager.spawn(spec, async () => {
     throw new Error('Missing credentials');
@@ -359,7 +361,7 @@ void test('startup failures and timeouts release slots and preserve errors', asy
 });
 
 void test('wait supports any, all, polling, and interruption without cancelling agents', async t => {
-  const manager = new AgentOrchestrator(2);
+  const manager = new AgentOrchestrator(3);
   t.after(() => manager.close());
   const a = controlledWorker();
   const b = controlledWorker();
@@ -390,7 +392,7 @@ void test('wait supports any, all, polling, and interruption without cancelling 
 });
 
 void test('closing during worker initialization disposes it and never starts queued agents', async () => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   const initializing = deferred<AgentWorker>();
   const cleanup = deferred<void>();
   const controlled = controlledWorker();
@@ -1410,11 +1412,11 @@ void test('every session shutdown closes running and queued workers', async t =>
     for (let i = 0; i < 7; i++) await parent.spawn(`Worker ${i}`);
     await until(
       () =>
-        workers.created.length === 6 &&
+        workers.created.length === 5 &&
         workers.created.every(w => w.controlled.runs.length === 1),
     );
     await parent.shutdown(reason);
-    assert.equal(workers.created.length, 6);
+    assert.equal(workers.created.length, 5);
     assert.ok(
       workers.created.every(
         w => w.controlled.disposed === 1 && w.controlled.runs[0].signal.aborted,
@@ -1440,7 +1442,7 @@ void test('every session shutdown closes running and queued workers', async t =>
 });
 
 void test('automatic cleanup retains steering through the active run and disposes once', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const controlled = controlledWorker();
   const {id} = manager.spawn(
@@ -1466,7 +1468,7 @@ void test('automatic cleanup retains steering through the active run and dispose
 void test('automatic cleanup waits for cancellation to settle and handles failures', async t => {
   for (const outcome of ['cancelled', 'failed'] as const) {
     await t.test(outcome, async t => {
-      const manager = new AgentOrchestrator(1);
+      const manager = new AgentOrchestrator(2);
       t.after(() => manager.close());
       const controlled = controlledWorker(false);
       const {id} = manager.spawn({...spec, autoCleanup: true}, async () => ({
@@ -1494,7 +1496,7 @@ void test('automatic cleanup waits for cancellation to settle and handles failur
 });
 
 void test('cleaned agents release the session capacity for later commands', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   let disposed = 0;
   for (let index = 0; index < 65; index++) {
@@ -1684,7 +1686,7 @@ void test('session callbacks publish pending tool output and settle cancellation
 });
 
 void test('simultaneous worker callbacks keep separate histories after cleanup and ignore caller mutations', async t => {
-  const manager = new AgentOrchestrator(2);
+  const manager = new AgentOrchestrator(3);
   t.after(() => manager.close());
   const callbacks: Array<
     (snapshot: NonNullable<AgentWorker['conversation']>) => void
@@ -1891,7 +1893,7 @@ void test('model policy is checked when queued workers start, including initiali
   workers.byId.get(resumed)!.controlled.runs[0].finish('First result');
   await parent.execute('agent_wait', {ids: [resumed]});
   const busy: string[] = [];
-  for (let i = 0; i < 6; i++) busy.push(await parent.spawn(`Busy ${i}`));
+  for (let i = 0; i < 5; i++) busy.push(await parent.spawn(`Busy ${i}`));
   await untilPolicy(() =>
     busy.every(id => workers.byId.get(id)?.controlled.runs.length === 1),
   );
@@ -1954,7 +1956,7 @@ void test('pinned model snapshots survive queueing, initialization, cancellation
   workers.byId.get(resumed)!.controlled.runs[0].finish('Initial result');
   await parent.execute('agent_wait', {ids: [resumed]});
   const busy: string[] = [];
-  for (let index = 0; index < 6; index++)
+  for (let index = 0; index < 5; index++)
     busy.push(await parent.spawn(`Busy ${index}`));
   await untilPolicy(() =>
     busy.every(id => workers.byId.get(id)?.controlled.runs.length === 1),
@@ -2353,7 +2355,7 @@ void test('inbox tool forwards incremental cursors and message lookup still retr
 });
 
 void test('cancelled operations settle before concurrent messages reuse the retained worker', async t => {
-  const manager = new AgentOrchestrator(2);
+  const manager = new AgentOrchestrator(3);
   const controlled = controlledWorker(false);
   t.after(() => {
     controlled.runs.at(-1)?.finish('Cleanup');
@@ -2385,7 +2387,7 @@ void test('cancelled operations settle before concurrent messages reuse the reta
 });
 
 void test('a finishing prompt resumes only after its operation settles and model errors stay reusable', async t => {
-  const manager = new AgentOrchestrator(2);
+  const manager = new AgentOrchestrator(3);
   const controlled = controlledWorker();
   controlled.worker.steer = async () => false;
   t.after(() => manager.close());
@@ -2409,7 +2411,7 @@ void test('a finishing prompt resumes only after its operation settles and model
 });
 
 void test('cancellation before initialization retains the factory and closing makes the conversation disposable', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const busy = controlledWorker();
   const controlled = controlledWorker();
@@ -2445,7 +2447,7 @@ void test('cancellation before initialization retains the factory and closing ma
 });
 
 void test('abort recovers and clears queued messages while preserving a worker for reuse', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   const busy = controlledWorker();
   const controlled = controlledWorker();
   const pending: string[] = [];
@@ -2590,7 +2592,7 @@ void test('abort cancels idle maintenance, waits for it, and invalidates queued 
 });
 
 void test('worker context updates through run callbacks, clears unavailable data, and retains isolated snapshots after disposal', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const busy = controlledWorker();
   const controlled = controlledWorker();
@@ -2711,7 +2713,7 @@ void test('agent tool wrappers forward live worker context into isolated team sn
 });
 
 void test('worker configuration updates records and serializes queued maintenance before a prompt starts', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const busy = controlledWorker();
   const controlled = controlledWorker();
@@ -2793,7 +2795,7 @@ void test('worker configuration updates records and serializes queued maintenanc
 });
 
 void test('stop clears messages awaiting session initialization and retained startup failures can retry', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   const controlled = controlledWorker();
   const initializing = deferred<AgentWorker>();
   t.after(() => {
@@ -2837,7 +2839,7 @@ void test('stop clears messages awaiting session initialization and retained sta
 });
 
 void test('abort waits for queued automatic cleanup to dispose its initialized worker', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   const busy = controlledWorker();
   const controlled = controlledWorker();
   const cleanup = deferred<void>();
@@ -2869,7 +2871,7 @@ void test('abort waits for queued automatic cleanup to dispose its initialized w
 });
 
 void test('nested waits yield a single worker slot to children and restore it before starting queued work', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => {
     parentFinish.resolve();
     return manager.close();
@@ -2923,7 +2925,7 @@ void test('nested waits yield a single worker slot to children and restore it be
 });
 
 void test('waiting agents reacquire slots after a wait timeout without exceeding concurrency', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const child = controlledWorker();
   const sibling = controlledWorker();
@@ -2961,7 +2963,7 @@ void test('waiting agents reacquire slots after a wait timeout without exceeding
 });
 
 void test('cancelling a waiting agent releases no extra slots and leaves its children running', async t => {
-  const manager = new AgentOrchestrator(1);
+  const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const child = controlledWorker();
   const next = controlledWorker();
@@ -2986,4 +2988,190 @@ void test('cancelling a waiting agent releases no extra slots and leaves its chi
   await until(() => next.runs.length === 1);
   next.runs[0].finish('Next result');
   await manager.wait([queued.id]);
+});
+
+void test('a limit of one reserves the only slot for the main conversation and rejects background work', async t => {
+  const manager = new AgentOrchestrator(1);
+  t.after(() => manager.close());
+  let created = 0;
+  const worker = controlledWorker();
+  assert.throws(
+    () =>
+      manager.spawn(spec, async () => {
+        created++;
+        return worker.worker;
+      }),
+    /Additional agents are disabled/,
+  );
+  assert.deepEqual(manager.list(), []);
+  assert.equal(created, 0);
+  for (const invalid of [
+    0,
+    -1,
+    1.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    assert.throws(
+      () => manager.setMaxConcurrentAgents(invalid),
+      /whole number of at least 1/,
+    );
+  manager.setMaxConcurrentAgents(2);
+  const {id} = manager.spawn(spec, async () => worker.worker);
+  await until(() => worker.runs.length === 1);
+  worker.runs[0].finish('Done');
+  await manager.wait([id]);
+  manager.setMaxConcurrentAgents(1);
+  await assert.rejects(
+    manager.send(id, 'More work'),
+    /Additional agents are disabled/,
+  );
+  assert.equal(manager.get(id).status, 'completed');
+  assert.equal(worker.runs.length, 1);
+});
+
+void test('saved concurrency governs live teams, nested launches, queue draining, and resumed agents', async t => {
+  const model = 'openai-codex/gpt-5.6-sol';
+  await isolateToolSettings(t, [model]);
+  await saveToolSettings('agents', {
+    allowedModels: [model],
+    maxConcurrentAgents: 2,
+  });
+  const workers = teamWorkers();
+  const parent = agentParent('concurrency-live', workers.create);
+  t.after(() => parent.shutdown());
+  await parent.emit('before_agent_start');
+  assert.match(
+    parent.tools.get('agent_spawn')!.description,
+    /Maximum 2 concurrent agents including the main conversation \(1 background agent\)/,
+  );
+  const first = await parent.spawn('First');
+  await untilPolicy(
+    () => workers.byId.get(first)?.controlled.runs.length === 1,
+  );
+  const nested = await workers.byId
+    .get(first)!
+    .execute('agent_spawn', {name: 'Nested', task: 'Nested task'});
+  const second = (nested.details as {agents: AgentRecord[]}).agents[0].id;
+  assert.equal(
+    parent.control.getTeam(parent.ctx).getManager().get(second).status,
+    'queued',
+  );
+  assert.equal(workers.created.length, 1);
+  // Raising the saved limit starts queued work without another tool call.
+  await saveToolSettings('agents', {
+    allowedModels: [model],
+    maxConcurrentAgents: 3,
+  });
+  await untilPolicy(
+    () => workers.byId.get(second)?.controlled.runs.length === 1,
+  );
+  const third = await parent.spawn('Third');
+  await saveToolSettings('agents', {
+    allowedModels: [model],
+    maxConcurrentAgents: 1,
+  });
+  await parent.emit('turn_end');
+  assert.match(
+    parent.tools.get('agent_spawn')!.description,
+    /Additional agents are disabled/,
+  );
+  await assert.rejects(
+    parent.spawn('Blocked'),
+    /Additional agents are disabled/,
+  );
+  await assert.rejects(
+    workers.byId
+      .get(first)!
+      .execute('agent_spawn', {task: 'Blocked nested task'}),
+    /Additional agents are disabled/,
+  );
+  workers.byId.get(first)!.controlled.runs[0].finish('First finished');
+  workers.byId.get(second)!.controlled.runs[0].finish('Second finished');
+  await parent.execute('agent_wait', {ids: [first, second]});
+  const manager = parent.control.getTeam(parent.ctx).getManager();
+  assert.equal(manager.get(third).status, 'queued');
+  assert.equal(workers.created.length, 2);
+  await assert.rejects(
+    parent.execute('agent_send', {id: first, message: 'Resume disabled'}),
+    /Additional agents are disabled/,
+  );
+  await saveToolSettings('agents', {
+    allowedModels: [model],
+    maxConcurrentAgents: 2,
+  });
+  await untilPolicy(
+    () => workers.byId.get(third)?.controlled.runs.length === 1,
+  );
+  await parent.execute('agent_send', {id: first, message: 'Resume queued'});
+  assert.equal(manager.get(first).status, 'queued');
+  workers.byId.get(third)!.controlled.runs[0].finish('Third finished');
+  await untilPolicy(
+    () => workers.byId.get(first)!.controlled.runs.length === 2,
+  );
+  workers.byId.get(first)!.controlled.runs[1].finish('Resumed');
+  await parent.execute('agent_wait', {ids: [first, second, third]});
+});
+
+void test('switching to main only lets a running nested waiter finish while queued and completed agents stay stopped', async t => {
+  const manager = new AgentOrchestrator(2);
+  t.after(() => manager.close());
+  const child = controlledWorker();
+  const queued = controlledWorker();
+  let childId: string | undefined;
+  let queuedId: string | undefined;
+  let queuedCreated = 0;
+  let continued = false;
+  const parent = manager.spawn({...spec, name: 'Parent worker'}, async id => ({
+    async run(_task, signal) {
+      childId = manager.spawn(
+        {...spec, name: 'Child worker'},
+        async () => child.worker,
+      ).id;
+      queuedId = manager.spawn({...spec, name: 'Queued worker'}, async () => {
+        queuedCreated++;
+        return queued.worker;
+      }).id;
+      const [result] = await manager.wait([childId], {
+        callerId: id,
+        timeoutMs: 1000,
+      });
+      signal.throwIfAborted();
+      assert.equal(result.output, 'Child finished');
+      continued = true;
+      return 'Parent finished after child';
+    },
+    async steer() {
+      return true;
+    },
+    dispose() {},
+  }));
+  await until(() => child.runs.length === 1);
+  assert.equal(manager.get(parent.id).status, 'running');
+  assert.equal(manager.get(queuedId!).status, 'queued');
+  manager.setMaxConcurrentAgents(1);
+  child.runs[0].finish('Child finished');
+  const results = await manager.wait([parent.id, childId!], {timeoutMs: 1000});
+  assert.equal(
+    continued,
+    true,
+    'The active parent returns from its nested wait',
+  );
+  assert.deepEqual(
+    results.map(result => result.status),
+    ['completed', 'completed'],
+  );
+  assert.equal(results[0].output, 'Parent finished after child');
+  assert.equal(manager.get(queuedId!).status, 'queued');
+  assert.equal(queuedCreated, 0);
+  assert.equal(queued.runs.length, 0);
+  await assert.rejects(
+    manager.send(childId!, 'Resume child'),
+    /Additional agents are disabled/,
+  );
+  assert.throws(
+    () => manager.spawn(spec, async () => queued.worker),
+    /Additional agents are disabled/,
+  );
 });

@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="environment.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link rel="stylesheet" href="live-view.css" />
+    <link rel="stylesheet" href="speed-mode.css" />
     <link rel="stylesheet" href="agent-templates.css" />
     <link rel="stylesheet" href="session-history.css" />
     <link rel="stylesheet" href="recent-projects.css" />
@@ -35,12 +36,13 @@
     <link rel="stylesheet" href="year1998.css" />
     <link rel="stylesheet" href="panel-resize.css" />
     <link rel="stylesheet" href="composer-resize.css" />
+    <link rel="stylesheet" href="panel-layout.css" />
     <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
     <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script type="module" src="app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#factory-title">Skip to agent</a>
+    <a class="skip-link" href="#welcome-title">Skip to content</a>
     <dialog id="session-history-dialog" aria-labelledby="session-history-title">
       <div class="dialog-heading">
         <h2 id="session-history-title">Resume session</h2>
@@ -198,7 +200,6 @@
                 <input
                   id="agent-template-id"
                   type="text"
-                  maxlength="160"
                   placeholder="team/reviewer"
                   required
                   spellcheck="false"
@@ -401,6 +402,14 @@
         </button>
       </div>
       <p id="updates-message" role="status"></p>
+      <div id="updates-progress" hidden>
+        <progress
+          id="updates-progress-bar"
+          max="100"
+          aria-label="Update progress"
+        ></progress>
+        <span id="updates-progress-detail" hidden></span>
+      </div>
       <p id="updates-error" role="alert" hidden></p>
       <div class="updates-actions">
         <button id="updates-check" class="quiet-button" type="button">
@@ -589,6 +598,25 @@
               aria-labelledby="agent-model-settings-title"
             >
               <h3 id="agent-model-settings-title">Agent models</h3>
+              <label for="agent-max-concurrent"
+                >Maximum concurrent agents</label
+              >
+              <input
+                id="agent-max-concurrent"
+                type="number"
+                min="1"
+                max="9007199254740991"
+                step="1"
+                required
+                aria-describedby="agent-max-concurrent-help"
+              />
+              <p
+                id="agent-max-concurrent-help"
+                class="muted tool-settings-card-note"
+              >
+                Includes the main conversation. Set to 1 to use only the main
+                agent.
+              </p>
               <label for="tool-settings-search">Search models</label>
               <input
                 id="tool-settings-search"
@@ -801,6 +829,43 @@
               >
                 <h2 id="app-menu-appearance-heading">Appearance</h2>
                 <div id="app-menu-appearance-controls"></div>
+                <details id="app-menu-layout">
+                  <summary>Panel layout</summary>
+                  <div class="app-menu-layout-controls">
+                    <label
+                      ><input
+                        id="layout-visualization"
+                        type="checkbox"
+                        checked
+                      />Visualization</label
+                    >
+                    <label
+                      ><input
+                        id="layout-workspaces"
+                        type="checkbox"
+                        checked
+                      />Workspaces</label
+                    >
+                    <label
+                      ><input
+                        id="layout-agents"
+                        type="checkbox"
+                        checked
+                      />Agents &amp; history</label
+                    >
+                    <button
+                      id="layout-reset"
+                      class="quiet-button"
+                      type="button"
+                    >
+                      Show all panels
+                    </button>
+                  </div>
+                </details>
+                <details id="app-menu-weapons" hidden>
+                  <summary>Weapons</summary>
+                  <div id="app-menu-weapon-controls"></div>
+                </details>
               </section>
               <label class="zoom-control" for="app-zoom">
                 Zoom
@@ -849,6 +914,12 @@
                     >
                       Model &amp; thinking
                     </button>
+                    <label class="speed-control" for="session-speed">
+                      <span>Speed</span>
+                      <select id="session-speed" disabled>
+                        <option value="regular">Regular</option>
+                      </select>
+                    </label>
                     <button
                       id="open-approvals"
                       class="quiet-button"
@@ -924,7 +995,7 @@
           ><span class="orbit orbit-two"></span>
         </div>
         <div class="welcome-content">
-          <h2 id="welcome-title">Where shall we work?</h2>
+          <h2 id="welcome-title" tabindex="-1">Where shall we work?</h2>
           <p>Pick a recent project or open a folder to start a conversation.</p>
           <button id="welcome-create" class="primary-button" type="button">
             Open folder
@@ -1020,6 +1091,12 @@
                 <div class="factory-model-settings">
                   <span id="factory-model" class="muted"></span>
                   <span id="factory-effort" class="effort-badge" hidden></span>
+                  <span
+                    id="factory-speed-mode"
+                    class="speed-mode-icon"
+                    role="img"
+                    hidden
+                  ></span>
                 </div>
                 <p id="context-meter" class="context-meter" hidden></p>
                 <div class="factory-file-actions">
@@ -1181,6 +1258,7 @@
         ></div>
         <aside
           id="inspector"
+          tabindex="-1"
           class="inspector panel"
           aria-labelledby="conversation-kind-label inspector-title"
         >
@@ -1321,6 +1399,7 @@
             id="panel-conversation"
             class="inspector-body conversation-body"
             role="tabpanel"
+            tabindex="0"
             aria-labelledby="tab-conversation"
           >
             <div class="feed-toolbar">
@@ -1570,9 +1649,10 @@
               </ul>
               <p class="muted">
                 Counts use recorded model usage. Providers do not report exact
-                tokens for each file, skill, or tool result. Cost uses
-                configured model rates; image service billing is separate.
-                Select an agent above to see its usage.
+                tokens for each file, skill, or tool result. Cost estimates use
+                configured model rates and may omit Fast or Ultrafast premiums;
+                image service billing is separate. Select an agent above to see
+                its usage.
               </p>
             </section>
           </div>

@@ -368,6 +368,7 @@ void test(
     const reloadedSession = SessionManager.open(completed.session.sessionFile!);
     observeDashboardSession(
       {
+        events: {on: () => () => {}},
         getThinkingLevel: () => 'high',
         on(name: string, handler: typeof startObserver) {
           if (name === 'session_start') startObserver = handler;
@@ -756,7 +757,7 @@ void test(
     );
     heldDisconnected = false;
     heldResponse = undefined;
-    for (let index = 0; index < 7; index++) {
+    for (let index = 0; index < 6; index++) {
       await parent.prompt(
         'start-held-worker: create background worker ' + index,
       );
@@ -767,8 +768,8 @@ void test(
           .snapshot()
           .agents.filter(
             agent => agent.name === 'Held worker' && agent.status === 'running',
-          ).length === 6,
-      'six agents running',
+          ).length === 5,
+      'five background agents and the main conversation fill the default limit',
     );
     assert.equal(
       parent.state.snapshot().agents.filter(agent => agent.status === 'queued')
@@ -785,7 +786,7 @@ void test(
     assert.equal(
       parent.state.snapshot().agents.filter(agent => agent.status === 'running')
         .length,
-      6,
+      5,
     );
     assert.equal(
       parent.state.snapshot().agents.filter(agent => agent.status === 'queued')

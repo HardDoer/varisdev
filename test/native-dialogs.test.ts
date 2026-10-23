@@ -16,6 +16,8 @@ void test('native command catalog covers Pi builtins and approval management wit
     [
       ...BUILTIN_SLASH_COMMANDS.map((item: {name: string}) => item.name),
       'approvals',
+      'fast',
+      'ultrafast',
     ].sort(),
   );
   assert.equal(

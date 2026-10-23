@@ -46,6 +46,9 @@ let templateError;
 let toolSettings;
 let toolSettingsError;
 let imageModel = '';
+let resizeMouseIsolated = false;
+let expectedResizeMouse = [];
+let resizeNativeTrace = [];
 
 function terminalMenuOutput(title, options, selection = 0) {
   return `\u001bc${title}\r\n${options
@@ -55,7 +58,7 @@ function terminalMenuOutput(title, options, selection = 0) {
 
 function fixtureToolSettings(allowedModels = null) {
   return {
-    settings: {agents: {allowedModels}},
+    settings: {agents: {allowedModels, maxConcurrentAgents: 6}},
     models: [
       {provider: 'fixture', id: 'small', name: 'Fixture small'},
       {provider: 'fixture-other', id: 'large', name: 'Fixture large'},
@@ -68,6 +71,18 @@ function features(agentProfile) {
     agentMentions: [
       {id: 'review', name: 'Review', description: 'Review changes'},
       {id: 'team/review', name: 'Team review', mention: '@agent:team/review'},
+      {
+        id: 'My Agent (Ä).test',
+        name: 'My Agent (Ä).test',
+        mention: '@agent:"My Agent (Ä).test"',
+      },
+      {
+        id: 'Agent "Quoted"',
+        name: 'Quoted agent',
+        mention: '@agent:"Agent \\"Quoted\\""',
+      },
+      {id: 'Äänekäs', name: 'Äänekäs'},
+      {id: '.Hidden.Agent', name: '.Hidden.Agent'},
     ],
     commands: [
       {
@@ -99,10 +114,26 @@ function features(agentProfile) {
     model: {provider: 'fixture', id: 'small'},
     thinkingLevel: 'medium',
     thinkingLevels: ['off', 'low', 'medium', 'high'],
+    speedMode: 'regular',
+    speedModes: ['regular'],
     tools: [{name: 'bash', description: 'Run a local command'}],
     diagnostics: [],
     ...(agentProfile ? {agentProfile} : {}),
   };
+}
+
+function applyFixtureSpeed(key, target, command) {
+  const match = /^\/(fast|ultrafast) (on|off)$/.exec(command);
+  if (!match) return false;
+  if (dialogErrors.get('speed')) throw new Error(dialogErrors.get('speed'));
+  const mode = match[2] === 'off' ? 'regular' : match[1];
+  const resource = resources.get(key) || features();
+  assert.ok(resource.speedModes.includes(mode));
+  target.speedMode = mode;
+  resource.speedMode = mode;
+  resources.set(key, resource);
+  window.webContents.send('fixture:snapshot', hub);
+  return true;
 }
 
 app.setPath('userData', join(directory, 'profile'));
@@ -467,6 +498,11 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
     const target = hub.sessions.find(item => item.session.id === sessionId);
     if (method === 'prompt' && dialogErrors.get('promptSession'))
       throw new Error(dialogErrors.get('promptSession'));
+    if (
+      method === 'prompt' &&
+      applyFixtureSpeed(sessionId, target.session, request.prompt)
+    )
+      return;
     if (method === 'cancelAgent') {
       if (cancellationError) throw new Error(cancellationError);
       for (const agent of target.agents) {
@@ -589,6 +625,7 @@ ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
     return structuredClone(resources.get(key) || features());
   }
   if (request.action === 'command') {
+    if (applyFixtureSpeed(key, agent, request.command)) return;
     assert.ok(['/model', '/approvals'].includes(request.command));
     owner.ui ||= {dialogs: [], notifications: [], statuses: []};
     owner.ui.dialogs = [
@@ -627,6 +664,7 @@ ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
     ];
   }
   if (request.action === 'prompt') {
+    if (applyFixtureSpeed(key, agent, request.prompt)) return;
     if (agentPromptDelay)
       await new Promise(resolve => setTimeout(resolve, agentPromptDelay));
     if (agentPromptError) throw new Error(agentPromptError);
@@ -1134,9 +1172,16 @@ async function run(name, callback, width = 1600, height = 1000) {
   } catch (error) {
     if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
       await screenshot(`failure-${report.cases.length + 1}`);
+    const dragTrace = await evaluate(() => window.fixtureResizeTrace).catch(
+      () => undefined,
+    );
     report.cases.push({
       name,
-      error: error.stack || String(error),
+      error:
+        (error.stack || String(error)) +
+        (dragTrace
+          ? `\nNative drag diagnostics: ${JSON.stringify({trace: dragTrace, nativeEvents: resizeNativeTrace})}`
+          : ''),
       rendererErrors: [...rendererErrors],
     });
   }
@@ -1152,50 +1197,153 @@ async function screenshot(name) {
 }
 
 async function resizePoint(selector) {
-  return evaluate(selector => {
+  // Native input requires an active renderer; showInactive only keeps it painting.
+  window.focus();
+  window.webContents.focus();
+  await until(
+    () => document.hasFocus(),
+    'Native pointer fixture did not receive focus',
+  );
+  return evaluate(async selector => {
     const element = document.querySelector(selector);
-    if (!element?.checkVisibility())
-      throw new Error(`Resize control is hidden: ${selector}`);
-    const rect = element.getBoundingClientRect();
-    const point = {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-    };
-    if (!element.contains(document.elementFromPoint(point.x, point.y)))
-      throw new Error(`Resize control is covered: ${selector}`);
-    return point;
+    let previous;
+    let stable = 0;
+    for (let frame = 0; frame < 20; frame++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (!element?.checkVisibility())
+        throw new Error(`Resize control is hidden: ${selector}`);
+      const rect = element.getBoundingClientRect();
+      const geometry = JSON.stringify(rect.toJSON());
+      stable = geometry === previous ? stable + 1 : 0;
+      previous = geometry;
+      if (stable < 2) continue;
+      const point = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+      if (!element.contains(document.elementFromPoint(point.x, point.y)))
+        throw new Error(`Resize control is covered: ${selector}`);
+      if (document.body.dataset.panelResizing)
+        throw new Error(`Previous resize is still active: ${selector}`);
+      return point;
+    }
+    throw new Error(`Resize control did not settle: ${selector}`);
   }, selector);
 }
 
-async function resizeMouse(type, point, clickCount = 1, modifiers = []) {
+function sendResizeMouse(type, point, clickCount = 1, modifiers = []) {
   const zoom = window.webContents.getZoomFactor();
-  window.webContents.sendInputEvent({
+  const input = {
     type,
     x: Math.round(point.x * zoom),
     y: Math.round(point.y * zoom),
     button: 'left',
     clickCount,
     modifiers,
-  });
+  };
+  if (resizeMouseIsolated) expectedResizeMouse.push(input);
+  window.webContents.sendInputEvent(input);
+}
+
+async function resizeMouse(type, point, clickCount = 1, modifiers = []) {
+  sendResizeMouse(type, point, clickCount, modifiers);
   await settle();
 }
 
 async function dragResize(selector, dx, dy, cancel = false) {
-  const start = await resizePoint(selector);
-  await resizeMouse('mouseMove', start);
-  await resizeMouse('mouseDown', start);
-  for (const fraction of [0.25, 0.5, 1])
-    await resizeMouse(
-      'mouseMove',
-      {
-        x: start.x + dx * fraction,
-        y: start.y + dy * fraction,
-      },
-      1,
-      ['leftButtonDown'],
+  resizeMouseIsolated = true;
+  resizeNativeTrace = [];
+  await evaluate(selector => {
+    const handle = document.querySelector(selector);
+    const events = [];
+    let pointerId;
+    const snapshot = event => {
+      if (event.type === 'pointerdown') pointerId = event.pointerId;
+      const bounds = handle.getBoundingClientRect();
+      events.push({
+        type: event.type,
+        target: event.target.id,
+        x: event.clientX,
+        y: event.clientY,
+        buttons: event.buttons,
+        trusted: event.isTrusted,
+        captured:
+          pointerId !== undefined && handle.hasPointerCapture(pointerId),
+        focused: document.hasFocus(),
+        resizing: document.body.dataset.panelResizing,
+        bounds: bounds.toJSON(),
+        value: handle.getAttribute('aria-valuenow'),
+      });
+    };
+    const types = [
+      'pointerdown',
+      'pointermove',
+      'pointerup',
+      'pointercancel',
+      'gotpointercapture',
+      'lostpointercapture',
+    ];
+    for (const type of types) document.addEventListener(type, snapshot);
+    for (const type of ['focus', 'blur'])
+      window.addEventListener(type, snapshot);
+    window.fixtureResizeTrace = {selector, events};
+    window.fixtureResizeCleanup = () => {
+      for (const type of types) document.removeEventListener(type, snapshot);
+      for (const type of ['focus', 'blur'])
+        window.removeEventListener(type, snapshot);
+    };
+  }, selector);
+  let start;
+  let released = false;
+  try {
+    start = await resizePoint(selector);
+    await resizeMouse('mouseMove', start);
+    start = await resizePoint(selector);
+    // Submit one ordered gesture so host focus changes cannot enter between
+    // synthetic moves while the test is waiting for animation frames.
+    sendResizeMouse('mouseDown', start);
+    for (const fraction of [0.25, 0.5, 1])
+      sendResizeMouse(
+        'mouseMove',
+        {
+          x: start.x + dx * fraction,
+          y: start.y + dy * fraction,
+        },
+        1,
+        ['leftButtonDown'],
+      );
+    if (cancel) {
+      window.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'});
+      window.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'});
+    }
+    sendResizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
+    released = true;
+    await settle();
+    const trace = await evaluate(() => window.fixtureResizeTrace);
+    const down = trace.events.find(event => event.type === 'pointerdown');
+    const moves = trace.events.filter(
+      event => event.type === 'pointermove' && event.buttons === 1,
     );
-  if (cancel) await press('Escape');
-  await resizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
+    assert.ok(
+      down?.captured &&
+        moves.length > 0 &&
+        moves.every(event => event.captured),
+      `Native resize must retain pointer capture: ${JSON.stringify({trace, nativeEvents: resizeNativeTrace})}`,
+    );
+    assert.ok(
+      trace.events.some(event => event.type === 'pointerup'),
+      `Native resize must release the pointer: ${JSON.stringify(trace)}`,
+    );
+  } finally {
+    try {
+      if (start && !released)
+        await resizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
+      await evaluate(() => window.fixtureResizeCleanup());
+    } finally {
+      resizeMouseIsolated = false;
+      expectedResizeMouse = [];
+    }
+  }
 }
 
 async function resizeKey(selector, key, modifiers = []) {
@@ -1469,8 +1617,20 @@ async function main() {
       backgroundThrottling: false,
     },
   });
+  window.webContents.on('before-mouse-event', (event, input) => {
+    if (!resizeMouseIsolated) return;
+    const expected = expectedResizeMouse[0];
+    const allowed =
+      expected &&
+      input.type === expected.type &&
+      input.x === expected.x &&
+      input.y === expected.y;
+    resizeNativeTrace.push({input, allowed: Boolean(allowed)});
+    if (allowed) expectedResizeMouse.shift();
+    else event.preventDefault();
+  });
   // Windows pauses animation frames for a hidden window even with background
-  // throttling disabled. Display the fixture without taking keyboard focus.
+  // throttling disabled. Native-input helpers focus the fixture before gestures.
   window.showInactive();
   window.webContents.on('console-message', details => {
     if (details.level === 'error') rendererErrors.push(details.message);
@@ -1583,6 +1743,21 @@ async function main() {
         'Double click restores the default split',
       );
 
+      window.setContentSize(1100, 760);
+      await resizeZoom(1.5);
+      await resizeKey('#conversation-resize', 'Home');
+      const narrowMinimum = await value();
+      await resizeKey('#conversation-resize', 'End');
+      const narrowMaximum = await value();
+      assert.ok(
+        narrowMaximum.value - narrowMinimum.value > 100,
+        'A compact zoomed window must retain useful horizontal resizing',
+      );
+      await resizeLayout();
+      await resizeKey('#conversation-resize', 'Return');
+      await resizeZoom(1);
+      window.setContentSize(1600, 1000);
+      await settle();
       await dragResize('#conversation-resize', 120, 0);
       const preferred = await value();
       await reloadPage();
@@ -1640,9 +1815,10 @@ async function main() {
       );
       const baselineWorkers = await workers();
       await dragResize('#agents-resize', 0, -56);
+      const grownWorkers = await workers();
       assert.ok(
-        (await workers()).value > baselineWorkers.value + 35,
-        'Dragging up grows workers',
+        grownWorkers.value > baselineWorkers.value + 35,
+        `Dragging up grows workers: ${JSON.stringify({baselineWorkers, grownWorkers})}`,
       );
       const baselineHistory = await history();
       await dragResize('#history-resize', 45, 0);
@@ -1833,6 +2009,38 @@ async function main() {
         'Drawer split survives reload inline',
       );
       await resizeLayout();
+      await evaluate(() =>
+        document.getElementById('layout-visualization').click(),
+      );
+      await settle();
+      await resizeKey('#workspaces-resize', 'End');
+      const withoutScene = await evaluate(() => ({
+        column: document.querySelector('.factory-column').clientHeight,
+        overview: document
+          .getElementById('workspaces-panel')
+          .getBoundingClientRect().height,
+        workers: document
+          .getElementById('worker-panels')
+          .getBoundingClientRect().height,
+        scene: document.getElementById('factory-panel').hidden,
+      }));
+      assert.equal(withoutScene.scene, true);
+      assert.ok(
+        withoutScene.overview > withoutScene.column * 0.75,
+        `Hiding the scene releases its resize reservation: ${JSON.stringify(withoutScene)}`,
+      );
+      assert.ok(
+        withoutScene.workers >= 147,
+        `Agent lists retain their minimum height: ${JSON.stringify(withoutScene)}`,
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('panel-resizing-without-visualization');
+      await evaluate(() =>
+        document.getElementById('layout-visualization').click(),
+      );
+      await settle();
+      await resizeKey('#workspaces-resize', 'Return');
+      await resizeLayout();
     },
   );
 
@@ -1976,7 +2184,11 @@ async function main() {
         Math.abs(maximum.value - maximum.max) <= 2,
         'End reaches editor maximum',
       );
-      await resizeLayout();
+      const maximumLayout = await resizeLayout();
+      assert.ok(
+        maximumLayout.conversation.height <= 92,
+        'The editor can use available height while retaining the conversation minimum',
+      );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('panel-resizing-composer-max-height');
       await resizeKey('#composer-resize', 'Return');
@@ -2423,6 +2635,12 @@ async function main() {
         };
       });
       const click = async selector => {
+        if (/^\.factory-(cane|gun|flamethrower)-holster$/.test(selector)) {
+          await click('#app-menu-button');
+          await evaluate(() => {
+            document.getElementById('app-menu-weapons').open = true;
+          });
+        }
         const point = await evaluate(selector => {
           const button = document.querySelector(selector);
           button.scrollIntoView({block: 'nearest'});
@@ -3918,12 +4136,8 @@ async function main() {
             cane: rect(cane),
             gun: rect(gun),
             menu: rect(menu),
-            caneInline:
-              getComputedStyle(cane).position === 'static' &&
-              cane.parentElement === menu.parentElement,
-            gunInline:
-              getComputedStyle(gun).position === 'static' &&
-              gun.parentElement === menu.parentElement,
+            caneInMenu: cane.closest('#app-menu-weapons') !== null,
+            gunInMenu: gun.closest('#app-menu-weapons') !== null,
             noCaneControlsOverScene: !document
               .getElementById('scene')
               .querySelector(
@@ -3968,15 +4182,12 @@ async function main() {
         assert.equal(geometry.flex, 'flex');
         assert.equal(geometry.workspaceInChanges, true);
         assert.equal(geometry.overviewInFactory, true);
-        assert.equal(geometry.caneInline, true);
-        assert.equal(geometry.gunInline, true);
+        assert.equal(geometry.caneInMenu, true);
+        assert.equal(geometry.gunInMenu, true);
         assert.equal(geometry.noCaneControlsOverScene, true);
-        assert.ok(geometry.cane.right <= geometry.gun.left);
-        assert.ok(geometry.gun.right <= geometry.menu.left);
-        assert.equal(geometry.gun.height, 32);
-        assert.ok(geometry.cane.left >= geometry.inspector.left);
+        assert.equal(geometry.gun.height, 0);
         assert.ok(geometry.menu.right <= width);
-        assert.equal(geometry.cane.height, 32);
+        assert.equal(geometry.cane.height, 0);
         assert.ok(
           geometry.overview.right <= geometry.inspector.left,
           'Overview must sit in the factory column beside the inspector',
@@ -4001,10 +4212,6 @@ async function main() {
           'Prompt actions must sit below the field',
         );
         assert.ok(geometry.editor.height >= 40, JSON.stringify(geometry));
-        assert.ok(
-          geometry.editor.height <= height * 0.46,
-          JSON.stringify(geometry),
-        );
         assert.equal(
           geometry.editorUsable,
           true,
@@ -4217,6 +4424,129 @@ async function main() {
         return panel.scrollHeight - panel.clientHeight - panel.scrollTop;
       });
       assert.ok(bottomGap < 4, `Follow left ${bottomGap}px below the viewport`);
+      assert.equal(
+        await evaluate(() => {
+          const panel = document
+            .getElementById('panel-conversation')
+            .getBoundingClientRect();
+          const follow = document.getElementById('follow-conversation');
+          const bounds = follow.getBoundingClientRect();
+          return (
+            bounds.top >= panel.top &&
+            bounds.bottom <= panel.bottom &&
+            document.elementFromPoint(
+              bounds.left + bounds.width / 2,
+              bounds.top + bounds.height / 2,
+            ) === follow
+          );
+        }),
+        true,
+        'Follow stays visible and clickable while reading the conversation bottom',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('conversation-follow-controls');
+      await new Promise(resolve => setTimeout(resolve, 150));
+      await settle();
+      for (const cursor of ['text', 'padding']) {
+        const point = await evaluate(cursor => {
+          const panel = document.getElementById('panel-conversation');
+          const body = panel.getBoundingClientRect();
+          const text = document
+            .querySelector('#conversation li:last-child .conversation-text')
+            .getBoundingClientRect();
+          return {
+            x: Math.round(
+              cursor === 'padding' ? body.left + 4 : text.left + 30,
+            ),
+            y: Math.round(
+              Math.max(
+                body.top + 20,
+                Math.min(body.bottom - 35, text.bottom - 20),
+              ),
+            ),
+          };
+        }, cursor);
+        window.webContents.sendInputEvent({
+          type: 'mouseWheel',
+          ...point,
+          deltaY: 24,
+          deltaX: 0,
+        });
+        await new Promise(resolve => setTimeout(resolve, 80));
+        await settle();
+        const reading = await evaluate(() => {
+          const panel = document.getElementById('panel-conversation');
+          return {
+            top: panel.scrollTop,
+            gap: panel.scrollHeight - panel.clientHeight - panel.scrollTop,
+          };
+        });
+        assert.ok(
+          reading.gap > 10 && reading.gap < 70,
+          `A small upward wheel over ${cursor} must move up: ${JSON.stringify(reading)}`,
+        );
+        hub.sessions[0].conversation.at(-1).text +=
+          `Streaming while reading over ${cursor}\n`.repeat(4);
+        await publish();
+        const streamedTop = await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        );
+        assert.ok(
+          streamedTop <= reading.top + 1,
+          `Streaming must not reverse an upward scroll over ${cursor}: ${JSON.stringify({reading, streamedTop})}`,
+        );
+        await new Promise(resolve => setTimeout(resolve, 180));
+        const pausedTop = await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        );
+        hub.sessions[0].conversation.at(-1).text +=
+          'More output while paused\n'.repeat(4);
+        await publish();
+        assert.ok(
+          Math.abs(
+            (await evaluate(
+              () => document.getElementById('panel-conversation').scrollTop,
+            )) - pausedTop,
+          ) <= 1,
+          `A reader over ${cursor} stays in place after the wheel settles`,
+        );
+        window.webContents.sendInputEvent({
+          type: 'mouseWheel',
+          ...point,
+          deltaY: -320,
+          deltaX: 0,
+        });
+        await until(() => {
+          const panel = document.getElementById('panel-conversation');
+          return panel.scrollHeight - panel.clientHeight - panel.scrollTop <= 2;
+        }, 'Scrolling down must reach the bottom');
+        hub.sessions[0].conversation.at(-1).text +=
+          'Follow resumes after scrolling down\n';
+        await publish();
+        await until(() => {
+          const panel = document.getElementById('panel-conversation');
+          return panel.scrollHeight - panel.clientHeight - panel.scrollTop <= 2;
+        }, 'Scrolling down to the bottom must resume follow');
+      }
+      await resizeKey('#panel-conversation', 'PageUp');
+      const keyboardTop = await evaluate(
+        () => document.getElementById('panel-conversation').scrollTop,
+      );
+      hub.sessions[0].conversation.at(-1).text +=
+        'Streaming during keyboard navigation\n';
+      await publish();
+      assert.ok(
+        (await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        )) <=
+          keyboardTop + 1,
+        'PageUp must pause follow while output arrives',
+      );
+      await press('End');
+      await until(() => {
+        const panel = document.getElementById('panel-conversation');
+        return panel.scrollHeight - panel.clientHeight - panel.scrollTop <= 2;
+      }, 'Keyboard navigation to the bottom resumes follow');
       const before = await evaluate(() => {
         const panel = document.getElementById('panel-conversation');
         panel.scrollTop = 100;
@@ -4536,6 +4866,11 @@ async function main() {
           mode: 'all',
           color: '#FF6B6B',
         }),
+        speedModes: ['regular', 'fast'],
+        commands: [
+          ...features().commands,
+          {name: 'fast', description: 'Toggle fast mode', source: 'extension'},
+        ],
         contextFiles: [
           {
             path: '/fixture/controlled/AGENTS.md',
@@ -4547,7 +4882,101 @@ async function main() {
           },
         ],
       });
+      resources.get('alpha').speedModes = ['regular', 'fast', 'ultrafast'];
+      resources.set('alpha:other', {
+        ...features(),
+        speedModes: ['regular', 'fast', 'ultrafast'],
+      });
       await publish();
+      const speedIndicator = async (mode, label, glyph) => {
+        owner.session.speedMode = mode;
+        await publish();
+        await settle();
+        await evaluate(() => {
+          const info = document.getElementById('factory-info');
+          const button = document.getElementById('factory-info-button');
+          if (
+            button.checkVisibility() &&
+            info.hasAttribute('popover') &&
+            !info.matches(':popover-open')
+          )
+            button.click();
+        });
+        await settle();
+        assert.deepEqual(
+          await evaluate(() => {
+            const icon = document.getElementById('factory-speed-mode');
+            const effort = document.getElementById('factory-effort');
+            const bounds = icon.getBoundingClientRect();
+            const effortBounds = effort.getBoundingClientRect();
+            return {
+              hidden: icon.hidden,
+              text: icon.textContent,
+              label: icon.getAttribute('aria-label'),
+              besideEffort:
+                effort.nextElementSibling === icon &&
+                Math.abs(bounds.top - effortBounds.top) < effortBounds.height &&
+                bounds.left >= effortBounds.right,
+              visible:
+                icon.checkVisibility() &&
+                bounds.width > 0 &&
+                bounds.right <= innerWidth &&
+                bounds.bottom <= innerHeight,
+            };
+          }),
+          {
+            hidden: false,
+            text: glyph,
+            label,
+            besideEffort: true,
+            visible: true,
+          },
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(
+            `speed-${mode}-${await evaluate(() => document.getElementById('factory-theme').value)}-${window.getContentSize()[0]}-${window.webContents.getZoomFactor()}`,
+          );
+        await evaluate(() => {
+          const info = document.getElementById('factory-info');
+          if (info.matches(':popover-open')) info.hidePopover();
+        });
+      };
+      const originalSpeedTheme = await evaluate(
+        () => document.getElementById('factory-theme').value,
+      );
+      const speedThemes = await evaluate(() =>
+        [...document.getElementById('factory-theme').options].map(
+          option => option.value,
+        ),
+      );
+      for (const theme of speedThemes) {
+        await evaluate(theme => {
+          const select = document.getElementById('factory-theme');
+          select.value = theme;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+        }, theme);
+        await speedIndicator('fast', 'Fast mode', '↯');
+        await speedIndicator('ultrafast', 'Ultrafast mode', '↯↯');
+      }
+      await evaluate(theme => {
+        const select = document.getElementById('factory-theme');
+        select.value = theme;
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+      }, originalSpeedTheme);
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      await speedIndicator('ultrafast', 'Ultrafast mode', '↯↯');
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      owner.session.speedMode = 'regular';
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-speed-mode').hidden,
+        ),
+        true,
+      );
       const configurationDetails = async (name, expected) => {
         await evaluate(() => document.getElementById('tab-details').click());
         assert.equal(
@@ -4606,13 +5035,256 @@ async function main() {
         ),
         'Project coordinator',
       );
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/fast on';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+      });
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Parent speed command was not acknowledged',
+      );
+      assert.equal(owner.session.speedMode, 'fast');
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'prompt' &&
+            call.sessionId === 'alpha' &&
+            call.request.prompt === '/fast on',
+        ),
+      );
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = 'Owner draft during speed changes';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+      });
       await evaluate(() =>
         [...document.querySelectorAll('#active-workers button')]
           .find(item => item.textContent.includes('Other agent'))
           .click(),
       );
       await configurationDetails('subagent', 'Discovery specialist (explore)');
+      const modelPromptsBeforeSwitch = calls.filter(
+        call =>
+          call.method === 'prompt' ||
+          (call.method === 'agentSession' && call.request.action === 'prompt'),
+      ).length;
+      const reopenSpeedMenu = async () => {
+        await evaluate(() => {
+          const button = document.getElementById('app-menu-button');
+          if (
+            document.getElementById('app-menu-panel').matches(':popover-open')
+          )
+            button.click();
+          button.click();
+        });
+      };
+      await reopenSpeedMenu();
+      await until(
+        () => !document.getElementById('session-speed').disabled,
+        'Running subagent speed control did not load',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-controls').hidden),
+        true,
+        'A subagent has no prompt composer',
+      );
+      for (const mode of ['fast', 'ultrafast', 'regular']) {
+        await evaluate(mode => {
+          const select = document.getElementById('session-speed');
+          select.dataset.expected = mode;
+          select.value = mode;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+        }, mode);
+        await until(() => {
+          const select = document.getElementById('session-speed');
+          return !select.disabled && select.value === select.dataset.expected;
+        }, 'Subagent speed command did not settle');
+        assert.equal(owner.agents[1].speedMode, mode);
+        assert.equal(owner.agents[1].status, 'running');
+        assert.equal(owner.session.speedMode, 'fast');
+        assert.ok(
+          calls.some(
+            call =>
+              call.method === 'agentSession' &&
+              call.sessionId === 'alpha' &&
+              call.request.agentId === 'other' &&
+              call.request.action === 'command' &&
+              call.request.command ===
+                (mode === 'ultrafast'
+                  ? '/ultrafast on'
+                  : mode === 'fast'
+                    ? '/fast on'
+                    : '/fast off'),
+          ),
+        );
+      }
+      assert.equal(
+        calls.filter(
+          call =>
+            call.method === 'prompt' ||
+            (call.method === 'agentSession' &&
+              call.request.action === 'prompt'),
+        ).length,
+        modelPromptsBeforeSwitch,
+        'The switch sends no user prompts',
+      );
+      for (const theme of speedThemes) {
+        await evaluate(theme => {
+          const select = document.getElementById('factory-theme');
+          select.value = theme;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+        }, theme);
+        await settle();
+        assert.equal(
+          await evaluate(() => {
+            const select = document.getElementById('session-speed');
+            const bounds = select.getBoundingClientRect();
+            return (
+              select.checkVisibility() &&
+              bounds.top >= 0 &&
+              bounds.bottom <= innerHeight &&
+              bounds.right <= innerWidth
+            );
+          }),
+          true,
+          `Speed control must be visible in ${theme}`,
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`speed-menu-${theme}`);
+      }
+      await evaluate(theme => {
+        const select = document.getElementById('factory-theme');
+        select.value = theme;
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+      }, originalSpeedTheme);
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      await evaluate(() =>
+        document
+          .getElementById('session-speed')
+          .scrollIntoView({block: 'center'}),
+      );
+      await settle();
+      assert.equal(
+        await evaluate(() => {
+          const select = document.getElementById('session-speed');
+          const bounds = select.getBoundingClientRect();
+          const panel = document
+            .getElementById('app-menu-panel')
+            .getBoundingClientRect();
+          return (
+            select.checkVisibility() &&
+            bounds.top >= panel.top &&
+            bounds.bottom <= panel.bottom &&
+            bounds.right <= panel.right &&
+            panel.bottom <= innerHeight &&
+            document.documentElement.scrollHeight <= innerHeight
+          );
+        }),
+        true,
+        'Speed control must fit a compact menu',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('speed-menu-compact');
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      resources.get('alpha:other').speedModes = ['regular', 'fast'];
+      await reopenSpeedMenu();
+      await until(
+        () =>
+          document.querySelector('#session-speed option[value="ultrafast"]')
+            .disabled && !document.getElementById('session-speed').disabled,
+        'Unsupported Anthropic Ultrafast option was not disabled',
+      );
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.getElementById('session-speed').options].map(
+            option => option.value,
+          ),
+        ),
+        ['regular', 'fast', 'ultrafast'],
+      );
+      resources.get('alpha:other').speedModes = ['regular'];
+      featureDelays.set('alpha:other', 120);
+      await reopenSpeedMenu();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        true,
+        'Cached speed capabilities stay disabled while refreshing',
+      );
+      await until(
+        () =>
+          document.getElementById('session-speed').disabled &&
+          document.querySelector('#session-speed option[value="fast"]')
+            .disabled,
+        'Unsupported model speed control was not disabled',
+      );
+      featureDelays.delete('alpha:other');
+      assert.equal(
+        await evaluate(() =>
+          [...document.getElementById('session-speed').options]
+            .filter(option => option.value !== 'regular')
+            .every(option => option.disabled),
+        ),
+        true,
+      );
+      resources.get('alpha:other').speedModes = [
+        'regular',
+        'fast',
+        'ultrafast',
+      ];
+      await reopenSpeedMenu();
+      await until(
+        () => !document.getElementById('session-speed').disabled,
+        'Restored model speed control did not refresh',
+      );
+      featureErrors.set('alpha:other', 'Fixture capability refresh failed');
+      await reopenSpeedMenu();
+      await until(
+        () =>
+          !document.getElementById('context-error').hidden &&
+          document.getElementById('session-speed').disabled,
+        'Failed capability refresh left cached speed enabled',
+      );
+      featureErrors.delete('alpha:other');
+      await reopenSpeedMenu();
+      await until(
+        () => !document.getElementById('session-speed').disabled,
+        'Speed control did not recover from capability refresh failure',
+      );
+      dialogErrors.set('speed', 'Fixture speed refused');
+      await evaluate(() => {
+        const select = document.getElementById('session-speed');
+        select.value = 'ultrafast';
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+      });
+      await until(
+        () =>
+          !document.getElementById('app-error').hidden &&
+          document.getElementById('session-speed').value === 'regular' &&
+          !document.getElementById('session-speed').disabled,
+        'Rejected speed change did not restore its confirmed mode and show an error',
+      );
+      assert.match(
+        await evaluate(() => document.getElementById('app-error').textContent),
+        /Fixture speed refused/,
+      );
+      assert.equal(owner.agents[1].speedMode, 'regular');
+      assert.equal(owner.session.speedMode, 'fast');
+      dialogErrors.delete('speed');
+      await evaluate(() => {
+        document.getElementById('app-error').hidden = true;
+        document.getElementById('app-menu-button').click();
+      });
       await evaluate(() => document.getElementById('back-to-parent').click());
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        'Owner draft during speed changes',
+      );
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Root draft during worker stop';
@@ -4730,6 +5402,28 @@ async function main() {
       );
       assert.equal(owner.agents[0].thinkingLevel, 'low');
       assert.equal(owner.session.thinkingLevel, 'medium');
+      await evaluate(() => {
+        const editor = document.getElementById('parent-prompt');
+        editor.value = '/fast on';
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('prompt-form').requestSubmit();
+      });
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Selected primary speed command was not acknowledged',
+      );
+      assert.equal(owner.agents[0].speedMode, 'fast');
+      assert.equal(owner.session.speedMode, 'fast');
+      assert.equal(owner.agents[1].speedMode, 'regular');
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'agentSession' &&
+            call.request.agentId === 'controlled' &&
+            call.request.action === 'prompt' &&
+            call.request.prompt === '/fast on',
+        ),
+      );
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = '/approv';
@@ -4890,7 +5584,7 @@ async function main() {
             'cancelAgent',
           ].includes(call.method),
         ),
-        [],
+        [{method: 'prompt', sessionId: 'alpha', request: {prompt: '/fast on'}}],
       );
       assert.deepEqual(
         calls
@@ -5424,6 +6118,10 @@ async function main() {
       for (const [typed, inserted] of [
         ['@rev', '@review'],
         ['@agent:team', '@agent:team/review'],
+        ['@agent:"My Agent', '@agent:"My Agent (Ä).test"'],
+        ['@agent:"Agent \\"Q', '@agent:"Agent \\"Quoted\\""'],
+        ['@Ää', '@Äänekäs'],
+        ['@.Hidden', '@.Hidden.Agent'],
       ]) {
         const promptCount = calls.filter(
           call => call.method === 'prompt',
@@ -10036,7 +10734,19 @@ async function main() {
       );
       window.setContentSize(1100, 760);
       window.webContents.setZoomFactor(1.5);
-      await settle();
+      await until(() => {
+        const panel = document
+          .getElementById('markdown-panel')
+          .getBoundingClientRect();
+        return (
+          Math.abs(innerWidth - 1100 / 1.5) <= 1 &&
+          Math.abs(innerHeight - 760 / 1.5) <= 1 &&
+          panel.left >= 8 &&
+          panel.top >= 8 &&
+          panel.right <= innerWidth - 8 &&
+          panel.bottom <= innerHeight - 8
+        );
+      }, 'Pinned Markdown placement did not settle inside the zoomed viewport');
       const compact = await evaluate(() => {
         const panel = document
           .getElementById('markdown-panel')
@@ -10099,7 +10809,7 @@ async function main() {
           compact.panel.top >= 8 &&
           compact.panel.right <= compact.viewport.width - 8 &&
           compact.panel.bottom <= compact.viewport.height - 8,
-        'Panel remains inside zoomed viewport',
+        `Panel remains inside zoomed viewport: ${JSON.stringify(compact)}`,
       );
       assert.ok(
         compact.preview.height >= 60 &&
@@ -12538,7 +13248,96 @@ async function main() {
           .instructions,
         'Use my review conventions.',
       );
+      const filenameIds = [
+        'sf-agent.test',
+        'My Agent (Ä).test',
+        ' leading and trailing ',
+        'global:Colon (Ä)',
+      ];
+      for (const id of filenameIds) {
+        await click('agent-template-new');
+        await fill({
+          'agent-template-id': id,
+          'agent-template-mode': 'all',
+          'agent-template-instructions': 'Use the exact filename.',
+        });
+        await click('agent-template-save');
+        await until(
+          () =>
+            document.getElementById('agent-templates-status').textContent ===
+              'Saved.' && document.getElementById('agent-template-id').disabled,
+          'Ordinary filename configuration did not save',
+        );
+        assert.equal(
+          calls.filter(call => call.method === 'saveAgentTemplate').at(-1).input
+            .id,
+          id,
+        );
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('agent-template-id').value,
+          ),
+          id,
+        );
+        assert.ok(
+          agentTemplates.some(
+            template => template.id === id && template.scope === 'workspace',
+          ),
+        );
+        assert.ok(
+          (
+            await evaluate(
+              () =>
+                document.getElementById('agent-template-source').textContent,
+            )
+          ).endsWith(`${id}.md`),
+        );
+      }
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await evaluate(() =>
+          document
+            .getElementById('agent-template-id')
+            .scrollIntoView({block: 'center'}),
+        );
+        await screenshot('ordinary-filename-editor');
+      }
       await click('agent-templates-close');
+      for (const [index, id] of filenameIds.entries()) {
+        await click('open-new-agent');
+        await until(
+          () => !document.getElementById('new-agent-template').disabled,
+          'Ordinary filename options did not load',
+        );
+        const selector = id.includes(':') ? `workspace:${id}` : id;
+        await evaluate(selector => {
+          const select = document.getElementById('new-agent-template');
+          select.value = selector;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+        }, selector);
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('new-agent-template').value,
+          ),
+          selector,
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR && index === 1)
+          await screenshot('ordinary-filename-selection');
+        creationIds = [`ordinary-filename-${index}`];
+        await click('new-agent-create');
+        await until(
+          () => !document.getElementById('new-agent-dialog').open,
+          'Ordinary filename selection did not create a conversation',
+        );
+        assert.equal(
+          calls.filter(call => call.method === 'createSession').at(-1).input
+            .templateId,
+          selector,
+        );
+        assert.equal(
+          resources.get(`ordinary-filename-${index}`).agentProfile.id,
+          id,
+        );
+      }
     },
   );
 }

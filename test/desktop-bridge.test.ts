@@ -386,6 +386,7 @@ function extensionFixture(
     modelRegistry: {
       getAvailable: () => models,
       getError: () => undefined,
+      isUsingOAuth: () => false,
       getApiKeyAndHeaders: async () => ({ok: true, apiKey: 'fixture-key'}),
     },
     getContextUsage: () => undefined,

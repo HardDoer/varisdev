@@ -30,6 +30,7 @@ let current;
 let previousId;
 let previousModel;
 let previousThinkingLevel;
+let previousSpeedMode;
 let activeDialog;
 let dialogBusy = false;
 const settingsBusy = new Set();
@@ -205,6 +206,7 @@ async function load(force = false, id = current?.session.id) {
         renderCatalog();
         renderSuggestions();
         renderAgentProfile();
+        renderSettingsControls();
       }
       return result;
     })
@@ -218,10 +220,14 @@ async function load(force = false, id = current?.session.id) {
     .finally(() => {
       if (loading.get(id) !== operation) return;
       loading.delete(id);
-      if (selected()?.session.id === id) renderContext();
+      if (selected()?.session.id === id) {
+        renderContext();
+        renderSettingsControls();
+      }
     });
   loading.set(id, operation);
   renderContext();
+  renderSettingsControls();
   return operation;
 }
 export function refreshContext() {
@@ -316,9 +322,15 @@ function commands(query = '') {
     ...builtinCommands.filter(
       command =>
         !current?.agentId ||
-        ['model', 'thinking', 'compact', 'reload', 'approvals'].includes(
-          command.name,
-        ),
+        [
+          'model',
+          'thinking',
+          'compact',
+          'reload',
+          'approvals',
+          'fast',
+          'ultrafast',
+        ].includes(command.name),
     ),
     ...(features()?.commands || []).filter(
       command => !builtinCommands.some(local => local.name === command.name),
@@ -338,9 +350,12 @@ function insertCommand(command) {
   const editor = $('parent-prompt');
   const prefix = suggestionPrefix(command);
   const existing = editor.value;
-  const rest = /^[/@]/.test(existing)
-    ? existing.replace(/^[/@]\S*\s*/, '')
-    : existing;
+  const rest =
+    command.source === 'agent' && existing.startsWith('@')
+      ? ''
+      : /^[/@]/.test(existing)
+        ? existing.replace(/^[/@]\S*\s*/, '')
+        : existing;
   editor.value = `${prefix} ${rest}`;
   editor.focus({preventScroll: true});
   editor.setSelectionRange(editor.value.length, editor.value.length);
@@ -394,7 +409,9 @@ function renderCatalog() {
 }
 function renderSuggestions() {
   const value = $('parent-prompt').value;
-  const match = value.match(/^([/@])([^\s]*)$/);
+  const match = value.match(
+    /^([/@])((?:agent:)?(?:(?:(?:builtin|global|repository|workspace):)?"(?:\\.|[^"\\])*"?|[^\s"@]*))$/u,
+  );
   const container = $('command-suggestions');
   if (!match || document.activeElement !== $('parent-prompt')) {
     container.hidden = true;
@@ -459,6 +476,43 @@ function canRunCommand(name) {
   );
 }
 function renderSettingsControls() {
+  const speed = $('session-speed');
+  const resource = features();
+  const modes = ['regular', 'fast', 'ultrafast'].filter(mode =>
+    (resource?.speedModes || ['regular']).includes(mode),
+  );
+  const signature = JSON.stringify(modes);
+  if (speed.dataset.options !== signature) {
+    speed.dataset.options = signature;
+    speed.replaceChildren(
+      ...['regular', 'fast', 'ultrafast'].map(mode => {
+        const option = node(
+          'option',
+          '',
+          mode === 'ultrafast'
+            ? 'Ultrafast'
+            : mode === 'fast'
+              ? 'Fast'
+              : 'Regular',
+        );
+        option.value = mode;
+        option.disabled = !modes.includes(mode);
+        return option;
+      }),
+    );
+  }
+  const busy = settingsBusy.has(current?.session.id);
+  if (!busy) {
+    const mode = resource?.speedMode ?? current?.session.speedMode ?? 'regular';
+    speed.value = modes.includes(mode) ? mode : 'regular';
+  }
+  speed.disabled =
+    busy ||
+    loading.has(current?.session.id) ||
+    contextErrors.has(current?.session.id) ||
+    !canRunCommand('fast') ||
+    !resource ||
+    modes.length < 2;
   $('session-maintenance').hidden = !conversationView;
   $('session-maintenance-name').textContent = current?.session.name || '';
   $('compact-session').disabled =
@@ -473,10 +527,12 @@ async function runSessionCommand(name, args = '') {
   const id = current.session.id;
   settingsBusy.add(id);
   $('session-settings-error').hidden = true;
-  if (name === 'approvals') $('app-error').hidden = true;
+  const menuCommand = ['approvals', 'fast', 'ultrafast'].includes(name);
+  if (menuCommand) $('app-error').hidden = true;
   renderSettingsControls();
   try {
-    if (name === 'approvals') await api.commandSession(id, '/approvals');
+    if (menuCommand)
+      await api.commandSession(id, `/${name}${args ? ` ${args}` : ''}`);
     else if (current.agentId && name === 'compact')
       await api.compactSession(id, args);
     else if (current.agentId && name === 'reload') await api.reloadSession(id);
@@ -487,10 +543,7 @@ async function runSessionCommand(name, args = '') {
     await load(true, id);
   } catch (cause) {
     if (current?.session.id === id)
-      error(
-        $(name === 'approvals' ? 'app-error' : 'session-settings-error'),
-        cause,
-      );
+      error($(menuCommand ? 'app-error' : 'session-settings-error'), cause);
   } finally {
     settingsBusy.delete(id);
     renderSettingsControls();
@@ -779,6 +832,18 @@ export function initSessionFeatures(options) {
   selected = options.selected;
   draftChanged = options.draftChanged;
   $('refresh-context').addEventListener('click', refreshContext);
+  $('app-menu-panel').addEventListener(
+    'varisdev:app-menu-open',
+    () => void load(true),
+  );
+  $('session-speed').addEventListener('change', () => {
+    const mode = $('session-speed').value;
+    if (!features()?.speedModes?.includes(mode)) return;
+    void runSessionCommand(
+      mode === 'ultrafast' ? 'ultrafast' : 'fast',
+      mode === 'regular' ? 'off' : 'on',
+    );
+  });
   $('extension-editor').addEventListener('click', () => {
     const data = selected();
     if (!data?.ui?.extensionEditor) return;
@@ -970,11 +1035,13 @@ export function renderSessionFeatures(data, options = {parent: true}) {
   if (
     previousId !== data.session.id ||
     previousModel !== data.session.model ||
-    previousThinkingLevel !== data.session.thinkingLevel
+    previousThinkingLevel !== data.session.thinkingLevel ||
+    previousSpeedMode !== data.session.speedMode
   ) {
     previousId = data.session.id;
     previousModel = data.session.model;
     previousThinkingLevel = data.session.thinkingLevel;
+    previousSpeedMode = data.session.speedMode;
     $('command-suggestions').hidden = true;
     void load(true);
   }

@@ -9,14 +9,26 @@ export function initLiveView() {
   const drawerButton = document.getElementById('factory-agents-button');
   const workers = document.querySelector('.worker-panels');
   const home = panel.parentElement;
+  const heading = panel.querySelector('.factory-heading');
+  const viewActions = panel.querySelector('.factory-view-actions');
+  const inspectorHeading = document.querySelector('.inspector-heading');
+  const inspectorControls = document.querySelector('.inspector-unit-controls');
   let sessionId;
 
   function placeInfo() {
     const {width, height} = panel.getBoundingClientRect();
-    if (!width || !height) return;
+    if (!panel.hidden && (!width || !height)) return;
+    const nextInfoHome = panel.hidden ? inspectorHeading : heading;
+    const nextButtonHome = panel.hidden ? inspectorControls : viewActions;
+    const moved = info.parentElement !== nextInfoHome;
+    if (moved) {
+      closeInfo();
+      nextInfoHome.append(info);
+      nextButtonHome.append(infoButton);
+    }
     // Reserve room for the scene after the header and its wrapping controls.
-    const collapsed = height < (width > 540 ? 440 : 420);
-    if (info.hasAttribute('popover') === collapsed) return;
+    const collapsed = panel.hidden || height < (width > 540 ? 440 : 420);
+    if (!moved && info.hasAttribute('popover') === collapsed) return;
     const focused = document.activeElement;
     closeInfo();
     infoButton.hidden = !collapsed;
@@ -62,7 +74,8 @@ export function initLiveView() {
   function placeWorkers() {
     const {width, height} = home.getBoundingClientRect();
     if (!width || !height) return;
-    const collapsed = height < 600;
+    const collapsed =
+      !panel.hidden && !workers.hidden && (height < 600 || width < 300);
     if (home.classList.contains('compact-workers') === collapsed) return;
     closeDrawer();
     home.classList.toggle('compact-workers', collapsed);
@@ -70,6 +83,12 @@ export function initLiveView() {
     if (collapsed) drawer.append(workers);
     else home.insertBefore(workers, drawerButton);
   }
+  function layoutChanged() {
+    closeDrawer();
+    placeWorkers();
+    placeInfo();
+  }
+  document.addEventListener('varisdev:panel-layout', layoutChanged);
   function close() {
     closeDrawer();
     closeInfo();
@@ -109,6 +128,7 @@ export function initLiveView() {
     dispose() {
       close();
       resize.disconnect();
+      document.removeEventListener('varisdev:panel-layout', layoutChanged);
       info.removeEventListener('toggle', syncInfo);
       drawer.removeEventListener('toggle', syncDrawer);
       actions.removeEventListener('click', openAction, true);

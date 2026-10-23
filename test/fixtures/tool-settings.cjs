@@ -22,7 +22,7 @@ const reads = [];
 const writes = [];
 const imageWrites = [];
 let settings = {
-  agents: {allowedModels: []},
+  agents: {allowedModels: [], maxConcurrentAgents: 6},
 };
 const models = [
   {provider: 'alpha', id: 'small', name: 'Swift model'},
@@ -130,6 +130,13 @@ async function change(id, value) {
     },
     {id, value},
   );
+}
+async function setConcurrency(value) {
+  await evaluate(value => {
+    const input = document.getElementById('agent-max-concurrent');
+    input.value = value;
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  }, value);
 }
 async function search(value) {
   await evaluate(value => {
@@ -242,6 +249,7 @@ async function auditThemeContrast() {
         agents: card('agent-model-settings'),
         image: card('image-model-settings'),
         search: control('tool-settings-search', 'agent-model-settings'),
+        concurrency: control('agent-max-concurrent', 'agent-model-settings'),
         imageModel: control('image-model', 'image-model-settings'),
         environmentLabel: contrast(
           getComputedStyle(document.getElementById('image-model-environment'))
@@ -278,6 +286,8 @@ async function captureScreenshots(themes) {
 async function readDraft() {
   return evaluate(() => ({
     agents: {
+      maxConcurrentAgents: document.getElementById('agent-max-concurrent')
+        .valueAsNumber,
       allowedModels: [
         ...document.querySelectorAll('#tool-settings-models input:checked'),
       ].map(input => input.value),
@@ -506,6 +516,7 @@ async function main() {
     }
     for (const [control, values] of [
       ['Agent search', result.search],
+      ['Maximum concurrent agents', result.concurrency],
       ['Image model', result.imageModel],
     ]) {
       assert.ok(
@@ -555,7 +566,9 @@ async function main() {
   );
   await search('');
   await change('image-model', 'gpt-image-2');
-  const initialSettings = {agents: {allowedModels: ['alpha/small']}};
+  const initialSettings = {
+    agents: {allowedModels: ['alpha/small'], maxConcurrentAgents: 6},
+  };
   assert.deepEqual(await readDraft(), initialSettings);
   await save();
   assert.deepEqual(writes[0], {
@@ -632,7 +645,9 @@ async function main() {
   await open();
   await selectModel('alpha/small');
   await selectModel('beta/large');
-  const changedSettings = {agents: {allowedModels: ['beta/large']}};
+  const changedSettings = {
+    agents: {allowedModels: ['beta/large'], maxConcurrentAgents: 6},
+  };
   saveError = 'Disk is read only';
   await click('tool-settings-save');
   await waitFor(() => !document.getElementById('tool-settings-error').hidden);
@@ -747,7 +762,9 @@ async function main() {
   scopedModels = undefined;
   settings.agents.allowedModels = null;
   await open();
-  assert.deepEqual(await readDraft(), {agents: {allowedModels: []}});
+  assert.deepEqual(await readDraft(), {
+    agents: {allowedModels: [], maxConcurrentAgents: 6},
+  });
   await save();
   assert.deepEqual(settings.agents.allowedModels, []);
   report.cases.push(
@@ -811,6 +828,42 @@ async function main() {
   assert.deepEqual(prompts[0].input, {prompt: 'Review the working tree'});
   report.cases.push('ordinary prompts dispatch directly');
 
+  await open();
+  assert.equal((await readDraft()).agents.maxConcurrentAgents, 6);
+  assert.match(
+    await evaluate(
+      () => document.getElementById('agent-max-concurrent-help').textContent,
+    ),
+    /Includes the main conversation/,
+  );
+  const beforeInvalidConcurrency = writes.length;
+  for (const invalid of ['0', '1.5', '']) {
+    await setConcurrency(invalid);
+    assert.equal(
+      await evaluate(
+        () => document.getElementById('tool-settings-save').disabled,
+      ),
+      true,
+    );
+    await click('tool-settings-save');
+    assert.equal(writes.length, beforeInvalidConcurrency);
+  }
+  await setConcurrency('1');
+  await save();
+  assert.equal(settings.agents.maxConcurrentAgents, 1);
+  await reload();
+  await open();
+  assert.equal((await readDraft()).agents.maxConcurrentAgents, 1);
+  await setConcurrency('4');
+  await click('tool-settings-close');
+  await open();
+  assert.equal((await readDraft()).agents.maxConcurrentAgents, 1);
+  await setConcurrency('6');
+  await save();
+  report.cases.push(
+    'concurrency includes the main agent, validates whole numbers, saves across reload, and cancels draft changes',
+  );
+
   for (const zoom of [1, 1.25]) {
     browser.setContentSize(440, 600);
     browser.webContents.setZoomFactor(zoom);
@@ -845,6 +898,25 @@ async function main() {
       noHorizontalScroll: true,
       actionsVisible: true,
     });
+    const concurrencyVisible = await evaluate(() => {
+      document
+        .getElementById('agent-max-concurrent')
+        .scrollIntoView({block: 'nearest'});
+      const rect = document
+        .getElementById('agent-max-concurrent')
+        .getBoundingClientRect();
+      const body = document
+        .querySelector('.tool-settings-body')
+        .getBoundingClientRect();
+      return rect.top >= body.top && rect.bottom <= body.bottom;
+    });
+    assert.equal(concurrencyVisible, true);
+    if (screenshotDirectory) {
+      writeFileSync(
+        join(screenshotDirectory, `concurrency-compact-${zoom}.png`),
+        (await browser.webContents.capturePage()).toPNG(),
+      );
+    }
     const imageVisible = await evaluate(() => {
       document
         .getElementById('image-model-settings')

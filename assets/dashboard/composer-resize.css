@@ -34,20 +34,7 @@
 }
 
 #parent-controls:not(.editor-expanded) #parent-prompt {
-  max-height: min(
-    46vh,
-    max(104px, calc(var(--inspector-space, 720px) - 450px)),
-    var(--composer-prompt-max-height, 100000px)
-  );
-}
-
-@media (max-height: 700px) {
-  #parent-controls:not(.editor-expanded) #parent-prompt {
-    max-height: min(
-      max(70px, calc(var(--inspector-space, 720px) - 490px)),
-      var(--composer-prompt-max-height, 100000px)
-    );
-  }
+  max-height: var(--composer-prompt-max-height, 46vh);
 }
 
 #parent-controls:not(.editor-expanded) #terminal-sessions {

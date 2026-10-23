@@ -573,10 +573,7 @@ export class DashboardHub {
         : text(values.name, 'Name', 120);
     const explicit = values.templateId !== undefined;
     const template = explicit
-      ? await resolveAgentTemplate(
-          cwd,
-          text(values.templateId, 'Template ID', 256),
-        )
+      ? await resolveAgentTemplate(cwd, values.templateId)
       : await resolveDefaultAgentTemplate(cwd, 'primary');
     if (!template || template.disabled)
       throw new DashboardInputError('This agent profile is unavailable.');

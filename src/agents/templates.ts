@@ -203,7 +203,6 @@ const inputKeys = new Set([
 ]);
 const permissionKeys = new Set(['action', 'resource', 'effect']);
 const maxFileBytes = 100_000;
-const idSegmentPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const preparedTemplateGet = Symbol('varisdev.agent-template-get');
 const templateMutations = new Map<string, Promise<void>>();
 
@@ -236,20 +235,37 @@ function validateWritableScope(value: unknown): WritableAgentTemplateScope {
 }
 
 function validateId(value: unknown): string {
-  if (typeof value !== 'string' || value.length < 1 || value.length > 160)
-    throw new Error(
-      'Agent template id must be a lowercase path of filename slugs with 1 to 160 characters.',
-    );
-  const segments = value.split('/');
   if (
-    segments.some(
-      segment => !segment || !idSegmentPattern.test(segment) || segment === '.',
-    )
+    typeof value !== 'string' ||
+    !value ||
+    value.includes('\0') ||
+    isAbsolute(value)
   )
     throw new Error(
-      'Agent template id must be a lowercase path of filename slugs with 1 to 160 characters.',
+      'Agent template id must be a relative filename path without empty, . or .. components or NUL.',
     );
-  return value;
+  const segments = value.split(process.platform === 'win32' ? /[\\/]/ : '/');
+  if (segments.some(segment => !segment || segment === '.' || segment === '..'))
+    throw new Error(
+      'Agent template id must be a relative filename path without empty, . or .. components or NUL.',
+    );
+  return segments.join('/');
+}
+
+function templateSelector(
+  value: string,
+  literalId = false,
+): {id: string; scope?: AgentTemplateScope} {
+  const separator = value.indexOf(':');
+  const prefix = value.slice(0, separator) as AgentTemplateScope;
+  const scope =
+    !literalId && separator !== -1 && scopes.includes(prefix)
+      ? prefix
+      : undefined;
+  return {
+    id: validateId(scope ? value.slice(separator + 1) : value),
+    ...(scope ? {scope} : {}),
+  };
 }
 
 function requiredText(value: unknown, label: string, maximum: number): string {
@@ -270,6 +286,13 @@ function optionalText(
 ): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   return requiredText(value, label, maximum);
+}
+
+function optionalSourcePath(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || value.includes('\0') || !isAbsolute(value))
+    throw new Error('Agent template sourcePath must be absolute.');
+  return value;
 }
 
 function optionalBoolean(value: unknown, label: string): boolean | undefined {
@@ -421,9 +444,7 @@ function normalizeInput(value: unknown): SaveAgentTemplateInput {
   const color = validateColor(input.color);
   const steps = validateSteps(input.steps);
   const permissions = validatePermissions(input.permissions);
-  const sourcePath = optionalText(input.sourcePath, 'sourcePath', 4096);
-  if (sourcePath !== undefined && !isAbsolute(sourcePath))
-    throw new Error('Agent template sourcePath must be absolute.');
+  const sourcePath = optionalSourcePath(input.sourcePath);
   return {
     scope,
     id,
@@ -899,7 +920,7 @@ function configuredDefaultAgent(cwd: string): string | undefined {
     resolve(getAgentDir()),
   ).settingsManager.getSettings() as Record<string, unknown>;
   const value = settings.default_agent;
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  return typeof value === 'string' && value ? value : undefined;
 }
 
 function primaryVisible(template: AgentTemplate): boolean {
@@ -963,13 +984,12 @@ function resolveFromLayers(
   loaded: LoadedTemplateLayers,
   value: string,
   allowInvalidPermissions = false,
+  literalId = false,
 ): AgentTemplate | undefined {
   if (loaded.sharedPermissionsError && !allowInvalidPermissions)
     throw loaded.sharedPermissionsError;
-  const separator = value.indexOf(':');
-  if (separator !== -1) {
-    const scope = validateScope(value.slice(0, separator));
-    const id = validateId(value.slice(separator + 1));
+  const {scope, id} = templateSelector(value, literalId);
+  if (scope) {
     if (
       !loaded.sources.some(
         source =>
@@ -986,7 +1006,6 @@ function resolveFromLayers(
       !loaded.sharedPermissionsError,
     );
   }
-  const id = validateId(value);
   const definitions = definitionsFor(loaded.sources, id);
   return definitions.length
     ? mergeDefinitions(
@@ -1103,10 +1122,16 @@ export async function resolveDefaultAgentTemplate(
 export async function resolveAgentTemplate(
   cwd: string,
   value: unknown,
+  literalId = false,
 ): Promise<AgentTemplate | undefined> {
   if (typeof value !== 'string')
     throw new Error('Agent template id or key must be text.');
-  return resolveFromLayers(await loadTemplateLayers(cwd), value);
+  return resolveFromLayers(
+    await loadTemplateLayers(cwd),
+    value,
+    false,
+    literalId,
+  );
 }
 
 /** Resolve and pin the exact files and value used by an agent_templates get. */
@@ -1123,12 +1148,7 @@ export async function prepareAgentTemplateGet(
   const requestedId = input.id;
   const scope =
     input.scope === undefined ? undefined : validateScope(input.scope);
-  const sourcePath =
-    input.sourcePath === undefined
-      ? undefined
-      : optionalText(input.sourcePath, 'sourcePath', 4096);
-  if (sourcePath !== undefined && !isAbsolute(sourcePath))
-    throw new Error('Agent template sourcePath must be absolute.');
+  const sourcePath = optionalSourcePath(input.sourcePath);
   if (sourcePath !== undefined && scope === undefined)
     throw new Error(
       'Agent template sourcePath requires an exact template scope.',
@@ -1167,14 +1187,7 @@ export async function prepareAgentTemplateGet(
     sourcePaths = result ? [result.sourcePath] : [];
   } else {
     result = resolveFromLayers(loaded, requestedId);
-    const separator = requestedId.indexOf(':');
-    const throughScope =
-      separator === -1
-        ? undefined
-        : validateScope(requestedId.slice(0, separator));
-    const id = validateId(
-      separator === -1 ? requestedId : requestedId.slice(separator + 1),
-    );
+    const {scope: throughScope, id} = templateSelector(requestedId);
     const definitions = definitionsFor(loaded.sources, id, throughScope);
     sourcePaths = [
       ...loaded.sharedPermissionSourcePaths,
@@ -1417,9 +1430,7 @@ export async function deleteAgentTemplate(
   const input = inputFields(value, new Set(['scope', 'id', 'sourcePath']));
   const scope = validateWritableScope(input.scope);
   const id = validateId(input.id);
-  const sourcePath = optionalText(input.sourcePath, 'sourcePath', 4096);
-  if (sourcePath !== undefined && !isAbsolute(sourcePath))
-    throw new Error('Agent template sourcePath must be absolute.');
+  const sourcePath = optionalSourcePath(input.sourcePath);
   const {directory, path} = writableDestination(cwd, scope, id, sourcePath);
   await withTemplateMutationQueue(path, async () => {
     if (!(await templateParentDirectory(directory, id, false))) return;

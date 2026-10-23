@@ -70,7 +70,8 @@
   margin-top: 10px;
 }
 #app-menu-panel .zoom-control,
-#app-menu-panel .theme-control {
+#app-menu-panel .theme-control,
+#app-menu-panel .speed-control {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
   align-items: center;

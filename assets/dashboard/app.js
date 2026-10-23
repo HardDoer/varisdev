@@ -22,6 +22,7 @@ import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
 import {initLiveView} from './live-view.js';
 import {initPanelResize} from './panel-resize.js';
+import {initPanelLayout} from './panel-layout.js';
 import {initComposerResize} from './composer-resize.js';
 import {initSessionHistory} from './session-history.js';
 import {initRecentProjects} from './recent-projects.js';
@@ -205,7 +206,10 @@ let changeKey = '';
 let conversationKey = '';
 let conversationFollowing = true;
 let conversationPointerActive = false;
+let conversationPointerTop = 0;
+let conversationScrollDirection = 0;
 let conversationScrollFrame;
+let conversationScrollTop;
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
@@ -976,6 +980,13 @@ function renderFactory() {
   $('factory-model').title = selected.model || '';
   text($('factory-effort'), `Effort: ${selected.thinkingLevel ?? ''}`);
   $('factory-effort').hidden = !selected.thinkingLevel;
+  const speedMode = selected.speedMode;
+  const speedIcon = $('factory-speed-mode');
+  speedIcon.hidden = speedMode !== 'fast' && speedMode !== 'ultrafast';
+  text(speedIcon, speedMode === 'ultrafast' ? '↯↯' : '↯');
+  const speedLabel = speedMode === 'ultrafast' ? 'Ultrafast mode' : 'Fast mode';
+  speedIcon.setAttribute('aria-label', speedLabel);
+  speedIcon.title = speedLabel;
   if (state.unitId === 'parent') parentBadge($('parent-status'), selected);
   else badge($('parent-status'), selected.status);
   for (const [key, value] of Object.entries(tally)) {
@@ -1394,12 +1405,14 @@ function saveConversationDisclosures() {
 }
 function followConversationBottom() {
   conversationFollowing = true;
+  conversationScrollDirection = 0;
   $('follow-conversation').checked = true;
   scheduleConversationBottom();
 }
 function cancelConversationBottom() {
   window.cancelAnimationFrame(conversationScrollFrame);
   conversationScrollFrame = undefined;
+  conversationScrollTop = undefined;
 }
 function scheduleConversationBottom() {
   if (
@@ -1411,25 +1424,41 @@ function scheduleConversationBottom() {
   )
     return;
   const key = conversationScope();
-  conversationScrollFrame = window.requestAnimationFrame(() => {
-    conversationScrollFrame = undefined;
+  let previousHeight;
+  function scroll() {
     if (
       state.disposed ||
       state.tab !== 'conversation' ||
       conversationScope() !== key ||
       !conversationFollowing ||
+      conversationPointerActive ||
       !$('follow-conversation').checked
-    )
+    ) {
+      conversationScrollFrame = undefined;
       return;
+    }
     const selection = window.getSelection();
     if (
       !selection?.isCollapsed &&
       $('conversation').contains(selection?.anchorNode)
-    )
+    ) {
+      conversationScrollFrame = undefined;
       return;
+    }
     const body = $('panel-conversation');
-    body.scrollTop = body.scrollHeight;
-  });
+    const height = body.scrollHeight;
+    const atBottom = height - body.clientHeight - body.scrollTop <= 2;
+    if (height === previousHeight && atBottom) {
+      conversationScrollFrame = undefined;
+      return;
+    }
+    previousHeight = height;
+    body.scrollTop = height;
+    conversationScrollTop = body.scrollTop;
+    // Offscreen messages can acquire their real height after scrolling.
+    conversationScrollFrame = window.requestAnimationFrame(scroll);
+  }
+  conversationScrollFrame = window.requestAnimationFrame(scroll);
 }
 // Keep existing text nodes so selection and open tool details survive snapshots.
 function updateStreamText(textNode, value, selection) {
@@ -1559,6 +1588,7 @@ function renderConversation(snapshot) {
     conversationKey = key;
     cancelConversationBottom();
     conversationFollowing = true;
+    conversationScrollDirection = 0;
     $('follow-conversation').checked = true;
   }
   const selection = window.getSelection();
@@ -2291,7 +2321,9 @@ async function sendPrompt(event) {
     if (
       agentId &&
       native &&
-      !['compact', 'reload', 'approvals'].includes(command.name)
+      !['compact', 'reload', 'approvals', 'fast', 'ultrafast'].includes(
+        command.name,
+      )
     )
       throw new Error(`/${command.name} is unavailable for this agent.`);
     const routing = !agentId
@@ -2544,42 +2576,75 @@ for (const tab of TABS) {
 $('panel-conversation').addEventListener(
   'wheel',
   event => {
-    if (event.deltaY < 0) {
+    if (!event.deltaY || event.ctrlKey) return;
+    conversationScrollDirection = Math.sign(event.deltaY);
+    if (conversationScrollDirection < 0) {
       cancelConversationBottom();
       conversationFollowing = false;
     }
   },
-  {passive: true},
+  {passive: true, capture: true},
 );
 $('panel-conversation').addEventListener('pointerdown', () => {
   conversationPointerActive = true;
+  conversationPointerTop = $('panel-conversation').scrollTop;
+  $('panel-conversation').style.overflowAnchor = 'none';
+  conversationScrollDirection = 0;
   cancelConversationBottom();
 });
 document.addEventListener('pointerup', () => {
   if (!conversationPointerActive) return;
   conversationPointerActive = false;
+  const body = $('panel-conversation');
+  body.style.removeProperty('overflow-anchor');
+  if (
+    conversationScrollDirection >= 0 &&
+    body.scrollHeight - body.clientHeight - body.scrollTop <= 2
+  )
+    conversationFollowing = true;
   scheduleConversationBottom();
 });
 document.addEventListener('pointercancel', () => {
   if (!conversationPointerActive) return;
   conversationPointerActive = false;
+  $('panel-conversation').style.removeProperty('overflow-anchor');
   conversationFollowing = false;
 });
 $('panel-conversation').addEventListener('keydown', event => {
-  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) {
+  if (
+    ['ArrowUp', 'PageUp', 'Home'].includes(event.key) ||
+    (event.key === ' ' && event.shiftKey)
+  ) {
+    conversationScrollDirection = -1;
     cancelConversationBottom();
     conversationFollowing = false;
+  } else if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
+    conversationScrollDirection = 1;
   }
 });
 $('panel-conversation').addEventListener('scroll', () => {
-  // Replacing a conversation can emit a scroll event before its scheduled paint.
-  if (conversationScrollFrame !== undefined) return;
   const body = $('panel-conversation');
-  conversationFollowing =
-    body.scrollHeight - body.clientHeight - body.scrollTop < 70;
+  const atBottom = body.scrollHeight - body.clientHeight - body.scrollTop <= 2;
+  if (
+    conversationPointerActive &&
+    conversationScrollDirection >= 0 &&
+    body.scrollTop >= conversationPointerTop - 1
+  )
+    return;
+  // Let follow settle as offscreen messages are measured, while still allowing
+  // a scrollbar or script to move upward before that paint completes.
+  if (
+    conversationScrollFrame !== undefined &&
+    (conversationScrollTop === undefined ||
+      body.scrollTop >= conversationScrollTop - 1 ||
+      atBottom)
+  )
+    return;
+  conversationFollowing = conversationScrollDirection >= 0 && atBottom;
   if (!conversationFollowing) cancelConversationBottom();
 });
 $('follow-conversation').addEventListener('change', () => {
+  conversationScrollDirection = 0;
   conversationFollowing = $('follow-conversation').checked;
   if (conversationFollowing) scheduleConversationBottom();
 });
@@ -2632,7 +2697,7 @@ const scene = createThemeScene($('factory-canvas'), {
   onError: message => reportSceneError(message),
 });
 const factoryToyOptions = {
-  holsterContainer: $('application-controls'),
+  holsterContainer: $('app-menu-weapon-controls'),
   getTargets: () => scene.caneTargets(),
   getEnvironmentTargets: () => scene.environmentTargets(),
   onEnvironmentHit: (id, weapon, amount, contact) =>
@@ -2777,6 +2842,17 @@ $('open-session-settings').addEventListener('click', async () => {
 });
 const appMenu = initAppMenu();
 const liveView = initLiveView();
+const cleanupPanelLayout = initPanelLayout({
+  onChange({visualization}) {
+    if (!visualization) {
+      factoryCane.stow();
+      factoryGun.stow();
+      factoryFlamethrower.stow();
+    }
+    sizeInspector();
+    sizeScene();
+  },
+});
 const cleanupPanelResize = initPanelResize();
 const cleanupComposerResize = initComposerResize({resizeTextarea});
 const recentProjects = initRecentProjects({api, open: openFolder});
@@ -2860,6 +2936,7 @@ window.addEventListener('unload', () => {
   toolSettings.dispose();
   appMenu.dispose();
   liveView.dispose();
+  cleanupPanelLayout();
   cleanupPanelResize();
   cleanupComposerResize();
   recentProjects.dispose();

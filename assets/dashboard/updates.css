@@ -20,6 +20,59 @@
 #updates-dialog p {
   margin: 18px 0;
 }
+#updates-progress {
+  margin: 0 0 18px;
+}
+#updates-progress-bar {
+  display: block;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  appearance: none;
+  background: var(--input, var(--panel));
+}
+#updates-progress-bar::-webkit-progress-bar {
+  background: var(--input, var(--panel));
+  border-radius: 4px;
+}
+#updates-progress-bar::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 4px;
+}
+#updates-progress-bar:indeterminate {
+  background: linear-gradient(var(--accent), var(--accent)) no-repeat
+    var(--input, var(--panel));
+  background-size: 35% 100%;
+  animation: updates-progress 1.2s ease-in-out infinite alternate;
+}
+#updates-progress-bar:indeterminate::-webkit-progress-bar {
+  background: transparent;
+}
+#updates-progress-detail {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#updates-progress-detail[hidden] {
+  display: none;
+}
+@keyframes updates-progress {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 100% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #updates-progress-bar:indeterminate {
+    animation-duration: 3s;
+  }
+}
 #updates-error {
   color: var(--red, #ff8e8e);
   overflow-wrap: anywhere;

@@ -40,6 +40,11 @@ import {
 import {attachedContextFiles} from './context-files.ts';
 import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {runAgentSessionRequest} from './agent-session.ts';
+import {
+  refreshSpeedModeAuth,
+  runSpeedCommand,
+  speedModeFeatures,
+} from '../speed-modes.ts';
 
 interface FactoryConnection {
   isOpen(): boolean;
@@ -296,6 +301,7 @@ export function registerFactory(
               .flatMap(sessionEntryToContextMessages),
             ctx.cwd,
           );
+          await refreshSpeedModeAuth(ctx);
           return {
             agentProfile: sessionAgentProfile(ctx.sessionManager),
             agentMentions: await discoverAgentMentions(ctx.cwd, profile),
@@ -318,6 +324,7 @@ export function registerFactory(
               ? {model: {id: ctx.model.id, provider: ctx.model.provider}}
               : {}),
             thinkingLevel: pi.getThinkingLevel(),
+            ...speedModeFeatures(ctx),
             thinkingLevels: ctx.model
               ? supportedThinkingLevels(ctx.model)
               : ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
@@ -429,6 +436,17 @@ export function registerFactory(
               'This session is updating. Try again when it is idle.',
             );
           if (native) {
+            const speedMode = await runSpeedCommand(
+              parsed!.name,
+              parsed!.args,
+              ctx,
+              (type, data) => pi.appendEntry(type, data),
+            );
+            if (speedMode !== undefined) {
+              state.updateSession({speedMode});
+              ctx.ui.notify(`Speed: ${speedMode}.`, 'info');
+              return;
+            }
             if (parsed!.name === 'approvals') {
               if (parsed!.args) throw new Error('Usage: /approvals');
               if (approvalController.signal.aborted)

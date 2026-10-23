@@ -7,6 +7,7 @@ import {
   type AgentToolsOptions,
 } from '../src/tools/agents.ts';
 import {registerProjectTools} from '../src/tools/index.ts';
+import {registerSpeedModes} from '../src/speed-modes.ts';
 
 export default function (pi: ExtensionAPI) {
   registerProjectTools(pi);
@@ -21,6 +22,7 @@ export default function (pi: ExtensionAPI) {
   );
   registerFactory(pi, agents, undefined, agentTools);
   registerApprovalCommand(pi);
+  registerSpeedModes(pi);
   registerDesktopStartup(pi);
   pi.on('session_shutdown', () => {
     releaseController();

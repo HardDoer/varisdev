@@ -137,13 +137,20 @@ body[data-panel-resizing='y'] * {
   }
   .inspector-tabs {
     padding-inline: 6px;
+    gap: 0;
   }
   .inspector-tabs button {
-    padding: 8px 6px;
+    padding: 8px 4px;
   }
   .conversation-kind {
     flex-basis: 108px;
     width: 108px;
+  }
+  #parent-controls:not(.editor-expanded) .composer-heading {
+    gap: 6px;
+  }
+  #parent-controls:not(.editor-expanded) .composer-heading .quiet-button {
+    padding-inline: 6px;
   }
   .inspector-heading > .inspector-activity-row {
     gap: 6px;
@@ -178,9 +185,15 @@ body[data-panel-resizing='y'] * {
     gap: 2px 6px;
   }
   .worker-panels .status-badge {
+    display: block;
+    width: fit-content;
     max-width: 100%;
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+  .worker-panels .status-badge::before {
+    margin-right: 5px;
+    vertical-align: middle;
   }
   .worker-panels .quiet-button,
   .history-search input {

@@ -26,7 +26,7 @@ async function until(
 }
 
 void test(
-  'managed parent invokes a pinned child without a root model, cancels approval and retires workers on reload',
+  'managed parent invokes a quoted filename configuration without a root model, cancels approval and retires workers on reload',
   {timeout: 15000},
   async t => {
     const root = await mkdtemp(join(tmpdir(), 'varisdev-parent-mentions-'));
@@ -89,7 +89,7 @@ export default function (pi) {
     await saveToolSettings('agents', {allowedModels: []});
     await saveAgentTemplate(cwd, {
       scope: 'global',
-      id: 'review',
+      id: 'Ägent Review (v2).test',
       name: 'Review',
       mode: 'subagent',
       model: 'mention-fixture/pinned-child',
@@ -100,13 +100,15 @@ export default function (pi) {
     profile.key = 'workspace:main-reviewer';
     profile.name = 'Main reviewer';
     profile.permissions = [
-      {action: 'subagent', resource: 'review', effect: 'ask'},
+      {action: 'subagent', resource: 'Ägent Review (v2).test', effect: 'ask'},
     ];
     const current = await createDashboardParent({cwd, agentProfile: profile});
     parents.push(current);
     const rootModel = (await current.features()).model;
     assert.ok(!rootModel || rootModel.provider === 'unknown');
-    const approved = current.prompt('@review Inspect the changes');
+    const approved = current.prompt(
+      '@agent:"Ägent Review (v2).test" Inspect the changes',
+    );
     await until(() => current.ui.snapshot().dialogs.length > 0);
     assert.equal(requests.length, 0);
     const approval = current.ui.snapshot().dialogs[0];
@@ -138,7 +140,9 @@ export default function (pi) {
       /no model|model.*selected|no API key/i,
     );
     assert.equal(requests.length, 1);
-    const cancelled = current.prompt('@review Do not launch this task');
+    const cancelled = current.prompt(
+      '@agent:"Ägent Review (v2).test" Do not launch this task',
+    );
     await until(() => current.ui.snapshot().dialogs.length > 0);
     await current.abort();
     await cancelled;
@@ -180,7 +184,9 @@ export default function (pi) {
       'Reload retains the saved root profile identity',
     );
     assert.equal(requests.length, 1, 'Reload requires no main turn');
-    const next = current.prompt('@review A fresh team after reload');
+    const next = current.prompt(
+      '@agent:"Ägent Review (v2).test" A fresh team after reload',
+    );
     await until(() => current.ui.snapshot().dialogs.length > 0);
     current.ui.respond(current.ui.snapshot().dialogs[0].id, 'Allow once');
     await next;
