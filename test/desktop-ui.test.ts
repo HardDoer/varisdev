@@ -44,13 +44,26 @@ void test(
     } catch (error) {
       launchError = error;
     }
-    let report: {cases: Array<{name: string; error?: string}>; fatal?: string};
+    let report: {
+      cases: Array<{name: string; error?: string}>;
+      fatal?: string;
+      activeCase?: string;
+      operation?: string;
+    };
     try {
       report = JSON.parse(await readFile(reportPath, 'utf8')) as typeof report;
     } catch {
       throw launchError || new Error('Electron produced no UI test report');
     }
+    for (const result of report.cases) {
+      await t.test(result.name, () => assert.ifError(result.error));
+    }
     assert.ifError(report.fatal);
+    if (launchError)
+      throw new Error(
+        `Electron UI run failed${report.activeCase ? ` during ${report.activeCase}` : ''}${report.operation ? ` (${report.operation})` : ''}`,
+        {cause: launchError},
+      );
     assert.equal(
       process.env.DESKTOP_UI_CASE_PATTERN
         ? report.cases.length > 0
@@ -58,9 +71,5 @@ void test(
       process.env.DESKTOP_UI_CASE_PATTERN ? true : 57,
       'All renderer scenarios must execute',
     );
-    for (const result of report.cases) {
-      await t.test(result.name, () => assert.ifError(result.error));
-    }
-    assert.ifError(launchError);
   },
 );

@@ -2159,6 +2159,9 @@ dialog::backdrop {
   .parent-controls:not(.editor-expanded) .composer-heading {
     margin-bottom: 6px;
   }
+  .parent-controls:not(.editor-expanded) .composer-tabs {
+    margin: 4px 0;
+  }
   .parent-controls:not(.editor-expanded) .composer-tab {
     padding: 4px 10px;
   }

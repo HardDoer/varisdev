@@ -1,4 +1,4 @@
-/* global process, __dirname, document, requestAnimationFrame, setTimeout, localStorage,
+/* global process, __dirname, document, requestAnimationFrame, setTimeout, clearTimeout, console, localStorage,
    NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
@@ -1069,20 +1069,65 @@ ipcMain.handle('fixture:dialog', async (_event, sessionId, dialogId, value) => {
 });
 
 async function press(keyCode, modifiers = []) {
+  await focusRenderer();
   window.webContents.sendInputEvent({type: 'keyDown', keyCode, modifiers});
-  window.webContents.sendInputEvent({type: 'keyUp', keyCode});
+  window.webContents.sendInputEvent({type: 'keyUp', keyCode, modifiers});
   await settle();
 }
 
+class UIOperationTimeout extends Error {}
+let operationFailure;
+
+async function uiOperation(name, action) {
+  if (operationFailure) throw operationFailure;
+  report.operation = name;
+  writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  const origin = new Error().stack;
+  let timer;
+  try {
+    return await Promise.race([
+      action(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          operationFailure = new UIOperationTimeout(
+            `${name} timed out in ${report.activeCase}\n` +
+              JSON.stringify({
+                bounds: window.getBounds(),
+                zoom: window.webContents.getZoomFactor(),
+                visible: window.isVisible(),
+                focused: window.isFocused(),
+              }) +
+              `\n${origin}`,
+          );
+          reject(operationFailure);
+        }, 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (!operationFailure) delete report.operation;
+  }
+}
+
+async function capturePage(rect) {
+  return uiOperation(`Capture page ${JSON.stringify(rect || {})}`, () =>
+    window.webContents.capturePage(rect),
+  );
+}
+
 async function evaluate(callback, ...args) {
-  const result = await window.webContents.executeJavaScript(
-    `(async () => {
+  const result = await uiOperation(
+    `Evaluate ${callback.toString().slice(0, 180)}`,
+    () =>
+      window.webContents.executeJavaScript(
+        `(async () => {
       try {
         return {ok: true, value: await (${callback.toString()})(...${JSON.stringify(args)})};
       } catch (error) {
         return {ok: false, error: error.stack || String(error)};
       }
     })()`,
+      ),
   );
   if (!result.ok) throw new Error(result.error);
   return result.value;
@@ -1098,7 +1143,8 @@ async function settle() {
 }
 
 async function until(callback, message) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
     if (await evaluate(callback)) return;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
@@ -1106,10 +1152,14 @@ async function until(callback, message) {
 }
 
 async function reloadPage() {
-  await new Promise(resolve => {
-    window.webContents.once('did-finish-load', resolve);
-    window.webContents.reload();
-  });
+  await uiOperation(
+    'Reload dashboard',
+    () =>
+      new Promise(resolve => {
+        window.webContents.once('did-finish-load', resolve);
+        window.webContents.reload();
+      }),
+  );
   await until(
     () => document.querySelectorAll('#parents .parent-card').length > 0,
     'Reloaded dashboard did not connect',
@@ -1128,18 +1178,27 @@ async function run(name, callback, width = 1600, height = 1000) {
     !new RegExp(process.env.DESKTOP_UI_CASE_PATTERN).test(name)
   )
     return;
+  report.activeCase = name;
+  const caseTimer = setTimeout(() => {
+    report.fatal = `UI case timed out after 45 seconds: ${name}. Active operation: ${report.operation || 'scenario callback'}`;
+    finishRun();
+  }, 45000);
   try {
     if (window.webContents.getURL().startsWith('file:')) {
       // Finish the previous window's recovery writes before resetting its profile.
-      await window.loadURL('about:blank');
-      await window.webContents.session.clearStorageData({
-        storages: ['localstorage'],
-      });
+      await uiOperation('Unload dashboard', () =>
+        window.loadURL('about:blank'),
+      );
+      await uiOperation('Reset dashboard storage', () =>
+        window.webContents.session.clearStorageData({
+          storages: ['localstorage'],
+        }),
+      );
     }
     reset();
     window.setContentSize(width, height);
-    await window.loadFile(
-      resolve(__dirname, '../../assets/dashboard/index.html'),
+    await uiOperation('Load dashboard', () =>
+      window.loadFile(resolve(__dirname, '../../assets/dashboard/index.html')),
     );
     // Reset the file origin's zoom after navigation; about:blank has its own zoom.
     window.webContents.setZoomFactor(1);
@@ -1168,23 +1227,31 @@ async function run(name, callback, width = 1600, height = 1000) {
     if (process.env.DESKTOP_UI_SCREENSHOT_DIR && name.startsWith('composer'))
       await screenshot(`layout-${width}x${height}`);
     report.cases.push({name});
-    writeFileSync(reportPath, JSON.stringify(report, null, 2));
   } catch (error) {
-    if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-      await screenshot(`failure-${report.cases.length + 1}`);
-    const dragTrace = await evaluate(() => window.fixtureResizeTrace).catch(
-      () => undefined,
-    );
-    report.cases.push({
+    const result = {
       name,
-      error:
-        (error.stack || String(error)) +
-        (dragTrace
-          ? `\nNative drag diagnostics: ${JSON.stringify({trace: dragTrace, nativeEvents: resizeNativeTrace})}`
-          : ''),
+      error: error.stack || String(error),
       rendererErrors: [...rendererErrors],
-    });
+    };
+    report.cases.push(result);
+    writeFileSync(reportPath, JSON.stringify(report, null, 2));
+    // A timed-out renderer operation is still pending. Stop using that window.
+    if (error instanceof UIOperationTimeout) throw error;
+    try {
+      const dragTrace = await evaluate(() => window.fixtureResizeTrace);
+      if (dragTrace)
+        result.error += `\nNative drag diagnostics: ${JSON.stringify({trace: dragTrace, nativeEvents: resizeNativeTrace})}`;
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot(`failure-${report.cases.length}`);
+    } catch (diagnosticError) {
+      result.error += `\nFailure diagnostics: ${diagnosticError.stack || diagnosticError}`;
+      if (diagnosticError instanceof UIOperationTimeout) throw diagnosticError;
+    }
+  } finally {
+    clearTimeout(caseTimer);
+    writeFileSync(reportPath, JSON.stringify(report, null, 2));
   }
+  delete report.activeCase;
 }
 
 async function screenshot(name) {
@@ -1192,43 +1259,79 @@ async function screenshot(name) {
   await new Promise(resolve => setTimeout(resolve, 60));
   const output = resolve(process.env.DESKTOP_UI_SCREENSHOT_DIR);
   mkdirSync(output, {recursive: true});
-  const image = await window.webContents.capturePage();
+  const image = await capturePage();
   writeFileSync(join(output, `${name}.png`), image.toPNG());
 }
 
-async function resizePoint(selector) {
-  // Native input requires an active renderer; showInactive only keeps it painting.
+async function focusRenderer() {
+  // Window focus alone does not activate an inactive application on macOS.
+  app.focus({steal: true});
   window.focus();
   window.webContents.focus();
   await until(
     () => document.hasFocus(),
-    'Native pointer fixture did not receive focus',
+    'Native input fixture did not receive focus',
   );
-  return evaluate(async selector => {
-    const element = document.querySelector(selector);
-    let previous;
-    let stable = 0;
-    for (let frame = 0; frame < 20; frame++) {
-      await new Promise(resolve => requestAnimationFrame(resolve));
-      if (!element?.checkVisibility())
-        throw new Error(`Resize control is hidden: ${selector}`);
-      const rect = element.getBoundingClientRect();
-      const geometry = JSON.stringify(rect.toJSON());
-      stable = geometry === previous ? stable + 1 : 0;
-      previous = geometry;
-      if (stable < 2) continue;
-      const point = {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-      };
-      if (!element.contains(document.elementFromPoint(point.x, point.y)))
-        throw new Error(`Resize control is covered: ${selector}`);
-      if (document.body.dataset.panelResizing)
-        throw new Error(`Previous resize is still active: ${selector}`);
-      return point;
-    }
-    throw new Error(`Resize control did not settle: ${selector}`);
-  }, selector);
+}
+
+async function pointerPoint(selector, scroll = false) {
+  await focusRenderer();
+  return evaluate(
+    async (selector, scroll) => {
+      const element = document.querySelector(selector);
+      if (scroll) element?.scrollIntoView({block: 'nearest'});
+      let previous;
+      let stable = 0;
+      for (let frame = 0; frame < 20; frame++) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (!element?.checkVisibility())
+          throw new Error(`Pointer target is hidden: ${selector}`);
+        const rect = element.getBoundingClientRect();
+        const geometry = JSON.stringify(rect.toJSON());
+        stable = geometry === previous ? stable + 1 : 0;
+        previous = geometry;
+        if (stable < 2) continue;
+        const point = {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        };
+        if (
+          rect.top < 0 ||
+          rect.left < 0 ||
+          rect.right > innerWidth ||
+          rect.bottom > innerHeight
+        )
+          throw new Error(
+            `Pointer target is clipped: ${selector}: ${JSON.stringify(rect.toJSON())}`,
+          );
+        if (!element.contains(document.elementFromPoint(point.x, point.y)))
+          throw new Error(`Pointer target is covered: ${selector}`);
+        if (document.body.dataset.panelResizing)
+          throw new Error(`Previous resize is still active: ${selector}`);
+        return {...point, width: rect.width, height: rect.height};
+      }
+      throw new Error(`Pointer target did not settle: ${selector}`);
+    },
+    selector,
+    scroll,
+  );
+}
+
+async function mouseGesture(callback) {
+  assert.equal(
+    resizeMouseIsolated,
+    false,
+    'Native mouse gestures cannot overlap',
+  );
+  resizeMouseIsolated = true;
+  resizeNativeTrace = [];
+  expectedResizeMouse = [];
+  try {
+    return await callback();
+  } finally {
+    resizeMouseIsolated = false;
+    expectedResizeMouse = [];
+  }
 }
 
 function sendResizeMouse(type, point, clickCount = 1, modifiers = []) {
@@ -1250,100 +1353,109 @@ async function resizeMouse(type, point, clickCount = 1, modifiers = []) {
   await settle();
 }
 
-async function dragResize(selector, dx, dy, cancel = false) {
-  resizeMouseIsolated = true;
-  resizeNativeTrace = [];
-  await evaluate(selector => {
-    const handle = document.querySelector(selector);
-    const events = [];
-    let pointerId;
-    const snapshot = event => {
-      if (event.type === 'pointerdown') pointerId = event.pointerId;
-      const bounds = handle.getBoundingClientRect();
-      events.push({
-        type: event.type,
-        target: event.target.id,
-        x: event.clientX,
-        y: event.clientY,
-        buttons: event.buttons,
-        trusted: event.isTrusted,
-        captured:
-          pointerId !== undefined && handle.hasPointerCapture(pointerId),
-        focused: document.hasFocus(),
-        resizing: document.body.dataset.panelResizing,
-        bounds: bounds.toJSON(),
-        value: handle.getAttribute('aria-valuenow'),
-      });
-    };
-    const types = [
-      'pointerdown',
-      'pointermove',
-      'pointerup',
-      'pointercancel',
-      'gotpointercapture',
-      'lostpointercapture',
-    ];
-    for (const type of types) document.addEventListener(type, snapshot);
-    for (const type of ['focus', 'blur'])
-      window.addEventListener(type, snapshot);
-    window.fixtureResizeTrace = {selector, events};
-    window.fixtureResizeCleanup = () => {
-      for (const type of types) document.removeEventListener(type, snapshot);
-      for (const type of ['focus', 'blur'])
-        window.removeEventListener(type, snapshot);
-    };
-  }, selector);
-  let start;
-  let released = false;
-  try {
-    start = await resizePoint(selector);
-    await resizeMouse('mouseMove', start);
-    start = await resizePoint(selector);
-    // Submit one ordered gesture so host focus changes cannot enter between
-    // synthetic moves while the test is waiting for animation frames.
-    sendResizeMouse('mouseDown', start);
-    for (const fraction of [0.25, 0.5, 1])
-      sendResizeMouse(
-        'mouseMove',
-        {
-          x: start.x + dx * fraction,
-          y: start.y + dy * fraction,
-        },
-        1,
-        ['leftButtonDown'],
-      );
-    if (cancel) {
-      window.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'});
-      window.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'});
-    }
-    sendResizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
-    released = true;
+async function clickPointer(selector, {scroll = false, minSize = 0} = {}) {
+  await mouseGesture(async () => {
+    const point = await pointerPoint(selector, scroll);
+    assert.ok(
+      point.width >= minSize && point.height >= minSize,
+      `Small pointer target: ${selector}`,
+    );
+    sendResizeMouse('mouseMove', point);
+    sendResizeMouse('mouseDown', point);
+    sendResizeMouse('mouseUp', point);
     await settle();
-    const trace = await evaluate(() => window.fixtureResizeTrace);
-    const down = trace.events.find(event => event.type === 'pointerdown');
-    const moves = trace.events.filter(
-      event => event.type === 'pointermove' && event.buttons === 1,
-    );
-    assert.ok(
-      down?.captured &&
-        moves.length > 0 &&
-        moves.every(event => event.captured),
-      `Native resize must retain pointer capture: ${JSON.stringify({trace, nativeEvents: resizeNativeTrace})}`,
-    );
-    assert.ok(
-      trace.events.some(event => event.type === 'pointerup'),
-      `Native resize must release the pointer: ${JSON.stringify(trace)}`,
-    );
-  } finally {
+  });
+}
+
+async function dragResize(selector, dx, dy, cancel = false) {
+  return mouseGesture(async () => {
+    await evaluate(selector => {
+      const handle = document.querySelector(selector);
+      const events = [];
+      let pointerId;
+      const snapshot = event => {
+        if (event.type === 'pointerdown') pointerId = event.pointerId;
+        const bounds = handle.getBoundingClientRect();
+        events.push({
+          type: event.type,
+          target: event.target.id,
+          x: event.clientX,
+          y: event.clientY,
+          buttons: event.buttons,
+          trusted: event.isTrusted,
+          captured:
+            pointerId !== undefined && handle.hasPointerCapture(pointerId),
+          focused: document.hasFocus(),
+          resizing: document.body.dataset.panelResizing,
+          bounds: bounds.toJSON(),
+          value: handle.getAttribute('aria-valuenow'),
+        });
+      };
+      const types = [
+        'pointerdown',
+        'pointermove',
+        'pointerup',
+        'pointercancel',
+        'gotpointercapture',
+        'lostpointercapture',
+      ];
+      for (const type of types) document.addEventListener(type, snapshot);
+      for (const type of ['focus', 'blur'])
+        window.addEventListener(type, snapshot);
+      window.fixtureResizeTrace = {selector, events};
+      window.fixtureResizeCleanup = () => {
+        for (const type of types) document.removeEventListener(type, snapshot);
+        for (const type of ['focus', 'blur'])
+          window.removeEventListener(type, snapshot);
+      };
+    }, selector);
+    let start;
+    let released = false;
     try {
+      start = await pointerPoint(selector);
+      await resizeMouse('mouseMove', start);
+      start = await pointerPoint(selector);
+      // Submit one ordered gesture so host focus changes cannot enter between
+      // synthetic moves while the test is waiting for animation frames.
+      sendResizeMouse('mouseDown', start);
+      for (const fraction of [0.25, 0.5, 1])
+        sendResizeMouse(
+          'mouseMove',
+          {
+            x: start.x + dx * fraction,
+            y: start.y + dy * fraction,
+          },
+          1,
+          ['leftButtonDown'],
+        );
+      if (cancel) {
+        window.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'});
+        window.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'});
+      }
+      sendResizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
+      released = true;
+      await settle();
+      const trace = await evaluate(() => window.fixtureResizeTrace);
+      const down = trace.events.find(event => event.type === 'pointerdown');
+      const moves = trace.events.filter(
+        event => event.type === 'pointermove' && event.buttons === 1,
+      );
+      assert.ok(
+        down?.captured &&
+          moves.length > 0 &&
+          moves.every(event => event.captured),
+        `Native resize must retain pointer capture: ${JSON.stringify({trace, nativeEvents: resizeNativeTrace})}`,
+      );
+      assert.ok(
+        trace.events.some(event => event.type === 'pointerup'),
+        `Native resize must release the pointer: ${JSON.stringify(trace)}`,
+      );
+    } finally {
       if (start && !released)
         await resizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
       await evaluate(() => window.fixtureResizeCleanup());
-    } finally {
-      resizeMouseIsolated = false;
-      expectedResizeMouse = [];
     }
-  }
+  });
 }
 
 async function resizeKey(selector, key, modifiers = []) {
@@ -1355,12 +1467,15 @@ async function resizeKey(selector, key, modifiers = []) {
 }
 
 async function resetResize(selector) {
-  const point = await resizePoint(selector);
-  await resizeMouse('mouseMove', point);
-  for (const count of [1, 2]) {
-    await resizeMouse('mouseDown', point, count);
-    await resizeMouse('mouseUp', point, count);
-  }
+  await mouseGesture(async () => {
+    const point = await pointerPoint(selector);
+    await resizeMouse('mouseMove', point);
+    for (const count of [1, 2]) {
+      sendResizeMouse('mouseDown', point, count);
+      sendResizeMouse('mouseUp', point, count);
+    }
+    await settle();
+  });
 }
 
 async function resizeLayout({drawer = false, terminal = false} = {}) {
@@ -1893,9 +2008,7 @@ async function main() {
           document.getElementById('factory-agents-button').checkVisibility(),
         'Compact agents drawer control missing',
       );
-      const button = await resizePoint('#factory-agents-button');
-      await resizeMouse('mouseDown', button);
-      await resizeMouse('mouseUp', button);
+      await clickPointer('#factory-agents-button');
       await until(
         () =>
           document
@@ -2425,9 +2538,7 @@ async function main() {
         false,
         'Resizing must not submit the draft',
       );
-      const send = await resizePoint('#send-prompt');
-      await resizeMouse('mouseDown', send);
-      await resizeMouse('mouseUp', send);
+      await clickPointer('#send-prompt');
       await until(
         () => document.getElementById('parent-prompt').value === '',
         'Submitting resized draft did not clear the prompt',
@@ -2597,9 +2708,7 @@ async function main() {
     async () => {
       await populateResizePanels();
       const openTerminal = async () => {
-        const point = await resizePoint('#terminal-tab');
-        await resizeMouse('mouseDown', point);
-        await resizeMouse('mouseUp', point);
+        await clickPointer('#terminal-tab');
         await until(
           () =>
             document.querySelector('#terminal-sessions .xterm') &&
@@ -2786,36 +2895,10 @@ async function main() {
             document.getElementById('app-menu-weapons').open = true;
           });
         }
-        const point = await evaluate(selector => {
-          const button = document.querySelector(selector);
-          button.scrollIntoView({block: 'nearest'});
-          const r = button.getBoundingClientRect();
-          const x = r.left + r.width / 2;
-          const y = r.top + r.height / 2;
-          if (
-            !button.contains(document.elementFromPoint(x, y)) ||
-            !window.compactLiveView.inside(r)
-          )
-            throw new Error(
-              `Unreachable ${selector}: ${JSON.stringify({rect: r.toJSON(), hit: document.elementFromPoint(x, y)?.outerHTML.slice(0, 300), drawer: {open: document.getElementById('factory-agents-drawer').matches(':popover-open'), workersInside: !!document.querySelector('#factory-agents-drawer .worker-panels'), rect: document.getElementById('factory-agents-drawer').getBoundingClientRect().toJSON()}, panel: document.getElementById('factory-panel').getBoundingClientRect().toJSON(), column: document.querySelector('.factory-column').getBoundingClientRect().toJSON(), classes: document.getElementById('factory-panel').outerHTML.slice(0, 250), style: ['width', 'minWidth', 'maxWidth', 'gridTemplateColumns'].map(key => [key, getComputedStyle(document.getElementById('factory-panel'))[key]])})}`,
-            );
-          if (
-            selector === '#factory-info-button' &&
-            (r.width < 32 || r.height < 32)
-          )
-            throw new Error(`Small toolbar hit target: ${selector}`);
-          return {x, y};
-        }, selector);
-        const zoom = window.webContents.getZoomFactor();
-        for (const type of ['mouseMove', 'mouseDown', 'mouseUp'])
-          window.webContents.sendInputEvent({
-            type,
-            button: 'left',
-            clickCount: 1,
-            x: Math.round(point.x * zoom),
-            y: Math.round(point.y * zoom),
-          });
-        await settle();
+        await clickPointer(selector, {
+          scroll: true,
+          minSize: selector === '#factory-info-button' ? 32 : 0,
+        });
       };
       const view = focus =>
         evaluate(focus => {
@@ -2872,18 +2955,29 @@ async function main() {
           ]),
         );
         await new Promise(resolve => setTimeout(resolve, 150));
-        const shown = (await window.webContents.capturePage(clip)).toBitmap();
-        await evaluate(() => {
-          document.getElementById('factory-canvas').style.visibility = 'hidden';
-        });
+        const shown = (await capturePage(clip)).toBitmap();
+        let hidden;
+        try {
+          await evaluate(() => {
+            document.getElementById('factory-canvas').style.visibility =
+              'hidden';
+          });
+          await settle();
+          // Allow the compositor to submit the hidden-canvas frame before capture.
+          await new Promise(resolve => setTimeout(resolve, 60));
+          hidden = (await capturePage(clip)).toBitmap();
+        } finally {
+          await evaluate(() => {
+            document.getElementById('factory-canvas').style.visibility = '';
+          });
+        }
         await settle();
-        // Allow the compositor to submit the hidden-canvas frame before capture.
-        await new Promise(resolve => setTimeout(resolve, 60));
-        const hidden = (await window.webContents.capturePage(clip)).toBitmap();
-        await evaluate(() => {
-          document.getElementById('factory-canvas').style.visibility = '';
-        });
-        await settle();
+        assert.ok(shown.length > 0, 'Scene capture must contain pixels');
+        assert.equal(
+          hidden.length,
+          shown.length,
+          'Scene captures have matching dimensions',
+        );
         let changed = 0;
         for (let i = 0; i < shown.length; i += 4)
           if (
@@ -2956,6 +3050,13 @@ async function main() {
         const compact = await view();
         await detailsVisible(collapsed);
         await click('.factory-cane-holster');
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('scene').dataset.caneEquipped,
+          ),
+          'true',
+          'Native click equips the cane before switching weapons',
+        );
         await click('.factory-gun-holster');
         assert.deepEqual(
           await evaluate(() => {
@@ -4086,7 +4187,7 @@ async function main() {
           height: Math.floor(rect.height),
         };
       });
-      const before = (await window.webContents.capturePage(bounds)).toBitmap();
+      const before = (await capturePage(bounds)).toBitmap();
       await evaluate(() =>
         [...document.querySelectorAll('#scene-labels button')]
           .find(item => item.textContent === 'Queued agent')
@@ -4094,7 +4195,7 @@ async function main() {
       );
       await settle();
       assert.equal((await evaluate(selected)).inspector, 'Queued agent');
-      const after = (await window.webContents.capturePage(bounds)).toBitmap();
+      const after = (await capturePage(bounds)).toBitmap();
       let changed = 0;
       for (let offset = 0; offset < before.length; offset += 4)
         if (
@@ -4117,20 +4218,25 @@ async function main() {
       }
 
       // Exercise the same selection when canvas graphics are unavailable.
-      window.webContents.debugger.attach('1.3');
-      await window.webContents.debugger.sendCommand('Page.enable');
-      const {identifier} = await window.webContents.debugger.sendCommand(
-        'Page.addScriptToEvaluateOnNewDocument',
-        {
-          source: `(() => {
+      let identifier;
+      try {
+        window.webContents.debugger.attach('1.3');
+        await uiOperation('Enable page debugger', () =>
+          window.webContents.debugger.sendCommand('Page.enable'),
+        );
+        ({identifier} = await uiOperation('Install fallback renderer', () =>
+          window.webContents.debugger.sendCommand(
+            'Page.addScriptToEvaluateOnNewDocument',
+            {
+              source: `(() => {
             const getContext = HTMLCanvasElement.prototype.getContext;
             HTMLCanvasElement.prototype.getContext = function(type, ...args) {
               return ['webgl', '2d'].includes(type) ? null : getContext.call(this, type, ...args);
             };
           })();`,
-        },
-      );
-      try {
+            },
+          ),
+        ));
         await reloadPage();
         assert.equal(
           await evaluate(() => !document.getElementById('fallback').hidden),
@@ -4173,11 +4279,18 @@ async function main() {
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
           await screenshot('selected-agent-fallback');
       } finally {
-        await window.webContents.debugger.sendCommand(
-          'Page.removeScriptToEvaluateOnNewDocument',
-          {identifier},
-        );
-        window.webContents.debugger.detach();
+        try {
+          if (identifier)
+            await uiOperation('Remove fallback renderer', () =>
+              window.webContents.debugger.sendCommand(
+                'Page.removeScriptToEvaluateOnNewDocument',
+                {identifier},
+              ),
+            );
+        } finally {
+          if (window.webContents.debugger.isAttached())
+            window.webContents.debugger.detach();
+        }
       }
     },
   );
@@ -5063,8 +5176,7 @@ async function main() {
         false,
         'The live scene must render',
       );
-      const frame = async () =>
-        (await window.webContents.capturePage(bounds)).toBitmap();
+      const frame = async () => (await capturePage(bounds)).toBitmap();
       const thinking = await frame();
       await new Promise(resolve => setTimeout(resolve, 180));
       assert.equal(
@@ -13709,12 +13821,26 @@ async function main() {
   );
 }
 
+function finishRun() {
+  let code = report.fatal || report.cases.some(result => result.error) ? 1 : 0;
+  try {
+    writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  } catch (error) {
+    code = 1;
+    console.error('Could not write UI report:', error);
+  }
+  try {
+    if (window && !window.isDestroyed()) window.destroy();
+  } catch (error) {
+    code = 1;
+    console.error('Could not destroy UI fixture:', error);
+  } finally {
+    app.exit(code);
+  }
+}
+
 main()
   .catch(error => {
     report.fatal = error.stack || String(error);
   })
-  .finally(() => {
-    writeFileSync(reportPath, JSON.stringify(report, null, 2));
-    window?.destroy();
-    app.exit(report.fatal ? 1 : 0);
-  });
+  .finally(finishRun);

@@ -136,11 +136,14 @@ body[data-panel-resizing='y'] * {
     padding: 8px 10px;
   }
   .inspector-tabs {
-    padding-inline: 6px;
+    padding-inline: 4px;
     gap: 0;
   }
   .inspector-tabs button {
-    padding: 8px 4px;
+    padding: 6px 2px;
+  }
+  .inspector-tabs span {
+    margin-left: 2px;
   }
   .conversation-kind {
     flex-basis: 108px;
