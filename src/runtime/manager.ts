@@ -15,6 +15,7 @@ import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {refreshMacLauncher} from './mac-launcher.ts';
+import {withNodePath} from './environment.mjs';
 import {
   downloadRelease,
   readRelease,
@@ -465,8 +466,9 @@ export class RuntimeManager {
       stage = join(this.dataDir, 'runtimes', generation);
       await mkdir(stage, {recursive: true});
       const require = createRequire(join(activeRoot, 'package.json'));
-      const env = gitEnvironment();
-      const executable = env.VARISDEV_NODE_EXECUTABLE || process.execPath;
+      const executable =
+        process.env.VARISDEV_NODE_EXECUTABLE || process.execPath;
+      const env = withNodePath(executable, gitEnvironment());
       if (process.versions.electron && executable === process.execPath)
         env.ELECTRON_RUN_AS_NODE = '1';
       else delete env.ELECTRON_RUN_AS_NODE;

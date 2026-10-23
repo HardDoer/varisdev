@@ -95,6 +95,26 @@ export function copyEnvironment(
   );
 }
 
+/**
+ * Make the selected Node executable available to npm lifecycle scripts.
+ * @param {string} executable
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function withNodePath(
+  executable,
+  env = process.env,
+  platform = process.platform,
+) {
+  const child = copyEnvironment(env, platform);
+  const directory =
+    platform === 'win32' ? win32.dirname(executable) : dirname(executable);
+  child.PATH = [directory, child.PATH]
+    .filter(Boolean)
+    .join(platform === 'win32' ? ';' : ':');
+  return child;
+}
+
 function fields(env, platform) {
   return Object.fromEntries(
     Object.entries(copyEnvironment(env, platform)).filter(

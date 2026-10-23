@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFile, spawn} from 'node:child_process';
 import {
+  copyFile,
   cp,
   mkdir,
   mkdtemp,
@@ -255,6 +256,69 @@ void test('full application update installs new code, dependencies and runtime a
   assert.equal(cli.stdout.trim(), 'VarisDev 0.2.0');
   await assert.rejects(stat(join(f.dataDir, 'update.lock')));
 });
+
+for (const configuredNode of [false, true]) {
+  void test(`updates expose ${configuredNode ? 'the configured' : 'the current'} Node to lifecycle scripts without an inherited Node PATH`, async t => {
+    const f = await fixture(t);
+    const inheritedPath = process.env.PATH;
+    const runAsNode = process.env.ELECTRON_RUN_AS_NODE;
+    t.after(() => {
+      if (inheritedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = inheritedPath;
+      if (runAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
+      else process.env.ELECTRON_RUN_AS_NODE = runAsNode;
+    });
+    let executable = process.execPath;
+    if (configuredNode) {
+      executable = join(
+        f.temp,
+        'Node runtime',
+        process.platform === 'win32' ? 'node.exe' : 'node',
+      );
+      await mkdir(dirname(executable), {recursive: true});
+      await copyFile(process.execPath, executable);
+      process.env.VARISDEV_NODE_EXECUTABLE = executable;
+    } else delete process.env.VARISDEV_NODE_EXECUTABLE;
+    process.env.PATH = f.temp;
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    let lifecycleChecks = 0;
+    const manager = new RuntimeManager({
+      ...f.options,
+      hooks: {
+        ...f.hooks,
+        run: async (command, args, options) => {
+          if (command !== 'git') {
+            assert.equal(command, executable);
+            assert.equal(options.env.ELECTRON_RUN_AS_NODE, undefined);
+            if (args[0].endsWith('npm-cli.js')) {
+              const resolved = await runRuntimeCommand(
+                process.platform === 'win32' ? process.env.ComSpec! : '/bin/sh',
+                process.platform === 'win32'
+                  ? ['/d', '/s', '/c', 'node -p process.execPath']
+                  : ['-c', 'node -p process.execPath'],
+                {...options, timeoutMs: 5000},
+              );
+              assert.equal(
+                await realpath(resolved.trim()),
+                await realpath(executable),
+              );
+              lifecycleChecks++;
+            }
+          }
+          return f.hooks.run!(
+            command === executable ? process.execPath : command,
+            args,
+            options,
+          );
+        },
+      },
+    });
+    await updateReady(manager);
+    assert.equal(lifecycleChecks, 2);
+    assert.equal(process.env.PATH, f.temp);
+    assert.equal(process.env.ELECTRON_RUN_AS_NODE, '1');
+  });
+}
 
 for (const failure of ['git', 'npm', 'compile', 'import']) {
   void test(`failed ${failure} preserves the active application and removes its partial install`, async t => {

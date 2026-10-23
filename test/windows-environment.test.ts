@@ -8,6 +8,7 @@ import {
   createEnvironmentSettings,
   environmentPath,
   windowsEnvironment,
+  withNodePath,
 } from '../src/runtime/environment.mjs';
 import {runTerminalProcess} from './fixtures/terminal-process.mjs';
 
@@ -21,6 +22,23 @@ const fallbackPath = [
   'C:\\Program Files\\Git\\cmd',
   'C:\\Users\\test\\Työkalut',
 ].join(';');
+
+void test('npm lifecycle environments prepend the selected Node directory and normalize Windows Path casing', () => {
+  for (const name of ['PATH', 'Path', 'path']) {
+    const env = {[name]: inheritedPath, CUSTOM_TOOL: 'keep'};
+    const child = withNodePath('D:\\Node runtime\\node.exe', env, 'win32');
+    assert.deepEqual(child, {
+      PATH: `D:\\Node runtime;${inheritedPath}`,
+      CUSTOM_TOOL: 'keep',
+    });
+    assert.equal(env[name], inheritedPath);
+  }
+  for (const env of [{}, {Path: ''}]) {
+    assert.deepEqual(withNodePath('D:\\Node runtime\\node.exe', env, 'win32'), {
+      PATH: 'D:\\Node runtime',
+    });
+  }
+});
 
 void test('Windows PATH recovery preserves inherited tools and adds system and user tools once', () => {
   for (const name of ['PATH', 'Path', 'path']) {

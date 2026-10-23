@@ -5,6 +5,7 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
 import {applyLinuxSandboxFix} from './linux-sandbox.mjs';
 import {configureBundledPi} from './configure-pi.mjs';
+import {withNodePath} from '../src/runtime/environment.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -13,9 +14,16 @@ const npm = join(
   'bin/npm-cli.js',
 );
 
+// Older updaters can invoke this script with Node missing from PATH.
+const env = withNodePath(process.execPath);
+
 // Keep the app's runtime separate from modules provided by an extension host.
 function run(args, cwd) {
-  const result = spawnSync(process.execPath, args, {cwd, stdio: 'inherit'});
+  const result = spawnSync(process.execPath, args, {
+    cwd,
+    env,
+    stdio: 'inherit',
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
