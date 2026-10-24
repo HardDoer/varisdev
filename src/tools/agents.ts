@@ -14,6 +14,7 @@ import {
   type AgentMessageSender,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
+import type {AgentWorkerConfiguration} from '../agents/history.ts';
 import {
   listAgentTemplates,
   prepareAgentTemplateGet,
@@ -596,6 +597,88 @@ export function registerAgentTools(
   const getManager = (ctx: ExtensionContext) => getTeam(ctx).getManager();
   registerAgentTemplateTool(pi);
 
+  const buildWorker = async (
+    record: AgentRecord,
+    ctx: ExtensionContext,
+    team: ReturnType<AgentSessionController['getTeam']>,
+    configuration: AgentWorkerConfiguration,
+    resume = false,
+  ) => {
+    await assertAgentModelAllowed(record.model, undefined, record.pinnedModel);
+    const separator = record.model.indexOf('/');
+    const model =
+      ctx.model && `${ctx.model.provider}/${ctx.model.id}` === record.model
+        ? ctx.model
+        : ctx.modelRegistry.find(
+            record.model.slice(0, separator),
+            record.model.slice(separator + 1),
+          );
+    if (!model)
+      throw new Error('Agent model is unavailable: ' + record.model + '.');
+    const approval = shared?.approval ?? createAgentApprovalRelay(ctx);
+    const approvalUI = shared?.approvalUI ?? (ctx.hasUI ? ctx.ui : undefined);
+    const {id, name} = record;
+    const worker = await createWorker({
+      ...configuration,
+      cwd: record.cwd,
+      projectTrustOverride:
+        record.cwd === resolve(ctx.cwd) ? ctx.isProjectTrusted() : undefined,
+      name,
+      model,
+      modelRegistry: ctx.modelRegistry,
+      thinkingLevel: record.thinkingLevel as (typeof allowedEfforts)[number],
+      approval,
+      approvalUI,
+      ui: shared?.ui,
+      parentSessionId: team.sessionId,
+      id,
+      ...(resume ? {resumeSessionFile: record.sessionFile} : {}),
+      agentToolsExtension(workerPi) {
+        observeFileChanges(workerPi, change =>
+          team.storeChange({...change, unitId: id, unitName: name}),
+        );
+        registerAgentTools(workerPi, createWorker, {
+          control,
+          team,
+          id,
+          agentProfile: configuration.agentProfile,
+          approval,
+          approvalUI,
+          ui: shared?.ui,
+        });
+      },
+    });
+    return {
+      ...worker,
+      get usage() {
+        return worker.usage;
+      },
+      get context() {
+        return worker.context;
+      },
+      get conversation() {
+        return worker.conversation;
+      },
+      steer: (message: string, starting: boolean) =>
+        worker.steer(message, starting),
+      dispose: () => worker.dispose(),
+      async run(...args: Parameters<typeof worker.run>) {
+        const current = team.getManager().get(id);
+        await assertAgentModelAllowed(
+          current.model,
+          undefined,
+          current.pinnedModel,
+        );
+        args[1].throwIfAborted();
+        return worker.run(...args);
+      },
+    };
+  };
+  if (!shared?.id)
+    control.setRestoreWorker((record, ctx, team) =>
+      buildWorker(record, ctx, team, team.workerConfiguration(record.id), true),
+    );
+
   const launchAgent = async (
     params: Static<typeof spawnSchema>,
     signal: AbortSignal | undefined,
@@ -629,7 +712,6 @@ export function registerAgentTools(
     if (!name?.trim())
       throw new Error('Choose an agent name or a saved configuration.');
     const agentProfile = structuredClone(template);
-    const approval = shared?.approval ?? createAgentApprovalRelay(ctx);
     const instructions = params.instructions || undefined;
     const inheritedModel = ctx.model && `${ctx.model.provider}/${ctx.model.id}`;
     const pinnedModel = agentProfile.model;
@@ -655,20 +737,10 @@ export function registerAgentTools(
       throw new Error(
         'Agent thinkingLevel must be off, minimal, low, medium, high, xhigh, or max.',
       );
-    const workerOptions = {
-      cwd,
-      projectTrustOverride:
-        cwd === resolve(ctx.cwd) ? ctx.isProjectTrusted() : undefined,
-      name,
+    const configuration: AgentWorkerConfiguration = {
       instructions,
       agentProfile,
-      approval,
-      approvalUI: shared?.approvalUI ?? (ctx.hasUI ? ctx.ui : undefined),
-      ui: shared?.ui,
-      context: params.context ?? agentProfile?.context ?? 'workspace',
-      model,
-      modelRegistry: ctx.modelRegistry,
-      thinkingLevel,
+      context: params.context ?? agentProfile.context ?? 'workspace',
     };
     signal?.throwIfAborted();
     const record = current.spawn(
@@ -684,57 +756,9 @@ export function registerAgentTools(
         timeoutMs: params.timeoutMs,
         autoCleanup: params.autoCleanup,
       },
-      async id => {
-        await assertAgentModelAllowed(selectedModel, undefined, pinnedModel);
-        const worker = await createWorker({
-          ...workerOptions,
-          parentSessionId: team.sessionId,
-          id,
-          agentToolsExtension(workerPi) {
-            observeFileChanges(workerPi, change =>
-              team.storeChange({
-                ...change,
-                unitId: id,
-                unitName: name,
-              }),
-            );
-            registerAgentTools(workerPi, createWorker, {
-              control,
-              team,
-              id,
-              agentProfile,
-              approval,
-              approvalUI: workerOptions.approvalUI,
-              ui: shared?.ui,
-            });
-          },
-        });
-        return {
-          ...worker,
-          get usage() {
-            return worker.usage;
-          },
-          get context() {
-            return worker.context;
-          },
-          get conversation() {
-            return worker.conversation;
-          },
-          steer: (message, starting) => worker.steer(message, starting),
-          dispose: () => worker.dispose(),
-          async run(...args) {
-            const record = current.get(id);
-            await assertAgentModelAllowed(
-              record.model,
-              undefined,
-              record.pinnedModel,
-            );
-            args[1].throwIfAborted();
-            return worker.run(...args);
-          },
-        };
-      },
+      id => buildWorker(current.get(id), ctx, team, configuration),
     );
+    team.retainWorkerConfiguration(record.id, configuration);
     return toolResult([record], 'ack');
   };
 

@@ -188,6 +188,42 @@ export class AgentOrchestrator {
     return [...this.jobs.values()].map(job => copyRecord(job.record));
   }
 
+  /** Restore retained sessions without scheduling any background work. */
+  restore(
+    agents: (AgentRecord & ConversationSnapshot)[],
+    createWorker?: (record: AgentRecord) => Promise<AgentWorker>,
+  ): void {
+    this.ensureOpen();
+    for (const agent of agents) {
+      if (this.jobs.has(agent.id)) continue;
+      const {conversation: messages, conversationTruncated, ...saved} = agent;
+      const record = copyRecord(saved);
+      if (!isAgentFinished(record.status)) {
+        record.status = 'cancelled';
+        record.activity = 'Interrupted';
+        record.finishedAt = new Date().toISOString();
+      }
+      record.resumable = Boolean(
+        record.resumable &&
+        record.sessionFile &&
+        !record.autoCleanup &&
+        createWorker,
+      );
+      const conversation = new ConversationState();
+      conversation.replace(messages, conversationTruncated);
+      conversation.settle();
+      this.jobs.set(record.id, {
+        record,
+        conversation,
+        input: '',
+        ...(record.resumable
+          ? {createWorker: () => createWorker!(copyRecord(record))}
+          : {}),
+      });
+    }
+    this.changed();
+  }
+
   spawn(
     spec: AgentSpec,
     createWorker: (id: string) => Promise<AgentWorker>,
@@ -259,6 +295,7 @@ export class AgentOrchestrator {
         this.captureUsage(job);
         this.captureContext(job);
         this.captureConversation(job);
+        this.changed();
         return worker;
       })
       .finally(() => {

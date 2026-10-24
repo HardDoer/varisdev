@@ -1093,10 +1093,7 @@ void test('native extension dialogs appear in hub snapshots and receive validate
   await hub.respondToDialog('dialogs', dialogId, 'Two');
   assert.equal(await response, 'Two');
   assert.deepEqual(hub.snapshot().sessions[0].ui!.dialogs, []);
-  await assert.rejects(
-    hub.respondToDialog('dialogs', dialogId, 'One'),
-    /no longer waiting/,
-  );
+  await hub.respondToDialog('dialogs', dialogId, 'One');
   assert.ok(changes >= 2);
   assert.equal(current.runs.length, 1);
   const thinking = current.parent.ui.selectThinking({
@@ -1182,6 +1179,54 @@ void test('native extension dialogs appear in hub snapshots and receive validate
   const terminalId = hub.snapshot().sessions[0].ui!.dialogs[0].id;
   await hub.respondToDialog('dialogs', terminalId, undefined);
   assert.deepEqual(hub.snapshot().sessions[0].ui!.dialogs, []);
+});
+
+void test('dismissed extension dialogs ignore late responses without affecting the next dialog', async t => {
+  const current = controlledParent('dismissed-dialog', process.cwd());
+  const ui = new DesktopExtensionUI(() => current.parent.state.touch());
+  current.parent.ui = ui;
+  const hub = new DashboardHub(undefined, async () => current.parent);
+  t.after(async () => {
+    ui.dispose();
+    await hub.close();
+  });
+  await hub.createSession({cwd: process.cwd()});
+  let input = '';
+  const loading = ui.context.custom(() => ({
+    render: () => ['llama-load'],
+    invalidate: () => {},
+    handleInput: value => {
+      input += value;
+    },
+  }));
+  const next = ui.context.input('Next dialog');
+  const confirmation = ui.context.confirm('Continue?', 'Still waiting');
+  const [dismissed, pending, queued] = ui.snapshot().dialogs;
+  await until(() => !!ui.snapshot().dialogs[0]?.terminal?.output);
+  await assert.rejects(
+    hub.respondToDialog('dismissed-dialog', pending.id, 'Too early'),
+    /no longer waiting/,
+  );
+
+  await hub.respondToDialog('dismissed-dialog', dismissed.id);
+  assert.equal(await loading, undefined);
+  for (const value of [undefined, {input: '\r'}, {columns: 80, rows: 24}])
+    await hub.respondToDialog('dismissed-dialog', dismissed.id, value);
+  assert.equal(input, '');
+  assert.deepEqual(
+    ui.snapshot().dialogs.map(dialog => dialog.id),
+    [pending.id, queued.id],
+  );
+  await assert.rejects(
+    hub.respondToDialog('dismissed-dialog', queued.id, true),
+    /no longer waiting/,
+  );
+  await hub.respondToDialog('dismissed-dialog', pending.id, 'Ready');
+  assert.equal(await next, 'Ready');
+  await hub.respondToDialog('dismissed-dialog', queued.id, true);
+  assert.equal(await confirmation, true);
+  await hub.respondToDialog('dismissed-dialog', dismissed.id);
+  assert.deepEqual(ui.snapshot().dialogs, []);
 });
 
 void test('native reload reconnects hub observation when the SDK replaces its dashboard state', async t => {

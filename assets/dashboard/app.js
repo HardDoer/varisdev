@@ -1379,7 +1379,6 @@ function renderChanges(data) {
       }
     },
   );
-  text($('changes-count'), changes.length);
   $('changes-empty').hidden = changes.length > 0;
 }
 function conversationScope() {
@@ -1802,6 +1801,10 @@ function renderInspector() {
       unit.status === 'cancelling' ? 'Stopping' : 'Agent working',
     );
   }
+  text(
+    $('changes-count'),
+    data.changes.filter(change => change.unitId === state.unitId).length,
+  );
   renderInspectorPanel(data, unit, parent);
   renderSteering(conversationSnapshot());
   renderSessionFeatures(conversationSnapshot(), {

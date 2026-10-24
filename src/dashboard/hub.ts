@@ -806,10 +806,13 @@ export class DashboardHub {
     const dialog = ui.dialogs[0];
     const editor =
       ui.editor?.id === dialogId || ui.extensionEditor?.id === dialogId;
-    if (!editor && dialog?.id !== dialogId)
+    if (!editor && dialog?.id !== dialogId) {
+      // Cancellation can win a race with terminal input, resize or a reply.
+      if (!ui.dialogs.some(pending => pending.id === dialogId)) return;
       throw new DashboardInputError(
         'This extension dialog is no longer waiting for a response.',
       );
+    }
     if (value !== null && typeof value === 'object') {
       const response = fields(value);
       const keys = Object.keys(response);

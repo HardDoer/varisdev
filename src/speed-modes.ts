@@ -101,11 +101,11 @@ export function supportedSpeedModes(
     model.provider === 'openai' &&
     (model.api === 'openai-responses' ||
       (!oauth && model.api === 'openai-completions')) &&
-    model.baseUrl === 'https://api.openai.com/v1';
+    /^https:\/\/api\.openai\.com\/v1\/?$/.test(model.baseUrl);
   const legacyChatgpt =
     model.provider === 'openai-codex' &&
     model.api === 'openai-codex-responses' &&
-    model.baseUrl === 'https://chatgpt.com/backend-api';
+    /^https:\/\/chatgpt\.com\/backend-api\/?$/.test(model.baseUrl);
   if (!directOpenai && !legacyChatgpt) return ['regular'];
   const fast = listedModel(
     model.id,

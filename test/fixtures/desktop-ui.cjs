@@ -1134,6 +1134,8 @@ async function evaluate(callback, ...args) {
 }
 
 async function settle() {
+  // Minimized Windows fixtures throttle frames even with background throttling off.
+  if (window.isMinimized()) window.restore();
   await evaluate(
     () =>
       new Promise(resolve =>
@@ -3377,8 +3379,24 @@ async function main() {
           at,
           diff: '+updated',
         },
+        {
+          id: 'worker-change',
+          unitId: 'worker',
+          unitName: 'Worker',
+          path: 'worker.ts',
+          tool: 'write',
+          at,
+          diff: '+worker output',
+        },
       ];
       await publish();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('changes-count').textContent,
+        ),
+        '1',
+        'The Changes badge updates for the selected agent before opening the tab',
+      );
       await evaluate(() => {
         window.performanceMutations = {history: 0, hidden: 0};
         const history = new window.MutationObserver(records => {
@@ -3497,6 +3515,49 @@ async function main() {
         ),
         '+updated',
       );
+      await evaluate(() => {
+        document.querySelector('#unit-changes details').open = true;
+      });
+      data.changes[0].diff = '+updated again';
+      await publish();
+      await until(
+        () =>
+          document.querySelector('#unit-changes .diff').textContent ===
+          '+updated again',
+        'The visible Changes tab did not refresh an existing change',
+      );
+      data.changes.push({
+        id: 'live-change',
+        unitId: 'parent',
+        unitName: 'Parent',
+        path: 'new-file.ts',
+        tool: 'write',
+        at,
+        diff: '+created while viewing Changes',
+      });
+      await publish();
+      await until(
+        () =>
+          document.querySelectorAll('#unit-changes details').length === 2 &&
+          document.getElementById('changes-count').textContent === '2',
+        'The visible Changes tab did not show a new file change',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.querySelectorAll('#unit-changes details')[1].open,
+        ),
+        true,
+        'Live updates preserve expanded diffs',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await evaluate(() => {
+          document.querySelector('#unit-changes details').open = true;
+        });
+        await screenshot('changes-live');
+        window.setContentSize(960, 720);
+        window.webContents.setZoomFactor(1.25);
+        await screenshot('changes-live-compact');
+      }
     },
   );
 
@@ -5464,13 +5525,27 @@ async function main() {
             call.request.prompt === '/fast on',
         ),
       );
+      delete owner.session.controllable;
       await reloadPage();
       await evaluate(() => document.getElementById('tab-speed').click());
       await until(
         () =>
           !document.getElementById('session-speed').disabled &&
           document.getElementById('session-speed').value === 'fast',
-        'Speed tab must display the saved mode after reload',
+        'An owned main agent without an explicit control flag must retain its Speed control after reload',
+      );
+      owner.session.controllable = false;
+      await publish();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        true,
+        'An explicit unavailable control flag takes precedence over ownership',
+      );
+      delete owner.session.controllable;
+      await publish();
+      await until(
+        () => !document.getElementById('session-speed').disabled,
+        'The owned main agent did not regain its Speed control',
       );
       window.setContentSize(1100, 760);
       await resizeZoom(1.5);
@@ -5494,6 +5569,30 @@ async function main() {
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('speed-tab-parent-compact');
+      resources.get('alpha').speedModes = ['regular'];
+      await evaluate(() => {
+        document.getElementById('tab-conversation').click();
+        document.getElementById('tab-speed').click();
+      });
+      await until(
+        () =>
+          document.getElementById('session-speed').disabled &&
+          document.getElementById('speed-status').checkVisibility(),
+        'Regular-only main models need a visible explanation for the disabled control',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('speed-tab-parent-unavailable-compact');
+      resources.get('alpha').speedModes = ['regular', 'fast', 'ultrafast'];
+      await evaluate(() => {
+        document.getElementById('tab-conversation').click();
+        document.getElementById('tab-speed').click();
+      });
+      await until(
+        () =>
+          !document.getElementById('session-speed').disabled &&
+          document.getElementById('speed-status').hidden,
+        'Supported main-agent capabilities did not restore the Speed control',
+      );
       await resizeZoom(1);
       window.setContentSize(1600, 1000);
       await settle();
@@ -7003,6 +7102,71 @@ async function main() {
           value: undefined,
         },
       ]);
+
+      const loadNotice = {
+        id: 'llama-load-notice',
+        type: 'info',
+        message: 'Model loaded',
+      };
+      hub.sessions[0].ui = {
+        notifications: [loadNotice],
+        statuses: [{key: 'llama-load', text: 'Loading model'}],
+        editor: {id: 'load-editor', text: 'Earlier draft'},
+        dialogs: [
+          {
+            id: 'llama-load',
+            kind: 'custom',
+            title: 'llama-load',
+            terminal: {
+              columns: 80,
+              rows: 16,
+              output: 'Loading model…\r\n',
+              revision: 1,
+            },
+          },
+        ],
+      };
+      await publish();
+      await until(
+        () => document.getElementById('extension-dialog').open,
+        'The loading dialog did not open',
+      );
+      hub.sessions[0].ui = {
+        notifications: [loadNotice],
+        statuses: [{key: 'llama-load', text: 'Ready'}],
+        editor: {id: 'ready-editor', text: 'Current draft'},
+        dialogs: [],
+      };
+      await publish();
+      await until(
+        () => !document.getElementById('extension-dialog').open,
+        'The finished loading dialog did not close',
+      );
+      await clickPointer('#extension-notifications button');
+      assert.deepEqual(
+        await evaluate(() => ({
+          dialogOpen: document.getElementById('extension-dialog').open,
+          noticesHidden: document.getElementById('extension-notifications')
+            .hidden,
+          draft: document.getElementById('parent-prompt').value,
+          status: document.getElementById('extension-statuses').textContent,
+        })),
+        {
+          dialogOpen: false,
+          noticesHidden: true,
+          draft: 'Current draft',
+          status: 'llama-load: Ready',
+        },
+        'Dismissing a notice must keep the latest dialog, status and editor state',
+      );
+      await clickPointer('#parent-prompt');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'parent-prompt',
+        'The composer remains usable after dismissing the loading notice',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('llama-notice-dismissed');
     },
   );
 

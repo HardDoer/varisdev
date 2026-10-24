@@ -12,6 +12,8 @@ Resumed conversations keep their saved agent configuration. The selected configu
 
 Every new agent has its own message history. Starting one does not copy the calling conversation or other agents' messages. Resuming an agent retains its own history. Additional agents share workspace files and can exchange messages explicitly.
 
+**Menu → Resume session** restores the workspace's additional agents, conversations, results, recorded file changes, and inbox messages. Retained agents can continue from their saved conversations. Work interrupted by an app exit appears as stopped and waits for an explicit follow-up. Older saved workspaces recover available agent transcripts for viewing; those imported agents cannot continue because their launch settings were not saved.
+
 ## Other agents
 
 Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The main agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`. Quote names containing spaces, such as `@"Review Agent" Check the changes` or `@agent:"Team/Review Agent" Check the changes`; the mention picker inserts the appropriate form.

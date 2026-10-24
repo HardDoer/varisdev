@@ -506,6 +506,85 @@ void test(
 );
 
 void test(
+  'main agent speed capabilities accept official OpenAI endpoints with a trailing slash',
+  options,
+  async t => {
+    const f = await fixture(t);
+    await writeFile(
+      join(f.agentDir, 'models.json'),
+      JSON.stringify({
+        providers: {
+          openai: {baseUrl: 'https://api.openai.com/v1/'},
+          'openai-codex': {baseUrl: 'https://chatgpt.com/backend-api/'},
+        },
+      }),
+    );
+    for (const reference of [
+      'openai/gpt-6-astra',
+      'openai-codex/gpt-6-astra',
+    ]) {
+      const parent = await f.create(reference);
+      const features = await parent.features();
+      assert.deepEqual(features.speedModes, ultrafast, reference);
+      await parent.prompt('/fast on');
+      assert.equal(parent.state.snapshot().session.speedMode, 'fast');
+      await parent.prompt('Fast response through the official endpoint');
+      assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
+      assert.equal(parent.state.snapshot().session.error, undefined);
+      await parent.prompt('/ultrafast on');
+      await parent.prompt('Ultrafast response through the official endpoint');
+      assert.equal(f.requests.at(-1)?.body.service_tier, 'ultrafast');
+    }
+  },
+);
+
+void test(
+  'main agent speed capabilities follow live credentials without replacing the session',
+  options,
+  async t => {
+    const f = await fixture(t);
+    const parent = await f.create('openai/gpt-5.5');
+    assert.equal(process.env.OPENAI_API_KEY, undefined);
+    assert.deepEqual((await parent.features()).speedModes, fast);
+    await parent.prompt('/fast on');
+    const authPath = join(f.agentDir, 'auth.json');
+    const saved = JSON.parse(await readFile(authPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    saved.openai = {
+      type: 'oauth',
+      access: 'switched-chatgpt-access',
+      refresh: 'switched-refresh',
+      expires: Date.now() + 3600000,
+      clientId: 'switch-client',
+    };
+    await writeFile(authPath, JSON.stringify(saved));
+    const subscription = await parent.features();
+    assert.deepEqual(subscription.speedModes, regular);
+    assert.equal(subscription.speedMode, 'regular');
+    await assert.rejects(parent.prompt('/fast on'), /unavailable/);
+    await parent.prompt('Regular response with saved ChatGPT sign-in');
+    assert.equal(f.requests.at(-1)?.body.service_tier, undefined);
+    assert.equal(
+      f.requests.at(-1)?.headers.get('authorization'),
+      'Bearer switched-chatgpt-access',
+    );
+    saved.openai = {type: 'api_key', key: 'sk-switched-api-key'};
+    await writeFile(authPath, JSON.stringify(saved));
+    const restored = await parent.features();
+    assert.deepEqual(restored.speedModes, fast);
+    assert.equal(restored.speedMode, 'fast');
+    await parent.prompt('Fast response with the replacement API key');
+    assert.equal(f.requests.at(-1)?.body.service_tier, 'priority');
+    assert.equal(
+      f.requests.at(-1)?.headers.get('authorization'),
+      'Bearer sk-switched-api-key',
+    );
+  },
+);
+
+void test(
   'Anthropic integration sends fast speed and preserves its required beta header only for preview models',
   options,
   async t => {

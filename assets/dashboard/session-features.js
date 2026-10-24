@@ -474,7 +474,7 @@ function renderSuggestions() {
 function canRunCommand(name) {
   return (
     conversationView &&
-    current?.session.controllable &&
+    (current?.session.controllable ?? current?.session.owned) &&
     (current.session.status === 'idle' ||
       (['running', 'compacting'].includes(current.session.status) &&
         nativeCommands.find(command => command.name === name)?.live))
@@ -521,6 +521,21 @@ function renderSettingsControls() {
   const cause =
     speedErrors.get(current?.session.id) ||
     contextErrors.get(current?.session.id);
+  let speedStatus = '';
+  if (current && !cause && !busy && !loading.has(current.session.id)) {
+    if (!(current.session.controllable ?? current.session.owned))
+      speedStatus = 'This conversation cannot be controlled.';
+    else if (!resource?.model && !current.session.model)
+      speedStatus = 'Choose a model to change speed.';
+    else if (resource && modes.length < 2) {
+      const model = resource.model
+        ? `${resource.model.provider}/${resource.model.id}`
+        : current.session.model;
+      speedStatus = `${model} supports Regular speed only with the current provider and sign-in.`;
+    }
+  }
+  $('speed-status').textContent = speedStatus;
+  $('speed-status').hidden = !speedStatus;
   $('speed-error').hidden = !cause;
   if (cause) error($('speed-error'), cause);
   $('session-maintenance').hidden = !conversationView;
@@ -586,12 +601,8 @@ function closeExtensionDialog() {
   editor.scrollLeft = position.left;
   draftChanged();
 }
-function renderExtensionUI(data) {
-  const ui = data.ui;
-  const ownerId = data.uiOwnerId || data.session.id;
-  const notices = (ui?.notifications || []).filter(
-    item => !dismissed.has(item.id),
-  );
+function renderExtensionNotifications(notifications = []) {
+  const notices = notifications.filter(item => !dismissed.has(item.id));
   const signature = JSON.stringify(notices);
   const container = $('extension-notifications');
   container.hidden = notices.length === 0;
@@ -604,13 +615,18 @@ function renderExtensionUI(data) {
         close.type = 'button';
         close.addEventListener('click', () => {
           dismissed.add(item.id);
-          renderExtensionUI(data);
+          renderExtensionNotifications(notifications);
         });
         notice.append(node('p', '', item.message), close);
         return notice;
       }),
     );
   }
+}
+function renderExtensionUI(data) {
+  const ui = data.ui;
+  const ownerId = data.uiOwnerId || data.session.id;
+  renderExtensionNotifications(ui?.notifications);
   const statuses = [...(ui?.statuses || [])];
   for (const widget of ui?.widgets || [])
     statuses.push({key: widget.key, text: widget.lines.join('\n')});

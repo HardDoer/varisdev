@@ -1,4 +1,7 @@
 import {randomUUID} from 'node:crypto';
+import {existsSync} from 'node:fs';
+import {getAgentDir} from '@earendil-works/pi-coding-agent';
+import {AgentHistoryStore, type AgentWorkerConfiguration} from './history.ts';
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -7,6 +10,7 @@ import {
   AgentOrchestrator,
   isAgentFinished,
   type AgentRecord,
+  type AgentWorker,
 } from './orchestrator.ts';
 
 import type {UnitChange} from '../dashboard/changes.ts';
@@ -61,6 +65,12 @@ function copyMessage(message: ParentMessage): ParentMessage {
   return {...message, from: {...message.from}};
 }
 
+type RestoreWorker = (
+  record: AgentRecord,
+  ctx: ExtensionContext,
+  team: AgentTeam,
+) => Promise<AgentWorker>;
+
 /** Owns workers and their inbox for one parent session. */
 class AgentTeam {
   private readonly manager = new AgentOrchestrator();
@@ -73,11 +83,43 @@ class AgentTeam {
   readonly sessionId: string;
   private readonly unsubscribe: () => void;
   private readonly publish: () => void;
+  private readonly history?: AgentHistoryStore;
+  private readonly configurations = new Map<string, AgentWorkerConfiguration>();
+  private closing?: Promise<void>;
 
-  constructor(ctx: ExtensionContext, changed: () => void) {
+  constructor(
+    ctx: ExtensionContext,
+    changed: () => void,
+    restoreWorker?: RestoreWorker,
+  ) {
     this.context = ctx;
     this.publish = changed;
     this.sessionId = ctx.sessionManager.getSessionId();
+    if (ctx.sessionManager.getSessionFile?.()) {
+      this.history = new AgentHistoryStore(getAgentDir(), this.sessionId);
+      const saved = this.history.read();
+      if (saved) {
+        for (const [id, configuration] of Object.entries(saved.configurations))
+          this.configurations.set(id, configuration);
+        this.messages.push(...saved.messages.slice(-maxParentMessages));
+        this.messageSequence = saved.messageSequence;
+        this.changes.push(...saved.changes.slice(-100));
+        this.manager.restore(
+          saved.agents.map(agent => ({
+            ...agent,
+            resumable: Boolean(
+              agent.resumable &&
+              agent.sessionFile &&
+              existsSync(agent.sessionFile) &&
+              this.configurations.has(agent.id),
+            ),
+          })),
+          restoreWorker
+            ? record => restoreWorker(record, this.context, this)
+            : undefined,
+        );
+      }
+    }
     const stopObservingAgents = this.manager.subscribe(() => {
       this.updateStatus();
       this.changed();
@@ -94,7 +136,32 @@ class AgentTeam {
 
   private changed(): void {
     this.cachedSnapshot = undefined;
+    this.saveHistory();
     this.publish();
+  }
+
+  private saveHistory(snapshot?: AgentSessionSnapshot): void {
+    this.history?.save(() => ({
+      ...(snapshot ?? this.deliverySnapshot()),
+      version: 1,
+      messageSequence: this.messageSequence,
+      configurations: Object.fromEntries(this.configurations),
+    }));
+  }
+
+  retainWorkerConfiguration(
+    id: string,
+    configuration: AgentWorkerConfiguration,
+  ): void {
+    this.configurations.set(id, structuredClone(configuration));
+    this.saveHistory();
+  }
+
+  workerConfiguration(id: string): AgentWorkerConfiguration {
+    const configuration = this.configurations.get(id);
+    if (!configuration)
+      throw new Error('Agent resume configuration is unavailable.');
+    return structuredClone(configuration);
   }
 
   getManager(): AgentOrchestrator {
@@ -236,7 +303,7 @@ class AgentTeam {
   }
 
   close(): Promise<void> {
-    if (this.closed) return this.manager.close();
+    if (this.closing) return this.closing;
     const snapshot = this.deliverySnapshot();
     this.cachedSnapshot = {
       ...snapshot,
@@ -244,10 +311,24 @@ class AgentTeam {
     };
     this.closed = true;
     this.unsubscribe();
-    this.messages.length = 0;
-    this.changes.length = 0;
     this.setStatus();
-    return this.manager.close();
+    this.closing = this.manager.close().then(async () => {
+      // Disposal releases workers, but their Pi session files remain available
+      // for an explicit continuation when this parent is reopened.
+      const previous = new Map(snapshot.agents.map(agent => [agent.id, agent]));
+      const agents = this.manager.list().map(agent => ({
+        ...agent,
+        ...this.manager.conversation(agent.id),
+        resumable: Boolean(
+          previous.get(agent.id)?.resumable &&
+          agent.sessionFile &&
+          !agent.autoCleanup,
+        ),
+      }));
+      this.saveHistory({...snapshot, agents});
+      await this.history?.flush();
+    });
+    return this.closing;
   }
 }
 
@@ -257,11 +338,13 @@ export class AgentSessionController {
   private finalSnapshot?: AgentSessionSnapshot;
   private shuttingDown = false;
   private readonly listeners = new Set<() => void>();
+  private restoreWorker?: RestoreWorker;
 
   constructor(pi: ExtensionAPI) {
-    pi.on('session_start', () => {
+    pi.on('session_start', (_event, ctx) => {
       this.shuttingDown = false;
       this.finalSnapshot = undefined;
+      if (ctx.sessionManager.getSessionFile?.()) this.attach(ctx);
     });
     pi.on('agent_start', (_event, ctx) => {
       if (this.shuttingDown) return;
@@ -276,6 +359,10 @@ export class AgentSessionController {
       this.changed();
       await closing;
     });
+  }
+
+  setRestoreWorker(restoreWorker: RestoreWorker): void {
+    this.restoreWorker = restoreWorker;
   }
 
   subscribe(listener: () => void): () => void {
@@ -308,7 +395,7 @@ export class AgentSessionController {
     if (this.shuttingDown) throw new Error('The workspace is shutting down.');
     if (this.team) this.team.updateContext(ctx);
     else {
-      this.team = new AgentTeam(ctx, () => this.changed());
+      this.team = new AgentTeam(ctx, () => this.changed(), this.restoreWorker);
       this.changed();
     }
   }

@@ -54,6 +54,7 @@ import {
 export interface WorkerOptions {
   id: string;
   parentSessionId: string;
+  resumeSessionFile?: string;
   cwd: string;
   name: string;
   instructions?: string;
@@ -531,11 +532,15 @@ export async function createSessionWorker(
     modelsPath: null,
     refreshOnCreate: false,
   });
-  const sessionManager = SessionManager.create(options.cwd, directory);
-  sessionManager.appendCustomEntry('varisdev.agent-context', {
-    scope: contextScope,
-  });
-  sessionManager.appendCustomEntry('varisdev.agent-profile', agentProfile);
+  const sessionManager = options.resumeSessionFile
+    ? SessionManager.open(options.resumeSessionFile, directory, options.cwd)
+    : SessionManager.create(options.cwd, directory);
+  if (!options.resumeSessionFile) {
+    sessionManager.appendCustomEntry('varisdev.agent-context', {
+      scope: contextScope,
+    });
+    sessionManager.appendCustomEntry('varisdev.agent-profile', agentProfile);
+  }
   const services = await createAgentSessionServices({
     cwd: options.cwd,
     agentDir,
