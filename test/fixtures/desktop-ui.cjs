@@ -10440,9 +10440,17 @@ async function main() {
           'PLAN.md',
         ],
       );
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .conversation-text strong a')
+              ?.textContent,
+        ),
+        'src/ai-worker.js',
+      );
       await evaluate(() => {
         const link = document.querySelector(
-          '#conversation a[data-file-path="src/main.js"]',
+          '#conversation strong a[data-file-path="src/ai-worker.js"]',
         );
         window.fixtureLink = link;
         link.click();
@@ -10450,7 +10458,7 @@ async function main() {
       assert.deepEqual(await waitForCall('openFile'), {
         method: 'openFile',
         sessionId: hub.sessions[1].session.id,
-        path: 'src/main.js',
+        path: 'src/ai-worker.js',
       });
       await evaluate(() => {
         const range = document.createRange();
@@ -10465,11 +10473,11 @@ async function main() {
         await evaluate(() => ({
           sameLink:
             document.querySelector(
-              '#conversation a[data-file-path="src/main.js"]',
+              '#conversation strong a[data-file-path="src/ai-worker.js"]',
             ) === window.fixtureLink,
           selection: window.getSelection().toString(),
         })),
-        {sameLink: true, selection: 'src/main.js'},
+        {sameLink: true, selection: 'src/ai-worker.js'},
       );
       await evaluate(() =>
         document.querySelector('#conversation a[data-external-url]').click(),
@@ -10519,6 +10527,105 @@ async function main() {
         ),
         'PLAN.md',
       );
+    },
+  );
+
+  await run(
+    'conversation bold renders as markers arrive and preserves streamed selection',
+    async () => {
+      hub.sessions[0].conversation = [
+        {
+          id: 'bold-answer',
+          role: 'assistant',
+          text: '- **IVA1 loads',
+          at,
+          streaming: true,
+        },
+      ];
+      await publish();
+      assert.equal(
+        await evaluate(
+          () =>
+            document.querySelector('#conversation .conversation-text')
+              .textContent,
+        ),
+        '- **IVA1 loads',
+      );
+      await evaluate(() => {
+        const text = document.querySelector(
+          '#conversation .conversation-text',
+        ).firstChild;
+        const start = text.data.indexOf('IVA1');
+        window.getSelection().setBaseAndExtent(text, start + 4, text, start);
+      });
+      hub.sessions[0].conversation[0].text +=
+        ' successfully**\n- __Second check passes__';
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => {
+          const content = document.querySelector(
+            '#conversation .conversation-text',
+          );
+          const strong = content.querySelector('strong');
+          const retainedSelection = window.getSelection().toString();
+          const backwards =
+            window.getSelection().anchorNode === strong.firstChild;
+          const range = document.createRange();
+          range.selectNodeContents(strong.firstChild);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(range);
+          window.fixtureBold = {element: strong, text: strong.firstChild};
+          return {
+            text: content.textContent,
+            retainedSelection,
+            backwards,
+            bold: [...content.querySelectorAll('strong')].map(
+              item => item.textContent,
+            ),
+            heavier:
+              Number(getComputedStyle(strong).fontWeight) >
+              Number(getComputedStyle(content).fontWeight),
+          };
+        }),
+        {
+          text: '- IVA1 loads successfully\n- Second check passes',
+          retainedSelection: 'IVA1',
+          backwards: true,
+          bold: ['IVA1 loads successfully', 'Second check passes'],
+          heavier: true,
+        },
+      );
+      hub.sessions[0].conversation[0].text +=
+        '\nMore streamed text.\n`**literal**`\n**<img src=x onerror=alert(1)>**';
+      hub.sessions[0].conversation[0].streaming = false;
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => {
+          const content = document.querySelector(
+            '#conversation .conversation-text',
+          );
+          return {
+            sameElement:
+              content.querySelector('strong') === window.fixtureBold.element,
+            sameText:
+              content.querySelector('strong').firstChild ===
+              window.fixtureBold.text,
+            selection: window.getSelection().toString(),
+            literal: content.textContent.includes('`**literal**`'),
+            html: Boolean(content.querySelector('img, script')),
+          };
+        }),
+        {
+          sameElement: true,
+          sameText: true,
+          selection: 'IVA1 loads successfully',
+          literal: true,
+          html: false,
+        },
+      );
+      await evaluate(() => window.getSelection().removeAllRanges());
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('conversation-bold');
     },
   );
 

@@ -100,9 +100,8 @@ void test('screenshot filenames in inline code become project links', () => {
       '**`src/ai-worker.js`** contains the chess AI logic.\n\n`src/main.js` starts the AI worker.',
     ),
     [
-      {text: '**'},
-      {text: 'src/ai-worker.js', path: 'src/ai-worker.js'},
-      {text: '** contains the chess AI logic.\n\n'},
+      {text: 'src/ai-worker.js', path: 'src/ai-worker.js', strong: true},
+      {text: ' contains the chess AI logic.\n\n'},
       {text: 'src/main.js', path: 'src/main.js'},
       {text: ' starts the AI worker.'},
     ],
@@ -127,6 +126,78 @@ void test('screenshot filenames in inline code become project links', () => {
     '```js\nconst name = "src/main.js";\n```',
   ])
     assert.deepEqual(fileLinkParts(text), [{text}]);
+});
+
+void test('conversation bold spans include links and leave incomplete markers readable', () => {
+  assert.deepEqual(
+    fileLinkParts('- **IVA1 loads successfully**\n- __Second check passes__'),
+    [
+      {text: '- '},
+      {text: 'IVA1 loads successfully', strong: true},
+      {text: '\n- '},
+      {text: 'Second check passes', strong: true},
+    ],
+  );
+  assert.deepEqual(
+    fileLinkParts(
+      '**See [report](report.md) and [website](https://example.com)**.',
+    ),
+    [
+      {text: 'See ', strong: true},
+      {text: 'report', path: 'report.md', strong: true},
+      {text: ' and ', strong: true},
+      {text: 'website', url: 'https://example.com/', strong: true},
+      {text: '.'},
+    ],
+  );
+  assert.deepEqual(fileLinkParts('**See https://example.com**.'), [
+    {text: 'See ', strong: true},
+    {text: 'https://example.com', url: 'https://example.com/', strong: true},
+    {text: '.'},
+  ]);
+  assert.deepEqual(fileLinkParts('__https://example.com/a__b__'), [
+    {
+      text: 'https://example.com/a__b',
+      url: 'https://example.com/a__b',
+      strong: true,
+    },
+  ]);
+  assert.deepEqual(fileLinkParts('**Outer __inner__ outer**'), [
+    {text: 'Outer inner outer', strong: true},
+  ]);
+  assert.deepEqual(fileLinkParts('Unclosed **text with __bold__'), [
+    {text: 'Unclosed **text with '},
+    {text: 'bold', strong: true},
+  ]);
+  for (const text of [
+    '- **IVA1 loads',
+    '- **IVA1 loads successfully*',
+    '** leading space**',
+    '**trailing space **',
+    'some__identifier__name',
+    '`**literal**`',
+    '```md\n**literal**\n```',
+    '~~~md\n__literal__\n~~~',
+    '~~~md\nconst example = "~~~";\n**literal**\n~~~',
+    '```md\nconst example = "```";\n**literal**\n```',
+    '```md\n**unfinished fence**',
+    String.raw`\**escaped\**`,
+    '*'.repeat(100_000),
+    '__ '.repeat(30_000),
+  ])
+    assert.deepEqual(fileLinkParts(text), [{text}], text.slice(0, 80));
+});
+
+void test('inline tildes preserve subsequent conversation links and bold text', () => {
+  assert.deepEqual(
+    fileLinkParts('Use ~~~ then **bold** and https://example.com'),
+    [
+      {text: 'Use ~~~ then '},
+      {text: 'bold', strong: true},
+      {text: ' and '},
+      {text: 'https://example.com', url: 'https://example.com/'},
+    ],
+  );
 });
 
 void test('Windows drive and UNC targets keep their roots when resolved in a project', () => {
