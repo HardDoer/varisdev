@@ -62,6 +62,12 @@ export function initPanelResize() {
     }
     return Math.ceil(chrome + 120);
   }
+  function overviewMinimum() {
+    return Math.min(
+      100,
+      overview.querySelector('.section-heading').offsetHeight + 42,
+    );
+  }
   function dividerHeight(id) {
     const handle = document.getElementById(id);
     return visible(handle) ? handle.offsetHeight : 0;
@@ -93,16 +99,11 @@ export function initPanelResize() {
         const others = visible(button)
           ? button.offsetHeight + 6
           : visible(workers) && workers.parentElement === column
-            ? visible(factory)
-              ? workers.offsetHeight
-              : 148
+            ? 148
             : 0;
         const dividers =
           dividerHeight('workspaces-resize') + dividerHeight('agents-resize');
-        const min = Math.min(
-          100,
-          overview.querySelector('.section-heading').offsetHeight + 42,
-        );
+        const min = overviewMinimum();
         return {
           total,
           min,
@@ -127,7 +128,7 @@ export function initPanelResize() {
           max: Math.max(
             148,
             total -
-              (visible(overview) ? overview.offsetHeight : 0) -
+              (visible(overview) ? overviewMinimum() : 0) -
               dividerHeight('workspaces-resize') -
               dividerHeight('agents-resize') -
               factoryMinimum(),
@@ -158,22 +159,82 @@ export function initPanelResize() {
     },
   ];
 
-  function refresh() {
+  function sizeRows(priority) {
+    const rows = splits.filter(split => split.axis === 'y');
+    if (!rows.every(split => visible(split.handle))) return false;
+    // A sibling can recover space if the pointer reverses within one drag.
+    const preferred = rows.map(row =>
+      drag && drag.split === priority && row !== priority
+        ? drag.previous[row.key]
+        : sizes[row.key],
+    );
+    // Measure automatic rows without a temporary clamp from a smaller window.
+    for (const [index, row] of rows.entries())
+      if (preferred[index] === undefined) row.apply(undefined);
+    const bounds = rows.map(row => row.measure());
+    const values = rows.map((_row, index) => {
+      const {total, min, max, value} = bounds[index];
+      return clamp(
+        preferred[index] === undefined ? value : preferred[index] * total,
+        min,
+        max,
+      );
+    });
+    const first = priority === rows[1] ? 1 : 0;
+    const second = 1 - first;
+    const budget = bounds[0].max + bounds[1].min;
+    values[second] = Math.max(
+      bounds[second].min,
+      Math.min(values[second], budget - values[first]),
+    );
+    for (const [index, row] of rows.entries()) {
+      if (priority?.axis === 'y') {
+        if (
+          preferred[index] === undefined &&
+          values[index] === bounds[index].value
+        )
+          delete sizes[row.key];
+        else sizes[row.key] = values[index] / bounds[index].total;
+      }
+      row.apply(
+        sizes[row.key] === undefined && values[index] === bounds[index].value
+          ? undefined
+          : values[index],
+      );
+    }
+    return true;
+  }
+
+  function refresh(priority) {
+    if (frame !== undefined) window.cancelAnimationFrame(frame);
     frame = undefined;
     if (disposed || !workspace.getClientRects().length) return;
+    if (drag?.pending !== undefined) {
+      const {split, pending} = drag;
+      drag.pending = undefined;
+      const bounds = split.measure();
+      if (bounds.total > 0)
+        sizes[split.key] =
+          clamp(pending, bounds.min, bounds.max) / bounds.total;
+      priority = split;
+    }
+    let rowsSized = false;
     for (const split of splits) {
       if (!split.handle.getClientRects().length) {
         if (drag?.split === split) finish(false);
         continue;
       }
+      if (split.key === 'workspaces') rowsSized = sizeRows(priority);
       let bounds = split.measure();
       if (bounds.total <= 0) continue;
-      const saved = sizes[split.key];
-      split.apply(
-        saved === undefined
-          ? undefined
-          : clamp(saved * bounds.total, bounds.min, bounds.max),
-      );
+      if (split.axis !== 'y' || !rowsSized) {
+        const saved = sizes[split.key];
+        split.apply(
+          saved === undefined
+            ? undefined
+            : clamp(saved * bounds.total, bounds.min, bounds.max),
+        );
+      }
       bounds = split.measure();
       const percent = value => String(Math.round((100 * value) / bounds.total));
       split.handle.setAttribute('aria-valuemin', percent(bounds.min));
@@ -187,21 +248,25 @@ export function initPanelResize() {
   }
   function schedule() {
     if (!disposed && frame === undefined)
-      frame = window.requestAnimationFrame(refresh);
+      frame = window.requestAnimationFrame(() => refresh());
   }
   function change(split, value) {
     const bounds = split.measure();
+    if (bounds.total <= 0) return;
     sizes[split.key] = clamp(value, bounds.min, bounds.max) / bounds.total;
-    refresh();
+    refresh(split);
   }
   function finish(commit) {
+    if (!drag) return;
+    // A release may arrive before the frame that applies the final movement.
+    if (commit && drag.pending !== undefined) refresh();
     if (!drag) return;
     const {split, previous, pointerId} = drag;
     drag = undefined;
     if (commit) save();
     else {
-      if (previous === undefined) delete sizes[split.key];
-      else sizes[split.key] = previous;
+      for (const key of Object.keys(sizes)) delete sizes[key];
+      Object.assign(sizes, previous);
       refresh();
     }
     delete document.body.dataset.panelResizing;
@@ -230,9 +295,10 @@ export function initPanelResize() {
       handle.focus({preventScroll: true});
       drag = {
         split,
-        previous: sizes[split.key],
+        previous: {...sizes},
         pointerId: event.pointerId,
         start: split.axis === 'x' ? event.clientX : event.clientY,
+        moved: false,
         value: split.measure().value,
       };
       handle.setPointerCapture(event.pointerId);
@@ -241,13 +307,18 @@ export function initPanelResize() {
     listen(handle, 'pointermove', event => {
       if (drag?.split !== split || event.pointerId !== drag.pointerId) return;
       const position = split.axis === 'x' ? event.clientX : event.clientY;
-      change(
-        split,
-        drag.value + (position - drag.start) * (split.direction || 1),
-      );
+      drag.moved = true;
+      drag.pending =
+        drag.value + (position - drag.start) * (split.direction || 1);
+      schedule();
     });
     listen(handle, 'pointerup', event => {
-      if (event.pointerId === drag?.pointerId) finish(true);
+      if (event.pointerId !== drag?.pointerId) return;
+      const position = split.axis === 'x' ? event.clientX : event.clientY;
+      if (drag.moved || position !== drag.start)
+        drag.pending =
+          drag.value + (position - drag.start) * (split.direction || 1);
+      finish(true);
     });
     listen(handle, 'pointercancel', () => finish(false));
     listen(handle, 'lostpointercapture', () => finish(false));

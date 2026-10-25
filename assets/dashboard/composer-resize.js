@@ -115,11 +115,17 @@ export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
     else setTerminalHeight(next);
     schedule();
   }
+  function applyDrag(element) {
+    if (!drag || element !== drag.element || drag.latestY === drag.appliedY)
+      return;
+    drag.appliedY = drag.latestY;
+    apply(element, drag.height + drag.y - drag.latestY);
+  }
   function sync() {
-    frame = undefined;
     if (disposed) return;
     const element = target();
     if (drag && element !== drag.element) finish(false);
+    else applyDrag(element);
     handle.setAttribute('aria-disabled', String(!element));
     handle.tabIndex = element ? 0 : -1;
     if (!element) return;
@@ -144,11 +150,19 @@ export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
   }
   function schedule() {
     if (!disposed && frame === undefined)
-      frame = window.requestAnimationFrame(sync);
+      frame = window.requestAnimationFrame(() => {
+        // Keep schedule() calls during sync covered by the current frame.
+        try {
+          sync();
+        } finally {
+          frame = undefined;
+        }
+      });
   }
   function finish(restore) {
     if (!drag) return;
     const previous = drag;
+    if (!restore && previous.latestY !== previous.appliedY) applyDrag(target());
     drag = undefined;
     handle.classList.remove('dragging');
     if (document.body.dataset.panelResizing === 'y')
@@ -178,6 +192,8 @@ export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
       element,
       pointerId: event.pointerId,
       y: event.clientY,
+      latestY: event.clientY,
+      appliedY: event.clientY,
       height: element.getBoundingClientRect().height,
       textareaHeight: textarea.style.height,
       terminalHeight,
@@ -188,14 +204,13 @@ export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
   }
   function pointermove(event) {
     if (!drag || event.pointerId !== drag.pointerId) return;
-    if (target() !== drag.element) {
-      finish(false);
-      return;
-    }
-    apply(drag.element, drag.height + drag.y - event.clientY);
+    drag.latestY = event.clientY;
+    schedule();
   }
   function pointerup(event) {
-    if (event.pointerId === drag?.pointerId) finish(false);
+    if (event.pointerId !== drag?.pointerId) return;
+    drag.latestY = event.clientY;
+    finish(false);
   }
   function cancelPointer(event) {
     if (event.pointerId === drag?.pointerId) finish(true);
@@ -299,6 +314,7 @@ export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
     finish(true);
     disposed = true;
     if (frame !== undefined) window.cancelAnimationFrame(frame);
+    frame = undefined;
     resize.disconnect();
     mutations.disconnect();
     for (const [node, event, listener, capture] of listeners)

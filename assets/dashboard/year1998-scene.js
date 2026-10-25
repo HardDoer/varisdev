@@ -2070,14 +2070,23 @@ function createScene(
   function resize() {
     if (disposed) return;
     const bounds = canvas.getBoundingClientRect();
-    width = Math.max(1, bounds.width);
-    height = Math.max(1, bounds.height);
+    const nextWidth = Math.max(1, bounds.width);
+    const nextHeight = Math.max(1, bounds.height);
     const dpr = window.devicePixelRatio || 1;
+    const w = Math.round(nextWidth * dpr),
+      h = Math.round(nextHeight * dpr);
+    if (
+      width === nextWidth &&
+      height === nextHeight &&
+      canvas.width === w &&
+      canvas.height === h
+    )
+      return;
+    width = nextWidth;
+    height = nextHeight;
     const scale = Math.max(0.6, Math.min(width / 420, height / 265));
     viewWidth = Math.max(1, Math.round(width / scale));
     viewHeight = Math.max(1, Math.round(height / scale));
-    const w = Math.round(width * dpr),
-      h = Math.round(height * dpr);
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
     refresh();

@@ -22,8 +22,11 @@ import {
 
 const help = `VarisDev
 
-Usage: varisdev [folder]
+Usage: varisdev [folder | --overview] [--ozone-platform=x11|wayland]
 
+  --overview            Open the project overview
+  --ozone-platform=x11|wayland
+                        Select the Linux display backend
   update                Install available updates
   update --check        Check for updates
   login [provider]      Connect a model account
@@ -143,11 +146,46 @@ export async function waitForPreviousDesktop(): Promise<void> {
   }
 }
 
+export type OzonePlatform = 'x11' | 'wayland';
+
+export function parseDesktopArguments(
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): {project: string | undefined; ozonePlatform?: OzonePlatform} {
+  let target: string | undefined;
+  let ozonePlatform: OzonePlatform | undefined;
+  for (const arg of args) {
+    if (arg === '--ozone-platform' || arg.startsWith('--ozone-platform=')) {
+      if (ozonePlatform) throw new Error('Specify --ozone-platform only once.');
+      const value = arg.slice('--ozone-platform='.length);
+      if (value !== 'x11' && value !== 'wayland')
+        throw new Error(
+          'Use --ozone-platform=x11 or --ozone-platform=wayland.',
+        );
+      if (platform !== 'linux')
+        throw new Error('--ozone-platform is only supported on Linux.');
+      ozonePlatform = value;
+    } else {
+      if (target !== undefined || (arg.startsWith('-') && arg !== '--overview'))
+        throw new Error(
+          'Usage: varisdev [folder | --overview] [--ozone-platform=x11|wayland]. Run varisdev --help for commands.',
+        );
+      target = arg;
+    }
+  }
+  return {
+    project:
+      target === '--overview' ? undefined : resolve(target ?? process.cwd()),
+    ozonePlatform,
+  };
+}
+
 /** Launch a detached desktop and wait until its window and session are ready. */
 export async function openDesktop(
   installRoot: string,
   runtimeRoot: string,
   project?: string,
+  ozonePlatform?: OzonePlatform,
 ): Promise<void> {
   await waitForPreviousDesktop();
   const dataDir = defaultDataDir();
@@ -172,6 +210,7 @@ export async function openDesktop(
         ...(launcher
           ? []
           : [join(runtimeRoot, 'desktop/build/src/desktop/main.js')]),
+        ...(ozonePlatform ? [`--ozone-platform=${ozonePlatform}`] : []),
         '--varisdev-launcher',
         ...(project ? [`--varisdev-project=${project}`] : []),
       ],
@@ -337,14 +376,9 @@ export async function runCli(
       ),
     );
   }
-  if (rest.length || (command?.startsWith('-') && command !== '--overview'))
-    throw new Error(
-      'Usage: varisdev [folder]. Run varisdev --help for commands.',
-    );
-  const project =
-    command === '--overview' ? undefined : resolve(command ?? process.cwd());
+  const {project, ozonePlatform} = parseDesktopArguments(args);
   if (project && !(await stat(project)).isDirectory())
     throw new Error(`Choose a project folder: ${project}`);
-  await openDesktop(installRoot, runtimeRoot, project);
+  await openDesktop(installRoot, runtimeRoot, project, ozonePlatform);
   return 0;
 }

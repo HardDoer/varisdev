@@ -143,3 +143,5 @@ Finder launches load exported variables from `.zshrc` at startup. Saved [environ
 ## CLI
 
 `varisdev --help` lists VarisDev commands. `varisdev run` accepts Pi's [terminal automation options](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#cli-reference). For application updates, see [Updates](installation.md#updates).
+
+On Linux, including WSLg, use `varisdev --ozone-platform=x11` or `varisdev --ozone-platform=wayland` to select the display backend for that launch. Both accept a project folder or `--overview`; omitting the option uses Electron's default. Fully quit the app before switching backends.

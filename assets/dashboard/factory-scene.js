@@ -1916,14 +1916,24 @@ export function createFactoryScene(
   }
   function resize(rect) {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    width = Math.max(rect.width, 1);
-    height = Math.max(rect.height, 1);
-    const w = Math.round(width * dpr),
-      h = Math.round(height * dpr);
+    const nextWidth = Math.max(rect.width, 1);
+    const nextHeight = Math.max(rect.height, 1);
+    const w = Math.round(nextWidth * dpr),
+      h = Math.round(nextHeight * dpr);
+    if (
+      width === nextWidth &&
+      height === nextHeight &&
+      canvas.width === w &&
+      canvas.height === h
+    )
+      return false;
+    width = nextWidth;
+    height = nextHeight;
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
     }
+    return true;
   }
   function render() {
     if (disposed || contextLost) return;
@@ -2385,7 +2395,7 @@ export function createFactoryScene(
   function onResize(entries) {
     if (disposed) return;
     const observed = entries?.[0]?.contentRect;
-    resize(observed || canvas.getBoundingClientRect());
+    if (!resize(observed || canvas.getBoundingClientRect())) return;
     if (!document.hidden && !canvas.closest('[hidden]')) render();
     schedule();
   }

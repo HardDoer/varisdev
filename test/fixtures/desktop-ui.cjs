@@ -1429,7 +1429,13 @@ async function clickPointer(selector, {scroll = false, minSize = 0} = {}) {
   });
 }
 
-async function dragResize(selector, dx, dy, cancel = false) {
+async function dragResize(
+  selector,
+  dx,
+  dy,
+  cancel = false,
+  returnToStart = false,
+) {
   return mouseGesture(async () => {
     await evaluate(selector => {
       const handle = document.querySelector(selector);
@@ -1490,11 +1496,18 @@ async function dragResize(selector, dx, dy, cancel = false) {
           1,
           ['leftButtonDown'],
         );
+      if (returnToStart) {
+        await settle();
+        sendResizeMouse('mouseMove', start, 1, ['leftButtonDown']);
+      }
       if (cancel) {
         window.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'});
         window.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'});
       }
-      sendResizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
+      sendResizeMouse(
+        'mouseUp',
+        returnToStart ? start : {x: start.x + dx, y: start.y + dy},
+      );
       released = true;
       await settle();
       const trace = await evaluate(() => window.fixtureResizeTrace);
@@ -1517,6 +1530,66 @@ async function dragResize(selector, dx, dy, cancel = false) {
         await resizeMouse('mouseUp', {x: start.x + dx, y: start.y + dy});
       await evaluate(() => window.fixtureResizeCleanup());
     }
+  });
+}
+
+async function burstResize(selector, target, dx, dy, cancel = false) {
+  return mouseGesture(async () => {
+    await evaluate(
+      ({selector, target, dx, dy, cancel}) => {
+        const handle = document.querySelector(selector);
+        const element = document.querySelector(target);
+        const axis = dx ? 'width' : 'height';
+        delete window.fixtureResizeBurst;
+        handle.addEventListener(
+          'pointerdown',
+          event => {
+            const before = element.getBoundingClientRect()[axis];
+            const saved = localStorage.getItem('varisdev.panel-sizes.v1');
+            for (let step = 1; step <= 30; step++)
+              handle.dispatchEvent(
+                new window.PointerEvent('pointermove', {
+                  bubbles: true,
+                  pointerId: event.pointerId,
+                  isPrimary: true,
+                  buttons: 1,
+                  clientX: event.clientX + (dx * step) / 30,
+                  clientY: event.clientY + (dy * step) / 30,
+                }),
+              );
+            const pending = element.getBoundingClientRect()[axis];
+            handle.dispatchEvent(
+              new window.PointerEvent(cancel ? 'pointercancel' : 'pointerup', {
+                bubbles: true,
+                pointerId: event.pointerId,
+                isPrimary: true,
+                clientX: event.clientX + dx,
+                clientY: event.clientY + dy,
+              }),
+            );
+            window.fixtureResizeBurst = {
+              before,
+              pending,
+              finished: element.getBoundingClientRect()[axis],
+              saved,
+              savedAfter: localStorage.getItem('varisdev.panel-sizes.v1'),
+            };
+          },
+          {once: true},
+        );
+      },
+      {selector, target, dx, dy, cancel},
+    );
+    const point = await pointerPoint(selector);
+    sendResizeMouse('mouseMove', point);
+    sendResizeMouse('mouseDown', point);
+    sendResizeMouse('mouseUp', point);
+    await until(
+      () => Boolean(window.fixtureResizeBurst),
+      'Resize burst was not delivered',
+    );
+    await settle();
+    return evaluate(() => window.fixtureResizeBurst);
   });
 }
 
@@ -2474,6 +2547,139 @@ async function main() {
   );
 
   await run(
+    'panel resizing batches movement, commits before paint and lets adjacent rows yield space',
+    async () => {
+      await populateResizePanels();
+      for (const [handle, target, dx, dy] of [
+        ['#conversation-resize', '.factory-column', 60, 0],
+        ['#workspaces-resize', '.overview', 0, 32],
+        ['#agents-resize', '#worker-panels', 0, -40],
+        ['#history-resize', '#active-agents-panel', 30, 0],
+        ['#composer-resize', '#parent-prompt', 0, -40],
+      ]) {
+        const cancelled = await burstResize(handle, target, dx, dy, true);
+        assert.equal(
+          cancelled.pending,
+          cancelled.before,
+          `${handle}: defer layout during a movement burst`,
+        );
+        assert.equal(
+          cancelled.finished,
+          cancelled.before,
+          `${handle}: cancellation discards pending movement`,
+        );
+        assert.equal(cancelled.savedAfter, cancelled.saved);
+        const committed = await burstResize(handle, target, dx, dy);
+        assert.equal(committed.pending, committed.before);
+        assert.ok(
+          committed.finished > committed.before + 20,
+          `${handle}: release applies the final movement before paint`,
+        );
+      }
+      await resizeLayout();
+      await resizeKey('#agents-resize', 'End');
+      const beforeOverview = await resizeValue(
+        '#workspaces-resize',
+        '.overview',
+      );
+      const beforeWorkers = await resizeValue(
+        '#agents-resize',
+        '#worker-panels',
+      );
+      await dragResize('#workspaces-resize', 0, 50, false, true);
+      assert.ok(
+        Math.abs(
+          (await resizeValue('#agents-resize', '#worker-panels')).value -
+            beforeWorkers.value,
+        ) <= 2,
+        'Returning a drag to its start restores the space yielded by the sibling',
+      );
+      await reloadPage();
+      assert.ok(
+        Math.abs(
+          (await resizeValue('#agents-resize', '#worker-panels')).value -
+            beforeWorkers.value,
+        ) <= 2,
+        'The final allocation, rather than intermediate drag positions, is saved',
+      );
+      await dragResize('#workspaces-resize', 0, 50);
+      const overview = await resizeValue('#workspaces-resize', '.overview');
+      const workers = await resizeValue('#agents-resize', '#worker-panels');
+      assert.ok(
+        overview.value > beforeOverview.value + 35,
+        'Workspaces grow when agents occupy the available space',
+      );
+      assert.ok(
+        workers.value < beforeWorkers.value - 35,
+        'Agents yield space to the dragged workspace row',
+      );
+      await resizeLayout();
+      await dragResize('#agents-resize', 0, -40, true);
+      assert.equal(
+        (await resizeValue('#agents-resize', '#worker-panels')).saved,
+        workers.saved,
+        'Cancellation restores both row preferences',
+      );
+      await reloadPage();
+      assert.ok(
+        Math.abs(
+          (await resizeValue('#workspaces-resize', '.overview')).value -
+            overview.value,
+        ) <= 2,
+      );
+      assert.ok(
+        Math.abs(
+          (await resizeValue('#agents-resize', '#worker-panels')).value -
+            workers.value,
+        ) <= 2,
+      );
+      await resizeKey('#workspaces-resize', 'End');
+      const crowded = await resizeValue('#agents-resize', '#worker-panels');
+      await dragResize('#agents-resize', 0, -50);
+      assert.ok(
+        (await resizeValue('#agents-resize', '#worker-panels')).value >
+          crowded.value + 35,
+        'Agents can also reclaim space from workspaces',
+      );
+      await resizeLayout();
+      await clickPointer('#terminal-tab');
+      await until(
+        () =>
+          document
+            .getElementById('composer-resize')
+            .getAttribute('aria-controls') === 'terminal-sessions',
+        'Terminal composer was not ready',
+      );
+      const terminal = await burstResize(
+        '#composer-resize',
+        '#terminal-sessions',
+        0,
+        -40,
+      );
+      assert.equal(terminal.pending, terminal.before);
+      assert.ok(terminal.finished > terminal.before + 20);
+      const savedTerminal = await evaluate(() =>
+        localStorage.getItem('varisdev.composer-terminal-height.v1'),
+      );
+      const cancelledTerminal = await burstResize(
+        '#composer-resize',
+        '#terminal-sessions',
+        0,
+        -40,
+        true,
+      );
+      assert.equal(cancelledTerminal.finished, cancelledTerminal.before);
+      assert.equal(
+        await evaluate(() =>
+          localStorage.getItem('varisdev.composer-terminal-height.v1'),
+        ),
+        savedTerminal,
+      );
+      await resizeLayout({terminal: true});
+    },
+  );
+
+  await run(
     'panel resizing conversation supports mouse, keyboard, cancellation and saved bounds across reload and zoom',
     async () => {
       await populateResizePanels();
@@ -3010,7 +3216,11 @@ async function main() {
       window.setContentSize(1600, 1000);
       await settle();
       await assertFilled();
-      assert.equal((await dimensions()).saved, resized.saved);
+      assert.equal(
+        (await dimensions()).saved,
+        null,
+        'Reset clears saved panel sizes',
+      );
     },
   );
 
