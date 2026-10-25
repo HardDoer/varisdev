@@ -286,6 +286,19 @@ export function initPanelResize() {
   );
   listen(window, 'blur', () => finish(false));
   listen(document, 'varisdev:panel-layout', schedule);
+  listen(document, 'varisdev:panel-layout-reset', () => {
+    finish(false);
+    for (const split of splits) {
+      delete sizes[split.key];
+      split.apply(undefined);
+    }
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Keep the default sizes for this window.
+    }
+    schedule();
+  });
   const observer = new window.ResizeObserver(schedule);
   for (const element of [
     workspace,

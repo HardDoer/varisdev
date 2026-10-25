@@ -219,6 +219,8 @@ export async function configurePath(
 }
 
 export async function install(args = process.argv.slice(2)) {
+  if (Number.parseInt(process.versions.node, 10) < 24)
+    throw new Error('VarisDev requires Node 24+ with npm.');
   if (args.includes('--help')) {
     console.log(
       'Usage: node install.mjs [--prefix DIRECTORY] [--feed URL] [--no-path]',
@@ -239,8 +241,6 @@ export async function install(args = process.argv.slice(2)) {
     else if (args[index] === '--feed') feed = args[++index];
     else throw new Error(`Unknown option: ${args[index]}`);
   }
-  if (Number.parseInt(process.versions.node, 10) < 24)
-    throw new Error('VarisDev requires Node.js 24+ with npm.');
   prefix = resolve(prefix);
   const npm = await findNpm();
   const release = await readRelease(feed);

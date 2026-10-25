@@ -1,6 +1,11 @@
-const {app, dialog} = require('electron');
 const process = require('node:process');
 const console = require('node:console');
+// This standalone launcher is also copied into installed app bundles.
+if (Number.parseInt(process.versions.node, 10) < 24) {
+  console.error(`VarisDev requires Node 24+ (running ${process.version}).`);
+  process.exit(1);
+}
+const {app, dialog} = require('electron');
 const {spawn} = require('node:child_process');
 const {readFileSync, mkdirSync} = require('node:fs');
 const {homedir} = require('node:os');

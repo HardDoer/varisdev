@@ -63,12 +63,121 @@ async function menu() {
     document.getElementById('app-menu-panel').matches(':popover-open'),
   );
 }
-function parent() {
+async function settle() {
+  await evaluate(
+    () =>
+      new Promise(resolve =>
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(resolve),
+        ),
+      ),
+  );
+}
+async function reloadPage() {
+  const loaded = new Promise(resolve =>
+    browser.webContents.once('did-finish-load', resolve),
+  );
+  browser.reload();
+  await loaded;
+  await waitFor(
+    () => !document.getElementById('factory-workspace').hidden,
+    5000,
+  );
+  await settle();
+}
+function layoutState() {
+  const style = (id, property) =>
+    document.getElementById(id).style.getPropertyValue(property);
+  return {
+    visible: ['factory-panel', 'workspaces-panel', 'worker-panels'].map(
+      id => !document.getElementById(id).hidden,
+    ),
+    checked: ['visualization', 'workspaces', 'agents'].map(
+      key => document.getElementById(`layout-${key}`).checked,
+    ),
+    sizes: [
+      style('factory-workspace', '--factory-width'),
+      style('factory-column', '--workspaces-height'),
+      style('factory-column', '--agents-height'),
+      style('worker-panels', '--active-agents-width'),
+    ],
+    resized: document
+      .getElementById('workspaces-panel')
+      .classList.contains('resized'),
+    promptHeight: style('parent-prompt', 'height'),
+    promptValue: document.getElementById('parent-prompt').value,
+    terminalHeight: style('terminal-sessions', '--composer-terminal-height'),
+    terminalMax: style('terminal-sessions', '--composer-terminal-max-height'),
+    saved: Object.fromEntries(
+      [
+        'panel-layout.v1',
+        'panel-sizes.v1',
+        'composer-heights.v1',
+        'composer-terminal-height.v1',
+      ].map(key => [key, window.localStorage.getItem(`varisdev.${key}`)]),
+    ),
+    drafts: JSON.parse(
+      window.localStorage.getItem('varisdev.composer-drafts.v1') || '[]',
+    ),
+    theme: document.documentElement.dataset.theme,
+    savedTheme: window.localStorage.getItem('varisdev.factory.theme'),
+    zoom: window.pidev.getZoom(),
+    savedZoom: window.localStorage.getItem('varisdev.factory.zoom'),
+  };
+}
+async function assertResetLayout(before) {
+  const state = await evaluate(layoutState);
+  assert.deepEqual(state.visible, [true, true, true]);
+  assert.deepEqual(state.checked, [true, true, true]);
+  assert.deepEqual(state.sizes, ['', '', '', '']);
+  assert.equal(state.resized, false);
+  assert.equal(state.promptHeight, '');
+  assert.equal(state.terminalHeight, '');
+  assert.equal(state.terminalMax, '');
+  for (const [key, value] of Object.entries(state.saved))
+    assert.equal(value, null, `${key} must be removed`);
+  assert.deepEqual(
+    state.drafts,
+    before.drafts.map(([id, draft]) => [id, {...draft, height: ''}]),
+    'Reset preserves every unsent draft and its cursor position',
+  );
+  for (const key of ['theme', 'savedTheme', 'zoom', 'savedZoom'])
+    assert.equal(state[key], before[key], `${key} must be preserved`);
+}
+async function startDrag(id, dx, dy) {
+  const point = await evaluate(id => {
+    const rect = document.getElementById(id).getBoundingClientRect();
+    return {
+      x: Math.round(rect.x + rect.width / 2),
+      y: Math.round(rect.y + rect.height / 2),
+    };
+  }, id);
+  browser.webContents.sendInputEvent({type: 'mouseMove', ...point});
+  browser.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...point,
+  });
+  const end = {x: point.x + dx, y: point.y + dy};
+  browser.webContents.sendInputEvent({type: 'mouseMove', ...end});
+  await waitFor(() => Boolean(document.body.dataset.panelResizing));
+  return async () => {
+    browser.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      ...end,
+    });
+    await settle();
+  };
+}
+function parent(id = 'project', name = 'Project') {
   const at = new Date().toISOString();
   return {
     session: {
-      id: 'project',
-      name: 'Project',
+      id,
+      name,
       cwd: directory,
       status: 'idle',
       activity: 'Ready',
@@ -132,6 +241,10 @@ async function main() {
     aborted++;
     return {steering: [], followUp: []};
   });
+  handle('pidev:open-terminal', () => ({generation: 1, sequence: 0, data: ''}));
+  handle('pidev:terminal-resize', () => {});
+  handle('pidev:terminal-write', () => {});
+  handle('pidev:terminal-close', () => {});
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('pidev:session-features', () => ({
     commands: [],
@@ -214,16 +327,14 @@ async function main() {
       maintenance: [
         ...document.querySelectorAll('.app-menu-maintenance button'),
       ].map(button => button.id),
-      destructive:
-        document
-          .getElementById('close-session')
-          .classList.contains('danger-button') &&
-        document
-          .getElementById('close-session')
-          .parentElement.classList.contains('app-menu-danger-zone'),
-      destructiveSeparated:
-        getComputedStyle(document.getElementById('close-session').parentElement)
-          .borderTopStyle === 'solid',
+      reset: {
+        label: document.getElementById('layout-reset').textContent.trim(),
+        direct: document
+          .getElementById('layout-reset')
+          .parentElement.classList.contains('app-menu-appearance'),
+        inDetails:
+          document.getElementById('layout-reset').closest('details') !== null,
+      },
       labelled: [...document.querySelectorAll('.app-menu-group')].every(group =>
         document.getElementById(group.getAttribute('aria-labelledby')),
       ),
@@ -237,7 +348,6 @@ async function main() {
         'new-session',
         'start-session',
         'resume-session',
-        'close-session',
       ],
       appearance: ['app-zoom', 'factory-theme', 'motion-toggle'],
       settings: [
@@ -248,8 +358,7 @@ async function main() {
         'open-accounts',
       ],
       maintenance: ['open-about'],
-      destructive: true,
-      destructiveSeparated: true,
+      reset: {label: 'Reset panel layout', direct: true, inDetails: false},
       labelled: true,
     },
   );
@@ -704,6 +813,180 @@ async function main() {
   await key('Escape');
   report.cases.push(
     'panel layout persists across reload and can restore every panel at compact zoom',
+  );
+
+  browser.setContentSize(1600, 1000);
+  hub.sessions.push(parent('other-project', 'Other project'));
+  browser.webContents.send('pidev:snapshot', hub);
+  await waitFor(() => document.querySelectorAll('.parent-card').length === 2);
+  await settle();
+  for (const [id, keyCode] of [
+    ['conversation', 'Left'],
+    ['workspaces', 'Home'],
+    ['agents', 'Home'],
+    ['history', 'Home'],
+  ]) {
+    await evaluate(id => document.getElementById(`${id}-resize`).focus(), id);
+    await key(keyCode);
+  }
+  const drafts = {
+    project: 'Keep the current unsent draft\nwith its selection.',
+    'other-project': 'Keep the other conversation draft.',
+  };
+  for (const id of ['project', 'other-project']) {
+    await evaluate(
+      id =>
+        document
+          .querySelector(`.parent-card[data-context-session="${id}"]`)
+          .click(),
+      id,
+    );
+    await evaluate(value => {
+      const editor = document.getElementById('parent-prompt');
+      editor.value = value;
+      editor.setSelectionRange(5, 12);
+      editor.dispatchEvent(new window.Event('input', {bubbles: true}));
+      document.getElementById('composer-resize').focus();
+    }, drafts[id]);
+    await key('Up');
+    await key('Up');
+  }
+  await evaluate(() =>
+    document
+      .querySelector('.parent-card[data-context-session="project"]')
+      .click(),
+  );
+  await evaluate(() => document.getElementById('terminal-tab').click());
+  await waitFor(
+    () =>
+      document.querySelector('#terminal-sessions .xterm') &&
+      document
+        .getElementById('composer-resize')
+        .getAttribute('aria-controls') === 'terminal-sessions',
+  );
+  await evaluate(() => document.getElementById('composer-resize').focus());
+  await key('Up');
+  await key('Up');
+  await evaluate(() => document.getElementById('prompt-tab').click());
+  await waitFor(
+    () =>
+      document
+        .getElementById('composer-resize')
+        .getAttribute('aria-controls') === 'parent-prompt',
+  );
+  const resized = await evaluate(layoutState);
+  assert.ok(resized.sizes.every(Boolean), JSON.stringify(resized));
+  assert.deepEqual(
+    Object.keys(JSON.parse(resized.saved['panel-sizes.v1'])).sort(),
+    ['agents', 'conversation', 'history', 'workspaces'],
+  );
+  assert.ok(resized.terminalHeight && resized.terminalMax);
+  assert.equal(resized.drafts.length, 2);
+  assert.ok(resized.drafts.every(([, draft]) => draft.height));
+  assert.equal(JSON.parse(resized.saved['composer-heights.v1']).length, 2);
+
+  await menu();
+  await evaluate(() => {
+    for (const key of ['visualization', 'workspaces', 'agents'])
+      document.getElementById(`layout-${key}`).click();
+  });
+  await key('Escape');
+  await waitFor(() => document.getElementById('factory-column').hidden);
+  browser.setContentSize(1100, 760);
+  await evaluate(() => window.pidev.setZoom(1.5));
+  await settle();
+  await menu();
+  await evaluate(() => {
+    document.getElementById('app-menu-layout').open = false;
+    document.getElementById('layout-reset').scrollIntoView({block: 'nearest'});
+  });
+  const resetAccess = await evaluate(() => {
+    const rect = id => document.getElementById(id).getBoundingClientRect();
+    const menu = rect('app-menu-panel');
+    const button = rect('app-menu-button');
+    const reset = rect('layout-reset');
+    const page = document.scrollingElement;
+    return {
+      fits: [button, menu].every(
+        rect =>
+          rect.left >= 0 &&
+          rect.top >= 0 &&
+          rect.right <= window.innerWidth &&
+          rect.bottom <= window.innerHeight,
+      ),
+      resetFits: reset.top >= menu.top && reset.bottom <= menu.bottom,
+      pageFits:
+        page.scrollWidth <= page.clientWidth &&
+        page.scrollHeight <= page.clientHeight,
+    };
+  });
+  assert.deepEqual(resetAccess, {fits: true, resetFits: true, pageFits: true});
+  writeFileSync(
+    join(screenshots, 'reset-all-hidden-menu-zoom.png'),
+    (await browser.webContents.capturePage()).toPNG(),
+  );
+  const beforeReset = await evaluate(layoutState);
+  assert.ok(
+    beforeReset.sizes.every(Boolean),
+    'Hidden panels retain stale inline dimensions before reset',
+  );
+  await evaluate(() => document.getElementById('layout-reset').focus());
+  await key('Space');
+  await assertResetLayout(beforeReset);
+  await key('Escape');
+  await settle();
+  writeFileSync(
+    join(screenshots, 'reset-defaults-zoom.png'),
+    (await browser.webContents.capturePage()).toPNG(),
+  );
+  await reloadPage();
+  await assertResetLayout(beforeReset);
+  assert.equal(
+    await evaluate(() => document.getElementById('parent-prompt').value),
+    drafts.project,
+  );
+  await evaluate(() =>
+    document
+      .querySelector('.parent-card[data-context-session="other-project"]')
+      .click(),
+  );
+  assert.equal(
+    await evaluate(() => document.getElementById('parent-prompt').value),
+    drafts['other-project'],
+  );
+  await assertResetLayout(beforeReset);
+  await evaluate(() =>
+    document
+      .querySelector('.parent-card[data-context-session="project"]')
+      .click(),
+  );
+  await assertResetLayout(beforeReset);
+  report.cases.push(
+    'Reset panel layout clears hidden split sizes terminal and all draft heights immediately and across reload while preserving drafts theme and zoom',
+  );
+
+  browser.setContentSize(1600, 1000);
+  await evaluate(() => window.pidev.setZoom(1));
+  await settle();
+  for (const [id, keyCode, dx, dy] of [
+    ['conversation-resize', 'Left', 36, 0],
+    ['composer-resize', 'Up', 0, -36],
+  ]) {
+    await evaluate(id => document.getElementById(id).focus(), id);
+    await key(keyCode);
+    const before = await evaluate(layoutState);
+    const release = await startDrag(id, dx, dy);
+    await evaluate(() => document.getElementById('layout-reset').click());
+    assert.equal(
+      await evaluate(() => document.body.dataset.panelResizing),
+      undefined,
+    );
+    await assertResetLayout(before);
+    await release();
+    await assertResetLayout(before);
+  }
+  report.cases.push(
+    'layout reset cancels active panel and composer drags before clearing their saved sizes',
   );
 
   hub.sessions[0].session.status = 'running';

@@ -4,8 +4,8 @@ import console from 'node:console';
 import {setTimeout, clearTimeout} from 'node:timers';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
-import {homedir} from 'node:os';
-import {dirname, join, win32} from 'node:path';
+import {homedir, userInfo} from 'node:os';
+import {basename, dirname, join, win32} from 'node:path';
 import process from 'node:process';
 
 const hiddenFields = new Set([
@@ -151,15 +151,26 @@ export function windowsEnvironment(env, paths) {
   return values;
 }
 
+function loginShell(env, platform) {
+  if (env.SHELL) return env.SHELL;
+  try {
+    const shell = userInfo().shell;
+    if (shell) return shell;
+  } catch {
+    // A desktop launch may not have a user database entry.
+  }
+  return platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
+}
+
 /**
- * Read Windows PATH or exported Zsh values without logging environment values.
+ * Read Windows PATH or the login shell's exports without logging values.
  * @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, shell?: string, timeoutMs?: number, signal?: AbortSignal}} [options]
  * @returns {Promise<Record<string, string>>}
  */
 export function readShellEnvironment({
   env = process.env,
   platform = process.platform,
-  shell = '/bin/zsh',
+  shell,
   timeoutMs = 8000,
   signal,
 } = {}) {
@@ -172,7 +183,33 @@ export function readShellEnvironment({
       'C:\\Windows',
     'System32',
   );
-  const source = windows ? 'Windows PATH' : '.zshrc';
+  shell ??= loginShell(env, platform);
+  const name = basename(shell);
+  const label =
+    {zsh: 'Zsh', bash: 'Bash', fish: 'Fish', nu: 'Nushell'}[name] ||
+    'the shell';
+  const source = windows
+    ? 'Windows PATH'
+    : name === 'zsh'
+      ? '.zshrc'
+      : `${label} startup files`;
+  // Bash login profiles need not source .bashrc. Read the login environment,
+  // then exec an interactive shell so both startup contexts are honored.
+  const shellArgs =
+    name === 'bash'
+      ? ['+m', '-lc', 'exec "$BASH" +m -ic \'/usr/bin/env -0 >&3\'']
+      : name === 'nu'
+        ? [
+            '--login',
+            '--interactive',
+            '--commands',
+            "^/bin/sh -c '/usr/bin/env -0 >&3'",
+          ]
+        : [
+            ...(name === 'zsh' ? ['-o', 'NO_MONITOR'] : []),
+            '-lic',
+            '/usr/bin/env -0 >&3',
+          ];
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const child = spawn(
@@ -189,7 +226,7 @@ export function readShellEnvironment({
               '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); ' +
               "ConvertTo-Json -Compress -InputObject @([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User'))",
           ]
-        : ['-o', 'NO_MONITOR', '-lic', '/usr/bin/env -0 >&3'],
+        : shellArgs,
       {
         env,
         cwd: env.HOME || env.USERPROFILE || homedir(),
@@ -240,7 +277,7 @@ export function readShellEnvironment({
       failure ??= new Error(
         windows
           ? 'Could not start PowerShell to read Windows PATH.'
-          : 'Could not start Zsh to read .zshrc.',
+          : `Could not start ${label} to read ${name === 'zsh' ? '.zshrc' : 'its startup files'}.`,
       );
     });
     child.once('close', code => {

@@ -19,6 +19,7 @@ import {
   readShellEnvironment,
 } from '../src/runtime/environment.mjs';
 import {runRuntimeCommand} from '../src/runtime/manager.ts';
+import {configurePath} from '../src/runtime/distribution.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shellAvailable = await access('/bin/zsh').then(
@@ -26,19 +27,27 @@ const shellAvailable = await access('/bin/zsh').then(
   () => false,
 );
 const options = {timeout: 15000, skip: !shellAvailable};
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, shell = '/bin/zsh') {
   const home = await mkdtemp(join(tmpdir(), 'varisdev-environment-'));
   t.after(() => rm(home, {recursive: true, force: true}));
   const env: NodeJS.ProcessEnv = {
     HOME: home,
     USERPROFILE: home,
-    SHELL: '/bin/zsh',
+    SHELL: shell,
     PATH: '/usr/bin:/bin',
     OPENAI_API_KEY: 'inherited-key',
   };
   const file = environmentPath(env);
   await writeFile(
     join(home, '.zshrc'),
+    'export OPENAI_API_KEY="shell-key"\nexport OPENAI_IMAGE_SIZE="1536x1024"\n',
+  );
+  await writeFile(
+    join(home, '.bash_profile'),
+    'export BASH_LOGIN_SETTING="profile"\n',
+  );
+  await writeFile(
+    join(home, '.bashrc'),
     'export OPENAI_API_KEY="shell-key"\nexport OPENAI_IMAGE_SIZE="1536x1024"\n',
   );
   const settings = createEnvironmentSettings({env, file, timeoutMs: 2000});
@@ -196,7 +205,7 @@ void test(
     const broken = createEnvironmentSettings({
       env: f.env,
       file: f.file,
-      shell: join(f.home, 'missing-shell'),
+      shell: join(f.home, 'zsh'),
     });
     const state = await broken.initialize();
     assert.equal(state.values.OPENAI_API_KEY, 'inherited-key');
@@ -290,98 +299,105 @@ void test(
   },
 );
 
-void test(
-  'Finder, CLI, and direct desktop/headless entry points load Zsh before application imports',
-  options,
-  async t => {
-    const f = await fixture(t);
-    async function put(relative: string, text: string) {
-      const path = join(f.home, 'app', relative);
-      await mkdir(dirname(path), {recursive: true});
-      await writeFile(path, text);
-      return path;
-    }
-    const check =
-      "if (process.env.OPENAI_API_KEY !== 'shell-key') throw new Error('Missing startup environment'); console.log('environment-ready');";
-    const helper = await readFile(
-      join(root, 'src/runtime/environment.mjs'),
-      'utf8',
-    );
-    await put('package.json', '{"type":"module"}');
-    await put('src/runtime/environment.mjs', helper);
-    await put('src/desktop/application.ts', check);
-    await put('src/runtime/headless-session.ts', check);
-    for (const relative of [
-      'src/desktop/main.ts',
-      'src/runtime/headless.ts',
-      'bin/varisdev.mjs',
-    ]) {
-      await put(relative, await readFile(join(root, relative), 'utf8'));
-    }
-    await put(
-      'desktop/build/src/runtime/manager.js',
-      `export class RuntimeManager { async currentRoot() { ${check} return ${JSON.stringify(join(f.home, 'app'))}; } }`,
-    );
-    await put(
-      'desktop/build/src/runtime/cli.js',
-      `export async function runCli() { ${check} return 0; }`,
-    );
-    for (const entry of [
-      'src/desktop/main.ts',
-      'src/runtime/headless.ts',
-      'bin/varisdev.mjs',
-    ]) {
+for (const shell of ['/bin/zsh', '/bin/bash']) {
+  const available = await access(shell).then(
+    () => true,
+    () => false,
+  );
+  void test(
+    `Finder, CLI, and direct desktop/headless entry points load ${shell} before application imports`,
+    {timeout: 15000, skip: !available},
+    async t => {
+      const f = await fixture(t, shell);
+      async function put(relative: string, text: string) {
+        const path = join(f.home, 'app', relative);
+        await mkdir(dirname(path), {recursive: true});
+        await writeFile(path, text);
+        return path;
+      }
+      const check =
+        "if (process.env.OPENAI_API_KEY !== 'shell-key') throw new Error('Missing startup environment'); console.log('environment-ready');";
+      const helper = await readFile(
+        join(root, 'src/runtime/environment.mjs'),
+        'utf8',
+      );
+      await put('package.json', '{"type":"module"}');
+      await put('src/runtime/environment.mjs', helper);
+      await put('src/desktop/application.ts', check);
+      await put('src/runtime/headless-session.ts', check);
+      for (const relative of [
+        'src/desktop/main.ts',
+        'src/runtime/headless.ts',
+        'bin/varisdev.mjs',
+        'src/runtime/node-version.mjs',
+      ]) {
+        await put(relative, await readFile(join(root, relative), 'utf8'));
+      }
+      await put(
+        'desktop/build/src/runtime/manager.js',
+        `export class RuntimeManager { async currentRoot() { ${check} return ${JSON.stringify(join(f.home, 'app'))}; } }`,
+      );
+      await put(
+        'desktop/build/src/runtime/cli.js',
+        `export async function runCli() { ${check} return 0; }`,
+      );
+      for (const entry of [
+        'src/desktop/main.ts',
+        'src/runtime/headless.ts',
+        'bin/varisdev.mjs',
+      ]) {
+        const output = await runRuntimeCommand(
+          process.execPath,
+          [join(f.home, 'app', entry)],
+          {cwd: f.home, env: f.env, timeoutMs: 4000},
+        );
+        assert.match(output, /environment-ready/);
+      }
+      // Execute the production CJS launcher with only Electron and the post-bootstrap runtime stubbed.
+      await put('bundle/environment.mjs', helper);
+      await put(
+        'bundle/main.cjs',
+        await readFile(join(root, 'assets/desktop/app-main.cjs'), 'utf8'),
+      );
+      await put(
+        'bundle/launch.json',
+        JSON.stringify({
+          installRoot: join(f.home, 'app'),
+          runtimeRoot: join(f.home, 'app'),
+          nodeExecutable: process.execPath,
+          path: f.env.PATH,
+        }),
+      );
+      await put('desktop/build/src/desktop/main.js', check);
+      await put(
+        'node_modules/electron/index.js',
+        'module.exports={app:{setName(){},exit(code){process.exitCode=code},whenReady:async()=>{}},dialog:{showErrorBox(_,message){console.error(message)}}};',
+      );
       const output = await runRuntimeCommand(
         process.execPath,
-        [join(f.home, 'app', entry)],
+        [join(f.home, 'app/bundle/main.cjs')],
         {cwd: f.home, env: f.env, timeoutMs: 4000},
       );
       assert.match(output, /environment-ready/);
-    }
-    // Execute the production CJS launcher with only Electron and the post-bootstrap runtime stubbed.
-    await put('bundle/environment.mjs', helper);
-    await put(
-      'bundle/main.cjs',
-      await readFile(join(root, 'assets/desktop/app-main.cjs'), 'utf8'),
-    );
-    await put(
-      'bundle/launch.json',
-      JSON.stringify({
-        installRoot: join(f.home, 'app'),
-        runtimeRoot: join(f.home, 'app'),
-        nodeExecutable: process.execPath,
-        path: f.env.PATH,
-      }),
-    );
-    await put('desktop/build/src/desktop/main.js', check);
-    await put(
-      'node_modules/electron/index.js',
-      'module.exports={app:{setName(){},exit(code){process.exitCode=code},whenReady:async()=>{}},dialog:{showErrorBox(_,message){console.error(message)}}};',
-    );
-    const output = await runRuntimeCommand(
-      process.execPath,
-      [join(f.home, 'app/bundle/main.cjs')],
-      {cwd: f.home, env: f.env, timeoutMs: 4000},
-    );
-    assert.match(output, /environment-ready/);
-    await rm(join(f.home, 'app/bundle/environment.mjs'));
-    await put(
-      'desktop/build/src/runtime/manager.js',
-      `export class RuntimeManager { async currentRoot() { return ${JSON.stringify(join(f.home, 'app'))}; } }`,
-    );
-    const upgraded = await runRuntimeCommand(
-      process.execPath,
-      [join(f.home, 'app/bundle/main.cjs')],
-      {cwd: f.home, env: f.env, timeoutMs: 4000},
-    );
-    assert.match(
-      upgraded,
-      /environment-ready/,
-      'an older updater that copied only main.cjs can load the active environment helper',
-    );
-    await assert.rejects(access(f.file), {code: 'ENOENT'});
-  },
-);
+      await rm(join(f.home, 'app/bundle/environment.mjs'));
+      await put(
+        'desktop/build/src/runtime/manager.js',
+        `export class RuntimeManager { async currentRoot() { return ${JSON.stringify(join(f.home, 'app'))}; } }`,
+      );
+      const upgraded = await runRuntimeCommand(
+        process.execPath,
+        [join(f.home, 'app/bundle/main.cjs')],
+        {cwd: f.home, env: f.env, timeoutMs: 4000},
+      );
+      assert.match(
+        upgraded,
+        /environment-ready/,
+        'an older updater that copied only main.cjs can load the active environment helper',
+      );
+      await assert.rejects(access(f.file), {code: 'ENOENT'});
+    },
+  );
+}
 
 void test(
   'direct bundled Pi commands receive effective JSON credentials',
@@ -409,5 +425,182 @@ void test(
       {cwd: f.home, env: f.env, timeoutMs: 8000},
     );
     assert.match(output, /command-environment-ready/);
+  },
+);
+
+void test(
+  'Linux Bash startup loads its own profile without requiring Zsh and preserves saved overrides',
+  {timeout: 15000, skip: process.platform !== 'linux'},
+  async t => {
+    const home = await mkdtemp(join(tmpdir(), 'varisdev-bash-environment-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const env: NodeJS.ProcessEnv = {
+      HOME: home,
+      SHELL: '/bin/bash',
+      PATH: '/usr/bin:/bin',
+      OPENAI_API_KEY: 'inherited-key',
+      STALE_PLUGIN_TOKEN: 'inherited-token',
+    };
+    await writeFile(
+      join(home, '.bash_profile'),
+      'export BASH_LOGIN_SETTING="from-login"\n',
+    );
+    await writeFile(
+      join(home, '.bashrc'),
+      'echo "startup noise with private-key"\necho "private-key" >&2\nexport OPENAI_API_KEY="bash-key"\nexport BASH_PLUGIN_SETTING="from-bash"\nunset STALE_PLUGIN_TOKEN\n',
+    );
+    await writeFile(join(home, '.zshrc'), 'exit 19\n');
+    const bin = join(home, 'installed/bin');
+    await configurePath(bin, {home, env, platform: 'linux'});
+    const file = environmentPath(env, 'linux');
+    await mkdir(dirname(file), {recursive: true});
+    const text = '{ "OPENAI_API_KEY": "saved-key" }\n';
+    await writeFile(file, text);
+    const settings = createEnvironmentSettings({
+      env,
+      platform: 'linux',
+      timeoutMs: 2000,
+    });
+    const state = await settings.initialize();
+    assert.equal(state.error, undefined);
+    assert.equal(env.OPENAI_API_KEY, 'saved-key');
+    assert.equal(env.BASH_PLUGIN_SETTING, 'from-bash');
+    assert.equal(env.BASH_LOGIN_SETTING, 'from-login');
+    assert.ok(env.PATH?.split(':').includes(bin));
+    assert.equal(env.STALE_PLUGIN_TOKEN, undefined);
+    assert.equal(await readFile(file, 'utf8'), text);
+    assert.equal(settings.forChild().OPENAI_API_KEY, 'bash-key');
+    assert.equal(
+      (await settings.save('OPENAI_API_KEY', null)).values.OPENAI_API_KEY,
+      'bash-key',
+    );
+    await assert.rejects(access(file), {code: 'ENOENT'});
+
+    await writeFile(join(home, '.bashrc'), 'echo "private-key" >&2\nexit 17\n');
+    const failed = await createEnvironmentSettings({
+      env,
+      file,
+      platform: 'linux',
+      timeoutMs: 2000,
+    }).initialize();
+    assert.match(
+      failed.error || '',
+      /Could not read Bash startup files: shell startup failed/,
+    );
+    assert.doesNotMatch(failed.error || '', /Zsh|private-key/);
+    const missing = await createEnvironmentSettings({
+      env,
+      file,
+      platform: 'linux',
+      shell: join(home, 'bash'),
+      timeoutMs: 2000,
+    }).initialize();
+    assert.match(missing.error || '', /Could not start Bash/);
+    assert.doesNotMatch(missing.error || '', /Zsh|private-key/);
+  },
+);
+
+void test(
+  'Bash startup deadlines and cancellation stop background descendants',
+  {timeout: 10000, skip: process.platform !== 'linux'},
+  async t => {
+    const home = await mkdtemp(join(tmpdir(), 'varisdev-bash-timeout-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const env = {HOME: home, SHELL: '/bin/bash', PATH: '/usr/bin:/bin'};
+    for (const cancel of [false, true]) {
+      const pidFile = join(home, `child-${cancel}.pid`);
+      const startup = `sleep 30 &\necho $! > '${pidFile}'\nwait\n`;
+      await writeFile(join(home, '.bash_profile'), cancel ? '' : startup);
+      await writeFile(join(home, '.bashrc'), cancel ? startup : '');
+      const controller = new AbortController();
+      const pending = readShellEnvironment({
+        env,
+        timeoutMs: 1000,
+        signal: controller.signal,
+      });
+      const rejected = assert.rejects(
+        pending,
+        cancel ? /cancelled/ : /timed out/,
+      );
+      if (cancel) {
+        for (let i = 0; i < 100; i++) {
+          if (
+            await access(pidFile).then(
+              () => true,
+              () => false,
+            )
+          )
+            break;
+          await delay(5);
+        }
+        controller.abort();
+      }
+      await rejected;
+      const pid = Number(await readFile(pidFile, 'utf8'));
+      // A killed orphan can remain a zombie until the host's init reaps it.
+      const status = await readFile(`/proc/${pid}/stat`, 'utf8').catch(
+        error => {
+          if (error.code === 'ENOENT') return '';
+          throw error;
+        },
+      );
+      assert.ok(
+        !status || /^\d+ \(.+\) Z /.test(status),
+        `Shell descendant ${pid} is still running`,
+      );
+    }
+  },
+);
+
+const nuShell = process.env.VARISDEV_TEST_NU || '/usr/bin/nu';
+const nuAvailable =
+  process.platform !== 'win32' &&
+  (await access(nuShell).then(
+    () => true,
+    () => false,
+  ));
+void test(
+  'Nushell startup exports env, config and login values through the inherited descriptor',
+  {timeout: 10000, skip: !nuAvailable},
+  async t => {
+    const home = await mkdtemp(join(tmpdir(), 'varisdev-nu-environment-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const config = join(home, 'config');
+    const directory = join(config, 'nushell');
+    await mkdir(directory, {recursive: true});
+    await writeFile(
+      join(directory, 'env.nu'),
+      '$env.OPENAI_API_KEY = "nu-key"\n',
+    );
+    await writeFile(
+      join(directory, 'config.nu'),
+      'print "private-startup-noise"\n$env.NU_CONFIG_SETTING = "config"\n',
+    );
+    await writeFile(
+      join(directory, 'login.nu'),
+      '$env.NU_LOGIN_SETTING = "login"\n',
+    );
+    const env: NodeJS.ProcessEnv = {
+      HOME: home,
+      SHELL: nuShell,
+      PATH: '/usr/bin:/bin',
+      XDG_CONFIG_HOME: config,
+    };
+    const bin = join(home, 'installed/bin');
+    await configurePath(bin, {home, env, platform: 'linux'});
+    const settings = createEnvironmentSettings({
+      env,
+      platform: 'linux',
+      timeoutMs: 3000,
+    });
+    const state = await settings.initialize();
+    assert.equal(state.error, undefined);
+    assert.equal(env.OPENAI_API_KEY, 'nu-key');
+    assert.equal(env.NU_CONFIG_SETTING, 'config');
+    assert.equal(env.NU_LOGIN_SETTING, 'login');
+    assert.ok(env.PATH?.split(':').includes(bin));
+    await assert.rejects(access(environmentPath(env, 'linux')), {
+      code: 'ENOENT',
+    });
   },
 );

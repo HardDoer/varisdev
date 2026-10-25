@@ -57,7 +57,13 @@ export function initPanelLayout({onChange = () => {}} = {}) {
   const reset = document.getElementById('layout-reset');
   const restore = () => {
     for (const key of Object.keys(visible)) visible[key] = true;
-    save();
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Keep the default layout for this window.
+    }
+    apply();
+    document.dispatchEvent(new CustomEvent('varisdev:panel-layout-reset'));
   };
   reset.addEventListener('click', restore);
   apply();

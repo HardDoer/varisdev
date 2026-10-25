@@ -2,7 +2,7 @@
 
 const TERMINAL_HEIGHT_KEY = 'varisdev.composer-terminal-height.v1';
 
-export function initComposerResize({resizeTextarea}) {
+export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
   const inspector = document.getElementById('inspector');
   const handle = document.getElementById('composer-resize');
   const slot = document.getElementById('composer-slot');
@@ -245,7 +245,18 @@ export function initComposerResize({resizeTextarea}) {
     schedule();
   }
 
+  function resetAll() {
+    finish(true);
+    setTerminalHeight(undefined);
+    persistTerminalHeight();
+    terminal.style.removeProperty('--composer-terminal-max-height');
+    textarea.style.removeProperty('--composer-prompt-max-height');
+    resetTextareaSizes();
+    schedule();
+  }
+
   const listeners = [
+    [document, 'varisdev:panel-layout-reset', resetAll],
     [handle, 'pointerdown', pointerdown],
     [handle, 'pointermove', pointermove],
     [handle, 'pointerup', pointerup],

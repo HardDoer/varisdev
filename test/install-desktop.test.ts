@@ -23,6 +23,7 @@ void test('desktop preparation supplies Node to nested npm lifecycle scripts whe
   for (const path of [
     'scripts/install-desktop.mjs',
     'src/runtime/environment.mjs',
+    'src/runtime/node-version.mjs',
   ]) {
     await put(
       path,

@@ -1,6 +1,10 @@
-const {app, shell} = require('electron');
 const process = require('node:process');
 const console = require('node:console');
+if (Number.parseInt(process.versions.node, 10) < 24) {
+  console.error(`VarisDev requires Node 24+ (running ${process.version}).`);
+  process.exit(1);
+}
+const {app, shell} = require('electron');
 const {mkdirSync} = require('node:fs');
 const {homedir} = require('node:os');
 const {join, resolve} = require('node:path');

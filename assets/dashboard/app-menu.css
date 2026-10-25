@@ -89,17 +89,6 @@
   min-height: 34px;
   text-align: left;
 }
-.app-menu-danger-zone {
-  margin-top: 5px;
-  padding-top: 9px;
-  border-top: 1px solid var(--line);
-}
-.app-menu-danger-zone:has(> #close-session[hidden]) {
-  display: none;
-}
-#app-menu-panel .app-menu-destructive {
-  color: var(--red);
-}
 #about-dialog .about-logo {
   display: block;
   margin: 0 auto 20px;

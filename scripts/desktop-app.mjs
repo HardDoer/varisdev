@@ -16,12 +16,13 @@ import {
 import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
-import {configureSettings} from '../src/runtime/settings.mjs';
-import {
-  environmentForChild,
-  initializeEnvironment,
-} from '../src/runtime/environment.mjs';
-import {configureBundledPi} from './configure-pi.mjs';
+import {requireNode24} from '../src/runtime/node-version.mjs';
+
+requireNode24();
+const {configureSettings} = await import('../src/runtime/settings.mjs');
+const {environmentForChild, initializeEnvironment} =
+  await import('../src/runtime/environment.mjs');
+const {configureBundledPi} = await import('./configure-pi.mjs');
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);

@@ -865,10 +865,9 @@ export function updateMarkdownFiles() {
 export function initMarkdownFiles(options) {
   api = options.api;
   selected = options.selected;
-  $('close-parent-session')?.insertAdjacentElement(
-    'beforebegin',
-    $('markdown-launcher'),
-  );
+  document
+    .querySelector('.factory-file-actions')
+    .append($('markdown-launcher'));
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
     if (stored && typeof stored === 'object' && !Array.isArray(stored)) {

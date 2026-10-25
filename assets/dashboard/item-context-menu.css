@@ -1,0 +1,49 @@
+#item-context-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 6px;
+  width: 240px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 40px #0008;
+}
+#item-context-menu-title {
+  margin: 0;
+  padding: 6px 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+#item-context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  margin-top: 4px;
+  text-align: left;
+}
+#item-context-menu button[hidden] {
+  display: none;
+}
+#item-context-menu button:focus-visible {
+  background: var(--hover);
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+#item-context-menu #close-session {
+  color: var(--red);
+}
+#item-actions-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 5px 8px;
+}
+#inspector > .control-error {
+  margin-inline: 12px;
+}

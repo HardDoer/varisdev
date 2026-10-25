@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -9,7 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join, relative} from 'node:path';
+import {basename, join} from 'node:path';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
 
@@ -96,10 +97,9 @@ void test('desktop startup reports the current Electron failure and sandbox repa
     },
   );
   await mkdir(join(electron, 'dist'));
-  await writeFile(
-    join(electron, 'path.txt'),
-    relative(join(electron, 'dist'), process.execPath),
-  );
+  const executable = basename(process.execPath);
+  await copyFile(process.execPath, join(electron, 'dist', executable));
+  await writeFile(join(electron, 'path.txt'), executable);
   await writeFile(join(electron, 'index.cjs'), 'module.exports = {app: {}};');
   await assert.rejects(
     execute(process.execPath, ['--input-type=module', '-e', source], {

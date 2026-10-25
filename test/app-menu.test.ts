@@ -9,9 +9,9 @@ import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 void test(
-  'application dropdown keyboard controls, update badge and reclaimed output space in Electron',
+  'application menu keyboard controls, saved layout reset and reclaimed output space in Electron',
   {
-    timeout: 60_000,
+    timeout: 90_000,
     skip:
       process.platform === 'linux' &&
       !process.env.DISPLAY &&
@@ -34,7 +34,7 @@ void test(
           directory,
           reportPath,
         ],
-        {cwd: process.cwd(), env, timeoutMs: 50_000},
+        {cwd: process.cwd(), env, timeoutMs: 80_000},
       );
     } catch (error) {
       launchError = error;
@@ -45,6 +45,11 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 7);
+    assert.equal(report.cases.length, 9);
+    assert.ok(
+      report.cases.includes(
+        'Reset panel layout clears hidden split sizes terminal and all draft heights immediately and across reload while preserving drafts theme and zoom',
+      ),
+    );
   },
 );

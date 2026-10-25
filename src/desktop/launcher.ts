@@ -63,6 +63,9 @@ export function createFactoryBridge(
       dirty = true;
       return;
     }
+    // This snapshot includes changes queued while the previous send was busy.
+    clearTimeout(pending);
+    pending = undefined;
     sending = true;
     dirty = false;
     child.send(

@@ -20,6 +20,7 @@ import {initToolSettings} from './tool-settings.js';
 import {initEnvironment} from './environment.js';
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
+import {initItemContextMenu} from './item-context-menu.js';
 import {initLiveView} from './live-view.js';
 import {initPanelResize} from './panel-resize.js';
 import {initPanelLayout} from './panel-layout.js';
@@ -630,6 +631,23 @@ function resizeTextarea(textarea, height) {
   saveDraft();
   sizeInspector();
 }
+function resetTextareaSizes() {
+  // Collapse before resetting so the editor cannot restore an old height.
+  if (expandedEditor) collapseEditor(false);
+  saveDraft();
+  composerHeights.clear();
+  try {
+    localStorage.removeItem(composerHeightKey);
+  } catch {
+    // Keep the default dimensions in this window.
+  }
+  for (const [id, draft] of promptDrafts) {
+    if (!draft.height) continue;
+    promptDrafts.set(id, {...draft, height: ''});
+    persistComposerDraft(id);
+  }
+  resizeTextarea($('parent-prompt'), undefined);
+}
 function initTextareaResize(handle, textarea) {
   handle.addEventListener('pointerdown', event => {
     event.preventDefault();
@@ -726,6 +744,7 @@ function createParentCard(data) {
   const path = node('span', 'project-path mono');
   const activity = node('span', 'parent-card-activity');
   element.append(header, path, activity);
+  element.dataset.contextSession = data.session.id;
   element.addEventListener('click', () => selectSession(data.session.id));
   return {element, name, status, path, activity};
 }
@@ -790,6 +809,7 @@ function createSceneLabel(id) {
   element.type = 'button';
   const name = node('span', 'scene-label-name');
   element.append(name);
+  element.dataset.contextUnit = id;
   element.addEventListener('click', () => selectUnit(id));
   $('scene-labels').append(element);
   return {element, name};
@@ -822,6 +842,7 @@ function layoutLabels(layout) {
     const selected = state.unitId === anchor.id;
     const title = `${unit.name}${anchor.detail ? `\n${anchor.detail}` : ''}\n${anchor.id === 'parent' ? unit.prompt || '' : unit.task}\n${unit.activity || ''}`;
     text(entry.name, name);
+    entry.element.dataset.contextSession = data.session.id;
     if (entry.selected !== selected) {
       entry.selected = selected;
       entry.element.classList.toggle('selected', selected);
@@ -857,11 +878,13 @@ function renderFallback(data) {
       const task = node('p');
       const activity = node('p', 'muted');
       element.append(mark, status, name, task, activity);
+      element.dataset.contextUnit = unit.id;
       element.addEventListener('click', () => selectUnit(unit.id));
       return {element, mark, status, name, task, activity};
     },
     (entry, unit) => {
       entry.element.dataset.unitId = unit.id;
+      entry.element.dataset.contextSession = data.session.id;
       const parent = unit.id === 'parent';
       const kind = conversationKind(unit, parent);
       const task = parent ? unit.prompt || 'Main agent prompt' : unit.task;
@@ -1035,6 +1058,7 @@ function createWorkerCard(agent) {
   const time = node('span');
   meta.append(model, time);
   element.append(header, task, activity, meta);
+  element.dataset.contextUnit = agent.id;
   element.addEventListener('click', () => selectUnit(agent.id));
   return {element, mark, name, status, task, activity, model, time};
 }
@@ -1048,6 +1072,7 @@ function createHistoryRow(agent) {
   const status = node('span');
   info.append(name, task);
   element.append(mark, info, status);
+  element.dataset.contextUnit = agent.id;
   element.addEventListener('click', () => selectUnit(agent.id));
   return {element, mark, name, task, status};
 }
@@ -1071,6 +1096,7 @@ function renderWorkers() {
         String(state.unitId === agent.id),
       );
       entry.element.dataset.status = agent.status;
+      entry.element.dataset.contextSession = data.session.id;
       entry.element.dataset.agentKind = kind;
       updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
@@ -1103,6 +1129,7 @@ function renderWorkers() {
         'aria-pressed',
         String(state.unitId === agent.id),
       );
+      entry.element.dataset.contextSession = data.session.id;
       entry.element.dataset.agentKind = kind;
       updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
@@ -1780,6 +1807,10 @@ function renderInspector() {
   }
   text($('inspector-title'), unit.name);
   $('inspector-title').title = unit.name;
+  for (const id of ['inspector-title', 'item-actions-button']) {
+    $(id).dataset.contextSession = data.session.id;
+    $(id).dataset.contextUnit = state.unitId;
+  }
   if (parent) parentBadge($('inspector-status'), unit);
   else badge($('inspector-status'), unit.status);
   text(
@@ -2024,6 +2055,7 @@ function render() {
     renderSessionFeatures(undefined, {parent: false});
     updateMarkdownFiles();
   }
+  itemContextMenu.sync();
 }
 function receive(hub) {
   if (state.disposed) return;
@@ -2124,30 +2156,29 @@ function renderSessionActions() {
         ? 'Retry reset conversation'
         : 'Reset conversation',
   );
-  for (const id of ['close-session', 'close-parent-session']) {
-    $(id).disabled =
-      Boolean(creating) ||
-      !session ||
-      !(parent ? api?.closeSession : api?.agentSession) ||
-      !unit ||
-      closingSessions.has(conversationId()) ||
-      closingSessions.has(session.id);
-    $(id).title = unit
-      ? parent
-        ? session.owned
-          ? `Close workspace ${session.name} and stop its agents`
-          : `Close workspace ${session.name} in this window`
-        : `Close ${unit.name}`
-      : '';
-    text(
-      $(id),
-      closingSessions.has(conversationId())
-        ? 'Closing…'
-        : parent
-          ? 'Close workspace'
-          : 'Close agent',
-    );
-  }
+  $('reset-item-session').disabled = $('start-session').disabled || !session;
+  $('close-session').disabled =
+    Boolean(creating) ||
+    !session ||
+    !(parent ? api?.closeSession : api?.agentSession) ||
+    !unit ||
+    closingSessions.has(conversationId()) ||
+    closingSessions.has(session.id);
+  $('close-session').title = unit
+    ? parent
+      ? session.owned
+        ? `Close workspace ${session.name} and stop its agents`
+        : `Close workspace ${session.name} in this window`
+      : `Close ${unit.name}`
+    : '';
+  text(
+    $('close-session'),
+    closingSessions.has(conversationId())
+      ? 'Closing…'
+      : parent
+        ? 'Close workspace'
+        : 'Close agent',
+  );
 }
 async function openFolder(folder) {
   if (creating || !api) return;
@@ -2214,7 +2245,7 @@ async function startSession(submission) {
     const result = await api.createSession({cwd: replacement.cwd});
     pendingReplacement = undefined;
     const submitted = replacement.submission;
-    if (submitted) clearSubmittedDraft(submitted.id, submitted.draft);
+    if (submitted?.draft) clearSubmittedDraft(submitted.id, submitted.draft);
     await selectOpenedSession(result.id);
     return true;
   } catch (error) {
@@ -2487,7 +2518,10 @@ $('open-workspace-config').addEventListener('click', async () => {
 });
 $('start-session').addEventListener('click', () => void startSession());
 $('close-session').addEventListener('click', closeSession);
-$('close-parent-session').addEventListener('click', closeSession);
+$('reset-item-session').addEventListener('click', () => {
+  if (state.unitId === 'parent' && state.sessionId)
+    void startSession({id: state.sessionId});
+});
 $('inspect-parent').addEventListener('click', () => selectUnit('parent'));
 $('back-to-parent').addEventListener('click', () => selectUnit('parent'));
 $('prompt-form').addEventListener('submit', event => {
@@ -2848,6 +2882,29 @@ $('open-session-settings').addEventListener('click', async () => {
   }
 });
 const appMenu = initAppMenu();
+const itemContextMenu = initItemContextMenu({
+  selected: () => {
+    const unit = selectedUnit();
+    return (
+      unit && {
+        sessionId: state.sessionId,
+        unitId: state.unitId,
+        name: unit.name,
+      }
+    );
+  },
+  select: (sessionId, unitId = 'parent') => {
+    const data = state.hub.sessions.find(item => item.session.id === sessionId);
+    if (
+      !data ||
+      (unitId !== 'parent' && !data.agents.some(item => item.id === unitId))
+    )
+      return false;
+    liveView.close();
+    selectSession(sessionId, unitId);
+    return true;
+  },
+});
 const liveView = initLiveView();
 const cleanupPanelLayout = initPanelLayout({
   onChange({visualization}) {
@@ -2861,7 +2918,10 @@ const cleanupPanelLayout = initPanelLayout({
   },
 });
 const cleanupPanelResize = initPanelResize();
-const cleanupComposerResize = initComposerResize({resizeTextarea});
+const cleanupComposerResize = initComposerResize({
+  resizeTextarea,
+  resetTextareaSizes,
+});
 const recentProjects = initRecentProjects({api, open: openFolder});
 const agentTemplates = initAgentTemplates({
   api,
@@ -2942,6 +3002,7 @@ window.addEventListener('unload', () => {
   cleanupEnvironment();
   toolSettings.dispose();
   appMenu.dispose();
+  itemContextMenu.dispose();
   liveView.dispose();
   cleanupPanelLayout();
   cleanupPanelResize();

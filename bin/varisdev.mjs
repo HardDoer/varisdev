@@ -3,7 +3,9 @@ import {fileURLToPath, pathToFileURL, URL} from 'node:url';
 import {join} from 'node:path';
 import process from 'node:process';
 import console from 'node:console';
+import {requireNode24} from '../src/runtime/node-version.mjs';
 
+requireNode24();
 const installRoot = fileURLToPath(new URL('../', import.meta.url));
 try {
   const {initializeEnvironment} =

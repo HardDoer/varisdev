@@ -9,7 +9,6 @@ export function initAppMenu() {
   const approvals = document.getElementById('open-approvals');
   const resume = document.getElementById('resume-session');
   const start = document.getElementById('start-session');
-  const closeSession = document.getElementById('close-session');
   const appearance = document.getElementById('app-menu-appearance-controls');
   const zoomControl = document.getElementById('app-zoom').closest('label');
   const themeControl = panel.querySelector('.theme-control');
@@ -75,7 +74,6 @@ export function initAppMenu() {
   approvals.addEventListener('click', close);
   resume.addEventListener('click', close);
   start.addEventListener('click', close);
-  closeSession.addEventListener('click', close);
   document.addEventListener('keydown', escape, true);
   return {
     place(hasSession) {
@@ -86,7 +84,6 @@ export function initAppMenu() {
         !hasSession ||
         document.getElementById('factory-workspace').dataset
           .visualizationHidden === 'true';
-      start.hidden = closeSession.hidden = !hasSession;
       const slot = document.getElementById(
         hasSession ? 'inspector-actions' : 'welcome-actions',
       );
@@ -105,7 +102,6 @@ export function initAppMenu() {
       approvals.removeEventListener('click', close);
       resume.removeEventListener('click', close);
       start.removeEventListener('click', close);
-      closeSession.removeEventListener('click', close);
       document.removeEventListener('keydown', escape, true);
     },
   };

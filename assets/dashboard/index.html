@@ -24,6 +24,7 @@
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="environment.css" />
     <link rel="stylesheet" href="app-menu.css" />
+    <link rel="stylesheet" href="item-context-menu.css" />
     <link rel="stylesheet" href="live-view.css" />
     <link rel="stylesheet" href="speed-mode.css" />
     <link rel="stylesheet" href="agent-templates.css" />
@@ -43,6 +44,65 @@
   </head>
   <body>
     <a class="skip-link" href="#welcome-title">Skip to content</a>
+    <div
+      id="item-context-menu"
+      popover="auto"
+      role="menu"
+      aria-labelledby="item-context-menu-title"
+    >
+      <h2 id="item-context-menu-title"></h2>
+      <button
+        id="reset-item-session"
+        class="quiet-button"
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+      >
+        Reset conversation
+      </button>
+      <button
+        id="cancel-all-agents"
+        class="quiet-button"
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        disabled
+      >
+        Cancel all agents
+      </button>
+      <button
+        id="cancel-agent"
+        class="quiet-button"
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        hidden
+        disabled
+      >
+        Cancel agent
+      </button>
+      <button
+        id="remove-agent"
+        class="quiet-button"
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        hidden
+        disabled
+      >
+        Remove agent
+      </button>
+      <button
+        id="close-session"
+        class="quiet-button"
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        disabled
+      >
+        Close workspace
+      </button>
+    </div>
     <dialog id="session-history-dialog" aria-labelledby="session-history-title">
       <div class="dialog-heading">
         <h2 id="session-history-title">Resume session</h2>
@@ -811,16 +871,6 @@
                   >
                     Resume session
                   </button>
-                  <div class="app-menu-danger-zone">
-                    <button
-                      id="close-session"
-                      class="danger-button app-menu-destructive"
-                      type="button"
-                      hidden
-                    >
-                      Close session
-                    </button>
-                  </div>
                 </div>
               </section>
               <section
@@ -829,6 +879,9 @@
               >
                 <h2 id="app-menu-appearance-heading">Appearance</h2>
                 <div id="app-menu-appearance-controls"></div>
+                <button id="layout-reset" class="quiet-button" type="button">
+                  Reset panel layout
+                </button>
                 <details id="app-menu-layout">
                   <summary>Panel layout</summary>
                   <div class="app-menu-layout-controls">
@@ -853,13 +906,6 @@
                         checked
                       />Agents &amp; history</label
                     >
-                    <button
-                      id="layout-reset"
-                      class="quiet-button"
-                      type="button"
-                    >
-                      Show all panels
-                    </button>
                   </div>
                 </details>
                 <details id="app-menu-weapons" hidden>
@@ -1093,16 +1139,7 @@
                   ></span>
                 </div>
                 <p id="context-meter" class="context-meter" hidden></p>
-                <div class="factory-file-actions">
-                  <button
-                    id="close-parent-session"
-                    class="quiet-button"
-                    type="button"
-                    title="Close this agent"
-                  >
-                    Close session
-                  </button>
-                </div>
+                <div class="factory-file-actions"></div>
               </div>
             </div>
             <div class="factory-metrics" aria-label="Agent counts">
@@ -1178,21 +1215,8 @@
                   Active agents
                   <span id="active-count" class="count-tag">0</span>
                 </h2>
-                <button
-                  id="cancel-all-agents"
-                  class="quiet-button"
-                  type="button"
-                  disabled
-                >
-                  Cancel all agents
-                </button>
               </div>
-              <p
-                id="cancel-all-agents-error"
-                class="control-error"
-                role="alert"
-                hidden
-              ></p>
+
               <div id="active-workers" class="worker-grid"></div>
               <p id="no-workers" class="empty-state">No active agents.</p>
             </section>
@@ -1260,6 +1284,16 @@
             <div class="inspector-title-row">
               <div class="inspector-unit-controls">
                 <h2 id="inspector-title">Inspector</h2>
+                <button
+                  id="item-actions-button"
+                  class="quiet-button"
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-controls="item-context-menu"
+                  aria-expanded="false"
+                >
+                  Actions
+                </button>
               </div>
               <div id="inspector-actions" class="app-actions-slot"></div>
             </div>
@@ -1408,7 +1442,11 @@
           >
             <label class="speed-control" for="session-speed">
               <span>Speed</span>
-              <select id="session-speed" aria-describedby="speed-status" disabled>
+              <select
+                id="session-speed"
+                aria-describedby="speed-status"
+                disabled
+              >
                 <option value="regular">Regular</option>
               </select>
             </label>
@@ -1676,6 +1714,18 @@
               </p>
             </section>
           </div>
+          <p
+            id="cancel-all-agents-error"
+            class="control-error"
+            role="alert"
+            hidden
+          ></p>
+          <p
+            id="cancel-agent-error"
+            class="control-error"
+            role="alert"
+            hidden
+          ></p>
           <p id="attached-note" class="attached-note" hidden>Connected agent</p>
           <div
             id="composer-resize"
@@ -1696,32 +1746,8 @@
             >
               <div class="agent-task-heading">
                 <h3 id="agent-task-title">Agent task</h3>
-                <div class="agent-task-actions">
-                  <button
-                    id="cancel-agent"
-                    class="quiet-button"
-                    type="button"
-                    disabled
-                  >
-                    Cancel agent
-                  </button>
-                  <button
-                    id="remove-agent"
-                    class="quiet-button"
-                    type="button"
-                    hidden
-                    disabled
-                  >
-                    Remove agent
-                  </button>
-                </div>
               </div>
-              <p
-                id="cancel-agent-error"
-                class="control-error"
-                role="alert"
-                hidden
-              ></p>
+
               <p id="agent-task-text"></p>
             </section>
             <section

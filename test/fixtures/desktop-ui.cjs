@@ -1272,8 +1272,9 @@ async function run(name, callback, width = 1600, height = 1000) {
           hiddenCanvasAncestor: Boolean(
             document.getElementById('factory-canvas').closest('[hidden]'),
           ),
-          themeErrors: [...document.querySelectorAll('#plugin-theme-errors li')]
-            .map(item => item.textContent),
+          themeErrors: [
+            ...document.querySelectorAll('#plugin-theme-errors li'),
+          ].map(item => item.textContent),
           pixels: window.fixturePixelDiagnostics,
           motion: document
             .getElementById('motion-toggle')
@@ -3709,8 +3710,7 @@ async function main() {
           if (
             $('factory-info-button').checkVisibility() !== collapsed ||
             info.hasAttribute('popover') !== collapsed ||
-            info.checkVisibility() === collapsed ||
-            $('close-parent-session').checkVisibility() === collapsed
+            info.checkVisibility() === collapsed
           )
             throw new Error(
               `Expected ${collapsed ? 'collapsed' : 'inline'} details at ${innerWidth}x${innerHeight}; panel ${JSON.stringify($('factory-panel').getBoundingClientRect().toJSON())}`,
@@ -3721,7 +3721,6 @@ async function main() {
               'factory-effort',
               'context-meter',
               'markdown-launcher',
-              'close-parent-session',
             ]) {
               const element = $(id);
               const r = element.getBoundingClientRect();
@@ -3736,6 +3735,14 @@ async function main() {
                 throw new Error(`Inline details clipped: ${id}`);
             }
           }
+          const actions = $('item-actions-button');
+          if (
+            !actions.checkVisibility() ||
+            !window.compactLiveView.inside(actions.getBoundingClientRect())
+          )
+            throw new Error(
+              'Item actions must remain visible in the inspector',
+            );
           if (
             info.textContent.includes($('factory-title').textContent) ||
             info.textContent.includes('/fixture/long-project-folder')
@@ -4034,8 +4041,8 @@ async function main() {
       await publish();
       await view();
       await detailsVisible(true);
-      await click('#factory-info-button');
-      await click('#close-parent-session');
+      await click('#item-actions-button');
+      await click('#close-session');
       await until(
         () => !document.getElementById('welcome').hidden,
         'Close session action did not remove the session',
@@ -7009,9 +7016,10 @@ async function main() {
       await evaluate(() => document.getElementById('close-commands').click());
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('selected-agent-controls');
-      await evaluate(() =>
-        document.getElementById('close-parent-session').click(),
-      );
+      await evaluate(() => {
+        document.getElementById('item-actions-button').click();
+        document.getElementById('close-session').click();
+      });
       await until(
         () =>
           document.getElementById('inspector-title').textContent ===
@@ -9135,13 +9143,16 @@ async function main() {
       agentPromptDelay = 0;
       await publish();
       await choose('Delegated only');
+      await clickPointer('#item-actions-button');
       assert.deepEqual(
         await evaluate(() => ({
           composerHidden: document.getElementById('parent-controls').hidden,
           sendDisabled: document.getElementById('send-prompt').disabled,
           taskDockHidden: document.getElementById('agent-task-dock').hidden,
           task: document.getElementById('agent-task-text').textContent,
-          cancelHidden: document.getElementById('cancel-agent').hidden,
+          cancelVisible: document
+            .getElementById('cancel-agent')
+            .checkVisibility(),
           cancelDisabled: document.getElementById('cancel-agent').disabled,
           detailsHidden: document.getElementById('tab-details').hidden,
           contextHidden: document.getElementById('tab-context').hidden,
@@ -9151,13 +9162,14 @@ async function main() {
           sendDisabled: true,
           taskDockHidden: false,
           task: 'Task delegated',
-          cancelHidden: false,
+          cancelVisible: true,
           cancelDisabled: false,
           detailsHidden: false,
           contextHidden: false,
         },
         'Subagent workers retain task, stop, details, and context controls',
       );
+      await press('Escape');
       await evaluate(() => document.getElementById('tab-details').click());
       assert.equal(
         await evaluate(() => document.getElementById('panel-details').hidden),
@@ -12501,14 +12513,12 @@ async function main() {
         await evaluate(() => ({
           inspector: document.getElementById('inspector-title').textContent,
           startHidden: document.getElementById('start-session').hidden,
-          closeHidden: document.getElementById('close-session').hidden,
           start: document.getElementById('start-session').textContent,
           openFolder: document.getElementById('new-session').textContent.trim(),
         })),
         {
           inspector: 'New session agent',
           startHidden: true,
-          closeHidden: false,
           start: 'Reset conversation',
           openFolder: 'Open folder',
         },
@@ -12656,9 +12666,9 @@ async function main() {
       closeDelay = 180;
       closeError = 'Could not close the session';
       await evaluate(() => {
-        document.getElementById('app-menu-button').click();
+        document.getElementById('item-actions-button').click();
         document.getElementById('close-session').click();
-        document.getElementById('close-parent-session').click();
+        document.getElementById('close-session').click();
       });
       await until(
         () =>
@@ -12668,20 +12678,12 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           disabled: document.getElementById('close-session').disabled,
-          headingDisabled: document.getElementById('close-parent-session')
-            .disabled,
-          headingLabel: document.getElementById('close-parent-session')
-            .textContent,
+          label: document.getElementById('close-session').textContent,
           menuOpen: document
-            .getElementById('app-menu-panel')
+            .getElementById('item-context-menu')
             .matches(':popover-open'),
         })),
-        {
-          disabled: true,
-          headingDisabled: true,
-          headingLabel: 'Closing…',
-          menuOpen: false,
-        },
+        {disabled: true, label: 'Closing…', menuOpen: false},
       );
       await until(
         () => !document.getElementById('app-error').hidden,
@@ -12709,17 +12711,15 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           disabled: document.getElementById('close-session').disabled,
-          headingDisabled: document.getElementById('close-parent-session')
-            .disabled,
           label: document.getElementById('close-session').textContent,
         })),
-        {disabled: false, headingDisabled: false, label: 'Close workspace'},
+        {disabled: false, label: 'Close workspace'},
       );
 
       closeDelay = 0;
       closeError = undefined;
       await evaluate(() => {
-        document.getElementById('app-menu-button').click();
+        document.getElementById('item-actions-button').click();
         document.getElementById('close-session').click();
       });
       await until(
@@ -12999,13 +12999,15 @@ async function main() {
       ];
       hub.sessions[0].totalAgents = 1;
       await publish();
+      await clickPointer('#item-actions-button');
       assert.equal(
         await evaluate(() =>
-          document.getElementById('close-parent-session').checkVisibility(),
+          document.getElementById('close-session').checkVisibility(),
         ),
         true,
-        'Close session must be directly accessible in the live panel',
+        'Close session must be accessible through Actions',
       );
+      await press('Escape');
       await evaluate(async () => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Resume this draft after closing';
@@ -13016,7 +13018,8 @@ async function main() {
         flushDrafts();
         document.querySelector('#active-workers button').click();
         document.getElementById('back-to-parent').click();
-        document.getElementById('close-parent-session').click();
+        document.getElementById('item-actions-button').click();
+        document.getElementById('close-session').click();
       });
       await until(
         () =>
@@ -13031,7 +13034,7 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           menuOpen: document
-            .getElementById('app-menu-panel')
+            .getElementById('item-context-menu')
             .matches(':popover-open'),
           parents: [
             ...document.querySelectorAll('#parents .parent-card-name'),
@@ -13106,7 +13109,7 @@ async function main() {
       );
 
       await evaluate(() => {
-        document.getElementById('app-menu-button').click();
+        document.getElementById('item-actions-button').click();
         document.getElementById('close-session').click();
       });
       await until(
@@ -13117,7 +13120,7 @@ async function main() {
       );
       await evaluate(() => {
         document.getElementById('open-commands').click();
-        document.getElementById('close-parent-session').click();
+        document.getElementById('close-session').click();
       });
       await until(
         () => !document.getElementById('welcome').hidden,
@@ -13137,7 +13140,9 @@ async function main() {
           welcome: !document.getElementById('welcome').hidden,
           workspace: document.getElementById('factory-workspace').hidden,
           startHidden: document.getElementById('start-session').hidden,
-          closeHidden: document.getElementById('close-session').hidden,
+          contextMenuVisible: document
+            .getElementById('item-context-menu')
+            .checkVisibility(),
           commandsOpen: document.getElementById('commands-dialog').open,
           settingsDisabled: document.getElementById('open-session-settings')
             .disabled,
@@ -13147,7 +13152,7 @@ async function main() {
           welcome: true,
           workspace: true,
           startHidden: true,
-          closeHidden: true,
+          contextMenuVisible: false,
           commandsOpen: false,
           settingsDisabled: true,
           openFolder: 'Open folder',

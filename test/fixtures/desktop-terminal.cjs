@@ -369,7 +369,8 @@ app
       await evaluate("document.querySelectorAll('.project-terminal').length"),
       2,
     );
-    await evaluate("document.getElementById('close-parent-session').click()");
+    await evaluate("document.getElementById('item-actions-button').click()");
+    await evaluate("document.getElementById('close-session').click()");
     await until("document.querySelectorAll('#parents button').length === 1");
     assert.throws(() => terminals.write('first', 'pwd\r'), /Open a terminal/);
     assert.equal(

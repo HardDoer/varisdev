@@ -7,12 +7,6 @@
 .agent-task-heading h3 {
   margin: 0;
 }
-.agent-task-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
 .control-error {
   margin: 6px 0;
   color: var(--status-failed, var(--red));

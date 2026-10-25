@@ -48,13 +48,14 @@ async function appFiles(
     join(root, 'package.json'),
     JSON.stringify({name: 'varisdev', type: 'module', version}),
   );
-  await put(
-    join(root, 'src/runtime/environment.mjs'),
-    await readFile(
-      new URL('../src/runtime/environment.mjs', import.meta.url),
-      'utf8',
-    ),
-  );
+  for (const name of ['environment.mjs', 'node-version.mjs'])
+    await put(
+      join(root, 'src/runtime', name),
+      await readFile(
+        new URL(`../src/runtime/${name}`, import.meta.url),
+        'utf8',
+      ),
+    );
   await put(
     join(root, 'src/dashboard/parent.ts'),
     `export const version = '${version}';`,

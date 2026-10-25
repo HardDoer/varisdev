@@ -3,9 +3,12 @@ import {createRequire} from 'node:module';
 import process from 'node:process';
 import {dirname, join} from 'node:path';
 import {fileURLToPath, URL} from 'node:url';
-import {applyLinuxSandboxFix} from './linux-sandbox.mjs';
-import {configureBundledPi} from './configure-pi.mjs';
-import {withNodePath} from '../src/runtime/environment.mjs';
+import {requireNode24} from '../src/runtime/node-version.mjs';
+
+requireNode24();
+const {applyLinuxSandboxFix} = await import('./linux-sandbox.mjs');
+const {configureBundledPi} = await import('./configure-pi.mjs');
+const {withNodePath} = await import('../src/runtime/environment.mjs');
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
