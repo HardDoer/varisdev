@@ -81,6 +81,7 @@ const runtime = new RuntimeManager({
   installRoot,
   runningRoot: fileURLToPath(new URL('../../../../', import.meta.url)),
 });
+await runtime.refreshEnvironment();
 const profile =
   process.env.PIDEV_DESKTOP_DATA_DIR ?? join(defaultDataDir(), 'desktop');
 mkdirSync(join(profile, 'temp'), {recursive: true});

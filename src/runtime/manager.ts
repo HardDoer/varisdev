@@ -106,6 +106,8 @@ interface AppRelease {
   archive?: Release;
 }
 
+class EnvironmentRestoreError extends Error {}
+
 export function defaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.VARISDEV_DATA_DIR) return resolve(env.VARISDEV_DATA_DIR);
   if (process.platform === 'darwin')
@@ -145,7 +147,10 @@ function installedVersion(root: string): string {
   return value.version;
 }
 
-async function sourceFingerprint(root: string): Promise<string> {
+async function sourceFingerprint(
+  root: string,
+  environment?: Buffer,
+): Promise<string> {
   const hash = createHash('sha256');
   const visit = async (relative: string): Promise<void> => {
     const path = join(root, relative);
@@ -170,7 +175,11 @@ async function sourceFingerprint(root: string): Promise<string> {
       }
     } else {
       hash.update(`${relative}\0`);
-      hash.update(await readFile(path));
+      hash.update(
+        environment && relative === join('src', 'runtime', 'environment.mjs')
+          ? environment
+          : await readFile(path),
+      );
       hash.update('\0');
     }
   };
@@ -353,6 +362,135 @@ export class RuntimeManager {
     return root;
   }
 
+  /** Repair the bootstrap left behind by updaters that only replaced the active runtime. */
+  async refreshEnvironment(): Promise<void> {
+    const temporary = join(this.dataDir, `active-${randomUUID()}.tmp`);
+    let unlock: (() => Promise<void>) | undefined;
+    let restore: (() => Promise<void>) | undefined;
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      const root = await this.currentRoot();
+      if (root === this.installRoot) return;
+      const relative = 'src/runtime/environment.mjs';
+      if (
+        (await readFile(join(this.installRoot, relative))).equals(
+          await readFile(join(root, relative)),
+        )
+      )
+        return;
+      // Startup can defer repair while another process is updating.
+      unlock = await this.acquireLock(false);
+      if (!unlock) return;
+      const activeRoot = await this.selectedRoot();
+      if (activeRoot === this.installRoot) return;
+      const pointer: ActiveRuntime = JSON.parse(
+        await readFile(join(this.dataDir, 'active.json'), 'utf8'),
+      );
+      const replacement = await this.replaceEnvironment(
+        activeRoot,
+        pointer.fingerprint,
+      );
+      if (!replacement) return;
+      restore = replacement.restore;
+      cleanup = replacement.cleanup;
+      pointer.fingerprint = replacement.fingerprint;
+      await writeFile(temporary, JSON.stringify(pointer) + '\n');
+      if (pointer.fingerprint !== (await sourceFingerprint(this.installRoot)))
+        throw new Error(
+          'VarisDev app files changed while updating the startup environment reader. Please retry.',
+        );
+      await rename(temporary, join(this.dataDir, 'active.json'));
+      restore = undefined;
+    } catch (error) {
+      if (error instanceof EnvironmentRestoreError) throw error;
+      if (restore) {
+        await restore();
+        restore = undefined;
+      }
+      console.warn(
+        'VarisDev: Could not update the startup environment reader. Reinstall VarisDev if the startup warning persists.',
+      );
+    } finally {
+      if (!restore) await cleanup?.();
+      await rm(temporary, {force: true}).catch(() => {});
+      await unlock?.();
+    }
+  }
+
+  /** Replace only the standalone loader; retain a rollback until the pointer is committed. */
+  private async replaceEnvironment(
+    root: string,
+    previousFingerprint: string,
+  ): Promise<
+    | {
+        fingerprint: string;
+        restore: () => Promise<void>;
+        cleanup: () => Promise<void>;
+      }
+    | undefined
+  > {
+    const destination = join(this.installRoot, 'src/runtime/environment.mjs');
+    const previous = await readFile(destination);
+    const next = await readFile(join(root, 'src/runtime/environment.mjs'));
+    if (previous.equals(next)) return;
+    const {mode} = await stat(destination);
+    // Keep staging files outside the directories included in the source fingerprint.
+    const temporary = join(
+      this.installRoot,
+      `.environment-${randomUUID()}.tmp`,
+    );
+    const backup = join(this.installRoot, `.environment-${randomUUID()}.bak`);
+    const cleanup = async (): Promise<void> => {
+      await rm(backup, {force: true}).catch(() => {});
+    };
+    const restore = async (): Promise<void> => {
+      try {
+        await rename(backup, destination);
+      } catch (cause) {
+        throw new EnvironmentRestoreError(
+          'Could not restore the installed startup environment reader.',
+          {cause},
+        );
+      }
+    };
+    const fingerprint = await sourceFingerprint(this.installRoot, next);
+    if (previousFingerprint !== (await sourceFingerprint(this.installRoot)))
+      throw new Error(
+        'VarisDev app files changed while updating the startup environment reader. Please retry.',
+      );
+    try {
+      await writeFile(backup, previous, {mode, flag: 'wx'});
+      await writeFile(temporary, next, {mode, flag: 'wx'});
+      await rename(temporary, destination);
+    } catch (error) {
+      await cleanup();
+      if (
+        ['EACCES', 'EPERM', 'EROFS'].includes(
+          (error as NodeJS.ErrnoException).code || '',
+        )
+      ) {
+        console.warn(
+          'VarisDev: Could not update the startup environment reader. Reinstall VarisDev with write access to the original installation to update it.',
+        );
+        return;
+      }
+      throw error;
+    } finally {
+      await rm(temporary, {force: true}).catch(() => {});
+    }
+    try {
+      if (fingerprint !== (await sourceFingerprint(this.installRoot)))
+        throw new Error(
+          'VarisDev app files changed while updating the startup environment reader. Please retry.',
+        );
+    } catch (error) {
+      await restore();
+      await cleanup();
+      throw error;
+    }
+    return {fingerprint, restore, cleanup};
+  }
+
   private async selectedRoot(): Promise<string> {
     let pointer: ActiveRuntime;
     try {
@@ -461,6 +599,8 @@ export class RuntimeManager {
     let unlock: (() => Promise<void>) | undefined;
     let stage: string | undefined;
     let pointerTemp: string | undefined;
+    let restoreEnvironment: (() => Promise<void>) | undefined;
+    let cleanupEnvironment: (() => Promise<void>) | undefined;
     try {
       const previousRoot = await this.currentRoot();
       unlock = await this.acquireLock();
@@ -615,10 +755,13 @@ export class RuntimeManager {
       this.publish({progress: {stage: 'activating'}});
       if (process.platform === 'darwin')
         await refreshMacLauncher(this.installRoot, root);
+      const replacement = await this.replaceEnvironment(root, fingerprint);
+      restoreEnvironment = replacement?.restore;
+      cleanupEnvironment = replacement?.cleanup;
       const pointer: ActiveRuntime = {
         generation,
         baseRoot: this.installRoot,
-        fingerprint,
+        fingerprint: replacement?.fingerprint ?? fingerprint,
         version,
         revision: release.revision,
       };
@@ -628,7 +771,12 @@ export class RuntimeManager {
       );
       pointerTemp = join(this.dataDir, `active-${randomUUID()}.tmp`);
       await writeFile(pointerTemp, JSON.stringify(pointer) + '\n');
+      if (pointer.fingerprint !== (await sourceFingerprint(this.installRoot)))
+        throw new Error(
+          'VarisDev app files changed during the update. Please retry.',
+        );
       await rename(pointerTemp, join(this.dataDir, 'active.json'));
+      restoreEnvironment = undefined;
       pointerTemp = undefined;
       stage = undefined;
       return this.publish({
@@ -640,8 +788,17 @@ export class RuntimeManager {
         progress: undefined,
       });
     } catch (error) {
+      try {
+        if (restoreEnvironment) await restoreEnvironment();
+        restoreEnvironment = undefined;
+      } catch (restoreError) {
+        stage = undefined;
+        return this.fail(restoreError);
+      }
+      if (error instanceof EnvironmentRestoreError) stage = undefined;
       return this.fail(error);
     } finally {
+      if (!restoreEnvironment) await cleanupEnvironment?.();
       if (pointerTemp) await rm(pointerTemp, {force: true}).catch(() => {});
       if (stage)
         await rm(stage, {recursive: true, force: true}).catch(() => {});
@@ -735,7 +892,9 @@ export class RuntimeManager {
     }
   }
 
-  private async acquireLock(): Promise<() => Promise<void>> {
+  private async acquireLock(
+    wait = true,
+  ): Promise<(() => Promise<void>) | undefined> {
     await mkdir(this.dataDir, {recursive: true});
     const lock = join(this.dataDir, 'update.lock');
     const token = randomUUID();
@@ -765,6 +924,7 @@ export class RuntimeManager {
         };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (!wait) return;
       }
       if (Date.now() - started >= (this.options.lockTimeoutMs ?? 15 * 60_000))
         throw new Error(

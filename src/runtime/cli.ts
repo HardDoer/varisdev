@@ -299,6 +299,7 @@ export async function runCli(
   configureSettings();
   const [command, ...rest] = args;
   const manager = new RuntimeManager({installRoot});
+  await manager.refreshEnvironment();
   const runtimeRoot = await manager.currentRoot();
   if (command === '--help' || command === '-h' || command === 'help') {
     console.log(help);

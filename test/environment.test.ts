@@ -11,7 +11,7 @@ import {
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test, type TestContext} from 'node:test';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {
   createEnvironmentSettings,
@@ -427,6 +427,119 @@ void test(
     assert.match(output, /command-environment-ready/);
   },
 );
+
+for (const recoverShell of [false, true]) {
+  void test(
+    recoverShell
+      ? 'source and build helpers migrate a legacy shell failure and initialize Bash once'
+      : 'legacy singleton migration restores inherited fallbacks while applying saved settings to process.env',
+    {timeout: 15000, skip: recoverShell && process.platform !== 'linux'},
+    async t => {
+      const f = await fixture(t, '/bin/bash');
+      if (!recoverShell) f.env.SHELL = join(f.home, 'missing/bash');
+      await writeFile(
+        join(f.home, '.bashrc'),
+        'printf "read\\n" >> "$HOME/shell-reads"\nexport MIGRATION_INHERITED_SETTING="$OPENAI_API_KEY"\nexport OPENAI_API_KEY="bash-key"\nexport SHELL_ONLY_SETTING="from-bash"\n',
+      );
+      const text =
+        '{ "OPENAI_API_KEY": "saved-key", "SAVED_ONLY_SETTING": "saved-only" }\n';
+      await mkdir(dirname(f.file), {recursive: true});
+      await writeFile(f.file, text);
+      const buildHelper = join(f.home, 'build/environment.mjs');
+      await mkdir(dirname(buildHelper), {recursive: true});
+      await writeFile(
+        buildHelper,
+        await readFile(join(root, 'src/runtime/environment.mjs'), 'utf8'),
+      );
+      const script = `
+        import assert from 'node:assert/strict';
+        import {access, readFile} from 'node:fs/promises';
+        import {delimiter} from 'node:path';
+        const source = await import(${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)});
+        const built = await import(${JSON.stringify(pathToFileURL(buildHelper).href)});
+        const file = ${JSON.stringify(f.file)};
+        const recoverShell = ${recoverShell};
+        if (!recoverShell)
+          process.env.SystemRoot = ${JSON.stringify(join(f.home, 'missing-windows'))};
+        const fallback = recoverShell ? 'bash-key' : 'inherited-key';
+        const key = Symbol.for('varisdev.environment-settings');
+        process.env.OPENAI_API_KEY = 'saved-key';
+        process.env.SAVED_ONLY_SETTING = 'saved-only';
+        let legacyReads = 0;
+        const legacy = {
+          async initialize() {
+            return {values: {...process.env}, error: 'Could not start Zsh to read .zshrc.'};
+          },
+          forChild(base) {
+            assert.equal(base, process.env);
+            legacyReads++;
+            const child = {...base, OPENAI_API_KEY: 'inherited-key'};
+            delete child.SAVED_ONLY_SETTING;
+            return child;
+          },
+        };
+        globalThis[key] = legacy;
+        assert.match((await legacy.initialize()).error, /Zsh/);
+        process.env.RUNTIME_ADDED_SETTING = 'from-app';
+        const settings = source.environmentSettings();
+        assert.notEqual(settings, legacy);
+        assert.equal(globalThis[key], settings);
+        const state = await settings.initialize();
+        assert.equal(state.values.OPENAI_API_KEY, 'saved-key');
+        assert.equal(state.values.SAVED_ONLY_SETTING, 'saved-only');
+        assert.equal(process.env.OPENAI_API_KEY, 'saved-key');
+        assert.equal(process.env.RUNTIME_ADDED_SETTING, 'from-app');
+        assert.deepEqual(state.savedNames.sort(), ['OPENAI_API_KEY', 'SAVED_ONLY_SETTING']);
+        assert.equal(await readFile(file, 'utf8'), ${JSON.stringify(text)});
+        if (recoverShell) {
+          assert.equal(state.error, undefined);
+          assert.equal(process.env.MIGRATION_INHERITED_SETTING, 'inherited-key');
+          assert.equal(process.env.SHELL_ONLY_SETTING, 'from-bash');
+        } else {
+          assert.match(state.error, /Could not start/);
+          assert.doesNotMatch(state.error, /Zsh/);
+        }
+        const child = settings.forChild();
+        assert.equal(child.OPENAI_API_KEY, fallback);
+        assert.equal(child.SAVED_ONLY_SETTING, undefined);
+        assert.equal(process.env.SAVED_ONLY_SETTING, 'saved-only');
+        process.env.RUNTIME_ADDED_SETTING = 'changed-by-app';
+        const runtimePath = 'app-runtime-bin' + delimiter + process.env.PATH;
+        process.env.PATH = runtimePath;
+        assert.notEqual(source.environmentSettings, built.environmentSettings);
+        assert.equal(built.environmentSettings(), settings);
+        await built.initializeEnvironment();
+        await source.initializeEnvironment();
+        await settings.get();
+        assert.equal(process.env.RUNTIME_ADDED_SETTING, 'changed-by-app');
+        assert.equal(process.env.PATH, runtimePath);
+        assert.equal(await readFile(file, 'utf8'), ${JSON.stringify(text)});
+        await settings.save('OPENAI_API_KEY', 'replacement-key');
+        assert.equal(process.env.OPENAI_API_KEY, 'replacement-key');
+        assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {
+          OPENAI_API_KEY: 'replacement-key', SAVED_ONLY_SETTING: 'saved-only',
+        });
+        const removed = await built.environmentSettings().save('OPENAI_API_KEY', null);
+        assert.equal(removed.values.OPENAI_API_KEY, fallback);
+        assert.equal(process.env.OPENAI_API_KEY, fallback);
+        assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {SAVED_ONLY_SETTING: 'saved-only'});
+        await settings.save('SAVED_ONLY_SETTING', null);
+        assert.equal(process.env.SAVED_ONLY_SETTING, undefined);
+        await assert.rejects(access(file), {code: 'ENOENT'});
+        assert.equal(legacyReads, 1);
+        if (recoverShell)
+          assert.equal(await readFile(${JSON.stringify(join(f.home, 'shell-reads'))}, 'utf8'), 'read\\n');
+        console.log('singleton-migration-ready');
+      `;
+      const output = await runRuntimeCommand(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        {cwd: f.home, env: f.env, timeoutMs: 8000},
+      );
+      assert.match(output, /singleton-migration-ready/);
+    },
+  );
+}
 
 void test(
   'Linux Bash startup loads its own profile without requiring Zsh and preserves saved overrides',

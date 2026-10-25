@@ -312,9 +312,10 @@ export function readShellEnvironment({
   });
 }
 
-/** @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, file?: string, shell?: string, timeoutMs?: number, signal?: AbortSignal, readEnvironment?: typeof readShellEnvironment}} [options] */
+/** @param {{env?: NodeJS.ProcessEnv, initialEnv?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, file?: string, shell?: string, timeoutMs?: number, signal?: AbortSignal, readEnvironment?: typeof readShellEnvironment}} [options] */
 export function createEnvironmentSettings({
   env = process.env,
+  initialEnv = env,
   platform = process.platform,
   file,
   shell,
@@ -322,11 +323,11 @@ export function createEnvironmentSettings({
   signal,
   readEnvironment = readShellEnvironment,
 } = {}) {
-  const inherited = fields(env, platform);
+  const inherited = fields(initialEnv, platform);
   let machine;
   let machineValues = inherited;
   let error;
-  let applied = new Set(Object.keys(inherited));
+  let applied = new Set(Object.keys(fields(env, platform)));
   let lastValues = {};
   let savedNames = [];
   let saving = Promise.resolve();
@@ -357,7 +358,7 @@ export function createEnvironmentSettings({
   }
   async function initialize() {
     machine ??= readEnvironment({
-      env: {...env},
+      env: {...initialEnv},
       platform,
       shell,
       timeoutMs,
@@ -435,8 +436,16 @@ export function createEnvironmentSettings({
 }
 
 const stateKey = Symbol.for('varisdev.environment-settings');
+const versionedStateKey = Symbol.for('varisdev.environment-settings.v2');
 export function environmentSettings() {
-  return (globalThis[stateKey] ??= createEnvironmentSettings());
+  if (!globalThis[versionedStateKey]) {
+    // Legacy helpers may cache a failed shell read. Recover their fallback
+    // so saved overrides do not become inherited values in the new settings.
+    const initialEnv = globalThis[stateKey]?.forChild(process.env);
+    globalThis[versionedStateKey] = createEnvironmentSettings({initialEnv});
+    globalThis[stateKey] = globalThis[versionedStateKey];
+  }
+  return globalThis[versionedStateKey];
 }
 export function environmentForChild(env = process.env) {
   return environmentSettings().forChild(env);
