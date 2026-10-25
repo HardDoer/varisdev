@@ -6,12 +6,12 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 
 ## Features
 
-- Parent sessions and background agents with a cool 3D-view reminiscent of early 2000s tycoon games.
+- Parent sessions and background agents with a cool 3D-view reminiscent of late 90s management games.
 - Makes you look like you are not working when in fact you are!
 - Robots drinking coffee!
 - Detailed visualizations regarding whatever the agents are doing and token usage.
 - Context files, Markdown editing, and image previews.
-- Loads Pi packages and extension commands. Terminal-specific plugin rendering and shortcuts have compatibility limitations.
+- Loads Pi packages and extension commands. Visual Pi plugins probably dont do much as VarisDev has its own UI. So beware!
 - Has its own theming system that you can extend as you wish.
 - Additional tools for browsing, structured data, and images.
 
@@ -19,7 +19,7 @@ Pi is a very cool project and VarisDev would not have been possible without it. 
 
 ### 1. [↓ Download Node.js](https://nodejs.org/en/download)
 
-**Install this first — Node.js 24 or newer is required.** The official installer includes npm and supports Windows, macOS, and Linux. Already installed? Continue to step 2.
+**Install this first — Node.js 24 or newer is required.**
 
 ### 2. Install VarisDev
 
