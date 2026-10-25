@@ -7,7 +7,7 @@ const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 
 const [directory, reportPath] = process.argv.slice(2);
-const report = {cases: []};
+const report = {cases: [], screenshots: []};
 const at = '2026-01-01T12:00:00.000Z';
 let hub;
 let window;
@@ -16,6 +16,7 @@ let rendererErrors = [];
 let resources;
 let featureRequests;
 let featureDelays;
+let featureGates;
 let featureErrors;
 let editorSubmission;
 let chosenFolder;
@@ -470,6 +471,7 @@ function reset() {
   ]);
   featureRequests = [];
   featureDelays = new Map();
+  featureGates = new Map();
   featureErrors = new Map();
 }
 
@@ -889,7 +891,9 @@ ipcMain.handle('fixture:features', async (_event, sessionId) => {
   const result = JSON.parse(JSON.stringify(resources.get(sessionId)));
   const failure = featureErrors.get(sessionId);
   const delay = featureDelays.get(sessionId);
+  const gate = featureGates.get(sessionId);
   if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+  if (gate) await gate;
   if (failure) throw new Error(failure);
   return result;
 });
@@ -1243,7 +1247,57 @@ async function run(name, callback, width = 1600, height = 1000) {
       const dragTrace = await evaluate(() => window.fixtureResizeTrace);
       if (dragTrace)
         result.error += `\nNative drag diagnostics: ${JSON.stringify({trace: dragTrace, nativeEvents: resizeNativeTrace})}`;
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+      if (name.startsWith('Canvas2D factory fallback')) {
+        const fallback = await evaluate(() => ({
+          canvas: Object.fromEntries(
+            Object.entries(
+              document.getElementById('factory-canvas').dataset,
+            ).filter(([key]) =>
+              [
+                'renderer',
+                'parentStatus',
+                'parentMode',
+                'agentStatuses',
+                'sceneEvents',
+              ].includes(key),
+            ),
+          ),
+          documentHidden: document.hidden,
+          visibilityState: document.visibilityState,
+          bounds: document
+            .getElementById('factory-canvas')
+            .getBoundingClientRect()
+            .toJSON(),
+          focused: document.hasFocus(),
+          hiddenCanvasAncestor: Boolean(
+            document.getElementById('factory-canvas').closest('[hidden]'),
+          ),
+          themeErrors: [...document.querySelectorAll('#plugin-theme-errors li')]
+            .map(item => item.textContent),
+          pixels: window.fixturePixelDiagnostics,
+          motion: document
+            .getElementById('motion-toggle')
+            .getAttribute('aria-pressed'),
+          reduced: window.matchMedia('(prefers-reduced-motion: reduce)')
+            .matches,
+          markers: [...document.querySelectorAll('.agent-work-marker')].map(
+            marker => ({
+              id: marker.dataset.agentId,
+              hidden: marker.hidden,
+              left: marker.style.left,
+              top: marker.style.top,
+            }),
+          ),
+          inspector: document.getElementById('inspector-title').textContent,
+          selectedSession: document.querySelector(
+            '#parents [aria-pressed="true"]',
+          )?.textContent,
+        }));
+        result.error += `\nFallback dashboard: ${JSON.stringify(fallback)}`;
+        await fallbackScreenshot(
+          `factory-fallback-failure-${report.cases.length}`,
+        );
+      } else if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot(`failure-${report.cases.length}`);
     } catch (diagnosticError) {
       result.error += `\nFailure diagnostics: ${diagnosticError.stack || diagnosticError}`;
@@ -1256,13 +1310,18 @@ async function run(name, callback, width = 1600, height = 1000) {
   delete report.activeCase;
 }
 
-async function screenshot(name) {
+async function screenshot(
+  name,
+  outputDirectory = process.env.DESKTOP_UI_SCREENSHOT_DIR,
+) {
   await settle();
   await new Promise(resolve => setTimeout(resolve, 60));
-  const output = resolve(process.env.DESKTOP_UI_SCREENSHOT_DIR);
+  const output = resolve(outputDirectory);
   mkdirSync(output, {recursive: true});
   const image = await capturePage();
-  writeFileSync(join(output, `${name}.png`), image.toPNG());
+  const path = join(output, `${name}.png`);
+  writeFileSync(path, image.toPNG());
+  report.screenshots.push(path);
 }
 
 async function focusRenderer() {
@@ -1695,6 +1754,404 @@ async function resizeZoom(factor) {
   await settle();
 }
 
+const fallbackScreenshotDirectory = resolve(
+  process.env.DESKTOP_UI_SCREENSHOT_DIR ||
+    'generated-images/factory-fallback-ui',
+);
+
+async function fallbackScreenshot(name) {
+  await screenshot(name, fallbackScreenshotDirectory);
+  const rect = await evaluate(() => {
+    const r = document.getElementById('factory-canvas').getBoundingClientRect();
+    return {x: r.x, y: r.y, width: r.width, height: r.height};
+  });
+  const zoom = window.webContents.getZoomFactor();
+  const clip = Object.fromEntries(
+    Object.entries(rect).map(([key, value]) => [key, Math.floor(value * zoom)]),
+  );
+  const image = await capturePage(clip);
+  const path = join(fallbackScreenshotDirectory, `${name}-scene.png`);
+  writeFileSync(path, image.toPNG());
+  report.screenshots.push(path);
+}
+
+async function dashboardTheme(id) {
+  await evaluate(id => {
+    const select = document.getElementById('factory-theme');
+    select.value = id;
+    select.dispatchEvent(new Event('change', {bubbles: true}));
+    window.fixtureExpectedRenderer =
+      id === 'year1998' ? 'year1998' : 'factory-2d';
+  }, id);
+  await until(
+    () =>
+      document.getElementById('factory-canvas').dataset.renderer ===
+      window.fixtureExpectedRenderer,
+    `Dashboard did not display ${id} with WebGL unavailable`,
+  );
+  await settle();
+}
+
+async function withUnavailableWebGL(callback) {
+  let identifier;
+  try {
+    window.webContents.debugger.attach('1.3');
+    await uiOperation('Enable fallback page debugger', () =>
+      window.webContents.debugger.sendCommand('Page.enable'),
+    );
+    await emulateReducedMotion(false);
+    ({identifier} = await uiOperation('Force WebGL unavailable', () =>
+      window.webContents.debugger.sendCommand(
+        'Page.addScriptToEvaluateOnNewDocument',
+        {
+          source: `(() => {
+            window.fixtureWebGLRequests = [];
+            const getContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function(type, options) {
+              if (['webgl', 'webgl2', 'experimental-webgl'].includes(type)) {
+                window.fixtureWebGLRequests.push(type);
+                return null;
+              }
+              return getContext.call(this, type, type === '2d'
+                ? {...options, willReadFrequently: true} : options);
+            };
+          })();`,
+        },
+      ),
+    ));
+    await evaluate(() => {
+      const select = document.getElementById('factory-theme');
+      select.value = 'factory';
+      select.dispatchEvent(new Event('change', {bubbles: true}));
+    });
+    await reloadPage();
+    await focusRenderer();
+    await until(
+      () =>
+        document.getElementById('factory-canvas').dataset.renderer ===
+        'factory-2d',
+      'Unavailable WebGL did not create the animated Canvas2D factory',
+    );
+    assert.deepEqual(
+      await evaluate(() => ({
+        attemptedWebGL: window.fixtureWebGLRequests.length > 0,
+        canvasVisible: document
+          .getElementById('factory-canvas')
+          .checkVisibility(),
+        labelsVisible: !document.getElementById('scene-labels').hidden,
+        fallbackHidden: document.getElementById('fallback').hidden,
+        has2D: Boolean(
+          document.getElementById('factory-canvas').getContext('2d'),
+        ),
+      })),
+      {
+        attemptedWebGL: true,
+        canvasVisible: true,
+        labelsVisible: true,
+        fallbackHidden: true,
+        has2D: true,
+      },
+      'Actual dashboard uses its Canvas2D factory after a failed WebGL request',
+    );
+    await callback();
+  } finally {
+    try {
+      if (window.webContents.debugger.isAttached()) {
+        await uiOperation('Reset reduced motion emulation', () =>
+          window.webContents.debugger.sendCommand(
+            'Emulation.setEmulatedMedia',
+            {features: []},
+          ),
+        );
+        if (identifier)
+          await uiOperation('Remove forced WebGL failure', () =>
+            window.webContents.debugger.sendCommand(
+              'Page.removeScriptToEvaluateOnNewDocument',
+              {identifier},
+            ),
+          );
+      }
+    } finally {
+      if (window.webContents.debugger.isAttached())
+        window.webContents.debugger.detach();
+    }
+  }
+}
+
+async function emulateReducedMotion(reduced) {
+  await uiOperation(`Emulate reduced motion ${reduced}`, () =>
+    window.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {
+      features: [
+        {
+          name: 'prefers-reduced-motion',
+          value: reduced ? 'reduce' : 'no-preference',
+        },
+      ],
+    }),
+  );
+  await settle();
+}
+
+async function fallbackPixels(robotId) {
+  return evaluate(robotId => {
+    const canvas = document.getElementById('factory-canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Dashboard has no Canvas2D context');
+    let x = 0,
+      y = 0,
+      width = canvas.width,
+      height = canvas.height;
+    if (robotId) {
+      const unit = JSON.parse(canvas.dataset.agentStatuses).find(
+        unit => unit.id === robotId,
+      );
+      if (unit?.status !== 'running')
+        throw new Error('Pixel motion check requires an actual running robot');
+      const marker = document.querySelector(
+        `.agent-work-marker[data-agent-id="${robotId}"]`,
+      );
+      const bounds = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / bounds.width;
+      const scaleY = canvas.height / bounds.height;
+      // The live anchor is just above the robot; include its face and arms.
+      x = Math.max(
+        0,
+        Math.round(
+          ((parseFloat(marker.style.left) / 100) * bounds.width - 24) * scaleX,
+        ),
+      );
+      y = Math.max(
+        0,
+        Math.round(
+          ((parseFloat(marker.style.top) / 100) * bounds.height + 4) * scaleY,
+        ),
+      );
+      width = Math.min(canvas.width - x, Math.round(48 * scaleX));
+      height = Math.min(canvas.height - y, Math.round(60 * scaleY));
+    }
+    const pixels = context.getImageData(x, y, width, height).data;
+    let hash = 2166136261;
+    for (let i = 0; i < pixels.length; i += 4) {
+      hash = Math.imul(hash ^ pixels[i], 16777619);
+      hash = Math.imul(hash ^ pixels[i + 1], 16777619);
+      hash = Math.imul(hash ^ pixels[i + 2], 16777619);
+    }
+    return {width, height, hash: hash >>> 0};
+  }, robotId);
+}
+
+async function assertFallbackMotion(animated, message) {
+  await settle();
+  const first = await fallbackPixels('fallback-running');
+  const firstCanvas = await fallbackPixels();
+  assert.ok(first.width >= 24 && first.height >= 30);
+  let changed = false;
+  for (let sample = 0; sample < 3; sample++) {
+    await new Promise(resolve => setTimeout(resolve, 160));
+    const next = await fallbackPixels('fallback-running');
+    assert.equal(next.width, first.width, 'Canvas width stays stable');
+    assert.equal(next.height, first.height, 'Canvas height stays stable');
+    changed ||= next.hash !== first.hash;
+    if (changed) break;
+  }
+  if (changed !== animated) {
+    const nextCanvas = await fallbackPixels();
+    await evaluate(
+      diagnostics => {
+        window.fixturePixelDiagnostics = diagnostics;
+      },
+      {
+        robotChanged: changed,
+        canvasChanged: firstCanvas.hash !== nextCanvas.hash,
+        firstCanvas,
+        nextCanvas,
+      },
+    );
+  }
+  assert.equal(changed, animated, message);
+}
+
+async function toggleDashboardMotion() {
+  await clickPointer('#app-menu-button');
+  await clickPointer('#motion-toggle', {scroll: true});
+  await press('Escape');
+  await settle();
+}
+
+async function selectFallbackRobot() {
+  await until(
+    () =>
+      document.querySelector(
+        '.agent-work-marker[data-agent-id="fallback-running"]',
+      )?.style.left,
+    'Running robot did not receive its live scene anchor',
+  );
+  await mouseGesture(async () => {
+    await focusRenderer();
+    const point = await evaluate(() => {
+      const marker = document.querySelector(
+        '.agent-work-marker[data-agent-id="fallback-running"]',
+      );
+      if (!marker.checkVisibility()) throw new Error('Robot anchor is hidden');
+      const rect = marker.parentElement.getBoundingClientRect();
+      const point = {
+        x: rect.left + (parseFloat(marker.style.left) / 100) * rect.width,
+        y: rect.top + (parseFloat(marker.style.top) / 100) * rect.height,
+      };
+      if (
+        document.elementFromPoint(point.x, point.y) !==
+        document.getElementById('factory-canvas')
+      )
+        throw new Error(`Robot is covered at ${JSON.stringify(point)}`);
+      return point;
+    });
+    sendResizeMouse('mouseMove', point);
+    sendResizeMouse('mouseDown', point);
+    sendResizeMouse('mouseUp', point);
+    await settle();
+  });
+  await until(
+    () =>
+      document.getElementById('inspector-title').textContent === 'Tool robot',
+    'Native canvas click did not select the running robot',
+  );
+  assert.deepEqual(
+    await evaluate(() => ({
+      selectedLabel: document.querySelector(
+        '#scene-labels [aria-pressed="true"]',
+      )?.textContent,
+      selectedCard: document.querySelector(
+        '#active-workers [aria-pressed="true"] .worker-card-name',
+      )?.textContent,
+      conversationVisible: document
+        .getElementById('conversation')
+        .textContent.includes('Tool robot answer'),
+    })),
+    {
+      selectedLabel: 'Tool robot',
+      selectedCard: 'Tool robot',
+      conversationVisible: true,
+    },
+    'Canvas selection reaches dashboard labels, agent card and conversation',
+  );
+}
+
+function populateFallbackFactory() {
+  const data = hub.sessions[0];
+  data.session.activity = 'Thinking about the project';
+  data.agents = [
+    ['running', 'Tool robot', 'Using bash'],
+    ['queued', 'Queued robot', 'Waiting for a slot'],
+    ['completed', 'Completed robot', 'Finished reading files'],
+    ['failed', 'Failed robot', 'Command failed'],
+    ['cancelling', 'Cancelling robot', 'Stopping the command'],
+    ['cancelled', 'Cancelled robot', 'Stopped'],
+  ].map(([status, name, activity]) => ({
+    id: `fallback-${status}`,
+    name,
+    task: 'Inspect the factory fallback',
+    activity,
+    status,
+    model: 'fixture/small',
+    createdAt: at,
+    startedAt: at,
+    ...(!['running', 'queued', 'cancelling'].includes(status)
+      ? {finishedAt: at}
+      : {}),
+    conversation: [
+      {id: `${status}-answer`, role: 'assistant', text: `${name} answer`, at},
+    ],
+  }));
+  data.totalAgents = data.agents.length;
+}
+
+async function fallbackLayout() {
+  return evaluate(() => {
+    for (const element of [
+      document.documentElement,
+      document.body,
+      document.querySelector('main'),
+    ])
+      if (
+        element.scrollWidth > element.clientWidth + 1 ||
+        element.scrollHeight > element.clientHeight + 1 ||
+        element.scrollTop !== 0 ||
+        element.scrollLeft !== 0
+      )
+        throw new Error(`Fallback layout scrolls: ${element.tagName}`);
+    const rect = id => {
+      const element = document.getElementById(id);
+      const box = element.getBoundingClientRect();
+      if (
+        !element.checkVisibility() ||
+        box.width <= 0 ||
+        box.height <= 0 ||
+        box.left < -1 ||
+        box.top < -1 ||
+        box.right > innerWidth + 1 ||
+        box.bottom > innerHeight + 1
+      )
+        throw new Error(
+          `Clipped fallback ${id}: ${JSON.stringify(box.toJSON())}`,
+        );
+      return box;
+    };
+    const scene = rect('scene');
+    if (scene.width < 180 || scene.height < 180)
+      throw new Error(
+        `Fallback scene too small: ${JSON.stringify(scene.toJSON())}`,
+      );
+    for (const id of [
+      'factory-panel',
+      'factory-canvas',
+      'inspector',
+      'parent-controls',
+      'parent-prompt',
+      'send-prompt',
+      'app-menu-button',
+    ])
+      rect(id);
+    const agents = document.getElementById('factory-agents-button');
+    const info = document.getElementById('factory-info-button');
+    if (agents.checkVisibility()) rect('factory-agents-button');
+    else {
+      rect('active-workers');
+      rect('history-workers');
+    }
+    if (info.checkVisibility()) rect('factory-info-button');
+    const point = {
+      x: scene.left + scene.width / 2,
+      y: scene.top + scene.height / 2,
+    };
+    if (
+      !document
+        .getElementById('scene')
+        .contains(document.elementFromPoint(point.x, point.y))
+    )
+      throw new Error('Fallback scene is covered');
+    return {scene: scene.toJSON(), drawer: agents.checkVisibility()};
+  });
+}
+
+async function fallbackTransitionEffect() {
+  const agent = hub.sessions[0].agents.find(
+    item => item.id === 'fallback-failed',
+  );
+  agent.status = 'running';
+  await publish();
+  agent.status = 'failed';
+  await publish();
+  assert.equal(
+    await evaluate(() =>
+      document
+        .getElementById('factory-canvas')
+        .dataset.sceneEvents.includes('fallback-failed:failed'),
+    ),
+    true,
+    'Status transition produces a live scene effect',
+  );
+}
+
 function rgbChannels(color) {
   return color
     .match(/[\d.]+/g)
@@ -1762,6 +2219,258 @@ async function main() {
       callback({cancel: true});
     } else callback({});
   });
+
+  await run(
+    'Canvas2D factory fallback animates by default without WebGL and supports native robot selection',
+    async () => {
+      await withUnavailableWebGL(async () => {
+        populateFallbackFactory();
+        await publish();
+        assert.deepEqual(
+          await evaluate(() => ({
+            saved: localStorage.getItem('varisdev-factory-motion'),
+            motion: document
+              .getElementById('motion-toggle')
+              .getAttribute('aria-pressed'),
+            parentStatus:
+              document.getElementById('factory-canvas').dataset.parentStatus,
+          })),
+          {saved: null, motion: 'true', parentStatus: 'running'},
+          'Running factory keeps the default motion setting after WebGL fails',
+        );
+        await assertFallbackMotion(
+          true,
+          'Real running robots must change the Canvas2D pixels by default',
+        );
+        await toggleDashboardMotion();
+        await assertFallbackMotion(false, 'Motion off freezes fallback robots');
+        const before = await fallbackPixels();
+        await selectFallbackRobot();
+        assert.notEqual(
+          (await fallbackPixels()).hash,
+          before.hash,
+          'Robot selection visibly updates the still Canvas2D scene',
+        );
+        await toggleDashboardMotion();
+        await assertFallbackMotion(
+          true,
+          'Selected running robot continues its tool animation',
+        );
+        await fallbackScreenshot('factory-fallback-running-selected');
+      });
+    },
+  );
+
+  await run(
+    'Canvas2D factory fallback saves Motion off across reload and follows reduced motion',
+    async () => {
+      await withUnavailableWebGL(async () => {
+        populateFallbackFactory();
+        await publish();
+        await toggleDashboardMotion();
+        await reloadPage();
+        await focusRenderer();
+        assert.deepEqual(
+          await evaluate(() => ({
+            saved: localStorage.getItem('varisdev-factory-motion'),
+            motion: document
+              .getElementById('motion-toggle')
+              .getAttribute('aria-pressed'),
+            renderer:
+              document.getElementById('factory-canvas').dataset.renderer,
+            running:
+              document.getElementById('factory-canvas').dataset.parentStatus,
+          })),
+          {
+            saved: 'false',
+            motion: 'false',
+            renderer: 'factory-2d',
+            running: 'running',
+          },
+          'Saved Motion off reaches the fallback renderer after reload',
+        );
+        await assertFallbackMotion(
+          false,
+          'Saved Motion off freezes running Canvas2D robots after reload',
+        );
+        await fallbackScreenshot('factory-fallback-saved-motion-off');
+        await emulateReducedMotion(true);
+        await toggleDashboardMotion();
+        await reloadPage();
+        await focusRenderer();
+        assert.deepEqual(
+          await evaluate(() => ({
+            saved: localStorage.getItem('varisdev-factory-motion'),
+            motion: document
+              .getElementById('motion-toggle')
+              .getAttribute('aria-pressed'),
+            reduced: window.matchMedia('(prefers-reduced-motion: reduce)')
+              .matches,
+            title: document.getElementById('motion-toggle').title,
+          })),
+          {
+            saved: 'true',
+            motion: 'false',
+            reduced: true,
+            title: 'Reduced motion is enabled in system settings',
+          },
+          'System reduced motion applies to a saved Motion on after reload',
+        );
+        await assertFallbackMotion(
+          false,
+          'Reduced motion keeps running fallback robots still',
+        );
+        await emulateReducedMotion(false);
+        await until(
+          () =>
+            document
+              .getElementById('motion-toggle')
+              .getAttribute('aria-pressed') === 'true',
+          'Disabling system reduced motion did not restore saved Motion on',
+        );
+        await assertFallbackMotion(
+          true,
+          'Running fallback robots resume when system reduced motion is disabled',
+        );
+        await emulateReducedMotion(true);
+        await until(
+          () =>
+            document
+              .getElementById('motion-toggle')
+              .getAttribute('aria-pressed') === 'false',
+          'Live system reduced motion change did not pause the fallback',
+        );
+        await assertFallbackMotion(
+          false,
+          'Live system reduced motion change freezes the running factory',
+        );
+        await fallbackScreenshot('factory-fallback-reduced-motion');
+      });
+    },
+  );
+
+  await run(
+    'Canvas2D factory fallback renders every shipped theme with statuses selection effects and compact zoom',
+    async () => {
+      await withUnavailableWebGL(async () => {
+        populateFallbackFactory();
+        hub.sessions[0].session.status = 'compacting';
+        hub.sessions[0].session.activity = 'Compacting conversation';
+        await publish();
+        await selectFallbackRobot();
+        const themes = await evaluate(async () => {
+          const {THEMES} = await import('./themes.js');
+          const shipped = THEMES.map(theme => theme.id);
+          const options = [
+            ...document.getElementById('factory-theme').options,
+          ].map(option => option.value);
+          if (JSON.stringify(shipped) !== JSON.stringify(options))
+            throw new Error('Theme review must include every shipped palette');
+          return shipped;
+        });
+        for (const theme of themes) {
+          await dashboardTheme(theme);
+          for (const [width, height, zoom] of [
+            [1600, 1000, 1],
+            [1100, 760, 1.5],
+          ]) {
+            window.setContentSize(width, height);
+            await resizeZoom(zoom);
+            await evaluate(
+              expected => {
+                window.fixtureViewport = expected;
+              },
+              {width: width / zoom, height: height / zoom},
+            );
+            await until(
+              () =>
+                Math.abs(innerWidth - window.fixtureViewport.width) < 2 &&
+                Math.abs(innerHeight - window.fixtureViewport.height) < 2,
+              `Fallback ${theme} viewport did not settle at ${width}/${zoom}`,
+            );
+            const layout = await fallbackLayout();
+            assert.deepEqual(
+              await evaluate(() => ({
+                parent:
+                  document.getElementById('factory-canvas').dataset
+                    .parentStatus,
+                statuses: JSON.parse(
+                  document.getElementById('factory-canvas').dataset
+                    .agentStatuses,
+                )
+                  .map(unit => unit.status)
+                  .sort(),
+                selected: document.querySelector(
+                  '#scene-labels [aria-pressed="true"]',
+                )?.textContent,
+                processing: document
+                  .getElementById('scene')
+                  .classList.contains('is-processing'),
+              })),
+              {
+                parent: 'compacting',
+                statuses: [
+                  'cancelled',
+                  'cancelling',
+                  'completed',
+                  'failed',
+                  'queued',
+                  'running',
+                ],
+                selected: 'Tool robot',
+                processing: true,
+              },
+              `${theme}: statuses and robot selection reach the renderer at ${width}/${zoom}`,
+            );
+            await fallbackTransitionEffect();
+            await fallbackScreenshot(
+              `factory-fallback-${theme}-${width}x${height}-${zoom}`,
+            );
+            if (layout.drawer && theme === 'factory') {
+              await clickPointer('#factory-agents-button');
+              assert.equal(
+                await evaluate(() => {
+                  const drawer = document.getElementById(
+                    'factory-agents-drawer',
+                  );
+                  const r = drawer.getBoundingClientRect();
+                  return (
+                    drawer.matches(':popover-open') &&
+                    r.left >= 0 &&
+                    r.top >= 0 &&
+                    r.right <= innerWidth &&
+                    r.bottom <= innerHeight &&
+                    drawer.querySelectorAll('#active-workers button').length ===
+                      3 &&
+                    drawer.querySelectorAll('#history-workers button')
+                      .length === 3
+                  );
+                }),
+                true,
+                'Compact fallback exposes statuses and actions through its agents drawer',
+              );
+              await fallbackScreenshot(
+                'factory-fallback-compact-agents-drawer',
+              );
+              await press('Escape');
+              await clickPointer('#factory-info-button');
+              assert.equal(
+                await evaluate(() =>
+                  document
+                    .getElementById('factory-info')
+                    .matches(':popover-open'),
+                ),
+                true,
+                'Compact fallback preserves access to session details',
+              );
+              await fallbackScreenshot('factory-fallback-compact-info');
+              await press('Escape');
+            }
+          }
+        }
+      });
+    },
+  );
 
   await run(
     'panel resizing conversation supports mouse, keyboard, cancellation and saved bounds across reload and zoom',
@@ -5278,6 +5987,178 @@ async function main() {
   );
 
   await run(
+    'Speed startup reuses pending capabilities and preserves a new saved selection',
+    async () => {
+      const owner = hub.sessions[0];
+      owner.session.model = 'openai/gpt-6-astra';
+      owner.session.speedMode = 'fast';
+      Object.assign(resources.get('alpha'), {
+        model: {provider: 'openai', id: 'gpt-6-astra'},
+        speedModes: ['regular', 'fast', 'ultrafast'],
+        speedMode: 'fast',
+      });
+      const initial = Promise.withResolvers();
+      featureGates.set('alpha', initial.promise);
+      featureRequests.length = 0;
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        true,
+        'Startup waits for its first capability response',
+      );
+      for (let index = 0; index < 3; index++) {
+        await evaluate(() => {
+          document.getElementById('tab-conversation').click();
+          document.getElementById('tab-speed').click();
+        });
+      }
+      await settle();
+      assert.equal(
+        featureRequests.filter(id => id === 'alpha').length,
+        1,
+        'Repeated Speed activation must reuse the initial request',
+      );
+      featureGates.delete('alpha');
+      initial.resolve();
+      await until(
+        () =>
+          !document.getElementById('session-speed').disabled &&
+          document.getElementById('session-speed').value === 'fast',
+        'The initial response must enable Speed without another click and restore the saved mode',
+      );
+      const stale = Promise.withResolvers();
+      featureGates.set('alpha', stale.promise);
+      await evaluate(() => {
+        document.getElementById('tab-conversation').click();
+        document.getElementById('tab-speed').click();
+      });
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        false,
+        'A background refresh must preserve confirmed startup capabilities',
+      );
+      await settle();
+      featureGates.delete('alpha');
+      await evaluate(() => document.getElementById('session-speed').focus());
+      await press('End');
+      await until(
+        () =>
+          !document.getElementById('session-speed').disabled &&
+          document.getElementById('session-speed').value === 'ultrafast',
+        'Keyboard selection must apply while an older capability request is pending',
+      );
+      assert.equal(owner.session.speedMode, 'ultrafast');
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'prompt' &&
+            call.sessionId === 'alpha' &&
+            call.request.prompt === '/ultrafast on',
+        ),
+      );
+      stale.resolve();
+      await settle();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').value),
+        'ultrafast',
+        'An older response must not overwrite the completed selection',
+      );
+      await reloadPage();
+      await evaluate(() => document.getElementById('tab-speed').click());
+      await until(
+        () =>
+          !document.getElementById('session-speed').disabled &&
+          document.getElementById('session-speed').value === 'ultrafast',
+        'The selected speed must survive a dashboard reload',
+      );
+    },
+  );
+
+  await run(
+    'Speed first opening uses cached startup capabilities and model changes invalidate them',
+    async () => {
+      const owner = hub.sessions[0];
+      owner.session.model = 'openai/gpt-6-astra';
+      Object.assign(resources.get('alpha'), {
+        model: {provider: 'openai', id: 'gpt-6-astra'},
+        speedModes: ['regular', 'fast', 'ultrafast'],
+      });
+      await reloadPage();
+      await until(
+        () => !document.getElementById('session-speed').disabled,
+        'Startup capabilities did not load before opening Speed',
+      );
+      const oldModel = Promise.withResolvers();
+      featureGates.set('alpha', oldModel.promise);
+      await evaluate(() => document.getElementById('tab-speed').click());
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        false,
+        'The first Speed opening must immediately use cached startup capabilities',
+      );
+      await settle();
+      const beforeModelChange = featureRequests.length;
+      const newModel = Promise.withResolvers();
+      featureGates.set('alpha', newModel.promise);
+      owner.session.model = 'openai/gpt-5.4-nano';
+      Object.assign(resources.get('alpha'), {
+        model: {provider: 'openai', id: 'gpt-5.4-nano'},
+        speedModes: ['regular'],
+      });
+      await publish();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        true,
+        'An actual model change must wait for the new capabilities',
+      );
+      assert.ok(
+        featureRequests.length > beforeModelChange,
+        'Model changes must supersede the old in-flight request',
+      );
+      oldModel.resolve();
+      await settle();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        true,
+        'A delayed supported-model response must not enable the new model',
+      );
+      newModel.resolve();
+      await until(
+        () =>
+          document.getElementById('session-speed').disabled &&
+          document.getElementById('speed-status').checkVisibility() &&
+          document.querySelector('#session-speed option[value="fast"]')
+            .disabled,
+        'The new model must retain its Regular-only capability check',
+      );
+      const restored = Promise.withResolvers();
+      featureGates.set('alpha', restored.promise);
+      owner.session.model = 'anthropic/claude-opus-5';
+      owner.session.speedMode = 'fast';
+      Object.assign(resources.get('alpha'), {
+        model: {provider: 'anthropic', id: 'claude-opus-5'},
+        speedModes: ['regular', 'fast'],
+        speedMode: 'fast',
+      });
+      await publish();
+      assert.equal(
+        await evaluate(() => document.getElementById('session-speed').disabled),
+        true,
+      );
+      featureGates.delete('alpha');
+      restored.resolve();
+      await until(
+        () =>
+          !document.getElementById('session-speed').disabled &&
+          document.getElementById('session-speed').value === 'fast' &&
+          document.querySelector('#session-speed option[value="ultrafast"]')
+            .disabled,
+        'The replacement provider must enable its supported saved speed without another click',
+      );
+    },
+  );
+
+  await run(
     'selected agent controls configure context commands stop and close without touching its owner',
     async () => {
       const owner = hub.sessions[0];
@@ -5786,8 +6667,8 @@ async function main() {
       await reopenSpeedTab();
       assert.equal(
         await evaluate(() => document.getElementById('session-speed').disabled),
-        true,
-        'Cached speed capabilities stay disabled while refreshing',
+        false,
+        'Confirmed same-model speed capabilities remain available while refreshing',
       );
       await until(
         () =>

@@ -2537,7 +2537,7 @@ export function createFactoryScene(
   const intersectionObserver =
     typeof IntersectionObserver !== 'undefined'
       ? new IntersectionObserver(entries => {
-          inView = entries[0]?.isIntersecting ?? true;
+          inView = entries.at(-1)?.isIntersecting ?? inView;
           onVisibility();
         })
       : null;

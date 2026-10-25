@@ -16,6 +16,7 @@ import {
 import {createRobotWhip, whipPose} from './robot-whip.js';
 import {factoryIdentity} from './factory-identity.js';
 import {iso, sortOfficeObjects} from './year1998-geometry.js';
+import {createFactory2DScenery} from './factory-2d-scenery.js';
 
 const TAU = Math.PI * 2;
 const WORKING = new Set(['running', 'cancelling']);
@@ -77,11 +78,19 @@ const unsettled = pose =>
   pose.phase !== 'alive' || pose.surprise > 0 || pose.panic > 0;
 const rgb = color => `rgb(${color.map(n => Math.round(n * 255)).join(',')})`;
 
-/** A pixel office. The dashboard owns selection labels and motion preferences;
- * the shared controllers own the same decorative lifecycles as the factory. */
-export function createYear1998Scene(
+/** Both Canvas2D scenes share robot activity, selection, and damage behavior. */
+export function createYear1998Scene(canvas, options) {
+  return createScene(canvas, options, false);
+}
+
+export function createFactory2DScene(canvas, options) {
+  return createScene(canvas, options, true);
+}
+
+function createScene(
   canvas,
   {onSelect = () => {}, onLayout = () => {}} = {},
+  factory = false,
 ) {
   let ctx;
   try {
@@ -118,7 +127,7 @@ export function createYear1998Scene(
                 iso(Math.min(9.2, x + 1), Math.min(5.5, z + 1)),
                 iso(Math.max(-11.8, x - 1), Math.min(5.5, z + 1)),
               ],
-              'carpet',
+              factory ? 'metal' : 'carpet',
             ),
           ],
         });
@@ -173,7 +182,10 @@ export function createYear1998Scene(
   const whip = createRobotWhip();
   const damageHomes = new Map();
   const serviceRoutes = new Map();
-  let colors = {...DEFAULTS};
+  const defaults = factory
+    ? {...DEFAULTS, floor: '#182429', edge: '#24363b', dark: '#11181d'}
+    : DEFAULTS;
+  let colors = {...defaults};
   let disposed = false,
     motion = true,
     inView = true,
@@ -198,6 +210,28 @@ export function createYear1998Scene(
     time = 0;
   let reaction = null;
   let camera = {x: -100, y: -38, zoom: 1.5};
+  const factoryScenery = factory
+    ? createFactory2DScenery({
+        box,
+        tile,
+        panel,
+        line,
+        rect,
+        object: drawEnvironmentObject,
+        decorate(draw) {
+          // Animated screen contents sit on a stable damage surface.
+          const previous = objectDamage;
+          objectDamage = null;
+          try {
+            draw();
+          } finally {
+            objectDamage = previous;
+          }
+        },
+        state: () => ({colors, identity, time}),
+        bays: BAYS,
+      })
+    : null;
 
   function data(name, value) {
     const text = String(value);
@@ -274,7 +308,11 @@ export function createYear1998Scene(
   function captureSurface(points, fill) {
     if (!objectDamage) return;
     const {site, surfaces} = objectDamage;
-    const material = officeMaterial(site, fill);
+    const material = factory
+      ? fill === colors.screen
+        ? 'glass'
+        : 'metal'
+      : officeMaterial(site, fill);
     const previous = site.surfaces?.[surfaces.length];
     const face =
       previous?.material === material &&
@@ -352,7 +390,7 @@ export function createYear1998Scene(
     );
     polygon([c, b, iso(x0 + w, z0, bottom), iso(x0 + w, z0 + d, bottom)], side);
     polygon([a, b, c, e], surface);
-    line([e, c, b], '#304c50');
+    line([e, c, b], factory ? colors.outline : '#304c50');
     return iso(x, z, h);
   }
   function panel(x, z, w, low, high, fill, axis = 'x') {
@@ -501,6 +539,7 @@ export function createYear1998Scene(
   }
 
   function drawGround() {
+    if (factoryScenery) return factoryScenery.ground();
     // A finite carpeted room with a visible cutaway slab and a clear aisle.
     box(-1.3, -0.45, 21, 11.9, 0, '#829397', '#566970', '#43575f', -6);
     for (let x = -11.8; x < 9.2; x += 1.2) {
@@ -524,6 +563,7 @@ export function createYear1998Scene(
   }
 
   function drawWalls() {
+    if (factoryScenery) return factoryScenery.walls();
     drawEnvironmentObject('wall:back', () => {
       panel(-11.8, -6.4, 21, 0, 44, '#dddac6');
       panel(-11.78, -6.36, 20.96, 0, 4, '#939d97');
@@ -699,6 +739,7 @@ export function createYear1998Scene(
   }
 
   function drawDesk(x, z, unit = null, manager = false) {
+    if (factoryScenery) return factoryScenery.workstation(x, z, unit, manager);
     const {x: cx, z: cz, w, d} = deskFootprint(x, z, manager);
     box(
       cx - w / 2 + 0.4,
@@ -759,12 +800,14 @@ export function createYear1998Scene(
   }
 
   function queueTable(x, z) {
+    if (factoryScenery) return factoryScenery.queue(x, z);
     box(x, z, 0.75, 0.8, 10, '#bdaf8c', '#a1977d', '#859084');
     box(x, z, 0.65, 0.65, 13, '#465f66', '#7e9192', '#5c7279', 10);
     tile(x - 0.25, z - 0.22, 0.5, 0.5, '#f4edce', 14);
   }
 
   function cabinet(x, z) {
+    if (factoryScenery) return factoryScenery.machinery('cabinet', x, z);
     box(x, z, 1.2, 0.75, 28, '#d2d0ba', '#b9c1ad', '#8f9f95');
     for (let i = 0; i < 4; i++) {
       const low = 2 + i * 6;
@@ -775,6 +818,7 @@ export function createYear1998Scene(
   }
 
   function printer(x, z) {
+    if (factoryScenery) return factoryScenery.machinery('printer', x, z);
     box(x, z, 1.6, 1.1, 10, '#b7bfae', '#99aa9d', '#7b948c');
     box(x, z, 1.4, 0.85, 20, '#dad8c2', '#b9c4b0', '#8fa49a', 10);
     panel(x - 0.5, z + 0.44, 1, 13, 16, '#3c565e');
@@ -787,6 +831,7 @@ export function createYear1998Scene(
   }
 
   function serverRack(x, z) {
+    if (factoryScenery) return factoryScenery.machinery('server', x, z);
     box(x, z, 1, 0.8, 35, '#718585', '#314c58', '#273f4b');
     for (let i = 0; i < 5; i++) {
       panel(x - 0.4, z + 0.42, 0.8, 3 + i * 6, 7 + i * 6, '#58717a');
@@ -797,6 +842,7 @@ export function createYear1998Scene(
   }
 
   function waterCooler(x, z) {
+    if (factoryScenery) return factoryScenery.machinery('cooler', x, z);
     box(x, z, 0.7, 0.8, 18, '#e0dfc9', '#95aaa0', '#c2cbb6');
     const p = iso(x, z, 18);
     rect(p[0] - 4, p[1] - 12, 9, 10, '#497984');
@@ -1607,8 +1653,15 @@ export function createYear1998Scene(
     if (!visitors.isAway(sessionId)) points.push(iso(pose.x, pose.z));
     for (const visitor of visitors.visitorsAt(sessionId))
       points.push(iso(visitor.x, visitor.z));
-    // Leave space around the main desk and its open office aisle.
-    if (!units.length) points.push(iso(-3.7, 1.8));
+    // Keep the factory floor visible even when only the main robot is present.
+    if (factory)
+      points.push(
+        iso(-11.8, -6.4),
+        iso(9.2, -6.4),
+        iso(-11.8, 5.5),
+        iso(9.2, 5.5),
+      );
+    else if (!units.length) points.push(iso(-3.7, 1.8));
     const left = Math.min(...points.map(p => p[0])) - 34;
     const right = Math.max(...points.map(p => p[0])) + 36;
     const top = Math.min(
@@ -1697,7 +1750,7 @@ export function createYear1998Scene(
       0,
       0,
     );
-    ctx.fillStyle = '#495961';
+    ctx.fillStyle = factory ? colors.dark : '#495961';
     ctx.fillRect(0, 0, viewWidth, viewHeight);
     ctx.save();
     ctx.translate(viewWidth / 2, viewHeight / 2);
@@ -1721,14 +1774,17 @@ export function createYear1998Scene(
           ),
       });
       // The main chair sits beside the desk, clear of the homecoming route.
-      const chairX = x + (manager ? 1 : -0.8);
-      add(chairX, z + 0.65, 1.1, 1.1, () => chair(chairX, z + 0.65, manager));
+      if (!factory) {
+        const chairX = x + (manager ? 1 : -0.8);
+        add(chairX, z + 0.65, 1.1, 1.1, () => chair(chairX, z + 0.65, manager));
+      }
     };
     addDesk(-6.25, 0, snapshot?.session, true);
     BAYS.forEach(([x, z], slot) => {
       const unit = occupants.get(slot);
       if (unit?.status === 'queued' || (!unit && slot >= 6)) {
-        add(x - 0.2, z - 0.8, 1.1, 1.1, () => chair(x - 0.2, z - 0.8));
+        if (!factory)
+          add(x - 0.2, z - 0.8, 1.1, 1.1, () => chair(x - 0.2, z - 0.8));
         add(x - 1.3, z - 0.8, 0.75, 0.8, () =>
           drawEnvironmentObject(`desk:${slot}`, () =>
             queueTable(x - 1.3, z - 0.8),
@@ -1749,13 +1805,14 @@ export function createYear1998Scene(
     add(-11.35, -2.8, 0.7, 0.8, () =>
       drawEnvironmentObject('cooler', () => waterCooler(-11.35, -2.8)),
     );
-    for (const [x, z] of [
-      [-11.25, 0.8],
-      [-8.65, -5.7],
-      [8.5, 4.8],
-      [-11.25, 4.8],
-    ])
-      add(x, z, 0.56, 0.56, () => pottedPlant(x, z));
+    if (!factory)
+      for (const [x, z] of [
+        [-11.25, 0.8],
+        [-8.65, -5.7],
+        [8.5, 4.8],
+        [-11.25, 4.8],
+      ])
+        add(x, z, 0.56, 0.56, () => pottedPlant(x, z));
     if (away && !items.some(item => item.id === 'parent')) {
       add(-6.25, 0, 1, 1, () => {
         const [x, y] = iso(-6.25, 0);
@@ -1812,7 +1869,7 @@ export function createYear1998Scene(
   function publishLayout(away, visiting, pose, ownTravel, shown) {
     const detail = visitors.awayMessage(sessionId);
     const parentDamage = damage.pose('parent');
-    data('renderer', 'year1998');
+    data('renderer', factory ? 'factory-2d' : 'year1998');
     data('factoryIdentity', identity.token);
     data('factoryVisitors', visiting.map(visitor => visitor.id).join(','));
     data('parentAway', away);
@@ -1901,7 +1958,9 @@ export function createYear1998Scene(
       .filter(visitor => visitor.id !== sessionId)
       .map(visitor => visitor.name || visitor.id);
     const label = [
-      'Isometric office with a main agent and agent workstations',
+      factory
+        ? '2D factory with a main agent and agent workstations'
+        : 'Isometric office with a main agent and agent workstations',
       detail ? `Main agent: ${detail}` : '',
       foreign.length ? `Visiting main agents: ${foreign.join(', ')}` : '',
     ]
@@ -2091,7 +2150,7 @@ export function createYear1998Scene(
     typeof IntersectionObserver === 'undefined'
       ? null
       : new IntersectionObserver(entries => {
-          inView = entries[0]?.isIntersecting ?? true;
+          inView = entries.at(-1)?.isIntersecting ?? inView;
           onVisibility();
         });
   intersectionObserver?.observe(canvas);
@@ -2138,7 +2197,7 @@ export function createYear1998Scene(
     setPalette(palette) {
       if (disposed) return;
       colors = Object.fromEntries(
-        Object.entries(DEFAULTS).map(([key, fallback]) => {
+        Object.entries(defaults).map(([key, fallback]) => {
           const value = palette?.[key];
           const valid =
             Array.isArray(value) &&

@@ -653,6 +653,7 @@ main > .welcome {
   height: 120%;
 }
 #factory-canvas[data-renderer='year1998'],
+#factory-canvas[data-renderer='factory-2d'],
 #factory-canvas[data-renderer='plugin'] {
   inset: 0;
   width: 100%;

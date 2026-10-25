@@ -3,6 +3,7 @@ import {openMarkdownFile} from './markdown-files.js';
 import {nativeCommands} from './command-catalog.js';
 const $ = id => document.getElementById(id);
 const cache = new Map();
+const sessionModels = new Map();
 const loading = new Map();
 const contextErrors = new Map();
 const speedErrors = new Map();
@@ -236,8 +237,10 @@ export function refreshContext() {
   void load(true);
 }
 export function refreshSpeed() {
-  speedErrors.delete(current?.session.id);
-  void load(true);
+  const id = current?.session.id;
+  speedErrors.delete(id);
+  if (!loading.has(id)) void load(true);
+  else renderSettingsControls();
 }
 function renderContext() {
   if (!current) return;
@@ -513,7 +516,6 @@ function renderSettingsControls() {
   }
   speed.disabled =
     busy ||
-    loading.has(current?.session.id) ||
     contextErrors.has(current?.session.id) ||
     !canRunCommand('fast') ||
     !resource ||
@@ -1044,6 +1046,12 @@ export function renderSessionFeatures(data, options = {parent: true}) {
     $('session-settings-error').hidden = true;
     speedErrors.delete(data.session.id);
   }
+  if (
+    sessionModels.has(data.session.id) &&
+    sessionModels.get(data.session.id) !== data.session.model
+  )
+    cache.delete(data.session.id);
+  sessionModels.set(data.session.id, data.session.model);
   current = data;
   renderAgentProfile();
   const conversation = JSON.stringify([

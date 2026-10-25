@@ -10,7 +10,7 @@ import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 void test(
-  'theme scene host and Year1998 renderer in real Electron',
+  'theme scene host and Canvas2D renderers in real Electron',
   {
     timeout: 120_000,
     skip:
@@ -61,7 +61,7 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      15,
+      22,
       'All host and renderer scenarios execute',
     );
     for (const result of report.cases)

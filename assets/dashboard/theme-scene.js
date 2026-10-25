@@ -1,6 +1,6 @@
 /* global document */
 import {createFactoryScene} from './factory-scene.js';
-import {createYear1998Scene} from './year1998-scene.js';
+import {createFactory2DScene, createYear1998Scene} from './year1998-scene.js';
 import {createParentFallback} from './parent-fallback.js';
 import {createParentMotion} from './parent-motion.js';
 import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
@@ -33,6 +33,7 @@ export function createThemeScene(
 ) {
   let canvas = initialCanvas;
   let renderer;
+  let removeContextLoss;
   let available = false;
   let disposed = false;
   let revision = 0;
@@ -48,6 +49,8 @@ export function createThemeScene(
   const label = canvas.getAttribute('aria-label');
 
   function release() {
+    removeContextLoss?.();
+    removeContextLoss = undefined;
     const previous = renderer;
     renderer = undefined;
     rendererRevision++;
@@ -106,20 +109,34 @@ export function createThemeScene(
       )
         throw new Error(`Custom scenes must implement ${REQUIRED.join(', ')}.`);
     }
+    if (!renderer && kind === 'factory') {
+      installFactory2D();
+      return;
+    }
     available = Boolean(renderer);
     if (!renderer) renderer = createParentFallback(fallbackContainer);
+    if (available && kind === 'factory') {
+      const hostedCanvas = canvas;
+      const onContextLost = event => {
+        if (disposed || current !== rendererRevision || canvas !== hostedCanvas)
+          return;
+        event.preventDefault();
+        installFactory2D();
+      };
+      hostedCanvas.addEventListener('webglcontextlost', onContextLost);
+      removeContextLoss = () =>
+        hostedCanvas.removeEventListener('webglcontextlost', onContextLost);
+    }
     canvas.hidden = !available;
     onAvailability(available);
     replay();
+    if (disposed || current !== rendererRevision) return;
     installing = false;
     onLayout(latestLayout);
   }
-  function recover(error) {
-    onError(
-      `Could not display theme scene: ${error?.message || String(error)}`,
-    );
+  function installFactory2D() {
     try {
-      install(createFactoryScene, 'factory');
+      install(createFactory2DScene, 'factory-2d');
     } catch {
       release();
       available = false;
@@ -128,6 +145,23 @@ export function createThemeScene(
       onAvailability(false);
       replay();
     }
+  }
+  function reportFailure(error) {
+    onError(
+      `Could not display theme scene: ${error?.message || String(error)}`,
+    );
+  }
+  function installFactory(reportError = true) {
+    try {
+      install(createFactoryScene, 'factory');
+    } catch (error) {
+      if (reportError) reportFailure(error);
+      installFactory2D();
+    }
+  }
+  function recover(error) {
+    reportFailure(error);
+    installFactory(false);
   }
   function invoke(method, ...args) {
     if (disposed) return;
@@ -159,12 +193,8 @@ export function createThemeScene(
         if (typeof descriptor === 'string') {
           if (!['factory', 'year1998'].includes(descriptor))
             throw new Error(`Unknown scene renderer: ${descriptor}`);
-          install(
-            descriptor === 'year1998'
-              ? createYear1998Scene
-              : createFactoryScene,
-            descriptor,
-          );
+          if (descriptor === 'factory') installFactory();
+          else install(createYear1998Scene, descriptor);
         } else {
           if (
             descriptor.apiVersion !== 1 ||

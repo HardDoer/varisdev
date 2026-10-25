@@ -35,6 +35,33 @@ async function setupRenderer(moduleUrl) {
       type === '2d' ? {...options, willReadFrequently: true} : options,
     );
   };
+  const contextLossListeners = new Map();
+  const addListener = window.HTMLCanvasElement.prototype.addEventListener;
+  const removeListener = window.HTMLCanvasElement.prototype.removeEventListener;
+  window.HTMLCanvasElement.prototype.addEventListener = function (
+    type,
+    listener,
+    ...options
+  ) {
+    if (type === 'webglcontextlost') {
+      if (!contextLossListeners.has(this))
+        contextLossListeners.set(this, new Set());
+      contextLossListeners.get(this).add(listener);
+    }
+    return addListener.call(this, type, listener, ...options);
+  };
+  window.HTMLCanvasElement.prototype.removeEventListener = function (
+    type,
+    listener,
+    ...options
+  ) {
+    if (type === 'webglcontextlost') {
+      const listeners = contextLossListeners.get(this);
+      listeners?.delete(listener);
+      if (!listeners?.size) contextLossListeners.delete(this);
+    }
+    return removeListener.call(this, type, listener, ...options);
+  };
   let clock = 1000;
   let sequence = 0;
   const frames = new Map();
@@ -85,7 +112,7 @@ async function setupRenderer(moduleUrl) {
       },
     ],
   });
-  function reset() {
+  function reset({agentsForBuiltin} = {}) {
     host?.dispose();
     document.querySelector('#stage').innerHTML =
       '<canvas id="scene" class="theme-scene" aria-label="Session scene"></canvas><div id="fallback"></div>';
@@ -98,6 +125,7 @@ async function setupRenderer(moduleUrl) {
     previousCanvas = null;
     host = createThemeScene(document.querySelector('canvas'), {
       fallbackContainer: document.querySelector('#fallback'),
+      agentsForBuiltin,
       onSelect: id => selections.push(id),
       onLayout: layout => layouts.push(layout),
       onAvailability: value => availability.push(value),
@@ -125,6 +153,10 @@ async function setupRenderer(moduleUrl) {
       availability: [...availability],
       pending: frames.size,
       activeResizers: resizers.filter(observer => !observer.closed).length,
+      contextLossListeners: [...contextLossListeners.values()].reduce(
+        (count, listeners) => count + listeners.size,
+        0,
+      ),
       calls: window.pluginCalls,
       canvasChanged: previousCanvas
         ? canvas !== previousCanvas && !previousCanvas.isConnected
@@ -184,11 +216,77 @@ async function setupRenderer(moduleUrl) {
       },
     };
   }
+  async function withContexts(mode, action) {
+    const prototype = window.HTMLCanvasElement.prototype;
+    const original = prototype.getContext;
+    const attempts = [];
+    const locked = [];
+    prototype.getContext = function (type, options) {
+      attempts.push({canvas: this, type});
+      if (type === 'webgl') {
+        if (['null', 'none', '2d-throw'].includes(mode)) return null;
+        if (mode === 'throw') throw new Error('WebGL creation failed');
+      }
+      if (type === '2d') {
+        if (mode === 'none') return null;
+        if (mode === '2d-throw') throw new Error('Canvas2D creation failed');
+      }
+      const context = original.call(this, type, options);
+      if (type === 'webgl' && ['shader', 'buffer'].includes(mode)) {
+        if (!context) throw new Error('Real WebGL context is required');
+        locked.push(this);
+        if (mode === 'shader') {
+          context.getShaderParameter = () => false;
+          context.getShaderInfoLog = () => 'Injected shader failure';
+        } else {
+          context.createBuffer = () => {
+            throw new Error('Factory buffer allocation failed');
+          };
+        }
+      }
+      return context;
+    };
+    try {
+      const state = await action();
+      const current = document.querySelector('canvas');
+      return {
+        ...state,
+        contextAttempts: attempts.map(({canvas, type}) => ({
+          type,
+          current: canvas === current,
+        })),
+        lockedCanvases: locked.length,
+        lockedCanvasReplaced: locked.every(
+          canvas => !canvas.isConnected && canvas !== current,
+        ),
+        lockedCanvasRejects2D: locked.every(
+          canvas => original.call(canvas, '2d') === null,
+        ),
+      };
+    } finally {
+      prototype.getContext = original;
+    }
+  }
   function pixelHash() {
     const canvas = document.querySelector('canvas');
     const context = canvas.getContext('2d');
-    if (!context) throw new Error('Year1998 must use Canvas2D');
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let pixels;
+    if (context)
+      pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    else {
+      const gl = canvas.getContext('webgl');
+      if (!gl) throw new Error('Scene requires a canvas context');
+      pixels = new Uint8Array(canvas.width * canvas.height * 4);
+      gl.readPixels(
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        pixels,
+      );
+    }
     let hash = 2166136261;
     for (let i = 0; i < pixels.length; i += 4) {
       hash = Math.imul(hash ^ pixels[i], 16777619);
@@ -204,6 +302,7 @@ async function setupRenderer(moduleUrl) {
     snapshot,
     plugin,
     pixelHash,
+    withContexts,
     createParentMotion,
     palette,
     host: () => host,
@@ -602,6 +701,620 @@ async function main() {
           /Scene cleanup failed: cleanup dispose failed/.test(error),
         ),
       );
+    },
+  );
+
+  await run(
+    'null and throwing WebGL contexts use a selectable Canvas2D factory with replayed state',
+    async () => {
+      const states = await evaluate(async () => {
+        const f = window.fixture;
+        const results = [];
+        for (const mode of ['null', 'throw']) {
+          results.push(
+            await f.withContexts(mode, async () => {
+              f.reset();
+              f.host().update(f.snapshot('running'), 'builder');
+              f.host().setMotion(false);
+              f.host().startle(false);
+              f.rememberCanvas();
+              await f.theme({scene: 'factory'});
+              const initial = {...f.inspect(), hash: f.pixelHash()};
+              f.advance(5);
+              const stoppedHash = f.pixelHash();
+              f.click('builder');
+              f.host().clearStartle();
+              const selectedHash = f.pixelHash();
+              f.host().update(f.snapshot('running'), 'parent');
+              const parentSelectedHash = f.pixelHash();
+              f.rememberCanvas();
+              await f
+                .host()
+                .setTheme(
+                  {scene: 'factory'},
+                  {...f.palette, shell: [1, 0, 1], running: [1, 0, 1]},
+                );
+              const palette = {...f.inspect(), hash: f.pixelHash()};
+              const hit = f.host().hitWithCane('builder', 1, 1);
+              f.host().setMotion(true);
+              const moving = f.inspect();
+              f.dispose();
+              return {
+                initial,
+                stoppedHash,
+                selectedHash,
+                parentSelectedHash,
+                palette,
+                hit,
+                moving,
+                disposed: f.inspect(),
+              };
+            }),
+          );
+        }
+        return results;
+      });
+      for (const state of states) {
+        const {initial} = state;
+        assert.equal(initial.renderer, 'factory-2d');
+        assert.equal(initial.available, true);
+        assert.equal(initial.hidden, false);
+        assert.equal(initial.canvasChanged, true);
+        assert.equal(initial.data.parentStatus, 'running');
+        assert.equal(initial.data.parentMode, 'startled');
+        assert.deepEqual(initial.availability, [true]);
+        assert.deepEqual(initial.errors.filter(Boolean), []);
+        assert.deepEqual(initial.layout.map(anchor => anchor.id).sort(), [
+          'builder',
+          'parent',
+          'reviewer',
+        ]);
+        assert.equal(state.stoppedHash, initial.hash);
+        assert.equal(initial.pending, 0);
+        assert.notEqual(state.selectedHash, state.parentSelectedHash);
+        assert.notEqual(state.palette.hash, state.parentSelectedHash);
+        assert.equal(state.palette.canvasChanged, false);
+        assert.equal(state.palette.selections.at(-1), 'builder');
+        assert.equal(state.hit, true);
+        assert.ok(state.moving.pending > 0);
+        assert.equal(state.disposed.pending, 0);
+        assert.equal(state.disposed.activeResizers, 0);
+        assert.deepEqual(state.contextAttempts[0], {
+          type: 'webgl',
+          current: false,
+        });
+        assert.ok(
+          state.contextAttempts.some(
+            attempt => attempt.type === '2d' && attempt.current,
+          ),
+        );
+      }
+    },
+  );
+
+  await run(
+    'failed shaders and thrown factory creation replace a canvas locked by real WebGL',
+    async () => {
+      const states = await evaluate(async () => {
+        const f = window.fixture;
+        const results = [];
+        for (const mode of ['shader', 'buffer']) {
+          results.push(
+            await f.withContexts(mode, async () => {
+              f.reset();
+              f.host().update(f.snapshot('running'), 'reviewer');
+              f.host().setMotion(false);
+              await f.theme({scene: 'factory'});
+              return {...f.click('reviewer'), hash: f.pixelHash(), mode};
+            }),
+          );
+        }
+        return results;
+      });
+      for (const state of states) {
+        assert.equal(state.renderer, 'factory-2d');
+        assert.equal(state.available, true);
+        assert.equal(state.lockedCanvases, 1);
+        assert.equal(state.lockedCanvasReplaced, true);
+        assert.equal(state.lockedCanvasRejects2D, true);
+        assert.ok(state.hash > 0);
+        assert.equal(state.selections.at(-1), 'reviewer');
+        assert.equal(state.contextLossListeners, 0);
+        if (state.mode === 'buffer')
+          assert.deepEqual(state.errors.filter(Boolean), [
+            'Could not display theme scene: Factory buffer allocation failed',
+          ]);
+        else assert.deepEqual(state.errors.filter(Boolean), []);
+      }
+    },
+  );
+
+  await run(
+    'context loss switches to Canvas2D with state replay and ignores events from the old canvas',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        f.reset({
+          agentsForBuiltin: snapshot =>
+            snapshot.agents.filter(agent => agent.id === 'reviewer'),
+        });
+        const hub = {
+          sessions: [
+            {id: 'city-session', status: 'running'},
+            {id: 'other-session', status: 'idle'},
+          ],
+        };
+        f.host().updateHub(hub);
+        f.host().update(f.snapshot('running'), 'reviewer');
+        f.host().setMotion(false);
+        f.host().startle(false);
+        const palette = {...f.palette, shell: [0.9, 0.15, 0.75]};
+        await f.host().setTheme({scene: 'factory'}, palette);
+        const before = f.inspect();
+        const oldCanvas = document.querySelector('canvas');
+        f.rememberCanvas();
+        const lost = new Event('webglcontextlost', {cancelable: true});
+        oldCanvas.dispatchEvent(lost);
+        const recovered = {...f.inspect(), hash: f.pixelHash()};
+        const replacement = document.querySelector('canvas');
+        for (const type of ['webglcontextlost', 'webglcontextrestored'])
+          oldCanvas.dispatchEvent(new Event(type, {cancelable: true}));
+        oldCanvas.dispatchEvent(new MouseEvent('click'));
+        f.advance(4);
+        const stale = {
+          ...f.inspect(),
+          hash: f.pixelHash(),
+          sameCanvas: replacement === document.querySelector('canvas'),
+        };
+        f.click('reviewer');
+        await f.host().setTheme(f.plugin({tag: 'after-context-loss'}), palette);
+        return {
+          before,
+          recovered,
+          stale,
+          final: f.inspect(),
+          prevented: lost.defaultPrevented,
+          hub,
+          palette,
+        };
+      });
+      assert.equal(state.before.renderer, 'factory');
+      assert.equal(state.before.contextLossListeners, 2);
+      assert.equal(state.prevented, true);
+      assert.equal(state.recovered.renderer, 'factory-2d');
+      assert.equal(state.recovered.available, true);
+      assert.equal(state.recovered.canvasChanged, true);
+      assert.equal(state.recovered.data.parentStatus, 'running');
+      assert.equal(state.recovered.data.parentMode, 'startled');
+      assert.deepEqual(state.recovered.availability, [true, true]);
+      assert.deepEqual(state.recovered.errors.filter(Boolean), []);
+      assert.deepEqual(state.recovered.layout.map(anchor => anchor.id).sort(), [
+        'parent',
+        'reviewer',
+      ]);
+      assert.equal(state.recovered.contextLossListeners, 0);
+      assert.equal(state.recovered.activeResizers, 1);
+      assert.equal(state.recovered.pending, 0);
+      assert.equal(state.stale.sameCanvas, true);
+      assert.equal(state.stale.hash, state.recovered.hash);
+      assert.deepEqual(state.stale.selections, []);
+      assert.equal(state.final.selections.at(-1), 'reviewer');
+      assert.equal(state.final.renderer, 'plugin');
+      assert.ok(
+        state.final.calls.some(
+          call => call[0] === 'setMotion' && call[1] === false,
+        ),
+      );
+      assert.deepEqual(
+        state.final.calls.find(call => call[0] === 'setPalette')[1],
+        state.palette,
+      );
+      assert.deepEqual(
+        state.final.calls.find(call => call[0] === 'updateHub')[1],
+        state.hub,
+      );
+      assert.equal(
+        state.final.calls.find(call => call[0] === 'update')[1].agents.length,
+        2,
+        'Custom scenes receive the unfiltered snapshot',
+      );
+      assert.equal(
+        state.final.calls.find(call => call[0] === 'update')[2],
+        'reviewer',
+      );
+      assert.ok(
+        state.final.calls.some(
+          call => call[0] === 'startle' && call[1] === false,
+        ),
+      );
+    },
+  );
+
+  await run(
+    'switching and disposal remove factory context listeners and ignore detached canvas events',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        f.reset();
+        f.host().update(f.snapshot('running'));
+        f.host().setMotion(true);
+        await f.theme({scene: 'factory'});
+        const oldCanvas = document.querySelector('canvas');
+        await f.theme({scene: 'year1998'});
+        const switchedCanvas = document.querySelector('canvas');
+        oldCanvas.dispatchEvent(
+          new Event('webglcontextlost', {cancelable: true}),
+        );
+        oldCanvas.dispatchEvent(new Event('webglcontextrestored'));
+        const switched = {
+          ...f.inspect(),
+          sameCanvas: switchedCanvas === document.querySelector('canvas'),
+        };
+        await f.theme({scene: 'factory'});
+        const beforeDispose = f.inspect();
+        const disposedCanvas = document.querySelector('canvas');
+        const targets = f.host().caneTargets();
+        f.dispose();
+        const lost = new Event('webglcontextlost', {cancelable: true});
+        disposedCanvas.dispatchEvent(lost);
+        disposedCanvas.dispatchEvent(new Event('webglcontextrestored'));
+        for (const target of targets)
+          disposedCanvas.dispatchEvent(
+            new MouseEvent('click', {clientX: target.x, clientY: target.y}),
+          );
+        window.dispatchEvent(new Event('resize'));
+        f.advance(4);
+        return {
+          switched,
+          beforeDispose,
+          disposed: {
+            ...f.inspect(),
+            sameCanvas: disposedCanvas === document.querySelector('canvas'),
+          },
+          preventedAfterDispose: lost.defaultPrevented,
+        };
+      });
+      assert.equal(state.switched.renderer, 'year1998');
+      assert.equal(state.switched.sameCanvas, true);
+      assert.equal(state.switched.contextLossListeners, 0);
+      assert.equal(state.switched.activeResizers, 1);
+      assert.equal(state.beforeDispose.renderer, 'factory');
+      assert.equal(state.beforeDispose.contextLossListeners, 2);
+      assert.equal(state.disposed.sameCanvas, true);
+      assert.equal(state.disposed.contextLossListeners, 0);
+      assert.equal(state.disposed.activeResizers, 0);
+      assert.equal(state.disposed.pending, 0);
+      assert.deepEqual(state.disposed.selections, []);
+      assert.equal(state.preventedAfterDispose, false);
+    },
+  );
+
+  await run(
+    'unavailable WebGL and Canvas2D retain the DOM fallback and custom errors',
+    async () => {
+      const states = await evaluate(async () => {
+        const f = window.fixture;
+        const results = [];
+        for (const mode of ['none', '2d-throw']) {
+          results.push(
+            await f.withContexts(mode, async () => {
+              f.reset();
+              document.querySelector('#fallback').innerHTML =
+                '<div class="fallback-station parent-session"><span class="robot-glyph"></span></div>';
+              f.host().update(f.snapshot('running'));
+              f.host().setMotion(false);
+              await f.theme({scene: 'factory'});
+              const fallback = {
+                ...f.inspect(),
+                robot: Boolean(
+                  document.querySelector('.parent-fallback-robot path'),
+                ),
+              };
+              await f.theme(
+                f.plugin({tag: 'fallback-error', throws: 'update'}),
+              );
+              const failedPlugin = f.inspect();
+              f.dispose();
+              return {fallback, failedPlugin, disposed: f.inspect()};
+            }),
+          );
+        }
+        return results;
+      });
+      for (const state of states) {
+        assert.equal(state.fallback.available, false);
+        assert.equal(state.fallback.hidden, true);
+        assert.equal(state.fallback.robot, true);
+        assert.deepEqual(state.fallback.layout, []);
+        assert.deepEqual(state.fallback.availability, [false]);
+        assert.equal(state.fallback.pending, 0);
+        assert.deepEqual(state.fallback.errors.filter(Boolean), []);
+        assert.equal(state.failedPlugin.available, false);
+        assert.equal(state.failedPlugin.hidden, true);
+        assert.ok(
+          state.failedPlugin.errors.includes(
+            'Could not display theme scene: fallback-error update failed',
+          ),
+        );
+        assert.equal(
+          state.failedPlugin.calls.filter(call => call[0] === 'dispose').length,
+          1,
+        );
+        assert.equal(state.disposed.pending, 0);
+        assert.equal(state.disposed.activeResizers, 0);
+        assert.equal(state.disposed.contextLossListeners, 0);
+      }
+    },
+  );
+
+  await run(
+    'renderers use the latest visibility entry to resume motion and paint hidden updates',
+    async () => {
+      const states = await evaluate(async () => {
+        const f = window.fixture;
+        const NativeObserver = window.IntersectionObserver;
+        const observers = new Set();
+        window.IntersectionObserver = class {
+          constructor(callback) {
+            this.callback = callback;
+            observers.add(this);
+          }
+          observe(target) {
+            this.target = target;
+          }
+          disconnect() {
+            observers.delete(this);
+          }
+        };
+        function visibility(...values) {
+          for (const observer of observers)
+            observer.callback(
+              values.map(isIntersecting => ({
+                target: observer.target,
+                isIntersecting,
+              })),
+              observer,
+            );
+        }
+        async function sample(kind) {
+          f.reset();
+          f.host().update(f.snapshot('running'), 'builder');
+          f.host().setMotion(true);
+          await f.theme({scene: kind === 'factory-2d' ? 'factory' : kind});
+          visibility(false, true);
+          f.advance();
+          const before = {...f.inspect(), hash: f.pixelHash()};
+          f.advance(8);
+          const moving = {...f.inspect(), hash: f.pixelHash()};
+          visibility(true, false);
+          const hidden = {...f.inspect(), hash: f.pixelHash()};
+          f.host().update(f.snapshot('compacting'), 'builder');
+          f.advance(8);
+          const updatedWhileHidden = {...f.inspect(), hash: f.pixelHash()};
+          visibility(false, true);
+          f.advance();
+          const shown = {...f.inspect(), hash: f.pixelHash()};
+          f.advance(8);
+          const resumed = {...f.click('builder'), hash: f.pixelHash()};
+          f.dispose();
+          return {
+            kind,
+            before,
+            moving,
+            hidden,
+            updatedWhileHidden,
+            shown,
+            resumed,
+            observersAfterDispose: observers.size,
+            disposed: f.inspect(),
+          };
+        }
+        try {
+          const result = [];
+          for (const kind of ['factory', 'factory-2d', 'year1998'])
+            result.push(
+              kind === 'factory-2d'
+                ? await f.withContexts('null', () => sample(kind))
+                : await sample(kind),
+            );
+          return result;
+        } finally {
+          f.dispose();
+          window.IntersectionObserver = NativeObserver;
+        }
+      });
+      for (const state of states) {
+        assert.equal(state.before.renderer, state.kind);
+        assert.deepEqual(state.resumed.errors.filter(Boolean), []);
+        assert.ok(state.before.pending > 0, state.kind + ' starts motion');
+        assert.notEqual(
+          state.moving.hash,
+          state.before.hash,
+          state.kind + ' paints animation after the last entry is shown',
+        );
+        assert.equal(
+          state.hidden.pending,
+          0,
+          state.kind + ' pauses when hidden',
+        );
+        assert.equal(state.updatedWhileHidden.pending, 0);
+        assert.equal(
+          state.updatedWhileHidden.hash,
+          state.hidden.hash,
+          state.kind + ' leaves the hidden frame unchanged',
+        );
+        if (state.kind !== 'factory')
+          assert.equal(state.shown.data.parentStatus, 'compacting');
+        assert.notEqual(
+          state.shown.hash,
+          state.updatedWhileHidden.hash,
+          state.kind + ' paints the current snapshot when shown',
+        );
+        assert.ok(state.shown.pending > 0, state.kind + ' resumes motion');
+        assert.notEqual(
+          state.resumed.hash,
+          state.shown.hash,
+          state.kind + ' continues animating after becoming visible',
+        );
+        assert.equal(state.resumed.selections.at(-1), 'builder');
+        assert.equal(state.observersAfterDispose, 0);
+        assert.equal(state.disposed.pending, 0);
+        assert.equal(state.disposed.activeResizers, 0);
+      }
+    },
+  );
+
+  await run(
+    'animated factory screens and conveyors retain visible damage at explicit contacts',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        return f.withContexts('null', async () => {
+          async function sample(damaged) {
+            f.reset();
+            f.host().setMotion(false);
+            f.host().update(f.snapshot('running'), 'builder');
+            await f.theme({scene: 'factory'});
+            f.host().setMotion(true);
+            f.advance();
+            const targets = f.host().environmentTargets();
+            function face(id, ratio, vertical) {
+              const target = targets.find(target => {
+                if (target.id !== id) return false;
+                const [a, b, , d] = target.polygon;
+                const width = Math.hypot(b.x - a.x, b.y - a.y);
+                const height = Math.hypot(d.x - a.x, d.y - a.y);
+                return (
+                  Math.abs(width / height - ratio) < 0.01 &&
+                  (vertical ? Math.abs(d.x - a.x) < 0.001 : d.x < a.x)
+                );
+              });
+              if (!target) throw new Error('Missing factory surface: ' + id);
+              return target;
+            }
+            function contact(name, target, u, v) {
+              const [a, b, , d] = target.polygon;
+              return {
+                name,
+                id: target.id,
+                x: a.x + (b.x - a.x) * u + (d.x - a.x) * v,
+                y: a.y + (b.y - a.y) * u + (d.y - a.y) * v,
+                polygon: target.polygon,
+              };
+            }
+            const contacts = [
+              // The contact crosses the first animated text row.
+              contact(
+                'screen',
+                face('desk:parent', Math.hypot(1.4 * 14, 1.4 * 7) / 9, true),
+                0.2,
+                2.5 / 9,
+              ),
+              // The belt contact lies on a roller and clear of the cargo.
+              contact('belt', face('printer', 1.4 / 0.85, false), 0.26, 0.7),
+              contact('cargo', face('printer', 1, false), 0.5, 0.5),
+            ];
+            const hits = damaged
+              ? contacts.map(point =>
+                  f.host().hitEnvironment(point.id, 'gun', 1, {
+                    x: point.x,
+                    y: point.y,
+                  }),
+                )
+              : [];
+            const canvas = document.querySelector('canvas');
+            const bounds = canvas.getBoundingClientRect();
+            const context = canvas.getContext('2d');
+            function pixels(point) {
+              const scaleX = canvas.width / bounds.width;
+              const scaleY = canvas.height / bounds.height;
+              return [
+                ...context.getImageData(
+                  Math.floor((point.x - bounds.left - 10) * scaleX),
+                  Math.floor((point.y - bounds.top - 10) * scaleY),
+                  Math.ceil(20 * scaleX),
+                  Math.ceil(20 * scaleY),
+                ).data,
+              ];
+            }
+            const frames = [];
+            let previous = 0;
+            for (const frame of [0, 1, 8, 24, 40]) {
+              f.advance(frame - previous);
+              previous = frame;
+              const current = f.host().environmentTargets();
+              frames.push({
+                frame,
+                regions: contacts.map(point => ({
+                  name: point.name,
+                  pixels: pixels(point),
+                  stableSurface: current.some(
+                    target =>
+                      target.id === point.id &&
+                      JSON.stringify(target.polygon) ===
+                        JSON.stringify(point.polygon),
+                  ),
+                })),
+                damage: JSON.parse(f.inspect().data.environmentDamage),
+              });
+            }
+            const result = {...f.inspect(), contacts, hits, frames};
+            f.dispose();
+            return result;
+          }
+          return {pristine: await sample(false), damaged: await sample(true)};
+        });
+      });
+      assert.equal(state.damaged.renderer, 'factory-2d');
+      assert.deepEqual(state.damaged.hits, [true, true, true]);
+      assert.deepEqual(state.damaged.errors.filter(Boolean), []);
+      assert.deepEqual(state.damaged.contacts, state.pristine.contacts);
+      for (const name of ['screen', 'belt']) {
+        const first = state.pristine.frames[0].regions.find(
+          region => region.name === name,
+        );
+        const last = state.pristine.frames
+          .at(-1)
+          .regions.find(region => region.name === name);
+        assert.notDeepEqual(
+          first.pixels,
+          last.pixels,
+          name + ' visibly animates during the damage check',
+        );
+      }
+      for (let frame = 0; frame < state.damaged.frames.length; frame++) {
+        const sample = state.damaged.frames[frame];
+        assert.ok(
+          sample.damage.some(
+            pose => pose.id === 'desk:parent' && pose.chips > 0,
+          ),
+        );
+        assert.ok(
+          sample.damage.some(pose => pose.id === 'printer' && pose.chips > 0),
+        );
+        for (let region = 0; region < sample.regions.length; region++) {
+          const actual = sample.regions[region];
+          const pristine = state.pristine.frames[frame].regions[region];
+          assert.equal(
+            actual.stableSurface,
+            true,
+            actual.name + ' keeps its contact surface at frame ' + sample.frame,
+          );
+          let changed = 0;
+          for (let i = 0; i < actual.pixels.length; i += 4)
+            if (
+              Math.abs(actual.pixels[i] - pristine.pixels[i]) +
+                Math.abs(actual.pixels[i + 1] - pristine.pixels[i + 1]) +
+                Math.abs(actual.pixels[i + 2] - pristine.pixels[i + 2]) >
+              30
+            )
+              changed++;
+          assert.ok(
+            changed >= 6,
+            `${actual.name} mark remains visible at frame ${sample.frame}: ${changed} changed pixels`,
+          );
+        }
+      }
     },
   );
 
