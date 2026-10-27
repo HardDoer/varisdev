@@ -15,6 +15,7 @@ import {
   type DesktopDashboardParent,
 } from '../src/dashboard/parent.ts';
 import {DesktopToolSettings} from '../src/desktop/tool-settings.ts';
+import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
 
 interface Request {
   model: string;
@@ -286,6 +287,7 @@ export default function(pi) {
   return {
     parent,
     cwd,
+    agentDir,
     requests,
     cancelledRequests,
     holdNextResponse,
@@ -297,6 +299,78 @@ export default function(pi) {
     contextPaths,
   };
 }
+
+void test(
+  'typed reload discovers added skills and refreshes changed and removed skills',
+  {timeout: 15000},
+  async t => {
+    const {parent, cwd, agentDir, requests} = await fixture(t);
+    const workspaceDir = workspaceConfigPaths(cwd, agentDir).workspaceDir;
+    const added = [
+      {name: 'reload-global', directory: agentDir},
+      {name: 'reload-workspace', directory: workspaceDir},
+    ].map(({name, directory}) => ({
+      name,
+      directory: join(directory, 'skills', name),
+      path: join(directory, 'skills', name, 'SKILL.md'),
+    }));
+    for (const skill of added) {
+      await mkdir(skill.directory, {recursive: true});
+      await writeFile(
+        skill.path,
+        `---\nname: ${skill.name}\ndescription: Added ${skill.name}\n---\nSkill body.`,
+      );
+    }
+    const before = await parent.features();
+    for (const {name, path} of added) {
+      assert.ok(
+        !before.commands.some(command => command.name === `skill:${name}`),
+      );
+      assert.ok(!before.contextFiles!.some(file => file.path === path));
+    }
+    await parent.prompt('/reload');
+    const discovered = await parent.features();
+    for (const {name, path} of added) {
+      assert.deepEqual(
+        discovered.commands.filter(command => command.name === `skill:${name}`),
+        [
+          {
+            name: `skill:${name}`,
+            description: `Added ${name}`,
+            source: 'skill',
+            path,
+          },
+        ],
+      );
+      const file = discovered.contextFiles!.find(file => file.path === path);
+      assert.equal(file?.kind, 'skill');
+      assert.equal(file?.status, 'available');
+      assert.ok(file?.description.includes(`Added ${name}`));
+    }
+    await writeFile(
+      added[0].path,
+      '---\nname: reload-global\ndescription: Updated global skill\n---\nUpdated body.',
+    );
+    await rm(added[1].path);
+    await parent.prompt('/reload');
+    const updated = await parent.features();
+    assert.equal(
+      updated.commands.find(command => command.path === added[0].path)
+        ?.description,
+      'Updated global skill',
+    );
+    assert.match(
+      updated.contextFiles!.find(file => file.path === added[0].path)!
+        .description,
+      /Updated global skill/,
+    );
+    assert.ok(
+      !updated.commands.some(command => command.path === added[1].path),
+    );
+    assert.ok(!updated.contextFiles!.some(file => file.path === added[1].path));
+    assert.equal(requests.length, 0, '/reload makes no model requests');
+  },
+);
 
 void test(
   'desktop context catalog follows loaded instruction sources and refreshes cached content on reload',

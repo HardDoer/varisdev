@@ -7550,6 +7550,145 @@ async function main() {
   );
 
   await run(
+    'typed reload refreshes skill suggestions and the open catalog for parents and agents',
+    async () => {
+      const owner = hub.sessions[0];
+      owner.session.status = 'idle';
+      owner.agents = [
+        {
+          id: 'reload-worker',
+          name: 'Reload worker',
+          cwd: directory,
+          task: 'Check skills',
+          status: 'completed',
+          model: 'fixture/small',
+          thinkingLevel: 'medium',
+          resumable: true,
+          createdAt: at,
+          conversation: [],
+        },
+      ];
+      resources.set('alpha:reload-worker', features());
+      await publish();
+      for (const key of ['alpha', 'alpha:reload-worker']) {
+        if (key !== 'alpha') {
+          await evaluate(() =>
+            [...document.querySelectorAll('#history-workers button')]
+              .find(item => item.textContent.includes('Reload worker'))
+              .click(),
+          );
+          await until(
+            () =>
+              document.getElementById('inspector-title').textContent ===
+              'Reload worker',
+            'Reload worker was not selected',
+          );
+        }
+        await evaluate(() => document.getElementById('open-commands').click());
+        await until(
+          () =>
+            document
+              .getElementById('command-catalog')
+              .textContent.includes('/skill:inspect'),
+          'Initial skill catalog did not load',
+        );
+        const updated = resources.get(key);
+        updated.commands = updated.commands.filter(
+          command => command.source !== 'skill',
+        );
+        updated.commands.push({
+          name: 'skill:added-after-startup',
+          description: 'A newly installed skill',
+          source: 'skill',
+          path: '/fixture/skills/added-after-startup/SKILL.md',
+        });
+        const requestsBefore = featureRequests.filter(id => id === key).length;
+        await evaluate(() => {
+          const editor = document.getElementById('parent-prompt');
+          editor.value = '/reload';
+          editor.focus();
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+          document.getElementById('prompt-form').requestSubmit();
+        });
+        await until(
+          () => document.getElementById('parent-prompt').value === '',
+          'Typed reload did not finish',
+        );
+        await until(
+          () =>
+            document
+              .getElementById('command-catalog')
+              .textContent.includes('/skill:added-after-startup'),
+          'Typed reload left the open skill catalog stale',
+        );
+        assert.ok(
+          featureRequests.filter(id => id === key).length > requestsBefore,
+        );
+        assert.equal(
+          await evaluate(() =>
+            document
+              .getElementById('command-catalog')
+              .textContent.includes('/skill:inspect'),
+          ),
+          false,
+          'Removed skills must disappear after reload',
+        );
+        await evaluate(() => {
+          document.getElementById('close-commands').click();
+          const editor = document.getElementById('parent-prompt');
+          editor.value = '/skill:';
+          editor.focus();
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+        });
+        await until(
+          () =>
+            !document.getElementById('command-suggestions').hidden &&
+            document
+              .getElementById('command-suggestions')
+              .textContent.includes('/skill:added-after-startup'),
+          'Reload did not update composer skill suggestions',
+        );
+        assert.equal(
+          await evaluate(() =>
+            document
+              .getElementById('command-suggestions')
+              .textContent.includes('/skill:inspect'),
+          ),
+          false,
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(
+            key === 'alpha'
+              ? 'reloaded-parent-skills'
+              : 'reloaded-worker-skills',
+          );
+        await press('Return');
+        assert.equal(
+          await evaluate(() => document.getElementById('parent-prompt').value),
+          '/skill:added-after-startup ',
+        );
+      }
+      assert.deepEqual(
+        calls.filter(
+          call =>
+            call.method === 'prompt' ||
+            (call.method === 'agentSession' &&
+              call.request.action !== 'features'),
+        ),
+        [
+          {method: 'prompt', sessionId: 'alpha', request: {prompt: '/reload'}},
+          {
+            method: 'agentSession',
+            sessionId: 'alpha',
+            request: {agentId: 'reload-worker', action: 'reload'},
+          },
+        ],
+        'Reload targets the selected agent without sending a skill prompt',
+      );
+    },
+  );
+
+  await run(
     'skill palette, slash commands and agent mentions insert before sending arguments',
     async () => {
       await evaluate(() => {

@@ -45,6 +45,7 @@ import {
   initSessionFeatures,
   renderSessionFeatures,
   refreshContext,
+  refreshSessionFeatures,
   refreshSpeed,
 } from './session-features.js';
 
@@ -2398,6 +2399,7 @@ async function sendPrompt(event) {
         });
       else await api.agentSession(ownerId, {agentId, action: 'prompt', prompt});
     } else await api.promptSession(id, {prompt});
+    if (command?.name === 'reload') await refreshSessionFeatures(id);
     if (!native) {
       pausedActivity.delete(id);
       if (stopEffectSession === id) clearStopEffect();

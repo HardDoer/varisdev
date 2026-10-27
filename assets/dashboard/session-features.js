@@ -232,9 +232,12 @@ async function load(force = false, id = current?.session.id) {
   renderSettingsControls();
   return operation;
 }
+export function refreshSessionFeatures(id) {
+  return load(true, id);
+}
 export function refreshContext() {
   renderContext();
-  void load(true);
+  void refreshSessionFeatures();
 }
 export function refreshSpeed() {
   const id = current?.session.id;
