@@ -11,17 +11,19 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {createRequire} from 'node:module';
-import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {refreshMacLauncher} from './mac-launcher.ts';
 import {withNodePath} from './environment.mjs';
 import {
+  acquireUpdateLock,
+  defaultDataDir,
   downloadRelease,
   readRelease,
   releaseURL,
   type Release,
 } from './distribution.mjs';
+export {defaultDataDir} from './distribution.mjs';
 
 const enginePackage = '@earendil-works/pi-coding-agent';
 const sourceInputs = [
@@ -108,25 +110,14 @@ interface AppRelease {
 
 class EnvironmentRestoreError extends Error {}
 
-export function defaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.VARISDEV_DATA_DIR) return resolve(env.VARISDEV_DATA_DIR);
-  if (process.platform === 'darwin')
-    return join(
-      env.HOME || homedir(),
-      'Library',
-      'Application Support',
-      'VarisDev',
-    );
-  if (process.platform === 'win32')
-    return join(
-      env.LOCALAPPDATA ||
-        join(env.USERPROFILE || homedir(), 'AppData', 'Local'),
-      'VarisDev',
-    );
-  return join(
-    env.XDG_DATA_HOME || join(env.HOME || homedir(), '.local', 'share'),
-    'varisdev',
-  );
+async function installedEnvironment(root: string): Promise<Buffer | undefined> {
+  try {
+    return await readFile(join(root, 'src/runtime/environment.mjs'));
+  } catch (error) {
+    // Early installations load the active CLI directly and have no bootstrap helper.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
 }
 
 function stableVersion(version: unknown): version is string {
@@ -215,14 +206,22 @@ export async function runRuntimeCommand(
       timedOut = true;
       if (process.platform === 'win32' && child.pid) {
         const killer = spawn(
-          'taskkill',
+          join(
+            process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows',
+            'System32',
+            'taskkill.exe',
+          ),
           ['/pid', String(child.pid), '/T', '/F'],
           {
             stdio: 'ignore',
             windowsHide: true,
+            timeout: 5000,
           },
         );
         killer.on('error', () => child.kill('SIGKILL'));
+        killer.on('close', code => {
+          if (code !== 0) child.kill('SIGKILL');
+        });
       } else {
         try {
           process.kill(-child.pid!, 'SIGKILL');
@@ -371,10 +370,11 @@ export class RuntimeManager {
     try {
       const root = await this.currentRoot();
       if (root === this.installRoot) return;
-      const relative = 'src/runtime/environment.mjs';
+      const previous = await installedEnvironment(this.installRoot);
       if (
-        (await readFile(join(this.installRoot, relative))).equals(
-          await readFile(join(root, relative)),
+        !previous ||
+        previous.equals(
+          await readFile(join(root, 'src/runtime/environment.mjs')),
         )
       )
         return;
@@ -430,7 +430,8 @@ export class RuntimeManager {
     | undefined
   > {
     const destination = join(this.installRoot, 'src/runtime/environment.mjs');
-    const previous = await readFile(destination);
+    const previous = await installedEnvironment(this.installRoot);
+    if (!previous) return;
     const next = await readFile(join(root, 'src/runtime/environment.mjs'));
     if (previous.equals(next)) return;
     const {mode} = await stat(destination);
@@ -590,6 +591,11 @@ export class RuntimeManager {
     return this.updating;
   }
 
+  /** Let desktop shutdown wait through activation, rollback, and lock release. */
+  async waitForUpdate(): Promise<void> {
+    await this.updating?.catch(() => {});
+  }
+
   private async performUpdate(): Promise<UpdateStatus> {
     this.publish({
       phase: 'updating',
@@ -723,6 +729,8 @@ export class RuntimeManager {
       installedVersion(root);
       for (const file of [
         'bin/varisdev.mjs',
+        'src/runtime/environment.mjs',
+        'src/runtime/node-version.mjs',
         'assets/dashboard/index.html',
         'assets/desktop/preload.cjs',
         'desktop/build/src/runtime/cli.js',
@@ -870,100 +878,10 @@ export class RuntimeManager {
     throw failure || new Error('Checking for VarisDev updates timed out.');
   }
 
-  private async lockIsStale(
-    lock: string,
-    observedMtime: number,
-  ): Promise<boolean> {
-    try {
-      const owner = JSON.parse(
-        await readFile(join(lock, 'owner.json'), 'utf8'),
-      );
-      if (!Number.isInteger(owner.pid) || owner.pid <= 0)
-        throw new Error('Invalid owner');
-      try {
-        process.kill(owner.pid, 0);
-        return false;
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code === 'ESRCH';
-      }
-    } catch {
-      // A new owner needs time to finish writing its metadata.
-      return Date.now() - observedMtime > 30_000;
-    }
-  }
-
-  private async acquireLock(
-    wait = true,
-  ): Promise<(() => Promise<void>) | undefined> {
-    await mkdir(this.dataDir, {recursive: true});
-    const lock = join(this.dataDir, 'update.lock');
-    const token = randomUUID();
-    const started = Date.now();
-    while (true) {
-      try {
-        await mkdir(lock);
-        try {
-          await writeFile(
-            join(lock, 'owner.json'),
-            JSON.stringify({pid: process.pid, token}),
-          );
-        } catch (error) {
-          await rm(lock, {recursive: true, force: true});
-          throw error;
-        }
-        return async () => {
-          try {
-            const owner = JSON.parse(
-              await readFile(join(lock, 'owner.json'), 'utf8'),
-            );
-            if (owner.token === token)
-              await rm(lock, {recursive: true, force: true});
-          } catch {
-            // Another owner or a removed directory needs no cleanup.
-          }
-        };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        if (!wait) return;
-      }
-      if (Date.now() - started >= (this.options.lockTimeoutMs ?? 15 * 60_000))
-        throw new Error(
-          'Another VarisDev update is still running. Please retry.',
-        );
-      try {
-        const observed = await stat(lock);
-        if (await this.lockIsStale(lock, observed.mtimeMs)) {
-          // Elect one recovering process, then recheck both directory identity
-          // and owner so an old observation cannot remove a new lock.
-          const recovery = join(lock, 'recovery');
-          let elected = false;
-          try {
-            await mkdir(recovery);
-            elected = true;
-            const current = await stat(lock);
-            if (
-              current.ino === observed.ino &&
-              current.dev === observed.dev &&
-              (await this.lockIsStale(lock, observed.mtimeMs))
-            ) {
-              const abandoned = `${lock}-abandoned-${randomUUID()}`;
-              await rename(lock, abandoned);
-              await rm(abandoned, {recursive: true, force: true});
-              elected = false;
-            }
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-            // A process can die after being elected for recovery as well.
-            if (Date.now() - (await stat(recovery)).mtimeMs > 30_000)
-              await rm(recovery, {recursive: true, force: true});
-          } finally {
-            if (elected) await rm(recovery, {recursive: true, force: true});
-          }
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-      await new Promise(fulfill => setTimeout(fulfill, 100));
-    }
+  private acquireLock(wait = true): Promise<(() => Promise<void>) | undefined> {
+    return acquireUpdateLock(this.dataDir, {
+      wait,
+      timeoutMs: this.options.lockTimeoutMs,
+    });
   }
 }

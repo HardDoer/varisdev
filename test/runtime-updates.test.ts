@@ -34,6 +34,7 @@ const sdk = '@earendil-works/pi-coding-agent';
 const execute = promisify(execFile);
 const initialRevision = 'a'.repeat(40);
 const nextRevision = 'b'.repeat(40);
+const runtimeHelpers = ['environment.mjs', 'node-version.mjs'] as const;
 async function updateReady(manager: RuntimeManager): Promise<void> {
   const state = await manager.update();
   assert.equal(state.phase, 'ready', state.error);
@@ -51,7 +52,7 @@ async function appFiles(
     join(root, 'package.json'),
     JSON.stringify({name: 'varisdev', type: 'module', version}),
   );
-  for (const name of ['environment.mjs', 'node-version.mjs'])
+  for (const name of runtimeHelpers)
     await put(
       join(root, 'src/runtime', name),
       await readFile(
@@ -173,6 +174,8 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
             join(root, 'src/runtime/environment.mjs'),
             environmentHelper,
           );
+        if (failure === 'environment.mjs' || failure === 'node-version.mjs')
+          await rm(join(root, 'src/runtime', failure));
         if (failure === 'compile')
           await rm(join(root, 'desktop/build'), {recursive: true});
         if (failure === 'import')
@@ -218,6 +221,46 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
       environmentHelper = value;
     },
   };
+}
+
+async function legacyBaseFixture(t: TestContext) {
+  const f = await fixture(t);
+  for (const name of runtimeHelpers)
+    await rm(join(f.installRoot, 'src/runtime', name));
+  await put(
+    join(f.installRoot, 'bin/varisdev.mjs'),
+    `#!/usr/bin/env node
+import {fileURLToPath, pathToFileURL, URL} from 'node:url';
+import {join} from 'node:path';
+import process from 'node:process';
+import console from 'node:console';
+const installRoot = fileURLToPath(new URL('../', import.meta.url));
+try {
+  const {RuntimeManager} = await import('../desktop/build/src/runtime/manager.js');
+  const root = await new RuntimeManager({installRoot}).currentRoot();
+  const {runCli} = await import(pathToFileURL(join(root, 'desktop/build/src/runtime/cli.js')).href);
+  process.exitCode = await runCli(process.argv.slice(2), installRoot);
+} catch (error) {
+  console.error(\`VarisDev: \${error.message || String(error)}\`);
+  process.exitCode = 1;
+}
+`,
+  );
+  return f;
+}
+async function baseSnapshot(root: string) {
+  return Promise.all(
+    ['', ...(await readdir(root, {recursive: true})).sort()].map(async name => {
+      const path = join(root, name);
+      const info = await stat(path);
+      return {
+        name,
+        mtimeMs: info.mtimeMs,
+        mode: info.mode,
+        contents: info.isFile() ? await readFile(path) : undefined,
+      };
+    }),
+  );
 }
 
 const environmentFile = 'src/runtime/environment.mjs';
@@ -279,6 +322,113 @@ async function assertEnvironmentCleanup(f: {
     [],
   );
   await assert.rejects(stat(join(f.dataDir, 'update.lock')), {code: 'ENOENT'});
+}
+
+void test('updates from a legacy base without helpers remain usable by its bootstrap and leave the base unchanged', async t => {
+  const f = await legacyBaseFixture(t);
+  const base = await baseSnapshot(f.installRoot);
+  const warning = t.mock.method(console, 'warn', () => {});
+  let previousRoot = f.installRoot;
+  let installs = 0;
+  for (const [revision, version] of [
+    [nextRevision, '0.2.0'],
+    ['c'.repeat(40), '0.3.0'],
+  ]) {
+    f.revision = revision;
+    f.latest = version;
+    await updateReady(f.manager);
+    const active = await f.manager.currentRoot();
+    assert.notEqual(active, previousRoot);
+    assert.equal(await new RuntimeManager(f.options).currentRoot(), active);
+    const output = await runRuntimeCommand(
+      process.execPath,
+      [join(f.installRoot, 'bin/varisdev.mjs'), '--version'],
+      {
+        cwd: f.temp,
+        timeoutMs: 10_000,
+        env: {...process.env, VARISDEV_DATA_DIR: f.dataDir},
+      },
+    );
+    assert.equal(output.trim(), `VarisDev ${version}`);
+    const pointer = join(f.dataDir, 'active.json');
+    const selected = await readFile(pointer, 'utf8');
+    const old = new Date('2020-01-01T00:00:00.000Z');
+    await utimes(pointer, old, old);
+    const before = await stat(pointer);
+    const startup = new RuntimeManager({...f.options, runningRoot: active});
+    await startup.refreshEnvironment();
+    await new RuntimeManager(f.options).refreshEnvironment();
+    const repeated = await startup.update();
+    assert.equal(repeated.phase, 'idle', repeated.error);
+    assert.equal(repeated.restartRequired, false);
+    assert.equal(f.installs, ++installs);
+    assert.equal(await readFile(pointer, 'utf8'), selected);
+    assert.equal((await stat(pointer)).mtimeMs, before.mtimeMs);
+    assert.deepEqual(await baseSnapshot(f.installRoot), base);
+    assert.equal(warning.mock.callCount(), 0);
+    assert.equal(await new RuntimeManager(f.options).currentRoot(), active);
+    await assertEnvironmentCleanup(f);
+    previousRoot = active;
+  }
+});
+
+void test('an existing app generation without helpers remains selected from a legacy base', async t => {
+  const f = await legacyBaseFixture(t);
+  await updateReady(f.manager);
+  const active = await f.manager.currentRoot();
+  for (const name of runtimeHelpers)
+    await rm(join(active, 'src/runtime', name));
+  const pointer = join(f.dataDir, 'active.json');
+  const previousPointer = await readFile(pointer, 'utf8');
+  const old = new Date('2020-01-01T00:00:00.000Z');
+  await utimes(pointer, old, old);
+  const before = await stat(pointer);
+  const warning = t.mock.method(console, 'warn', () => {});
+  const startup = new RuntimeManager({...f.options, runningRoot: active});
+  assert.equal(await startup.currentRoot(), active);
+  await startup.refreshEnvironment();
+  assert.equal(await new RuntimeManager(f.options).currentRoot(), active);
+  assert.equal(warning.mock.callCount(), 0);
+  assert.equal(await readFile(pointer, 'utf8'), previousPointer);
+  assert.equal((await stat(pointer)).mtimeMs, before.mtimeMs);
+  await assertEnvironmentCleanup(f);
+});
+
+for (const helper of runtimeHelpers) {
+  void test(`a candidate missing ${helper} preserves the legacy base selection and can retry`, async t => {
+    const f = await legacyBaseFixture(t);
+    await updateReady(f.manager);
+    const previous = await f.manager.currentRoot();
+    const pointer = join(f.dataDir, 'active.json');
+    const previousPointer = await readFile(pointer, 'utf8');
+    f.revision = 'c'.repeat(40);
+    f.latest = '0.3.0';
+    f.failure = helper;
+    const result = await f.manager.update();
+    assert.equal(result.phase, 'error');
+    assert.ok(result.error?.includes(helper), result.error);
+    assert.equal(await f.manager.currentRoot(), previous);
+    assert.equal(await new RuntimeManager(f.options).currentRoot(), previous);
+    assert.equal(await readFile(pointer, 'utf8'), previousPointer);
+    assert.deepEqual(await readdir(join(f.dataDir, 'runtimes')), [
+      JSON.parse(previousPointer).generation,
+    ]);
+    await assertEnvironmentCleanup(f);
+    f.failure = '';
+    await updateReady(f.manager);
+    const active = await f.manager.currentRoot();
+    assert.notEqual(active, previous);
+    assert.notEqual(active, f.installRoot);
+    assert.equal(await new RuntimeManager(f.options).currentRoot(), active);
+    assert.equal(f.manager.status().currentRevision, 'c'.repeat(40));
+    for (const name of runtimeHelpers) {
+      await stat(join(active, 'src/runtime', name));
+      await assert.rejects(stat(join(f.installRoot, 'src/runtime', name)), {
+        code: 'ENOENT',
+      });
+    }
+    await assertEnvironmentCleanup(f);
+  });
 }
 
 void test('activation refreshes a stale base environment helper and binds the new selection to it', async t => {
@@ -1124,8 +1274,14 @@ void test('a running app detects external updates and clears restart status afte
   assert.equal((await relaunched.check()).restartRequired, false);
 });
 
-void test('a timed-out installer terminates its process tree and removes staging', async t => {
+void test('a timed-out installer terminates its process tree without system tools on PATH and removes staging', async t => {
   const f = await fixture(t);
+  const inheritedPath = process.env.PATH;
+  t.after(() => {
+    if (inheritedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = inheritedPath;
+  });
+  process.env.PATH = f.temp;
   const marker = join(f.temp, 'descendant-ran');
   const childCode = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran'), 300)`;
   await writeFile(

@@ -756,7 +756,6 @@ async function restoreAfterUpdate(): Promise<boolean> {
 
 const unsubscribeUpdates = runtime.subscribe(status => {
   if (
-    !shuttingDown &&
     mainWindow &&
     !mainWindow.isDestroyed() &&
     !mainWindow.webContents.isDestroyed()
@@ -850,9 +849,9 @@ async function shutdown(): Promise<void> {
   clearTimeout(snapshotTimer);
   clearInterval(updateTimer);
   unsubscribe();
-  unsubscribeUpdates();
   completionSound.dispose();
   try {
+    await runtime.waitForUpdate();
     terminals.dispose();
     await accounts.dispose();
     if (
@@ -874,6 +873,7 @@ async function shutdown(): Promise<void> {
   } catch (error) {
     console.error('Could not finish closing dashboard sessions:', error);
   } finally {
+    unsubscribeUpdates();
     requests.disconnect('The factory window closed.');
     cleanupFinished = true;
     app.quit();

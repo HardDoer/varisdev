@@ -1,18 +1,22 @@
 /* global AbortSignal, Buffer, console, fetch, process, URL */
 import {spawnSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {
   appendFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import {homedir, userInfo} from 'node:os';
 import {delimiter, dirname, join, resolve} from 'node:path';
+import {setTimeout} from 'node:timers';
 import {pathToFileURL} from 'node:url';
 
 export const releaseURL = 'https://joonas.ninja/varisdev/latest.json';
@@ -218,6 +222,191 @@ export async function configurePath(
   return {activation: line, skippedProfiles};
 }
 
+/** @param {NodeJS.ProcessEnv} [env] */
+export function defaultDataDir(env = process.env) {
+  if (env.VARISDEV_DATA_DIR) return resolve(env.VARISDEV_DATA_DIR);
+  if (process.platform === 'darwin')
+    return join(
+      env.HOME || homedir(),
+      'Library',
+      'Application Support',
+      'VarisDev',
+    );
+  if (process.platform === 'win32')
+    return join(
+      env.LOCALAPPDATA ||
+        join(env.USERPROFILE || homedir(), 'AppData', 'Local'),
+      'VarisDev',
+    );
+  return join(
+    env.XDG_DATA_HOME || join(env.HOME || homedir(), '.local', 'share'),
+    'varisdev',
+  );
+}
+
+async function lockIsStale(lock, observedMtime) {
+  try {
+    const owner = JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8'));
+    if (!Number.isInteger(owner.pid) || owner.pid <= 0)
+      throw new Error('Invalid owner');
+    try {
+      process.kill(owner.pid, 0);
+      return false;
+    } catch (error) {
+      return error.code === 'ESRCH';
+    }
+  } catch {
+    // A new owner needs time to finish writing its metadata.
+    return Date.now() - observedMtime > 30_000;
+  }
+}
+
+/**
+ * @param {string} dataDir
+ * @param {{wait?: boolean, timeoutMs?: number}} [options]
+ * @returns {Promise<(() => Promise<void>) | undefined>}
+ */
+export async function acquireUpdateLock(
+  dataDir,
+  {wait = true, timeoutMs = 15 * 60_000} = {},
+) {
+  await mkdir(dataDir, {recursive: true});
+  const lock = join(dataDir, 'update.lock');
+  const token = randomUUID();
+  const started = Date.now();
+  while (true) {
+    try {
+      await mkdir(lock);
+      try {
+        await writeFile(
+          join(lock, 'owner.json'),
+          JSON.stringify({pid: process.pid, token}),
+        );
+      } catch (error) {
+        await rm(lock, {recursive: true, force: true});
+        throw error;
+      }
+      return async () => {
+        try {
+          const owner = JSON.parse(
+            await readFile(join(lock, 'owner.json'), 'utf8'),
+          );
+          if (owner.token === token)
+            await rm(lock, {recursive: true, force: true});
+        } catch {
+          // Another owner or a removed directory needs no cleanup.
+        }
+      };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (!wait) return;
+    }
+    if (Date.now() - started >= timeoutMs)
+      throw new Error(
+        'Another VarisDev update is still running. Please retry.',
+      );
+    try {
+      const observed = await stat(lock);
+      if (await lockIsStale(lock, observed.mtimeMs)) {
+        // Elect one recovering process, then recheck both directory identity
+        // and owner so an old observation cannot remove a new lock.
+        const recovery = join(lock, 'recovery');
+        let elected = false;
+        try {
+          await mkdir(recovery);
+          elected = true;
+          const current = await stat(lock);
+          if (
+            current.ino === observed.ino &&
+            current.dev === observed.dev &&
+            (await lockIsStale(lock, observed.mtimeMs))
+          ) {
+            const abandoned = `${lock}-abandoned-${randomUUID()}`;
+            await rename(lock, abandoned);
+            await rm(abandoned, {recursive: true, force: true});
+            elected = false;
+          }
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          // A process can die after being elected for recovery as well.
+          if (Date.now() - (await stat(recovery)).mtimeMs > 30_000)
+            await rm(recovery, {recursive: true, force: true});
+        } finally {
+          if (elected) await rm(recovery, {recursive: true, force: true});
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await new Promise(fulfill => setTimeout(fulfill, 100));
+  }
+}
+
+class InstallRollbackError extends Error {}
+
+function packageRoot(prefix) {
+  return join(
+    prefix,
+    process.platform === 'win32' ? 'node_modules' : 'lib/node_modules',
+    'varisdev',
+  );
+}
+
+function entrypoints(prefix) {
+  return process.platform === 'win32'
+    ? ['varisdev', 'varisdev.cmd', 'varisdev.ps1'].map(name =>
+        join(prefix, name),
+      )
+    : [join(prefix, 'bin/varisdev')];
+}
+
+async function promotePackage(stage, prefix, temporary, activate) {
+  const sources = [packageRoot(stage), ...entrypoints(stage)];
+  const destinations = [packageRoot(prefix), ...entrypoints(prefix)];
+  for (const source of sources) await lstat(source);
+  const backup = join(temporary, 'previous');
+  await mkdir(backup);
+  const changes = [];
+  try {
+    for (const [index, destination] of destinations.entries()) {
+      await mkdir(dirname(destination), {recursive: true});
+      const previous = join(backup, String(index));
+      const change = {destination, previous, saved: false, installed: false};
+      try {
+        await rename(destination, previous);
+        change.saved = true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      changes.push(change);
+      await rename(sources[index], destination);
+      change.installed = true;
+    }
+    await activate(packageRoot(prefix));
+  } catch (error) {
+    const failures = [];
+    for (const change of changes.reverse()) {
+      try {
+        if (change.installed)
+          await rm(change.destination, {
+            recursive: true,
+            force: true,
+            maxRetries: 5,
+          });
+        if (change.saved) await rename(change.previous, change.destination);
+      } catch (failure) {
+        failures.push(failure);
+      }
+    }
+    if (failures.length)
+      throw new InstallRollbackError(
+        `Could not restore the previous installation. Recovery files remain in ${temporary}.`,
+        {cause: new AggregateError([error, ...failures])},
+      );
+    throw error;
+  }
+}
+
 export async function install(args = process.argv.slice(2)) {
   if (Number.parseInt(process.versions.node, 10) < 24)
     throw new Error('VarisDev requires Node 24+ with npm.');
@@ -246,21 +435,24 @@ export async function install(args = process.argv.slice(2)) {
   const release = await readRelease(feed);
   await mkdir(prefix, {recursive: true});
   const temporary = await mkdtemp(join(prefix, '.varisdev-install-'));
+  let unlock;
+  let retainRecovery = false;
   try {
     const archive = join(temporary, 'varisdev.tgz');
     console.log(
       `Installing VarisDev ${release.version} (${release.revision.slice(0, 8)}) into ${prefix}`,
     );
     await downloadRelease(release, archive);
-    // npm 12 disables Git and lifecycle scripts by default. Install a verified
-    // local archive, then explicitly prepare the app with its bundled npm.
+    // Keep npm and preparation failures away from the installed package and shims.
+    // npm 12 disables lifecycle scripts by default; prepare the verified archive explicitly.
+    const stage = join(temporary, 'stage');
     run(
       [
         npm,
         'install',
         '--global=true',
         '--prefix',
-        prefix,
+        stage,
         '--omit=dev',
         '--legacy-peer-deps',
         '--ignore-scripts',
@@ -270,12 +462,16 @@ export async function install(args = process.argv.slice(2)) {
       ],
       temporary,
     );
-    const root = join(
-      prefix,
-      process.platform === 'win32' ? 'node_modules' : 'lib/node_modules',
-      'varisdev',
+    const root = packageRoot(stage);
+    // Use the downloaded app's settings reader so installer and desktop updates
+    // honor the same saved data directory and machine environment fallback.
+    const {initializeEnvironment, environmentForChild} = await import(
+      pathToFileURL(join(root, 'src/runtime/environment.mjs')).href
     );
-    run([join(root, 'scripts/install-desktop.mjs')], root);
+    await initializeEnvironment();
+    unlock = await acquireUpdateLock(defaultDataDir());
+    const env = environmentForChild();
+    run([join(root, 'scripts/install-desktop.mjs')], root, env);
     const manifest = JSON.parse(
       await readFile(join(root, 'package.json'), 'utf8'),
     );
@@ -290,13 +486,19 @@ export async function install(args = process.argv.slice(2)) {
       throw new Error(
         'Installed application does not match the release manifest.',
       );
-    run([join(root, 'bin/varisdev.mjs'), '--version'], root);
-    if (process.platform === 'darwin' || process.platform === 'win32')
-      run([join(root, 'scripts/desktop-app.mjs'), 'install'], root, {
-        ...process.env,
-        VARISDEV_INSTALL_ROOT: await realpath(root),
-        VARISDEV_NODE_EXECUTABLE: process.execPath,
-      });
+    run([join(root, 'bin/varisdev.mjs'), '--version'], root, env);
+    await promotePackage(stage, prefix, temporary, async installed => {
+      if (process.platform === 'darwin' || process.platform === 'win32')
+        run(
+          [join(installed, 'scripts/desktop-app.mjs'), 'install'],
+          installed,
+          {
+            ...env,
+            VARISDEV_INSTALL_ROOT: await realpath(installed),
+            VARISDEV_NODE_EXECUTABLE: process.execPath,
+          },
+        );
+    });
     const bin = process.platform === 'win32' ? prefix : join(prefix, 'bin');
     if (addPath) {
       const {activation, skippedProfiles} = await configurePath(bin);
@@ -315,8 +517,16 @@ export async function install(args = process.argv.slice(2)) {
           console.log(`To use this terminal now, run:\n${activation}`);
       }
     } else console.log(`Installed. Add ${bin} to PATH, then run varisdev.`);
+  } catch (error) {
+    retainRecovery = error instanceof InstallRollbackError;
+    throw error;
   } finally {
-    await rm(temporary, {recursive: true, force: true, maxRetries: 5});
+    try {
+      if (!retainRecovery)
+        await rm(temporary, {recursive: true, force: true, maxRetries: 5});
+    } finally {
+      await unlock?.();
+    }
   }
 }
 

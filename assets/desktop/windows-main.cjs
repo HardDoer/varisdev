@@ -5,7 +5,7 @@ if (Number.parseInt(process.versions.node, 10) < 24) {
   process.exit(1);
 }
 const {app, dialog} = require('electron');
-const {mkdirSync, readFileSync} = require('node:fs');
+const {existsSync, mkdirSync, readFileSync} = require('node:fs');
 const {homedir} = require('node:os');
 const {dirname, delimiter, isAbsolute, join} = require('node:path');
 const {pathToFileURL} = require('node:url');
@@ -30,14 +30,6 @@ async function start() {
     throw new Error(
       'Invalid launcher configuration. Run varisdev app install.',
     );
-  const {initializeEnvironment} = await import(
-    pathToFileURL(
-      join(
-        config.runtimeRoot || config.installRoot,
-        'src/runtime/environment.mjs',
-      ),
-    ).href
-  );
   const bootstrapProfile = join(config.profile, 'windows-launcher/bootstrap');
   mkdirSync(bootstrapProfile, {recursive: true});
   app.setPath('userData', bootstrapProfile);
@@ -69,13 +61,28 @@ async function start() {
   if (!config.environment && config.settingsDir)
     process.env.VARISDEV_SETTINGS_DIR ??= config.settingsDir;
   delete process.env.ELECTRON_RUN_AS_NODE;
-  await initializeEnvironment();
-  process.chdir(homedir());
   const {RuntimeManager} = await import(
     pathToFileURL(
       join(config.installRoot, 'desktop/build/src/runtime/manager.js'),
     ).href
   );
+  // The saved generation may have been removed. Resolve through the base manager
+  // before loading helpers; early installations have no helper of their own.
+  const bootstrapRoot = await new RuntimeManager({
+    installRoot: config.installRoot,
+    dataDir: config.dataDir,
+  }).currentRoot();
+  const environment = [bootstrapRoot, config.installRoot]
+    .map(root => join(root, 'src/runtime/environment.mjs'))
+    .find(path => existsSync(path));
+  if (environment) {
+    const {initializeEnvironment} = await import(
+      pathToFileURL(environment).href
+    );
+    await initializeEnvironment();
+  }
+  process.chdir(homedir());
+  // Saved settings can select a different data directory from the launch fallback.
   const root = await new RuntimeManager({
     installRoot: config.installRoot,
   }).currentRoot();
