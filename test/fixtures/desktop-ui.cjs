@@ -5845,6 +5845,7 @@ async function main() {
         await screenshot('conversation-follow-controls');
       await new Promise(resolve => setTimeout(resolve, 150));
       await settle();
+      await focusRenderer();
       for (const cursor of ['text', 'padding']) {
         const point = await evaluate(cursor => {
           const panel = document.getElementById('panel-conversation');
@@ -5870,7 +5871,10 @@ async function main() {
           deltaY: 24,
           deltaX: 0,
         });
-        await new Promise(resolve => setTimeout(resolve, 80));
+        await until(() => {
+          const panel = document.getElementById('panel-conversation');
+          return panel.scrollHeight - panel.clientHeight - panel.scrollTop > 10;
+        }, 'The upward wheel must move the conversation away from the bottom');
         await settle();
         const reading = await evaluate(() => {
           const panel = document.getElementById('panel-conversation');
@@ -5908,12 +5912,25 @@ async function main() {
           ) <= 1,
           `A reader over ${cursor} stays in place after the wheel settles`,
         );
-        window.webContents.sendInputEvent({
-          type: 'mouseWheel',
-          ...point,
-          deltaY: -320,
-          deltaX: 0,
-        });
+        // Offscreen rows can change the measured height as they enter view.
+        for (let attempt = 0; attempt < 8; attempt++) {
+          window.webContents.sendInputEvent({
+            type: 'mouseWheel',
+            ...point,
+            deltaY: -320,
+            deltaX: 0,
+          });
+          await settle();
+          if (
+            await evaluate(() => {
+              const panel = document.getElementById('panel-conversation');
+              return (
+                panel.scrollHeight - panel.clientHeight - panel.scrollTop <= 2
+              );
+            })
+          )
+            break;
+        }
         await until(() => {
           const panel = document.getElementById('panel-conversation');
           return panel.scrollHeight - panel.clientHeight - panel.scrollTop <= 2;
@@ -13823,6 +13840,11 @@ async function main() {
         ),
         [directory, other],
       );
+      assert.equal(
+        await evaluate(() => document.getElementById('new-agent-recent').value),
+        directory,
+        'Recent workspaces reflects the initial workspace after history loads',
+      );
       await evaluate(other => {
         document.getElementById('new-agent-name').value =
           'Review the workspace';
@@ -13838,45 +13860,99 @@ async function main() {
       assert.deepEqual(
         await evaluate(() => ({
           folder: document.getElementById('new-agent-folder').textContent,
+          recent: document.getElementById('new-agent-recent').value,
+          recentLabel:
+            document.getElementById('new-agent-recent').selectedOptions[0]
+              .textContent,
+          label: document.getElementById('new-agent-workspace-label')
+            .textContent,
           name: document.getElementById('new-agent-name').value,
           task: document.getElementById('new-agent-task').value,
         })),
         {
           folder: other,
+          recent: other,
+          recentLabel: `other-project · ${other}`,
+          label: 'Selected workspace',
           name: 'Review the workspace',
           task: 'Inspect its files',
         },
       );
-      for (const [width, height, zoom] of [
-        [1600, 1000, 1],
-        [1100, 760, 1.5],
-      ]) {
-        window.setContentSize(width, height);
-        window.webContents.setZoomFactor(zoom);
-        await settle();
-        assert.equal(
-          await evaluate(() => {
+      const themes = await evaluate(async () =>
+        (await import('./themes.js')).THEMES.map(theme => theme.id),
+      );
+      for (const theme of themes) {
+        await evaluate(theme => {
+          const select = document.getElementById('factory-theme');
+          select.value = theme;
+          select.dispatchEvent(new Event('change', {bubbles: true}));
+        }, theme);
+        for (const [width, height, zoom] of [
+          [1600, 1000, 1],
+          [1100, 760, 1.5],
+        ]) {
+          window.setContentSize(width, height);
+          window.webContents.setZoomFactor(zoom);
+          await settle();
+          const selection = await evaluate(() => {
             const recent = document.getElementById('new-agent-recent');
             const rect = recent.getBoundingClientRect();
             const create = document
               .getElementById('new-agent-create')
               .getBoundingClientRect();
-            return (
-              rect.top >= 0 &&
-              rect.right <= innerWidth &&
-              document.elementFromPoint(
-                rect.left + rect.width / 2,
-                rect.top + rect.height / 2,
-              ) === recent &&
-              create.bottom <= innerHeight &&
-              document.documentElement.scrollHeight <= innerHeight
+            const panel = getComputedStyle(
+              document.getElementById('new-agent-dialog'),
+            ).backgroundColor;
+            return {
+              accessible:
+                rect.top >= 0 &&
+                rect.right <= innerWidth &&
+                document.elementFromPoint(
+                  rect.left + rect.width / 2,
+                  rect.top + rect.height / 2,
+                ) === recent &&
+                create.bottom <= innerHeight &&
+                document.documentElement.scrollHeight <= innerHeight,
+              value: recent.value,
+              panel,
+              surfaces: [
+                'new-agent-workspace',
+                'new-agent-recent',
+                'new-agent-template',
+              ].map(id => {
+                const element = document.getElementById(id);
+                const style = getComputedStyle(element);
+                return {
+                  id,
+                  selected: element.classList.contains('has-selection'),
+                  background: style.backgroundColor,
+                  color: style.color,
+                  border: style.borderLeftColor,
+                };
+              }),
+            };
+          });
+          assert.equal(
+            selection.accessible,
+            true,
+            `${theme}: accessible actions`,
+          );
+          assert.equal(selection.value, other, `${theme}: selection persists`);
+          for (const surface of selection.surfaces) {
+            assert.equal(surface.selected, true, `${theme}: ${surface.id}`);
+            assert.ok(
+              contrast(surface.color, surface.background) >= 4.5,
+              `${theme}: ${surface.id} selected text remains readable`,
             );
-          }),
-          true,
-          'Recent workspace selector and create action remain accessible',
-        );
-        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-          await screenshot(`new-conversation-recents-${width}-${zoom}`);
+            assert.ok(
+              contrast(surface.border, surface.background) >= 3 &&
+                contrast(surface.border, selection.panel) >= 3,
+              `${theme}: ${surface.id} selection border stands out`,
+            );
+          }
+          if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+            await screenshot(`new-conversation-${theme}-${width}-${zoom}`);
+        }
       }
       creationDelay = 150;
       dialogErrors.set(
@@ -13938,6 +14014,11 @@ async function main() {
       await until(
         () => document.getElementById('new-agent-recent').options.length === 2,
         'Reopening did not refresh recent workspace history',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('new-agent-recent').value),
+        other,
+        'Reopening reflects the newly active workspace',
       );
       await click('new-agent-cancel');
     },
@@ -14020,6 +14101,31 @@ async function main() {
       assert.equal(
         await evaluate(() => document.getElementById('new-agent-error').hidden),
         true,
+      );
+      chosenFolder = join(directory, 'unlisted-workspace');
+      await click('new-agent-choose-folder');
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'Folder selection did not finish',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          folder: document.getElementById('new-agent-folder').textContent,
+          recent: document.getElementById('new-agent-recent').value,
+        })),
+        {folder: chosenFolder, recent: ''},
+        'An unlisted folder clears the previous recent selection',
+      );
+      chosenFolder = directory;
+      await click('new-agent-choose-folder');
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'Recent folder selection did not finish',
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('new-agent-recent').value),
+        directory,
+        'The folder picker synchronizes matching recent workspaces',
       );
       await click('new-agent-cancel');
       recentProjects = [];

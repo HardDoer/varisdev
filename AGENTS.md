@@ -1,3 +1,11 @@
+# Review cycle
+
+- After completing all requested tasks and their checks, use the repository's `code-review` agent to review the unstaged changes, including new untracked files, within the requested scope.
+- Start every review in a fresh agent conversation with no prior conversation history. Never resume or reuse a reviewer, including between iterations of the same review cycle.
+- Give the reviewer the scope, requirements, and applicable project instructions so it can assess the changes independently.
+- Fix all findings and run the checks appropriate to those fixes, then return to review with another fresh agent.
+- Repeat until a review reports no findings. Complete this cycle before staging, committing, and applying the versioning steps below.
+
 # Versioning
 
 - After completing a set of changes that differs from the default branch (`main`, or `master` in this repository), ensure the application version is higher than the version on that branch. Reuse an appropriate existing bump for the same set of changes.

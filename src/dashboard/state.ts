@@ -31,6 +31,8 @@ export interface DashboardSession {
   prompt?: string;
   response?: string;
   error?: string;
+  /** Identifies a live, non-aborted main-agent settlement. Never restored from history. */
+  completionId?: string;
   context?: AgentRecord['context'];
 }
 

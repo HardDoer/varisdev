@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import {basename} from 'node:path';
+import {randomUUID} from 'node:crypto';
 import {
   archiveAgentRecord,
   type AgentSessionController,
@@ -57,6 +58,7 @@ export function observeDashboardSession(
   let teamTimer: ReturnType<typeof setTimeout> | undefined;
   const tools = new Map<string, string>();
   let lastError: string | undefined;
+  let runStarted = false;
   let sessionId: string | undefined;
   let seenChanges = new Set<string>();
   let assistantMessage: MessageIdentity | undefined;
@@ -424,6 +426,7 @@ export function observeDashboardSession(
     teamTimer = undefined;
     tools.clear();
     lastError = undefined;
+    runStarted = false;
     seenChanges.clear();
     assistantMessage = undefined;
     userMessage = undefined;
@@ -465,6 +468,7 @@ export function observeDashboardSession(
     });
   });
   pi.on('agent_start', (_event, ctx) => {
+    runStarted = true;
     state?.batch(() => {
       lastError = undefined;
       state!.updateSession({
@@ -665,7 +669,10 @@ export function observeDashboardSession(
         );
     });
   });
-  pi.on('agent_settled', (_event, ctx) => {
+  pi.on('agent_settled', (event, ctx) => {
+    const completionId =
+      runStarted && !event.aborted ? randomUUID() : undefined;
+    runStarted = false;
     state?.batch(() => {
       // Do not publish an idle parent with a worker snapshot still waiting on
       // the throttle timer.
@@ -679,6 +686,7 @@ export function observeDashboardSession(
       state!.updateSession({
         ...metadata(ctx),
         status: 'idle',
+        ...(completionId ? {completionId} : {}),
         activity: lastError
           ? `Error: ${lastError.slice(0, 1000)}`
           : 'Ready for a task',

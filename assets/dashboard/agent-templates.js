@@ -130,6 +130,24 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     const working = createWorking();
     const created = Boolean(createState.createdId);
     $('new-agent-folder').textContent = createState.cwd || 'Choose a folder';
+    $('new-agent-folder').title = createState.cwd;
+    $('new-agent-workspace').classList.toggle(
+      'has-selection',
+      !!createState.cwd,
+    );
+    $('new-agent-workspace-label').textContent = createState.cwd
+      ? 'Selected workspace'
+      : 'Workspace';
+    const recent = $('new-agent-recent');
+    recent.value = createState.recentFolders.includes(createState.cwd)
+      ? createState.cwd
+      : '';
+    recent.title = recent.value;
+    recent.classList.toggle('has-selection', !!recent.value);
+    $('new-agent-template').classList.toggle(
+      'has-selection',
+      !!$('new-agent-template').value,
+    );
     $('new-agent-choose-folder').disabled =
       working || created || !api?.chooseFolder;
     $('new-agent-recent').disabled =
@@ -328,13 +346,16 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       createState.recentFolders = folders;
       const placeholder = document.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = 'Select a workspace…';
+      placeholder.textContent = 'Choose a recent workspace…';
+      placeholder.disabled = true;
       $('new-agent-recent').replaceChildren(
         placeholder,
         ...folders.map(cwd => {
           const option = document.createElement('option');
           option.value = cwd;
-          option.textContent = cwd;
+          const name = cwd.split(/[\\/]/).filter(Boolean).at(-1) || cwd;
+          option.textContent = `${name} · ${cwd}`;
+          option.title = cwd;
           return option;
         }),
       );
@@ -1139,7 +1160,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   );
   listen($('new-agent-recent'), 'change', event => {
     const cwd = event.target.value;
-    event.target.value = '';
     if (createState.recentFolders.includes(cwd))
       void selectCreateWorkspace(cwd);
   });

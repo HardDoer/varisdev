@@ -19,7 +19,13 @@ export function initPanelResize() {
 
   try {
     const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY));
-    for (const key of ['conversation', 'workspaces', 'agents', 'history'])
+    for (const key of [
+      'conversation',
+      'workspaces',
+      'agents',
+      'history',
+      'detached',
+    ])
       if (typeof saved?.[key] === 'number' && saved[key] > 0 && saved[key] < 1)
         sizes[key] = saved[key];
   } catch {
@@ -75,10 +81,34 @@ export function initPanelResize() {
 
   const splits = [
     {
+      key: 'detached',
+      axis: 'x',
+      direction: -1,
+      measure() {
+        const total = workspace.clientWidth;
+        return {
+          total,
+          min: 240,
+          max: Math.max(240, total - (visible(column) ? 240 : 0) - 344),
+          value: document
+            .getElementById('inspector-panel-rack')
+            .getBoundingClientRect().width,
+        };
+      },
+      apply(value) {
+        setSize(workspace, '--detached-width', value);
+      },
+    },
+    {
       key: 'conversation',
       axis: 'x',
       measure() {
-        const total = workspace.clientWidth - this.handle.offsetWidth;
+        const rack = document.getElementById('inspector-panel-rack');
+        const divider = document.getElementById('detached-resize');
+        const total =
+          workspace.clientWidth -
+          this.handle.offsetWidth -
+          (visible(rack) ? rack.offsetWidth + divider.offsetWidth : 0);
         return {
           total,
           min: Math.min(240, total * 0.4),

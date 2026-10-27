@@ -87,7 +87,9 @@ export function initComposerResize({resizeTextarea, resetTextareaSizes}) {
       pixels(window.getComputedStyle(inspector).borderBottomWidth) -
       pixels(window.getComputedStyle(inspector).paddingBottom) -
       slot.getBoundingClientRect().bottom;
-    for (const body of inspector.querySelectorAll(':scope > .inspector-body')) {
+    for (const body of inspector.querySelectorAll(
+      ':scope > .inspector-body, :scope > .inspector-panels-empty',
+    )) {
       if (!body.getClientRects().length) continue;
       const bodyStyle = window.getComputedStyle(body);
       const padding =

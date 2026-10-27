@@ -1,6 +1,6 @@
 # VarisDev
 
-VarisDev is built on top of the open-source coding harness [Pi](https://pi.dev), adding a desktop GUI, some tools and a data visualization layer. Its designed to be as minimal as possible and does not pollute your prompts with anything or enforce any particular workflows. Its functions should be very familiar to anyone who has used Pi.
+VarisDev is built on top of the open-source coding harness Pi, adding a desktop GUI, some tools and a data visualization layer. Its designed to be as minimal as possible and does not pollute your prompts with anything or enforce any particular workflows. Its functions should be very familiar to anyone who has used Pi.
 
 Pi is a very cool project and VarisDev would not have been possible without it. Check it out [here](https://github.com/earendil-works/pi).
 

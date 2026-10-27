@@ -37,6 +37,8 @@ Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read ne
 
 Spawn, send, and cancel return short acknowledgements. Status and wait return results; truncated output includes `outputTruncated` and `resultFile` for reading the full text.
 
+When a main agent finishes, VarisDev plays a completion sound only while the app window is unfocused. It waits for retries, automatic compaction, and queued work to settle. Cancelled runs stay silent. Windows and Linux use the original Windows 98 ding, with a system bell fallback; macOS uses its system bell.
+
 **Stop** stops the selected agent's current work; other agents continue. Open **Actions** beside the conversation title to cancel or remove an additional agent, or cancel all agents in the selected workspace. You can also right-click a workspace, agent, history entry, or the conversation title; the menu selects that item and supports keyboard navigation.
 
 Select a workspace and choose **Actions → Close workspace**. Closing a workspace stops all of its agents, closes its embedded terminal, and frees its workspace slot. Saved history remains available through **Menu → Resume session**. Closing the last workspace returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a workspace attached from another terminal, **Close workspace** dismisses it from this window.

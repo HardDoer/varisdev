@@ -80,6 +80,26 @@
   border-radius: 8px;
   font: inherit;
 }
+#new-agent-workspace.has-selection,
+#new-agent-dialog select.has-selection {
+  border-color: var(--selection-border, var(--accent));
+  background: var(--selected, var(--panel-raised));
+}
+#new-agent-workspace.has-selection {
+  border-inline-start-width: 4px;
+}
+#new-agent-workspace.has-selection .agent-template-field-label::before {
+  content: '✓';
+  margin-inline-end: 7px;
+  color: var(--selection-border, var(--accent));
+}
+#new-agent-folder {
+  color: var(--text);
+  font-size: 0.875rem;
+}
+#new-agent-dialog select.has-selection {
+  font-weight: 650;
+}
 #new-agent-task {
   min-height: 112px;
 }

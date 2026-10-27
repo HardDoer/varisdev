@@ -1,0 +1,172 @@
+#factory-workspace.has-inspector-panels {
+  grid-template-columns:
+    var(--factory-width, minmax(240px, 1fr)) 12px minmax(320px, 1.35fr)
+    10px var(--detached-width, minmax(260px, 0.9fr));
+}
+#factory-workspace.has-inspector-panels:has(> #factory-column[hidden]) {
+  grid-template-columns: minmax(320px, 1.35fr) 10px var(
+      --detached-width,
+      minmax(260px, 0.9fr)
+    );
+}
+.inspector-panel-rack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.detached-inspector-panel {
+  display: flex;
+  flex: 1 0 220px;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  container-type: inline-size;
+}
+.detached-panel-heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-raised, var(--panel));
+  cursor: grab;
+  touch-action: none;
+}
+.detached-panel-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+}
+.detached-panel-heading:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: -2px;
+}
+.detached-inspector-panel > .inspector-body {
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
+  padding: 12px;
+  overflow: auto;
+}
+.detached-panel-close,
+.inspector-panel-buttons {
+  display: none;
+}
+.inspector-panel-buttons {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 88px;
+  overflow: auto;
+  padding: 4px 8px;
+  border-top: 1px solid var(--line);
+}
+.inspector-panel-buttons button {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+}
+.inspector-panels-empty {
+  flex: 1 1 0;
+  min-height: 0;
+}
+#inspector .inspector-tabs [data-detached] {
+  display: none !important;
+}
+.inspector-tabs [data-inspector-tab] {
+  touch-action: none;
+}
+body[data-inspector-dragging],
+body[data-inspector-dragging] * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+.inspector-drop-target {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: -2px;
+}
+.panel-context-menu {
+  position: fixed;
+  inset: auto;
+  width: 200px;
+  max-width: calc(100vw - 16px);
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 40px #0008;
+}
+.panel-context-menu button {
+  width: 100%;
+  min-height: 34px;
+  text-align: left;
+}
+.panel-context-menu button:focus-visible {
+  background: var(--hover);
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: -2px;
+}
+.inspector-panel-drawer {
+  position: fixed;
+  inset: 0;
+  width: min(680px, calc(100vw - 24px));
+  height: min(720px, calc(100dvh - 40px));
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 40px #0008;
+}
+.inspector-panel-drawer:popover-open {
+  display: flex;
+}
+.inspector-panel-drawer > .detached-inspector-panel {
+  flex: 1;
+  border: 0;
+}
+.inspector-panel-drawer .detached-panel-close {
+  display: block;
+}
+.inspector-panel-rack[hidden],
+.detached-inspector-panel[hidden],
+.inspector-panel-buttons[hidden],
+.inspector-panel-buttons button[hidden],
+.inspector-panels-empty[hidden],
+#detached-resize[hidden] {
+  display: none !important;
+}
+@media (max-width: 1300px), (max-height: 650px) {
+  #factory-workspace.has-inspector-panels {
+    grid-template-columns: var(--factory-width, minmax(0, 1fr)) 12px minmax(
+        0,
+        1.35fr
+      );
+  }
+  #factory-workspace.has-inspector-panels:has(> #factory-column[hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #factory-workspace > .inspector-panel-rack,
+  #factory-workspace > #detached-resize {
+    display: none;
+  }
+  .has-inspector-panels .inspector-panel-buttons {
+    display: flex;
+  }
+}

@@ -26,7 +26,7 @@ async function until(
 }
 
 void test(
-  'managed parent invokes a quoted filename configuration without a root model, cancels approval and retires workers on reload',
+  'managed parent invokes a quoted filename configuration without a root model, cancels approval and retains worker history on reload',
   {timeout: 15000},
   async t => {
     const root = await mkdtemp(join(tmpdir(), 'varisdev-parent-mentions-'));
@@ -168,7 +168,9 @@ export default function (pi) {
     assert.equal(reloaded.agents.length, 1);
     assert.equal(reloaded.agents[0].id, child.id);
     assert.equal(reloaded.agents[0].status, 'completed');
-    assert.equal(reloaded.agents[0].resumable, false);
+    assert.equal(reloaded.agents[0].resumable, true);
+    assert.equal(reloaded.agents[0].sessionFile, child.sessionFile);
+    assert.deepEqual(reloaded.agents[0].conversation, child.conversation);
     assert.equal(reloaded.agents[0].output, child.output);
     assert.deepEqual(reloaded.session.agentProfile, identity);
     assert.deepEqual((await current.features()).agentProfile, identity);
@@ -185,19 +187,30 @@ export default function (pi) {
     );
     assert.equal(requests.length, 1, 'Reload requires no main turn');
     const next = current.prompt(
-      '@agent:"Ägent Review (v2).test" A fresh team after reload',
+      '@agent:"Ägent Review (v2).test" A new task after reload',
     );
     await until(() => current.ui.snapshot().dialogs.length > 0);
     current.ui.respond(current.ui.snapshot().dialogs[0].id, 'Allow once');
     await next;
-    await until(() => {
-      const agent = current.state.snapshot().agents[0];
-      return agent?.id !== child.id && agent?.status === 'completed';
-    });
-    const fresh = current.state.snapshot().agents;
-    assert.equal(fresh.length, 1);
-    assert.notEqual(fresh[0].id, child.id);
-    assert.equal(fresh[0].resumable, true);
+    await until(() =>
+      current.state
+        .snapshot()
+        .agents.some(
+          agent => agent.id !== child.id && agent.status === 'completed',
+        ),
+    );
+    const agents = current.state.snapshot().agents;
+    assert.equal(agents.length, 2);
+    const retained = agents.find(agent => agent.id === child.id)!;
+    assert.equal(retained.status, 'completed');
+    assert.equal(retained.resumable, true);
+    assert.equal(retained.sessionFile, child.sessionFile);
+    assert.deepEqual(retained.conversation, child.conversation);
+    assert.equal(retained.output, child.output);
+    const fresh = agents.find(agent => agent.id !== child.id)!;
+    assert.equal(fresh.status, 'completed');
+    assert.equal(fresh.task, 'A new task after reload');
+    assert.equal(fresh.resumable, true);
     assert.equal(requests.length, 2);
   },
 );

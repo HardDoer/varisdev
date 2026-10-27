@@ -24,6 +24,7 @@ import {initItemContextMenu} from './item-context-menu.js';
 import {initLiveView} from './live-view.js';
 import {initPanelResize} from './panel-resize.js';
 import {initPanelLayout} from './panel-layout.js';
+import {initInspectorPanels} from './inspector-panels.js';
 import {initComposerResize} from './composer-resize.js';
 import {initSessionHistory} from './session-history.js';
 import {initRecentProjects} from './recent-projects.js';
@@ -206,6 +207,7 @@ let clock;
 let inspectorKey = '';
 let feedKey = '';
 let lastFeedId;
+let feedFollowing = true;
 let changeKey = '';
 let conversationKey = '';
 let conversationFollowing = true;
@@ -225,6 +227,9 @@ const composingEditors = new Set();
 let snapshotVersion = 0;
 const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
 const renderScheduler = createRenderScheduler(render);
+let inspectorPanels = null;
+const panelVisible = name =>
+  state.tab === name || inspectorPanels?.isDetached(name);
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'short',
   day: 'numeric',
@@ -1269,6 +1274,7 @@ function renderFeed(data) {
     feedNodes.clear();
     $('live-feed').replaceChildren();
     lastFeedId = undefined;
+    feedFollowing = true;
     feedKey = key;
   }
   const events = data.events.filter(item => item.sourceId === state.unitId);
@@ -1279,9 +1285,6 @@ function renderFeed(data) {
       : worker?.conversation || []
     ).map(message => [message.id, message]),
   );
-  const body = $('panel-feed');
-  const nearBottom =
-    body.scrollHeight - body.scrollTop - body.clientHeight < 70;
   reconcile(
     $('live-feed'),
     feedNodes,
@@ -1339,16 +1342,15 @@ function renderFeed(data) {
     },
   );
   const latest = events.at(-1)?.id;
-  if (
-    $('follow-feed').checked &&
-    state.tab === 'feed' &&
-    (nearBottom || lastFeedId === undefined) &&
-    latest !== lastFeedId
-  )
-    body.scrollTop = body.scrollHeight;
+  if (latest !== lastFeedId) followFeedBottom();
   lastFeedId = latest;
   text($('feed-count'), events.length);
   $('feed-empty').hidden = events.length > 0;
+}
+function followFeedBottom() {
+  const body = $('panel-feed');
+  if (feedFollowing && $('follow-feed').checked && body.checkVisibility())
+    body.scrollTop = body.scrollHeight;
 }
 function renderChanges(data) {
   const key = `${state.sessionId}:${state.unitId}`;
@@ -1445,7 +1447,7 @@ function cancelConversationBottom() {
 }
 function scheduleConversationBottom() {
   if (
-    state.tab !== 'conversation' ||
+    !panelVisible('conversation') ||
     !conversationFollowing ||
     conversationPointerActive ||
     !$('follow-conversation').checked ||
@@ -1457,7 +1459,7 @@ function scheduleConversationBottom() {
   function scroll() {
     if (
       state.disposed ||
-      state.tab !== 'conversation' ||
+      !panelVisible('conversation') ||
       conversationScope() !== key ||
       !conversationFollowing ||
       conversationPointerActive ||
@@ -1758,7 +1760,7 @@ function renderConversation(snapshot) {
         : 'No conversation recorded for this agent.',
   );
   if (
-    state.tab === 'conversation' &&
+    panelVisible('conversation') &&
     $('follow-conversation').checked &&
     !selectedText &&
     (conversationFollowing || sessionChanged) &&
@@ -1800,12 +1802,6 @@ function renderInspector() {
   $('inspector').dataset.conversationKind = kind;
   document.querySelector('.conversation-kind').dataset.agentKind = kind;
   text($('conversation-kind-label'), conversationKindLabel(kind));
-  const key = `${state.sessionId}:${state.unitId}`;
-  if (inspectorKey !== key) {
-    for (const tab of ['details', 'feed', 'changes', 'tokens', 'speed'])
-      $(`panel-${tab}`).scrollTop = 0;
-    inspectorKey = key;
-  }
   text($('inspector-title'), unit.name);
   $('inspector-title').title = unit.name;
   for (const id of ['inspector-title', 'item-actions-button']) {
@@ -1847,13 +1843,19 @@ function renderInspector() {
   renderComposer(data, unit, parent);
 }
 function renderInspectorPanel(data, unit, parent) {
-  if (state.tab === 'conversation') renderConversation(data);
-  else if (state.tab === 'feed') renderFeed(data);
-  else if (state.tab === 'changes') {
+  const key = `${state.sessionId}:${state.unitId}`;
+  if (inspectorKey !== key) {
+    inspectorPanels?.resetScroll();
+    inspectorKey = key;
+  }
+  if (panelVisible('conversation')) renderConversation(data);
+  if (panelVisible('feed')) renderFeed(data);
+  if (panelVisible('changes')) {
     renderChanges(data);
     renderWorkspace();
-  } else if (state.tab === 'tokens') renderUsage(data);
-  if (state.tab !== 'details') return;
+  }
+  if (panelVisible('tokens')) renderUsage(data);
+  if (!panelVisible('details')) return;
   facts($('unit-facts'), [
     [
       'Configuration',
@@ -2001,7 +2003,16 @@ function renderWorkspace() {
   $('workspace-diff').hidden = !result.diff;
   $('workspace-truncated').hidden = !result.truncated;
 }
-function setTab(tab) {
+function setTab(tab, {preserveScroll = false} = {}) {
+  if (inspectorPanels?.isDetached(tab)) {
+    const data = snapshot();
+    const unit = selectedUnit();
+    if (data && unit) {
+      inspectorPanels.reveal(tab);
+      renderInspectorPanel(data, unit, state.unitId === 'parent');
+    }
+    return;
+  }
   const previousTab = state.tab;
   state.tab = tab;
   for (const name of TABS) {
@@ -2010,15 +2021,23 @@ function setTab(tab) {
     $(`tab-${name}`).tabIndex = selected ? 0 : -1;
     $(`panel-${name}`).hidden = !selected;
   }
+  inspectorPanels?.sync();
+  inspectorPanels?.reveal(tab);
   const data = snapshot();
   const unit = selectedUnit();
   if (data && unit) renderInspectorPanel(data, unit, state.unitId === 'parent');
   if (tab === 'context') refreshContext();
   if (tab === 'speed') refreshSpeed();
-  if (tab === 'conversation' && previousTab !== 'conversation')
+  if (
+    !preserveScroll &&
+    tab === 'conversation' &&
+    previousTab !== 'conversation'
+  )
     followConversationBottom();
-  if (tab === 'feed' && $('follow-feed').checked)
-    $('panel-feed').scrollTop = $('panel-feed').scrollHeight;
+  if (!preserveScroll && tab === 'feed' && $('follow-feed').checked) {
+    feedFollowing = true;
+    followFeedBottom();
+  }
 }
 let themeSessionId;
 let themesDiscovered = false;
@@ -2027,6 +2046,7 @@ function render() {
   renderScheduler.rendered();
   const hasSession = Boolean(snapshot());
   liveView.setSession(hasSession ? state.sessionId : null);
+  if (!hasSession) inspectorPanels?.close();
   if (!hasSession && $('welcome').hidden) void recentProjects.refresh();
   $('welcome').hidden = hasSession;
   $('factory-workspace').hidden = !hasSession;
@@ -2603,7 +2623,8 @@ for (const tab of TABS) {
   $(`tab-${tab}`).addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const tabs = TABS.filter(name => !$(`tab-${name}`).hidden);
+    const tabs =
+      inspectorPanels?.tabs() || TABS.filter(name => !$(`tab-${name}`).hidden);
     const index = tabs.indexOf(tab);
     const next =
       event.key === 'Home'
@@ -2700,9 +2721,14 @@ for (const id of [
   'panel-conversation',
 ])
   conversationResize.observe($(id));
+$('panel-feed').addEventListener('scroll', () => {
+  const body = $('panel-feed');
+  if (body.checkVisibility())
+    feedFollowing = body.scrollHeight - body.scrollTop - body.clientHeight < 70;
+});
 $('follow-feed').addEventListener('change', () => {
-  if ($('follow-feed').checked)
-    $('panel-feed').scrollTop = $('panel-feed').scrollHeight;
+  feedFollowing = $('follow-feed').checked;
+  followFeedBottom();
 });
 motionPreference.addEventListener('change', applyMotion);
 window.addEventListener('resize', resizeFactory);
@@ -2919,6 +2945,15 @@ const cleanupPanelLayout = initPanelLayout({
     sizeScene();
   },
 });
+inspectorPanels = initInspectorPanels({
+  selected: () => state.tab,
+  select: setTab,
+  changed: () => {
+    followFeedBottom();
+    renderScheduler.schedule();
+    scheduleConversationBottom();
+  },
+});
 const cleanupPanelResize = initPanelResize();
 const cleanupComposerResize = initComposerResize({
   resizeTextarea,
@@ -3007,6 +3042,7 @@ window.addEventListener('unload', () => {
   itemContextMenu.dispose();
   liveView.dispose();
   cleanupPanelLayout();
+  inspectorPanels.dispose();
   cleanupPanelResize();
   cleanupComposerResize();
   recentProjects.dispose();

@@ -322,8 +322,8 @@ async function protectLiveSession(
   if (livePath === outputPath)
     throw new Error('Export cannot overwrite the live session file.');
   const [live, output] = await Promise.all([
-    stat(livePath).catch(() => undefined),
-    stat(outputPath).catch(() => undefined),
+    stat(livePath, {bigint: true}).catch(() => undefined),
+    stat(outputPath, {bigint: true}).catch(() => undefined),
   ]);
   if (live && output && live.dev === output.dev && live.ino === output.ino)
     throw new Error('Export cannot overwrite the live session file.');

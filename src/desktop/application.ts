@@ -51,6 +51,10 @@ import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopCommands} from './commands.ts';
+import {
+  DesktopCompletionSound,
+  playDesktopCompletionSound,
+} from './completion-sound.ts';
 import {DesktopPreferences} from './preferences.ts';
 import {DesktopTerminals} from './terminal.ts';
 import {openConversationFile, openConversationURL} from './files.ts';
@@ -134,6 +138,17 @@ const toolSettings = new DesktopToolSettings({
   sessionFeatures: sessionId => hub.sessionFeatures(sessionId),
 });
 let mainWindow: BrowserWindow | undefined;
+const completionSound = new DesktopCompletionSound(hub, {
+  window: () => mainWindow,
+  play: shouldPlay =>
+    playDesktopCompletionSound({
+      path: fileURLToPath(
+        new URL('../../../../assets/windows_98_ding.wav', import.meta.url),
+      ),
+      shouldPlay,
+      beep: () => shell.beep(),
+    }),
+});
 const desktopCommands = new DesktopCommands({
   clipboard,
   lastAssistantText: sessionId => hub.lastAssistantText(id(sessionId)),
@@ -836,6 +851,7 @@ async function shutdown(): Promise<void> {
   clearInterval(updateTimer);
   unsubscribe();
   unsubscribeUpdates();
+  completionSound.dispose();
   try {
     terminals.dispose();
     await accounts.dispose();

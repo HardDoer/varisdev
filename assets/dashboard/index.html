@@ -127,10 +127,18 @@
           </button>
         </div>
         <div class="agent-template-dialog-body">
-          <div class="agent-template-folder-row">
+          <div id="new-agent-workspace" class="agent-template-folder-row">
             <div>
-              <span class="agent-template-field-label">Folder</span>
-              <p id="new-agent-folder" class="agent-template-path mono"></p>
+              <span
+                id="new-agent-workspace-label"
+                class="agent-template-field-label"
+                >Workspace</span
+              >
+              <p
+                id="new-agent-folder"
+                class="agent-template-path mono"
+                role="status"
+              ></p>
             </div>
             <button
               id="new-agent-choose-folder"

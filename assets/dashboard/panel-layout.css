@@ -1,3 +1,5 @@
+@import './inspector-panels.css';
+
 #factory-column[hidden],
 #factory-workspace [hidden].panel-resize-handle,
 #factory-workspace [hidden].overview,

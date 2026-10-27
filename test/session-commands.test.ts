@@ -10,6 +10,8 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {basename, dirname, join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -511,6 +513,45 @@ void test('/export opens native path input, uses SDK JSONL, and asks about sensi
   assert.ok(native.confirms.some(item => item.message.includes('secrets')));
   assert.ok(native.confirms.some(item => item.title.includes('Overwrite')));
   assert.notEqual(output, session.sessionFile);
+});
+
+void test('/export distinguishes large file identities that round to the same number', async t => {
+  const {run, native, session, root, manager} = await fixture(t);
+  const output = join(root, 'separate-export.jsonl');
+  const live = session.sessionFile!;
+  const original = await readFile(live, 'utf8');
+  await writeFile(output, 'old export');
+  const liveInode = 2n ** 54n;
+  const outputInode = liveInode + 1n;
+  assert.equal(Number(liveInode), Number(outputInode));
+  const originalStat = fs.stat;
+  const mockedStat = t.mock.method(
+    fs,
+    'stat',
+    async (...args: Parameters<typeof fs.stat>) => {
+      const info = await originalStat(...args);
+      const path = String(args[0]);
+      const inode =
+        path === live ? liveInode : path === output ? outputInode : undefined;
+      if (inode !== undefined)
+        Object.defineProperty(info, 'ino', {
+          value: typeof info.ino === 'bigint' ? inode : Number(inode),
+        });
+      return info;
+    },
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    mockedStat.mock.restore();
+    syncBuiltinESMExports();
+  });
+  native.confirmations.push(true, true);
+  assert.equal((await run('export', `"${output}"`))?.kind, 'done');
+  assert.deepEqual(
+    SessionManager.open(output).getEntries(),
+    manager.getBranch(),
+  );
+  assert.equal(await readFile(live, 'utf8'), original);
 });
 
 void test('/export HTML delegates to SDK and never overwrites the live transcript', async t => {

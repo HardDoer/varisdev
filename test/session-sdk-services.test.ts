@@ -168,6 +168,65 @@ void test('desktop and worker adapters use SDK trust, provider registration, sco
   );
 
   await t.test(
+    'resume retains a virtual selection over its physical response when availability is pending',
+    async resume => {
+      store.set(cwd, true);
+      await settings();
+      const manager = SessionManager.create(cwd, join(root, 'saved-sessions'));
+      manager.appendModelChange(provider, 'auto');
+      manager.appendMessage({
+        role: 'user',
+        content: 'Keep the virtual model selected.',
+        timestamp: Date.now(),
+      });
+      manager.appendMessage({
+        role: 'assistant',
+        content: [{type: 'text', text: 'A physical response.'}],
+        api: 'openai-completions',
+        provider,
+        model: 'physical',
+        stopReason: 'stop',
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+        },
+        timestamp: Date.now(),
+      });
+      const configured = ModelRuntime.prototype.hasConfiguredAuth;
+      resume.mock.method(
+        ModelRuntime.prototype,
+        'hasConfiguredAuth',
+        function (this: ModelRuntime, providerId: string) {
+          return providerId === provider
+            ? false
+            : configured.call(this, providerId);
+        },
+      );
+      const parent = await createDashboardParent({
+        cwd,
+        resume: {id: manager.getSessionId(), path: manager.getSessionFile()!},
+      });
+      try {
+        assert.equal((await capture()).model, `${provider}/auto`);
+        assert.equal((await parent.features()).model?.id, 'auto');
+        const restoredEntries = parent.restartSnapshot().entries;
+        for (const entry of manager.getEntries())
+          assert.deepEqual(
+            restoredEntries.find(item => item.id === entry.id),
+            entry,
+            'Restoring the selected router preserves saved entries',
+          );
+      } finally {
+        await parent.close();
+      }
+    },
+  );
+
+  await t.test(
     'saved denial takes priority over the global always preference',
     async () => {
       store.set(cwd, false);

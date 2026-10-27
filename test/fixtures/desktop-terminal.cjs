@@ -11,6 +11,7 @@ let browser;
 let terminals;
 const report = {cases: []};
 const calls = [];
+const terminalOutput = new Map();
 let fail = false;
 const closedSessions = new Set();
 const openSessions = () =>
@@ -85,9 +86,15 @@ app
         resolve(__dirname, '../../desktop/build/src/desktop/terminal.js'),
       ).href
     );
-    terminals = new DesktopTerminals(event =>
-      browser.webContents.send('pidev:terminal', event),
-    );
+    terminals = new DesktopTerminals(event => {
+      terminalOutput.set(
+        event.sessionId,
+        ((terminalOutput.get(event.sessionId) || '') + event.data).slice(
+          -16384,
+        ),
+      );
+      browser.webContents.send('pidev:terminal', event);
+    });
     handle('pidev:get-state', () => snapshot('first'));
     handle('pidev:recent-projects', () => []);
     handle('pidev:open-file', (id, path) => openedFiles.push([id, path]));
@@ -155,12 +162,16 @@ app
       await evaluate("document.getElementById('terminal-panel').hidden"),
       false,
     );
-    // Check the project launch through Electron and the real Windows PTY.
-    // Split markers ensure echoed commands cannot satisfy the output checks.
-    if (process.platform === 'win32') terminals.resize('first', 93, 31);
+    // Check the renderer's fitted size instead of racing its resize with a
+    // separate manual PTY resize. Split markers exclude echoed commands.
+    const terminalSize = await evaluate(`(async () => {
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return {cols: window.fixtureTerminal.cols, rows: window.fixtureTerminal.rows};
+    })()`);
     await browser.webContents.insertText(
       process.platform === 'win32'
-        ? `if ((Get-Location).ProviderPath -eq '${projectDirectory('first').replaceAll("'", "''")}') { 'cwd-' + 'ready' } else { throw 'Wrong project directory' }; if ($Host.UI.RawUI.WindowSize.Width -eq 93 -and $Host.UI.RawUI.WindowSize.Height -eq 31) { 'size-' + 'ready' } else { throw 'Wrong terminal size' }; if (Get-Module PSReadLine) { 'embedded-' + 'ready' } else { throw 'PSReadLine unavailable' }`
+        ? `if ((Get-Location).ProviderPath -eq '${projectDirectory('first').replaceAll("'", "''")}') { 'cwd-' + 'ready' } else { throw 'Wrong project directory' }; if ($Host.UI.RawUI.WindowSize.Width -eq ${terminalSize.cols} -and $Host.UI.RawUI.WindowSize.Height -eq ${terminalSize.rows}) { 'size-' + 'ready' } else { throw 'Wrong terminal size' }; if (Get-Module PSReadLine) { 'embedded-' + 'ready' } else { throw 'PSReadLine unavailable' }`
         : "printf 'embedded-%s\\n' 'ready'",
     );
     browser.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Return'});
@@ -393,7 +404,7 @@ app
     );
   })
   .catch(error => {
-    report.error = error.stack;
+    report.error = `${error.stack}\nTerminal output: ${JSON.stringify(Object.fromEntries(terminalOutput))}`;
     process.exitCode = 1;
   })
   .finally(() => {

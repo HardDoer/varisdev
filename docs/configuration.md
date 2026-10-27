@@ -56,7 +56,11 @@ Open **Actions** beside the conversation title, or right-click a workspace, agen
 
 ## Panel layout and sizes
 
-**Menu → Appearance → Panel layout** controls the visualization, workspace list, and agents and history panels. All are shown by default. Hide all three for a full-width conversation; **Info** and **Actions** beside the conversation title keep session details and actions accessible. Visibility is remembered across app restarts. **Menu → Appearance → Reset panel layout** restores default visibility, panel splits, and composer sizes.
+**Menu → Appearance → Panel layout** controls the visualization, workspace list, and agents and history panels. Hide all three for a full-width conversation; **Info** and **Actions** beside the conversation title keep session details and actions accessible.
+
+Drag the inspector tabs to reorder them, or drag a tab into the workspace to open it as a separate panel. The same panels are available in **Panel layout**. Drag panel headings to arrange them or return them to the tab bar. Right-click a panel and choose **Minify** to return its tab; for Visualization, Workspaces, and Agents, Minify hides the panel until you restore it from **Panel layout**.
+
+Tab order, panel arrangement, visibility, and sizes are remembered across app restarts. **Menu → Appearance → Reset panel layout** restores the default tabs, panels, splits, and composer sizes.
 
 **Menu → Appearance → Weapons** contains the Cane, Gun, and Flamethrower when the visualization is shown.
 
@@ -64,7 +68,7 @@ Drag the dividers to resize the conversation and live view, the workspace list, 
 
 Focus a divider with **Tab** and use the arrow keys to resize it; hold **Shift** for larger steps. **Home** and **End** select its smallest and largest sizes. Double-click a divider or press **Enter** to reset it. **Esc** cancels a drag.
 
-Panel sizes adjust to fit the window and zoom level. Hiding panels lets the remaining panels fill the available space; showing them again restores your preferred sizes. In short windows, **Agents & history** opens the agent panels in a drawer.
+Panel sizes adjust to fit the window and zoom level. Hiding panels lets the remaining panels fill the available space; showing them again restores your preferred sizes. In short windows, **Agents & history** opens the agent panels in a drawer. At compact sizes, labeled buttons above the inspector tabs open detached panels in a drawer.
 
 ## Models
 

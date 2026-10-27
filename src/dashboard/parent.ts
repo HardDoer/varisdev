@@ -51,6 +51,19 @@ import {runSessionCommand} from './session-commands.ts';
 import {runReportCommand} from './report-commands.ts';
 import {runAgentSessionRequest} from './agent-session.ts';
 import {refreshSpeedModeAuth, runSpeedCommand} from '../speed-modes.ts';
+import {piModuleURL} from '../runtime/pi-paths.ts';
+
+const {getBranchSelection} = (await import(
+  piModuleURL('core/virtual-models.js').href
+)) as {
+  getBranchSelection(
+    branch: ReturnType<SessionManager['getBranch']>,
+    getModel: (
+      provider: string,
+      modelId: string,
+    ) => CreateAgentSessionOptions['model'],
+  ): {provider: string; modelId: string} | undefined;
+};
 
 export interface ParentModel {
   model: NonNullable<CreateAgentSessionOptions['model']>;
@@ -316,10 +329,23 @@ export async function createDashboardParent(
       })()
     : undefined;
   const requestedThinking = request.thinkingLevel ?? modelParts?.[3];
-  const selectedModel =
+  let selectedModel =
     requestedModel ??
     startupModel ??
     (!request.resume ? inherited?.model : undefined);
+  if (!selectedModel && request.resume) {
+    const saved = getBranchSelection(
+      sessionManager.getBranch(),
+      (provider, modelId) => modelRuntime.getModel(provider, modelId),
+    );
+    if (saved && !modelRuntime.hasConfiguredAuth(saved.provider)) {
+      const model = modelRuntime.getModel(saved.provider, saved.modelId);
+      // Native provider availability can lag registration. Verify the saved
+      // provider before the SDK falls back to another provider's cached model.
+      if (model && (await modelRuntime.checkAuth(saved.provider)))
+        selectedModel = model;
+    }
+  }
   if (
     requestedThinking !== undefined &&
     !(

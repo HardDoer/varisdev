@@ -107,6 +107,10 @@ void test(
         ),
         '{"version":"0.85.1"}',
       );
+      await put(
+        join(path, 'src/runtime/environment.mjs'),
+        await readFile(join(root, 'src/runtime/environment.mjs'), 'utf8'),
+      );
       for (const name of [
         'bin/varisdev.mjs',
         'assets/dashboard/index.html',

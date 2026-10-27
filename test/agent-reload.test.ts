@@ -11,9 +11,10 @@ void test(
   'reload final snapshots retire completed, running and queued workers before disposal finishes',
   {timeout: 5000},
   async t => {
-    const handlers = new Map<string, () => unknown>();
+    type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
+    const handlers = new Map<string, Handler>();
     const pi = {
-      on(name: string, handler: () => unknown) {
+      on(name: string, handler: Handler) {
         handlers.set(name, handler);
       },
     } as unknown as ExtensionAPI;
@@ -75,7 +76,10 @@ void test(
     const before = control.deliverySnapshot()!;
     assert.ok(before.agents.every(agent => agent.resumable));
 
-    const closing = handlers.get('session_shutdown')!();
+    const closing = handlers.get('session_shutdown')!(
+      {type: 'session_shutdown', reason: 'reload'},
+      ctx,
+    );
     assert.equal(control.snapshot(), undefined);
     assert.throws(() => control.getTeam(ctx), /shutting down/);
     const final = control.deliverySnapshot()!;
@@ -97,7 +101,7 @@ void test(
     await closing;
     assert.strictEqual(control.deliverySnapshot(), final);
 
-    handlers.get('session_start')!();
+    handlers.get('session_start')!({type: 'session_start'}, ctx);
     assert.equal(control.deliverySnapshot(), undefined);
     const replacement = control.getTeam(ctx).getManager();
     t.after(() => replacement.close());

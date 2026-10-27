@@ -1062,6 +1062,36 @@ void test(
         assert.equal(after.session.response, before.session.response);
         await historical.close();
         cancellation.mock.restoreAll();
+        assert.deepEqual(
+          SessionManager.open(before.session.sessionFile).buildSessionContext()
+            .model,
+          {provider: providerId, modelId: 'dashboard-model'},
+          'Cancellation persists the original model selection',
+        );
+
+        // A provider can authenticate before its availability snapshot catches up.
+        const configuredAuth = ModelRuntime.prototype.hasConfiguredAuth;
+        cancellation.mock.method(
+          ModelRuntime.prototype,
+          'hasConfiguredAuth',
+          function (this: ModelRuntime, provider: string) {
+            return this !== runtime && provider === providerId
+              ? false
+              : configuredAuth.call(this, provider);
+          },
+        );
+        let resumeAuthChecks = 0;
+        cancellation.mock.method(
+          ModelRuntime.prototype,
+          'checkAuth',
+          function (
+            this: ModelRuntime,
+            ...args: Parameters<ModelRuntime['checkAuth']>
+          ) {
+            if (this !== runtime && args[0] === providerId) resumeAuthChecks++;
+            return checkAuth.apply(this, args);
+          },
+        );
 
         const resumed = await createDashboardParent(
           {
@@ -1077,6 +1107,10 @@ void test(
         parents.push(resumed);
         const restored = resumed.state.snapshot();
         assert.equal(restored.session.model, `${providerId}/dashboard-model`);
+        assert.ok(
+          resumeAuthChecks > 0,
+          'Resume verifies the saved provider auth',
+        );
         assert.deepEqual(
           conversationIdentity(resumed.state),
           beforeConversation,
