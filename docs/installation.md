@@ -34,6 +34,8 @@ For a permanent PATH entry, add that export to a shell startup file you can edit
 
 Use **Updates → Check for updates** or `varisdev update`. Restart when prompted.
 
+If an older installation cannot update, quit VarisDev and run the [install command](../README.md#install) again with the same installation directory. Reinstalling preserves your sessions and settings.
+
 ## Uninstall
 
 Quit VarisDev before uninstalling.

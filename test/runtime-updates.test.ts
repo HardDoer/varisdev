@@ -129,6 +129,7 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
   let failure = '';
   let environmentHelper: string | undefined;
   let installs = 0;
+  let preparations = 0;
   let smokeImports = 0;
   const urls: string[] = [];
   const hooks: RuntimeHooks = {
@@ -158,6 +159,7 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
           '--legacy-peer-deps',
           '--no-audit',
           '--no-fund',
+          '--ignore-scripts',
           join(options.cwd, `varisdev-${latest}.tgz`),
         ]);
         if (failure === 'npm') throw new Error('Package installation failed');
@@ -176,13 +178,26 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
           );
         if (failure === 'environment.mjs' || failure === 'node-version.mjs')
           await rm(join(root, 'src/runtime', failure));
-        if (failure === 'compile')
-          await rm(join(root, 'desktop/build'), {recursive: true});
-        if (failure === 'import')
+        // npm only unpacks the candidate; explicit preparation must build it.
+        await rm(join(root, 'desktop/build'), {recursive: true});
+      } else if (args[0].endsWith('install-desktop.mjs')) {
+        preparations++;
+        if (failure === 'prepare')
+          throw new Error('Desktop preparation failed');
+        if (failure !== 'compile') {
+          for (const entry of ['desktop/main.js', 'runtime/cli.js'])
+            await put(join(options.cwd, 'desktop/build/src', entry), '');
           await put(
-            join(root, 'desktop/build/src/dashboard/parent.js'),
-            "throw new Error('App import failed');",
+            join(options.cwd, 'desktop/build/src/runtime/cli.js'),
+            `export async function runCli() { console.log('VarisDev ${latest}'); return 0; }`,
           );
+          await put(
+            join(options.cwd, 'desktop/build/src/dashboard/parent.js'),
+            failure === 'import'
+              ? "throw new Error('App import failed');"
+              : 'export const ready = true;',
+          );
+        }
       } else {
         smokeImports++;
         await execute(command, args, {cwd: options.cwd, env: options.env});
@@ -201,6 +216,9 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
     manager: new RuntimeManager(options),
     get installs() {
       return installs;
+    },
+    get preparations() {
+      return preparations;
     },
     get smokeImports() {
       return smokeImports;
@@ -893,6 +911,7 @@ void test('full application update installs new code, dependencies and runtime a
     '0.1.0',
   );
   assert.equal(f.installs, 1);
+  assert.equal(f.preparations, 1);
   assert.equal(f.smokeImports, 1);
   const cli = await execute(
     process.execPath,
@@ -940,12 +959,7 @@ void test(
           await put(destination, 'archive');
         },
         run: async (command, args, options) => {
-          if (args[0].endsWith('install-desktop.mjs')) return;
-          const result = await f.hooks.run!(
-            command,
-            args.filter(arg => arg !== '--ignore-scripts'),
-            options,
-          );
+          const result = await f.hooks.run!(command, args, options);
           if (args[1] === 'install') {
             const root = join(
               options.cwd,
@@ -1054,7 +1068,7 @@ for (const configuredNode of [false, true]) {
   });
 }
 
-for (const failure of ['git', 'npm', 'compile', 'import']) {
+for (const failure of ['git', 'npm', 'prepare', 'compile', 'import']) {
   void test(`failed ${failure} preserves the active application and removes its partial install`, async t => {
     const f = await fixture(t);
     await updateReady(f.manager);
@@ -1168,7 +1182,7 @@ void test('cross-process updates serialize full application installation', async
           if(args[0]==='init') await cp(${JSON.stringify(template)},args[1],{recursive:true});
           return;
         }
-        if(args[1]==='pack') return;
+        if(args[1]==='pack'||args[0].endsWith('install-desktop.mjs')) return;
         await appendFile(${JSON.stringify(log)},'install\\n');await new Promise(r=>setTimeout(r,150));await cp(${JSON.stringify(template)},join(options.cwd,process.platform==='win32'?'node_modules/varisdev':'lib/node_modules/varisdev'),{recursive:true});
       },
       smokeImport:async()=>{}

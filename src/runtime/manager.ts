@@ -700,7 +700,7 @@ export class RuntimeManager {
           '--legacy-peer-deps',
           '--no-audit',
           '--no-fund',
-          ...(release.archive ? ['--ignore-scripts'] : []),
+          '--ignore-scripts',
           archive,
         ],
         {...commandOptions, cwd: stage},
@@ -715,12 +715,13 @@ export class RuntimeManager {
           throw new Error(
             'The prepared application does not match the release manifest.',
           );
-        this.publish({progress: {stage: 'preparing'}});
-        await run(executable, [join(root, 'scripts/install-desktop.mjs')], {
-          ...commandOptions,
-          cwd: root,
-        });
       }
+      // Prepare explicitly for both sources, including npm installations that disable hooks.
+      this.publish({progress: {stage: 'preparing'}});
+      await run(executable, [join(root, 'scripts/install-desktop.mjs')], {
+        ...commandOptions,
+        cwd: root,
+      });
       this.publish({progress: {stage: 'verifying'}});
       if (applicationVersion(root) !== version)
         throw new Error(

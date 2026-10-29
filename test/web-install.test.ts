@@ -14,6 +14,7 @@ import {
   realpath,
   rename,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import {createServer} from 'node:http';
@@ -162,6 +163,35 @@ void test('installer rejects missing values and unknown options before doing any
   await assert.rejects(install(['--unknown', 'value']), /Unknown option/);
 });
 
+void test('standalone installer runs when its directory is reached through a symlink', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'installer-link-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const source = join(directory, 'source');
+  await mkdir(source);
+  await copyFile(
+    new URL('../src/runtime/distribution.mjs', import.meta.url),
+    join(source, 'install.mjs'),
+  );
+  const alias = join(directory, 'alias');
+  await symlink(
+    source,
+    alias,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  for (const flags of [[], ['--preserve-symlinks-main']]) {
+    const output = await runRuntimeCommand(
+      process.execPath,
+      [...flags, join(alias, 'install.mjs'), '--help'],
+      {
+        cwd: directory,
+        env: process.env,
+        timeoutMs: 5_000,
+      },
+    );
+    assert.match(output, /^Usage: node install\.mjs/);
+  }
+});
+
 void test(
   'CMD installer detects npm, forwards quoted arguments and propagates failures',
   {skip: process.platform !== 'win32'},
@@ -307,8 +337,14 @@ async function snapshot(directory: string) {
   return files;
 }
 
-async function installerFixture(t: TestContext, savedDataDir = false) {
-  const directory = await mkdtemp(join(tmpdir(), 'web-install space-'));
+async function installerFixture(
+  t: TestContext,
+  savedDataDir = false,
+  legacyBase = false,
+) {
+  const directory = await realpath(
+    await mkdtemp(join(tmpdir(), 'web-install space-')),
+  );
   t.after(() => rm(directory, {recursive: true, force: true}));
   const source = join(directory, 'source');
   const prefix = join(directory, 'shared prefix');
@@ -360,7 +396,7 @@ console.log(JSON.parse(await readFile(new URL('../package.json', import.meta.url
   await put(
     join(source, 'scripts/install-desktop.mjs'),
     `import {existsSync} from 'node:fs';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {setTimeout} from 'node:timers/promises';
 if (!existsSync(join(process.env.VARISDEV_TEST_LOCK_DIR, 'update.lock/owner.json')))
@@ -381,6 +417,9 @@ for (const file of [
   await mkdir(dirname(file), {recursive: true});
   await writeFile(file, '');
 }
+if (process.env.VARISDEV_TEST_FAIL === 'asset') await rm('assets/desktop/preload.cjs');
+if (process.env.VARISDEV_TEST_FAIL === 'import')
+  await writeFile('desktop/build/src/dashboard/parent.js', "throw new Error('Broken session runtime');");
 for (const [file, value] of [
   ['desktop/node_modules/@earendil-works/pi-coding-agent/package.json', {version: '1.0.0'}],
   ['node_modules/npm/package.json', {exports: {'./package.json': './package.json'}}],
@@ -494,6 +533,9 @@ await writeFile(process.env.VARISDEV_TEST_LAUNCHER, JSON.stringify({root: proces
   await runInstall();
   selected = 1;
   const root = appRoot(prefix);
+  if (legacyBase)
+    for (const name of ['environment.mjs', 'node-version.mjs'])
+      await rm(join(root, 'src/runtime', name));
   const manager = new RuntimeManager({
     installRoot: root,
     dataDir,
@@ -510,6 +552,12 @@ await writeFile(process.env.VARISDEV_TEST_LAUNCHER, JSON.stringify({root: proces
         if (args[0].endsWith('npm-cli.js')) {
           const target = appRoot(args[args.indexOf('--prefix') + 1]);
           await cp(root, target, {recursive: true});
+          if (legacyBase)
+            for (const name of ['environment.mjs', 'node-version.mjs'])
+              await copyFile(
+                join(source, 'src/runtime', name),
+                join(target, 'src/runtime', name),
+              );
           const manifest = JSON.parse(
             await readFile(join(target, 'package.json'), 'utf8'),
           );
@@ -565,11 +613,13 @@ void test(
         : await readFile(f.env.VARISDEV_TEST_LAUNCHER!);
     const failures = [
       {name: 'npm install', env: {}, npm: true},
-      ...['prepare', 'manifest', 'revision', 'version'].map(name => ({
-        name,
-        env: {VARISDEV_TEST_FAIL: name},
-        npm: false,
-      })),
+      ...['prepare', 'manifest', 'revision', 'version', 'asset', 'import'].map(
+        name => ({
+          name,
+          env: {VARISDEV_TEST_FAIL: name},
+          npm: false,
+        }),
+      ),
       ...['package', ...appShims].map(name => ({
         name: `promoting ${name}`,
         env: {VARISDEV_TEST_PROMOTION_FAILURE: name},
@@ -590,7 +640,7 @@ void test(
         f.corruptPackage(failure.npm);
         await assert.rejects(
           f.runInstall(failure.env),
-          /Installation command failed|does not match|Injected promotion failure/,
+          /Installation command failed|does not match|Injected promotion failure|ENOENT/,
         );
         f.corruptPackage(false);
         assert.deepEqual(await snapshot(f.prefix), original);
@@ -671,6 +721,91 @@ void test(
         JSON.parse(await readFile(f.env.VARISDEV_TEST_LAUNCHER!, 'utf8')),
         {root: f.root, installRoot: await realpath(f.root)},
       );
+  },
+);
+
+void test(
+  'reinstallation recovers a legacy base whose active updater requires a missing environment helper',
+  {timeout: 90_000},
+  async t => {
+    const f = await installerFixture(t, true, true);
+    const invoked = join(f.directory, 'old-updater-invocations');
+    const legacyUpdater = join(f.active, 'broken-updater.mjs');
+    // Preserve the old updater's failing read; recovery must bypass it entirely.
+    await put(
+      legacyUpdater,
+      `
+      import {appendFile, readFile} from 'node:fs/promises';
+      await appendFile(${JSON.stringify(invoked)}, 'invoked\\n');
+      const helper = ${JSON.stringify(join(f.root, 'src/runtime/environment.mjs'))};
+      try { await readFile(helper); } catch {
+        console.warn('VarisDev: Could not update the startup environment reader.');
+      }
+      console.log('Updating VarisDev…');
+      await readFile(helper);
+    `,
+    );
+    await assert.rejects(
+      runRuntimeCommand(process.execPath, [legacyUpdater], {
+        cwd: f.directory,
+        env: f.env,
+        timeoutMs: 10_000,
+      }),
+      /startup environment reader[\s\S]*ENOENT[\s\S]*environment\.mjs/,
+    );
+    const oldRuntime = await snapshot(f.active);
+    const pointer = await readFile(join(f.dataDir, 'active.json'), 'utf8');
+    const settings = await readFile(f.settings, 'utf8');
+    const sentinel = join(f.dataDir, 'saved-session.txt');
+    await writeFile(sentinel, 'user session');
+    await f.runInstall();
+    assert.equal(await readFile(invoked, 'utf8'), 'invoked\n');
+    for (const name of ['environment.mjs', 'node-version.mjs'])
+      await access(join(f.root, 'src/runtime', name));
+    assert.equal(await f.manager.currentRoot(), f.root);
+    assert.equal(
+      await readFile(join(f.dataDir, 'active.json'), 'utf8'),
+      pointer,
+    );
+    assert.deepEqual(await snapshot(f.active), oldRuntime);
+    assert.equal(await readFile(f.settings, 'utf8'), settings);
+    assert.equal(await readFile(sentinel, 'utf8'), 'user session');
+    assert.equal(
+      (
+        await runRuntimeCommand(
+          process.execPath,
+          [join(f.root, 'bin/varisdev.mjs'), '--version'],
+          {
+            cwd: f.directory,
+            env: f.env,
+            timeoutMs: 10_000,
+          },
+        )
+      ).trim(),
+      '0.2.0',
+    );
+    const warning = t.mock.method(console, 'warn', () => {});
+    await f.manager.refreshEnvironment();
+    const updated = await f.manager.update();
+    assert.equal(updated.phase, 'ready', updated.error);
+    await f.manager.refreshEnvironment();
+    assert.notEqual(await f.manager.currentRoot(), f.root);
+    assert.equal(
+      await new RuntimeManager({
+        installRoot: f.root,
+        dataDir: f.dataDir,
+      }).currentRoot(),
+      await f.manager.currentRoot(),
+    );
+    assert.equal(warning.mock.callCount(), 0);
+    await assert.rejects(access(join(f.dataDir, 'update.lock')), {
+      code: 'ENOENT',
+    });
+    assert.ok(
+      (await readdir(f.prefix)).every(
+        name => !name.startsWith('.varisdev-install-'),
+      ),
+    );
   },
 );
 

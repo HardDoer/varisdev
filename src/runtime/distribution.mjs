@@ -17,7 +17,7 @@ import {
 import {homedir, userInfo} from 'node:os';
 import {delimiter, dirname, join, resolve} from 'node:path';
 import {setTimeout} from 'node:timers';
-import {pathToFileURL} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 
 export const releaseURL = 'https://joonas.ninja/varisdev/latest.json';
 
@@ -486,6 +486,25 @@ export async function install(args = process.argv.slice(2)) {
       throw new Error(
         'Installed application does not match the release manifest.',
       );
+    for (const file of [
+      'bin/varisdev.mjs',
+      'src/runtime/environment.mjs',
+      'src/runtime/node-version.mjs',
+      'assets/dashboard/index.html',
+      'assets/desktop/preload.cjs',
+      'desktop/build/src/runtime/cli.js',
+      'desktop/build/src/desktop/main.js',
+    ])
+      await stat(join(root, file));
+    run(
+      [
+        '--input-type=module',
+        '--eval',
+        `await import(${JSON.stringify(pathToFileURL(join(root, 'desktop/build/src/dashboard/parent.js')).href)}); await import(${JSON.stringify(pathToFileURL(join(root, 'desktop/build/src/runtime/cli.js')).href)});`,
+      ],
+      root,
+      env,
+    );
     run([join(root, 'bin/varisdev.mjs'), '--version'], root, env);
     await promotePackage(stage, prefix, temporary, async installed => {
       if (process.platform === 'darwin' || process.platform === 'win32')
@@ -530,9 +549,13 @@ export async function install(args = process.argv.slice(2)) {
   }
 }
 
+const entry = process.argv[1]
+  ? await realpath(resolve(process.argv[1])).catch(() => undefined)
+  : undefined;
 if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+  entry &&
+  import.meta.url.startsWith('file:') &&
+  entry === (await realpath(fileURLToPath(import.meta.url)))
 ) {
   install().catch(error => {
     console.error(`VarisDev: ${error.message || String(error)}`);

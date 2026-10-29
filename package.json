@@ -54,6 +54,7 @@
     "lint": "gts lint",
     "fix": "gts fix",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-concurrency=1 test/*.test.ts",
+    "test:installer": "node scripts/test-installer.mjs",
     "typecheck": "tsc --noEmit",
     "benchmark:render": "electron scripts/benchmark-rendering.cjs",
     "desktop:build": "node scripts/configure-pi.mjs && tsc --project tsconfig.desktop.json",
