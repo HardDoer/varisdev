@@ -15,6 +15,7 @@
 
 # Verification
 
+- Keep CI in the existing Jenkins pipeline and Docker release build.
 - Add tests for new functionality, including user interactions and saved state when applicable. Use the existing test harness and test the application's behavior and integrations.
 - Keep verification proportional to the change and use the existing test harness where available.
 - After every completed larger implementation, run `npm run test:installer` and resolve failures before committing or versioning. Keep installer coverage for fresh installation, reinstall, updates from an older base installation and an older updater, saved settings and environment values, PATH setup, custom prefixes, read-only locations, and rollback after failure. Run platform-specific checks on macOS, Linux, and Windows; the command tests its current operating system and does not run the other operating systems automatically.
