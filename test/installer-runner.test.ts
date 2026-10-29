@@ -18,6 +18,7 @@ import {fileURLToPath} from 'node:url';
 import {
   ProcessTracker,
   runCommand,
+  runPowerShell,
   stopPosixProcesses,
 } from '../scripts/test-installer.mjs';
 
@@ -794,5 +795,43 @@ void test(
       remaining: 1,
     });
     await assertStopped(record);
+  },
+);
+
+void test('installer runner matches exact creation identities independently of wall-clock birth windows', () => {
+  const tracker = new ProcessTracker('managed');
+  const row = {pid: 901, ppid: 1, group: 901, started: 123456, precision: 1};
+  const registration = {
+    type: 'process',
+    scope: 'managed',
+    pid: row.pid,
+    started: row.started,
+    before: 1793301907440,
+    after: 1793301907441,
+    detached: true,
+  };
+  assert.deepEqual(tracker.update([row], [registration]), [row]);
+  assert.deepEqual(
+    tracker.update([{...row, started: row.started + 1}], [registration]),
+    [],
+    'a recycled PID with a different creation tick is rejected despite a stale registration',
+  );
+});
+
+void test(
+  'installer runner PowerShell adapter accepts handled absence and preserves terminating failures',
+  {timeout: 15000, skip: !windows},
+  () => {
+    assert.equal(
+      runPowerShell(
+        'Get-Process -Id 2147483647 -ErrorAction SilentlyContinue',
+        3000,
+      ).trim(),
+      '',
+    );
+    assert.throws(
+      () => runPowerShell("throw 'installer runner failure probe'", 3000),
+      /installer runner failure probe/,
+    );
   },
 );

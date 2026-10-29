@@ -5,6 +5,7 @@ import {
   appendFileSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -19,6 +20,7 @@ import {
   setTimeout,
 } from 'node:timers';
 import {fileURLToPath, URL} from 'node:url';
+import {readLinuxProcess} from './installer-process-registry.cjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const preload = fileURLToPath(
@@ -45,7 +47,7 @@ function checkedOutput(result) {
   return result.stdout;
 }
 
-function runPowerShell(script, timeout) {
+export function runPowerShell(script, timeout) {
   return checkedOutput(
     spawnSync(
       powershell,
@@ -55,7 +57,9 @@ function runPowerShell(script, timeout) {
         '-NonInteractive',
         '-EncodedCommand',
         Buffer.from(
-          `$ErrorActionPreference = 'Stop'; ${script}`,
+          `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';
+           try { & { ${script} }; exit 0 }
+           catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`,
           'utf16le',
         ).toString('base64'),
       ],
@@ -65,6 +69,12 @@ function runPowerShell(script, timeout) {
 }
 
 function processTable(timeout = snapshotTimeoutMs) {
+  if (process.platform === 'linux') {
+    return readdirSync('/proc')
+      .filter(name => /^\d+$/.test(name))
+      .map(readLinuxProcess)
+      .filter(Boolean);
+  }
   if (windows) {
     return runPowerShell(
       `Get-CimInstance Win32_Process | ForEach-Object {
@@ -230,8 +240,10 @@ export class ProcessTracker {
       );
       if (
         row &&
-        row.started <= record.after &&
-        row.started + row.precision > (record.before ?? -Infinity)
+        (record.started !== undefined
+          ? row.started === record.started
+          : row.started <= record.after &&
+            row.started + row.precision > (record.before ?? -Infinity))
       ) {
         adopt(row);
         if (record.type === 'group')
@@ -321,7 +333,7 @@ export function runCommand(command, args, {timeoutMs, cwd, env}) {
     return Promise.reject(new Error('A positive command timeout is required.'));
 
   return new Promise((fulfill, reject) => {
-    // Check ps before starting work; cleanup must also work with a restricted PATH.
+    // Check process inspection before starting work, including a restricted PATH.
     if (!windows) processTable();
     const inheritedRegistry =
       process.env[registryVariable] || env?.[registryVariable];
@@ -378,6 +390,10 @@ export function runCommand(command, args, {timeoutMs, cwd, env}) {
             scope,
             pid: child.pid,
             ppid: process.pid,
+            started:
+              process.platform === 'linux'
+                ? readLinuxProcess(child.pid)?.started
+                : undefined,
             before,
             after: Date.now(),
             detached: !windows,

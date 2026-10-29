@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   access,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -11,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {delimiter, dirname, join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {environmentPath, withNodePath} from '../src/runtime/environment.mjs';
@@ -67,6 +68,15 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.NODE_PATH;
     delete env.VARISDEV_INSTALL_ROOT;
+    if (process.platform === 'win32') {
+      // Exercise machines with more than one Node installation on PATH.
+      const otherNode = join(temporary, 'another Node installation');
+      await mkdir(otherNode);
+      await copyFile(process.execPath, join(otherNode, 'node.exe'));
+      env.PATH = [dirname(process.execPath), otherNode, env.PATH].join(
+        delimiter,
+      );
+    }
     const environment = environmentPath(env);
     await mkdir(dirname(environment), {recursive: true});
     const saved = JSON.stringify({
@@ -237,6 +247,10 @@ void test(
       );
       assert.equal(launcher.installRoot, root);
       assert.equal(launcher.profile, data);
+      assert.equal(
+        await realpath(launcher.nodeExecutable),
+        await realpath(process.execPath),
+      );
     }
     if (process.platform === 'darwin') {
       const launcher = JSON.parse(

@@ -1,7 +1,7 @@
 'use strict';
 
 const {ChildProcess, spawn, spawnSync} = require('node:child_process');
-const {appendFileSync} = require('node:fs');
+const {appendFileSync, readFileSync} = require('node:fs');
 const {syncBuiltinESMExports} = require('node:module');
 const process = require('node:process');
 
@@ -11,6 +11,34 @@ const registry = process.env[registryVariable];
 const scope = process.env[scopeVariable];
 const installed = Symbol.for('varisdev.installerProcessRegistry');
 
+function readLinuxProcess(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat
+      .slice(stat.lastIndexOf(')') + 2)
+      .trim()
+      .split(/\s+/);
+    const started = Number(fields[19]);
+    if (!Number.isSafeInteger(started))
+      throw new Error(`Cannot identify installer process ${pid}.`);
+    return {
+      pid: Number(pid),
+      ppid: Number(fields[1]),
+      group: Number(fields[2]),
+      state: fields[0],
+      started,
+      precision: 1,
+    };
+  } catch (error) {
+    if (['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code))
+      return undefined;
+    throw error;
+  }
+}
+exports.readLinuxProcess = readLinuxProcess;
+const processStart = pid =>
+  process.platform === 'linux' ? readLinuxProcess(pid)?.started : undefined;
+
 if (registry && scope && !ChildProcess.prototype[installed]) {
   const record = (file, value) =>
     appendFileSync(file, `${JSON.stringify({type: 'process', ...value})}\n`);
@@ -19,6 +47,7 @@ if (registry && scope && !ChildProcess.prototype[installed]) {
     scope,
     pid: process.pid,
     ppid: process.ppid,
+    started: processStart(process.pid),
     after: Date.now(),
   });
   // All asynchronous child_process APIs, including promisified execFile and
@@ -39,6 +68,7 @@ if (registry && scope && !ChildProcess.prototype[installed]) {
           pid: child.pid,
           ppid: process.pid,
           detached: !!args[0].detached,
+          started: processStart(child.pid),
           before,
           after: Date.now(),
         });
@@ -51,24 +81,33 @@ if (registry && scope && !ChildProcess.prototype[installed]) {
 
   const deadline = Number(process.env.VARISDEV_INSTALLER_PROCESS_DEADLINE);
   if (process.platform !== 'win32' && Number.isFinite(deadline)) {
-    const result = spawnSync(
-      '/bin/ps',
-      ['-p', String(process.pid), '-o', 'pgid=,lstart='],
-      {
-        encoding: 'utf8',
-        env: {...process.env, LC_ALL: 'C', TZ: 'UTC'},
-        timeout: 1000,
-        killSignal: 'SIGKILL',
-      },
-    );
-    if (result.error) throw result.error;
-    const match = result.stdout.trim().match(/^(\d+)\s+(.+)$/);
-    if (result.status !== 0 || !match)
-      throw new Error('Cannot identify installer process group.');
-    if (Number(match[1]) === process.pid) {
-      const leaderStarted = Date.parse(`${match[2]} UTC`);
-      if (!Number.isFinite(leaderStarted))
-        throw new Error('Cannot identify installer group leader.');
+    let group;
+    let leaderStarted;
+    if (process.platform === 'linux') {
+      const self = readLinuxProcess(process.pid);
+      group = self?.group;
+      leaderStarted = self?.started;
+    } else {
+      const result = spawnSync(
+        '/bin/ps',
+        ['-p', String(process.pid), '-o', 'pgid=,lstart='],
+        {
+          encoding: 'utf8',
+          env: {...process.env, LC_ALL: 'C', TZ: 'UTC'},
+          timeout: 1000,
+          killSignal: 'SIGKILL',
+        },
+      );
+      if (result.error) throw result.error;
+      const match = result.stdout.trim().match(/^(\d+)\s+(.+)$/);
+      if (result.status !== 0 || !match)
+        throw new Error('Cannot identify installer process group.');
+      group = Number(match[1]);
+      leaderStarted = Date.parse(`${match[2]} UTC`);
+    }
+    if (!Number.isFinite(group) || !Number.isFinite(leaderStarted))
+      throw new Error('Cannot identify installer group leader.');
+    if (group === process.pid) {
       const before = Date.now();
       // Keep this existing group identifiable after its command exits. The
       // private keeper has no child processes and expires with the registry/deadline.
@@ -92,6 +131,7 @@ if (registry && scope && !ChildProcess.prototype[installed]) {
         group: process.pid,
         leaderStarted,
         keeper: keeper.pid,
+        started: processStart(keeper.pid),
         before,
         after: Date.now(),
       });

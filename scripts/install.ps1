@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Prefix = [IO.Path]::GetFullPath($Prefix)
-$node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue
+$node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $node) {
     throw 'VarisDev requires Node.js 24+.'
 }
