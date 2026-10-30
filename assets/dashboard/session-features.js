@@ -455,7 +455,7 @@ function renderSuggestions() {
           source: 'agent',
         }))
     : commands(needle);
-  suggestions = candidates.sort((a, b) => rank(a) - rank(b)).slice(0, 8);
+  suggestions = candidates.sort((a, b) => rank(a) - rank(b));
   suggestionIndex = Math.min(
     suggestionIndex,
     Math.max(0, suggestions.length - 1),
@@ -476,6 +476,14 @@ function renderSuggestions() {
     }),
   );
   container.hidden = suggestions.length === 0;
+  const selected = container.children[suggestionIndex];
+  if (selected) {
+    const top = selected.offsetTop;
+    const bottom = top + selected.offsetHeight;
+    if (top < container.scrollTop) container.scrollTop = top;
+    else if (bottom > container.scrollTop + container.clientHeight)
+      container.scrollTop = bottom - container.clientHeight;
+  }
 }
 function canRunCommand(name) {
   return (

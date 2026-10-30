@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {test, type TestContext} from 'node:test';
@@ -56,7 +63,9 @@ async function fixture(
   configuredVarisdev = false,
   enabledModels?: string[],
 ) {
-  const root = await mkdtemp(join(tmpdir(), 'desktop-features-'));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'desktop-features-')),
+  );
   const cwd = join(root, 'project');
   const agentDir = join(root, 'config');
   const previous = process.env.PI_CODING_AGENT_DIR;

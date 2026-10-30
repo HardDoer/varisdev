@@ -6,7 +6,7 @@ Commands, accounts, models, settings, skills, prompts, and packages work as in P
 
 ## Slash commands
 
-Type `/` in the conversation composer or open **Commands**. Installed extensions add their own commands with their usual arguments.
+Type `/` in the conversation composer or open **Commands**. Scroll or use the arrow keys to browse the matches; typing filters the list. Invoke a skill with `/skill:name [arguments]`. Installed extensions add their own commands with their usual arguments.
 
 | Commands                                        | Desktop behavior                                                                                              |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |

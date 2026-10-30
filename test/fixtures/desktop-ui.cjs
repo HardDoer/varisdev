@@ -7706,6 +7706,141 @@ async function main() {
   );
 
   await run(
+    'slash suggestions keep repository skills reachable beyond the first eight matches',
+    async () => {
+      const resource = resources.get('alpha');
+      for (let index = 1; index <= 12; index++)
+        resource.commands.push({
+          name: `skill:repository-${index}`,
+          description: `Repository skill ${index}`,
+          source: 'skill',
+          path: `/fixture/.varisdev/skills/repository-${index}/SKILL.md`,
+        });
+      await evaluate(() => document.getElementById('open-commands').click());
+      await until(
+        () =>
+          document
+            .getElementById('command-catalog')
+            .textContent.includes('/skill:repository-12'),
+        'Repository skills did not load',
+      );
+      await evaluate(() => document.getElementById('close-commands').click());
+      const draft = value =>
+        evaluate(value => {
+          const editor = document.getElementById('parent-prompt');
+          editor.value = value;
+          editor.focus();
+          editor.dispatchEvent(new Event('input', {bubbles: true}));
+        }, value);
+      const selectedSuggestion = () =>
+        evaluate(() => {
+          const list = document.getElementById('command-suggestions');
+          const selected = list.querySelector('[aria-selected="true"]');
+          const bounds = list.getBoundingClientRect();
+          const row = selected?.getBoundingClientRect();
+          return {
+            name: selected?.querySelector('strong').textContent,
+            visible:
+              !list.hidden &&
+              row?.top >= bounds.top &&
+              row?.bottom <= bounds.bottom &&
+              bounds.top >= 0 &&
+              bounds.bottom <= innerHeight,
+            scrollTop: list.scrollTop,
+            count: list.children.length,
+            pageScroll: document.scrollingElement.scrollTop,
+          };
+        });
+      const {nativeCommands} = await import(
+        pathToFileURL(resolve('assets/dashboard/command-catalog.js')).href
+      );
+      for (const [width, height, zoom] of [
+        [1600, 1000, 1],
+        [1100, 760, 1.5],
+      ]) {
+        window.setContentSize(width, height);
+        window.webContents.setZoomFactor(zoom);
+        await settle();
+        await draft('/');
+        assert.equal(
+          (await selectedSuggestion()).count,
+          nativeCommands.length + 15,
+          'Bare slash retains builtins, templates, extensions and every skill',
+        );
+        await press('Up');
+        const last = await selectedSuggestion();
+        assert.equal(last.name, '/skill:repository-12');
+        assert.equal(
+          last.visible,
+          true,
+          'Keyboard selection scrolls into view',
+        );
+        assert.ok(last.scrollTop > 0);
+        assert.equal(last.pageScroll, 0);
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`slash-skills-${width}-${zoom}`);
+        await press('Down');
+        const first = await selectedSuggestion();
+        assert.equal(first.name, `/${nativeCommands[0].name}`);
+        assert.equal(
+          first.visible,
+          true,
+          'Wrapping returns to the first match',
+        );
+
+        await draft('/skill:repository-');
+        assert.equal((await selectedSuggestion()).count, 12);
+        for (let index = 0; index < 9; index++) await press('Down');
+        const tenth = await selectedSuggestion();
+        assert.equal(tenth.name, '/skill:repository-10');
+        assert.equal(tenth.visible, true);
+        await press('Tab');
+        assert.equal(
+          await evaluate(() => document.getElementById('parent-prompt').value),
+          '/skill:repository-10 ',
+        );
+        assert.deepEqual(calls, [], 'Selecting a skill only edits the draft');
+        await draft('/skill:repository-12');
+        assert.equal((await selectedSuggestion()).visible, true);
+        await press('Escape');
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('command-suggestions').hidden,
+          ),
+          true,
+        );
+        assert.equal(
+          await evaluate(() => document.getElementById('parent-prompt').value),
+          '/skill:repository-12',
+        );
+      }
+      await draft('/');
+      await evaluate(() => {
+        const list = document.getElementById('command-suggestions');
+        list.scrollTop = list.scrollHeight;
+      });
+      await clickPointer('#command-suggestions button:last-child');
+      assert.equal(
+        await evaluate(() => document.getElementById('parent-prompt').value),
+        '/skill:repository-12 ',
+      );
+      await draft('/skill:repository-12 src/index.ts');
+      await press('Return');
+      await until(
+        () => document.getElementById('parent-prompt').value === '',
+        'Selected repository skill did not submit',
+      );
+      assert.deepEqual(calls, [
+        {
+          method: 'prompt',
+          sessionId: 'alpha',
+          request: {prompt: '/skill:repository-12 src/index.ts'},
+        },
+      ]);
+    },
+  );
+
+  await run(
     'skill palette, slash commands and agent mentions insert before sending arguments',
     async () => {
       await evaluate(() => {
