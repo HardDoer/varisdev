@@ -9,8 +9,9 @@ import {
   resolveDefaultAgentTemplate,
   type AgentTemplate,
 } from '../agents/templates.ts';
+import {randomUUID} from 'node:crypto';
 import {realpath, stat} from 'node:fs/promises';
-import {isAbsolute} from 'node:path';
+import {basename, isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
 import {DashboardState} from './state.ts';
 import {DashboardInputError} from './errors.ts';
@@ -18,7 +19,7 @@ import {workspaceConfigurationDirectory} from './workspace-config.ts';
 import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
 import type {SessionFeatures, SessionConfiguration} from './features.ts';
-import type {DesktopExtensionUI, DesktopUIState} from './extension-ui.ts';
+import {DesktopExtensionUI, type DesktopUIState} from './extension-ui.ts';
 import {
   readMarkdownFile,
   saveMarkdownFile,
@@ -75,8 +76,14 @@ export interface DashboardParent {
   lastAssistantText?(): string | undefined;
 }
 
+export interface ParentStartupInteraction {
+  ui: DesktopExtensionUI;
+  signal: AbortSignal;
+}
+
 export type ParentFactory = (
   request: ParentRequest,
+  interaction?: ParentStartupInteraction,
 ) => Promise<DashboardParent>;
 
 export interface ExternalSessionControl {
@@ -105,6 +112,7 @@ interface Headquarters {
 }
 
 export interface DashboardHubSnapshot {
+  startup?: {id: string; name: string; ui: DesktopUIState};
   selectedSessionId?: string;
   launchCwd: string;
   sessions: Array<
@@ -242,10 +250,20 @@ export class DashboardHub {
   private readonly sessions = new Map<string, Headquarters>();
   private readonly listeners = new Set<() => void>();
   private readonly creating = new Set<Promise<DashboardParent>>();
+  private readonly starting = new Map<
+    string,
+    {
+      name: string;
+      ui: DesktopExtensionUI;
+      controller: AbortController;
+      operation: Promise<DashboardParent>;
+    }
+  >();
   private readonly creationCredits = new Map<
     Promise<DashboardParent>,
     number
   >();
+  private startupDialogOwner?: string;
   private readonly resuming = new Map<string, Promise<StartedSession>>();
   private readonly resumeFolders = new Map<string, Promise<void>>();
   private readonly closingSessions = new Map<string, Promise<void>>();
@@ -390,7 +408,27 @@ export class DashboardHub {
         };
       }),
     ];
+    const waiting = [...this.starting].filter(
+      ([, pending]) => pending.ui.snapshot().dialogs.length > 0,
+    );
+    const dialog =
+      waiting.find(([id]) => id === this.startupDialogOwner) ?? waiting[0];
+    this.startupDialogOwner = dialog?.[0];
+    const startup =
+      dialog ??
+      [...this.starting].find(
+        ([, pending]) => pending.ui.snapshot().notifications.length > 0,
+      );
     return (this.cachedSnapshot = {
+      ...(startup
+        ? {
+            startup: {
+              id: startup[0],
+              name: startup[1].name,
+              ui: structuredClone(startup[1].ui.snapshot()),
+            },
+          }
+        : {}),
       selectedSessionId: sessions.some(
         item => item.session.id === this.selectedSessionId,
       )
@@ -662,6 +700,53 @@ export class DashboardHub {
     return this.external !== replacement.external;
   }
 
+  /** Publish startup dialogs while Pi resolves trust before creating a session. */
+  async startParent(
+    request: ParentRequest,
+    factory = this.factory,
+  ): Promise<DashboardParent> {
+    this.ensureOpen();
+    const id = `startup-${randomUUID()}`;
+    const controller = new AbortController();
+    let completed: DashboardParent | undefined;
+    let transferred = false;
+    const ui = new DesktopExtensionUI(() => {
+      completed?.state.touch();
+      this.changed();
+    });
+    const startupUI = ui.forCommand(controller.signal);
+    const operation = Promise.resolve().then(async () => {
+      controller.signal.throwIfAborted();
+      const parent = await factory(request, {
+        ui: startupUI,
+        signal: controller.signal,
+      });
+      completed = parent;
+      if (this.closed || controller.signal.aborted) {
+        await parent.close();
+        throw new DashboardInputError(
+          'The dashboard closed while starting the session.',
+        );
+      }
+      return parent;
+    });
+    this.starting.set(id, {
+      name: request.name || basename(request.cwd),
+      ui,
+      controller,
+      operation,
+    });
+    try {
+      const parent = await operation;
+      transferred = parent.ui === startupUI;
+      return parent;
+    } finally {
+      this.starting.delete(id);
+      if (!transferred) ui.dispose();
+      this.changed();
+    }
+  }
+
   private async startSession(
     request: ParentRequest,
     replacements: Array<{
@@ -687,7 +772,7 @@ export class DashboardHub {
       throw new DashboardInputError('The factory can hold eight workspaces.');
     }
     const creation = Promise.resolve().then(async () => {
-      const parent = await this.factory(request);
+      const parent = await this.startParent(request);
       if (this.closed) {
         await parent.close();
         throw new DashboardInputError(
@@ -791,7 +876,11 @@ export class DashboardHub {
       (typeof value !== 'object' || value === null || Array.isArray(value))
     )
       throw new DashboardInputError('Invalid extension dialog response.');
-    const parent = this.owned(id).parent;
+    this.ensureOpen();
+    const pending = this.starting.get(id);
+    // Terminal input or resize can arrive after the startup request has settled.
+    if (!pending && id.startsWith('startup-')) return;
+    const parent = pending ?? this.owned(id).parent;
     if (!parent.ui)
       throw new DashboardInputError(
         'Extension dialogs are unavailable in this session.',
@@ -993,7 +1082,7 @@ export class DashboardHub {
 
   restartSnapshots(): DesktopStartup[] {
     this.ensureOpen();
-    if (this.creating.size)
+    if (this.creating.size || this.starting.size)
       throw new DashboardInputError('A workspace is still starting.');
     const parents: DesktopStartup[] = [];
     for (const entry of this.sessions.values()) {
@@ -1148,6 +1237,7 @@ export class DashboardHub {
     if (this.closing) return this.closing;
     this.closed = true;
     this.externalControl = undefined;
+    for (const pending of this.starting.values()) pending.controller.abort();
     for (const entry of this.sessions.values()) {
       entry.stopping = true;
       entry.unsubscribe();
@@ -1172,7 +1262,10 @@ export class DashboardHub {
         ...this.closingSessions.values(),
       ]);
       // A concurrently created parent is disposed by createSession before it can run.
-      await Promise.allSettled([...this.creating]);
+      await Promise.allSettled([
+        ...this.creating,
+        ...[...this.starting.values()].map(pending => pending.operation),
+      ]);
     })();
     return this.closing;
   }

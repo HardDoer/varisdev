@@ -26,6 +26,15 @@ void test(
     const reportPath = join(directory, 'report.json');
     const env = {...process.env};
     delete env.ELECTRON_RUN_AS_NODE;
+    await runRuntimeCommand(
+      process.execPath,
+      [require.resolve('typescript/bin/tsc'), '-p', 'tsconfig.desktop.json'],
+      {
+        cwd: fileURLToPath(new URL('../', import.meta.url)),
+        env,
+        timeoutMs: 30_000,
+      },
+    );
     let launchError: unknown;
     try {
       await runRuntimeCommand(
@@ -68,7 +77,7 @@ void test(
       process.env.DESKTOP_UI_CASE_PATTERN
         ? report.cases.length > 0
         : report.cases.length,
-      process.env.DESKTOP_UI_CASE_PATTERN ? true : 66,
+      process.env.DESKTOP_UI_CASE_PATTERN ? true : 71,
       'All renderer scenarios must execute',
     );
   },

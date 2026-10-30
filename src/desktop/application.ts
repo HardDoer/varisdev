@@ -118,6 +118,8 @@ const projectArgument = process.argv
 const launchProject =
   projectArgument && isAbsolute(projectArgument) ? projectArgument : undefined;
 const replacingTerminal = process.argv.includes('--pidev-startup');
+let transferringStartup = replacingTerminal;
+let startupInteractionWaiting = false;
 const standalone = process.argv.includes('--varisdev-launcher');
 const primaryInstance =
   !standalone || app.requestSingleInstanceLock({project: launchProject});
@@ -131,7 +133,8 @@ const startupRequest = replacingTerminal
   : undefined;
 const hub = new DashboardHub(
   undefined,
-  request => createDashboardParent(request),
+  (request, interaction) =>
+    createDashboardParent(request, undefined, undefined, interaction),
   launchCwd,
 );
 const toolSettings = new DesktopToolSettings({
@@ -725,12 +728,13 @@ app.on('second-instance', (_event, _argv, _cwd, data: unknown) => {
       : undefined;
   if (!desktopReady) pendingProjects.push(project);
   else
-    void openProject(project).catch(error =>
-      dialog.showErrorBox(
-        'Could not open project',
-        updateMessage(String(error)),
-      ),
-    );
+    void openProject(project).catch(error => {
+      if (!shuttingDown)
+        dialog.showErrorBox(
+          'Could not open project',
+          updateMessage(String(error)),
+        );
+    });
 });
 
 async function restoreAfterUpdate(): Promise<boolean> {
@@ -742,10 +746,8 @@ async function restoreAfterUpdate(): Promise<boolean> {
     readFileSync(restorePath, 'utf8'),
   ) as DesktopStartup[];
   for (const startup of saved) {
-    const parent = await createDashboardParent(
-      {cwd: startup.cwd},
-      undefined,
-      startup,
+    const parent = await hub.startParent({cwd: startup.cwd}, (request, ui) =>
+      createDashboardParent(request, undefined, startup, ui),
     );
     hub.adoptSession(parent);
     preferences.rememberFolder(startup.cwd);
@@ -768,6 +770,13 @@ const unsubscribeUpdates = runtime.subscribe(status => {
 });
 
 const unsubscribe = hub.subscribe(() => {
+  if (transferringStartup && process.connected) {
+    const waiting = Boolean(hub.deliverySnapshot().startup?.ui.dialogs.length);
+    if (waiting !== startupInteractionWaiting) {
+      startupInteractionWaiting = waiting;
+      process.send?.({type: 'startup-interaction', waiting});
+    }
+  }
   if (shuttingDown || snapshotTimer) return;
   snapshotTimer = setTimeout(() => {
     snapshotTimer = undefined;
@@ -904,10 +913,10 @@ if (!primaryInstance) {
       if (startupRequest) {
         process.send?.({type: 'startup-request'});
         const startup = await startupRequest;
-        const parent = await createDashboardParent(
+        const parent = await hub.startParent(
           {cwd: startup.cwd},
-          undefined,
-          startup,
+          (request, ui) =>
+            createDashboardParent(request, undefined, startup, ui),
         );
         try {
           const settings = createWorkspaceConfiguration(
@@ -923,6 +932,7 @@ if (!primaryInstance) {
           await parent.close();
           throw error;
         }
+        transferringStartup = false;
         process.send?.({type: 'startup-ready'});
       } else {
         const restored = await restoreAfterUpdate();
@@ -948,6 +958,7 @@ if (!primaryInstance) {
       }
     })
     .catch(error => {
+      if (shuttingDown) return;
       console.error('Could not start VarisDev:', error);
       if (process.connected) {
         process.send?.({

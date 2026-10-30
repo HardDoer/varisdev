@@ -615,7 +615,9 @@ function closeExtensionDialog() {
   draftChanged();
 }
 function renderExtensionNotifications(notifications = []) {
-  const notices = notifications.filter(item => !dismissed.has(item.id));
+  const notices = [
+    ...new Map(notifications.map(item => [item.id, item])).values(),
+  ].filter(item => !dismissed.has(item.id));
   const signature = JSON.stringify(notices);
   const container = $('extension-notifications');
   container.hidden = notices.length === 0;
@@ -630,16 +632,27 @@ function renderExtensionNotifications(notifications = []) {
           dismissed.add(item.id);
           renderExtensionNotifications(notifications);
         });
-        notice.append(node('p', '', item.message), close);
+        const message = node('p', '', item.message);
+        message.style.margin = '0';
+        message.style.color = 'inherit';
+        notice.append(message, close);
         return notice;
       }),
     );
   }
 }
-function renderExtensionUI(data) {
-  const ui = data.ui;
-  const ownerId = data.uiOwnerId || data.session.id;
-  renderExtensionNotifications(ui?.notifications);
+function renderExtensionUI(data, startup) {
+  const ui = data?.ui;
+  const notices = $('extension-notifications');
+  const noticeAnchor = $(data ? 'conversation-activity' : 'welcome-create');
+  if (notices.parentElement !== noticeAnchor.parentElement)
+    noticeAnchor.before(notices);
+  notices.style.maxHeight = data ? '' : 'min(30vh, 180px)';
+  notices.style.overflowY = data ? '' : 'auto';
+  renderExtensionNotifications([
+    ...(ui?.notifications || []),
+    ...(startup?.ui.notifications || []),
+  ]);
   const statuses = [...(ui?.statuses || [])];
   for (const widget of ui?.widgets || [])
     statuses.push({key: widget.key, text: widget.lines.join('\n')});
@@ -662,8 +675,16 @@ function renderExtensionUI(data) {
     draftChanged();
     editorChanged = true;
   }
-  const request = ui?.dialogs?.[0];
-  if (activeDialog?.sessionId === ownerId && activeDialog.id === request?.id) {
+  const startupRequest = startup?.ui.dialogs?.[0];
+  const request = startupRequest || ui?.dialogs?.[0];
+  const ownerId = startupRequest
+    ? startup.id
+    : data?.uiOwnerId || data?.session.id;
+  if (
+    request &&
+    activeDialog?.sessionId === ownerId &&
+    activeDialog.id === request.id
+  ) {
     activeDialog = {...activeDialog, ...request};
     renderDialogTabs();
     renderTerminal(request);
@@ -686,8 +707,9 @@ function renderExtensionUI(data) {
   dialogBusy = false;
   renderDialogTabs();
   $('extension-dialog-title').textContent = request.title;
-  $('extension-dialog-session').textContent =
-    data.uiOwnerName || data.session.name;
+  $('extension-dialog-session').textContent = startupRequest
+    ? startup.name
+    : data.uiOwnerName || data.session.name;
   const terminal = Boolean(request.terminal);
   $('extension-dialog-message').textContent = request.message || '';
   $('extension-dialog-message').hidden = terminal || !request.message;
@@ -1036,12 +1058,6 @@ export function renderSessionFeatures(data, options = {parent: true}) {
   )
     $('commands-dialog').close();
   if (!data) {
-    closeExtensionDialog();
-    disposeTerminal();
-    activeDialog = undefined;
-    dialogBusy = false;
-  }
-  if (!data) {
     current = undefined;
     previousId = undefined;
     contextConversation = undefined;
@@ -1050,6 +1066,7 @@ export function renderSessionFeatures(data, options = {parent: true}) {
     $('open-commands').disabled = true;
     renderAgentProfile();
     renderSettingsControls();
+    renderExtensionUI(undefined, options.startup);
     return;
   }
   const changedSession = current?.session.id !== data.session.id;
@@ -1101,5 +1118,5 @@ export function renderSessionFeatures(data, options = {parent: true}) {
   renderAgentProfile();
   renderSettingsControls();
   renderContext();
-  renderExtensionUI(data);
+  renderExtensionUI(data, options.startup);
 }

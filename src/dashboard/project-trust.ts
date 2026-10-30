@@ -34,29 +34,36 @@ const {createProjectTrustContext} = (await import(
   }): ProjectTrustContext;
 };
 
-/** Use Pi's noninteractive startup policy before publishing a desktop session. */
+/** Resolve trust before loading project resources and selecting session defaults. */
 export function projectTrustReloadOptions(
   cwd: string,
   agentDir: string,
   settingsManager: SettingsManager,
   trustOverride?: boolean,
   onExtensionError?: (message: string) => void,
+  interaction?: {ui: ProjectTrustContext['ui']; signal: AbortSignal},
 ): CreateAgentSessionServicesOptions['resourceLoaderReloadOptions'] {
   return {
-    resolveProjectTrust: ({extensionsResult}) =>
-      resolveProjectTrusted({
+    resolveProjectTrust: async ({extensionsResult}) => {
+      interaction?.signal.throwIfAborted();
+      const trusted = await resolveProjectTrusted({
         cwd,
         trustStore: new ProjectTrustStore(agentDir),
         trustOverride,
         defaultProjectTrust: settingsManager.getDefaultProjectTrust(),
         extensionsResult,
-        projectTrustContext: createProjectTrustContext({
-          cwd,
-          mode: 'rpc',
-          settingsManager,
-          hasUI: false,
-        }),
+        projectTrustContext: interaction
+          ? {cwd, mode: 'rpc', hasUI: true, ui: interaction.ui}
+          : createProjectTrustContext({
+              cwd,
+              mode: 'rpc',
+              settingsManager,
+              hasUI: false,
+            }),
         onExtensionError,
-      }),
+      });
+      interaction?.signal.throwIfAborted();
+      return trusted;
+    },
   };
 }

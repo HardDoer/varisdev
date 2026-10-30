@@ -26,7 +26,12 @@ import {createAgentResourcePolicy} from '../agents/resources.ts';
 import type {AgentSessionController} from '../agents/team.ts';
 import {registerAgentTools} from '../tools/agents.ts';
 import {registerProjectTools} from '../tools/index.ts';
-import type {DashboardParent, ParentRequest, StoppedMessages} from './hub.ts';
+import type {
+  DashboardParent,
+  ParentRequest,
+  ParentStartupInteraction,
+  StoppedMessages,
+} from './hub.ts';
 import {
   sessionFeatures,
   agentProfileSummary,
@@ -84,6 +89,7 @@ export async function createDashboardParent(
   request: ParentRequest,
   inherited?: ParentModel,
   startup?: DesktopStartup,
+  interaction?: ParentStartupInteraction,
 ): Promise<DesktopDashboardParent> {
   const agentDir = getAgentDir();
   const args = startup ? parseArgs(startup.argv) : undefined;
@@ -184,9 +190,13 @@ export async function createDashboardParent(
   const resourceOptions: Partial<ReturnType<typeof desktopResourceOptions>> =
     args ? desktopResourceOptions(args) : {};
   let state: DashboardState | undefined;
-  const ui = new DesktopExtensionUI(() => state?.touch());
+  const ui = interaction?.ui ?? new DesktopExtensionUI(() => state?.touch());
   let parentDialogs = new AbortController();
-  const parentUI = ui.forCommand(() => parentDialogs.signal);
+  const parentUI = ui.forCommand(() =>
+    interaction
+      ? AbortSignal.any([parentDialogs.signal, interaction.signal])
+      : parentDialogs.signal,
+  );
   const approval = createAgentApprovalRelay({hasUI: true, ui: ui.context});
   const approvalSignal = () => {
     const signals = [...activePrompts]
@@ -221,6 +231,7 @@ export async function createDashboardParent(
       settingsManager,
       args?.projectTrustOverride,
       report,
+      interaction && {ui: parentUI.context, signal: interaction.signal},
     ),
     resourceLoaderOptions: configuration.resourceOptions(
       agentResources.resourceOptions({
@@ -288,6 +299,9 @@ export async function createDashboardParent(
       }),
       contextScope,
     ),
+  }).catch(error => {
+    ui.dispose();
+    throw error;
   });
   services.resourceLoader = configuration.resourceLoader(
     services.resourceLoader,
@@ -357,6 +371,10 @@ export async function createDashboardParent(
     throw new Error(
       'This thinking level is unavailable for the selected model.',
     );
+  if (interaction?.signal.aborted) {
+    ui.dispose();
+    interaction.signal.throwIfAborted();
+  }
   const {session, modelFallbackMessage} = await createAgentSessionFromServices({
     services,
     model: selectedModel,
@@ -434,6 +452,7 @@ export async function createDashboardParent(
         },
       },
     });
+    interaction?.signal.throwIfAborted();
     refreshAutocomplete();
     if (!state || !context || !control)
       throw new Error('Main agent observation did not start.');

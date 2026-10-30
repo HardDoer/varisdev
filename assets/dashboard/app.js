@@ -1838,6 +1838,7 @@ function renderInspector() {
   renderSessionFeatures(conversationSnapshot(), {
     parent,
     available: conversationControllable(data, unit),
+    startup: state.hub.startup,
   });
   updateMarkdownFiles();
   renderComposer(data, unit, parent);
@@ -2073,7 +2074,10 @@ function render() {
     conversationNodes.clear();
     $('conversation').replaceChildren();
     conversationKey = '';
-    renderSessionFeatures(undefined, {parent: false});
+    renderSessionFeatures(undefined, {
+      parent: false,
+      startup: state.hub.startup,
+    });
     updateMarkdownFiles();
   }
   itemContextMenu.sync();

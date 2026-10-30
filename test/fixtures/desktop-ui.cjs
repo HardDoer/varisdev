@@ -1,9 +1,10 @@
 /* global process, __dirname, document, requestAnimationFrame, setTimeout, clearTimeout, console, localStorage,
-   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException */
+   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException, AbortController */
 const assert = require('node:assert/strict');
-const {mkdirSync, writeFileSync} = require('node:fs');
-const {basename, join, resolve} = require('node:path');
-const {pathToFileURL} = require('node:url');
+const {mkdirSync, realpathSync, writeFileSync} = require('node:fs');
+const {basename, dirname, join, resolve} = require('node:path');
+const {pathToFileURL, URL} = require('node:url');
+const {stripVTControlCharacters} = require('node:util');
 const {app, BrowserWindow, ipcMain} = require('electron');
 
 const [directory, reportPath] = process.argv.slice(2);
@@ -50,6 +51,62 @@ let imageModel = '';
 let resizeMouseIsolated = false;
 let expectedResizeMouse = [];
 let resizeNativeTrace = [];
+let startupInteraction;
+let startupOnCreate;
+
+async function openStartupProjectTrust(id, cwd) {
+  const host = pathToFileURL(
+    resolve('desktop/build/src/dashboard/extension-ui.js'),
+  );
+  const [{DesktopExtensionUI}, {projectTrustReloadOptions}, {piModuleURL}] =
+    await Promise.all([
+      import(host.href),
+      import(new URL('./project-trust.js', host).href),
+      import(new URL('../runtime/pi-paths.js', host).href),
+    ]);
+  const sdk = await import(piModuleURL('index.js').href);
+  const agentDir = join(directory, 'trust', id);
+  mkdirSync(join(cwd, sdk.CONFIG_DIR_NAME), {recursive: true});
+  writeFileSync(join(cwd, sdk.CONFIG_DIR_NAME, 'settings.json'), '{}');
+  const interaction = {id, cwd, name: basename(cwd), finished: false};
+  const sync = () => {
+    if (startupInteraction !== interaction) return;
+    const ui = interaction.ui.snapshot();
+    if (interaction.parent) {
+      interaction.parent.ui = ui;
+      delete hub.startup;
+    } else if (ui.dialogs.length || ui.notifications.length)
+      hub.startup = {id, name: interaction.name, ui};
+    else delete hub.startup;
+    window.webContents.send('fixture:snapshot', hub);
+  };
+  interaction.ui = new DesktopExtensionUI(sync);
+  startupInteraction = interaction;
+  const options = projectTrustReloadOptions(
+    cwd,
+    agentDir,
+    sdk.SettingsManager.inMemory({defaultProjectTrust: 'ask'}),
+    undefined,
+    undefined,
+    {ui: interaction.ui.context, signal: new AbortController().signal},
+  );
+  interaction.result = options
+    .resolveProjectTrust({extensionsResult: undefined})
+    .then(trusted => {
+      interaction.trusted = trusted;
+      interaction.finished = true;
+      sync();
+      return trusted;
+    });
+  await uiOperation('Render native startup project trust prompt', async () => {
+    while (!hub.startup?.ui.dialogs[0]?.terminal?.output) {
+      if (interaction.finished)
+        throw new Error('Native project trust prompt was not requested');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  });
+  return interaction;
+}
 
 function terminalMenuOutput(title, options, selection = 0) {
   return `\u001bc${title}\r\n${options
@@ -418,6 +475,9 @@ function listFixtureAgentTemplates(cwd) {
 }
 
 function reset() {
+  startupInteraction?.ui.dispose();
+  startupInteraction = undefined;
+  startupOnCreate = undefined;
   imageModel = '';
   hub = {
     launchCwd: directory,
@@ -801,6 +861,13 @@ ipcMain.handle('fixture:create-session', async (_event, input) => {
     await new Promise(resolve => setTimeout(resolve, creationDelay));
   if (input.sessionId && resumeError) throw new Error(resumeError);
   if (!input.sessionId && creationError) throw new Error(creationError);
+  if (startupOnCreate) {
+    const interaction = await openStartupProjectTrust(
+      startupOnCreate,
+      input.cwd,
+    );
+    await interaction.result;
+  }
   const parent = input.sessionId
     ? structuredClone(
         archivedSessions.get(input.sessionId) ||
@@ -904,6 +971,14 @@ for (const method of ['compact', 'reload']) {
 }
 ipcMain.handle('fixture:dialog', async (_event, sessionId, dialogId, value) => {
   calls.push({method: 'respondToDialog', sessionId, dialogId, value});
+  if (
+    startupInteraction &&
+    (startupInteraction.id === sessionId ||
+      startupInteraction.parent?.session.id === sessionId)
+  ) {
+    startupInteraction.ui.respond(dialogId, value);
+    return;
+  }
   const target = hub.sessions.find(item => item.session.id === sessionId);
   const dialog = target.ui.dialogs.find(item => item.id === dialogId);
   const delay = dialogDelays.get(sessionId);
@@ -1178,7 +1253,7 @@ async function publish() {
   await settle();
 }
 
-async function run(name, callback, width = 1600, height = 1000) {
+async function run(name, callback, width = 1600, height = 1000, initialize) {
   if (
     process.env.DESKTOP_UI_CASE_PATTERN &&
     !new RegExp(process.env.DESKTOP_UI_CASE_PATTERN).test(name)
@@ -1202,6 +1277,7 @@ async function run(name, callback, width = 1600, height = 1000) {
       );
     }
     reset();
+    await initialize?.();
     window.setContentSize(width, height);
     await uiOperation('Load dashboard', () =>
       window.loadFile(resolve(__dirname, '../../assets/dashboard/index.html')),
@@ -1209,7 +1285,9 @@ async function run(name, callback, width = 1600, height = 1000) {
     // Reset the file origin's zoom after navigation; about:blank has its own zoom.
     window.webContents.setZoomFactor(1);
     await until(
-      () => document.querySelectorAll('#parents .parent-card').length > 0,
+      () =>
+        document.querySelectorAll('#parents .parent-card').length > 0 ||
+        document.getElementById('extension-dialog').open,
       'Dashboard never connected to the isolated preload fixture',
     );
     await settle();
@@ -1242,7 +1320,11 @@ async function run(name, callback, width = 1600, height = 1000) {
     report.cases.push(result);
     writeFileSync(reportPath, JSON.stringify(report, null, 2));
     // A timed-out renderer operation is still pending. Stop using that window.
-    if (error instanceof UIOperationTimeout) throw error;
+    if (
+      error instanceof UIOperationTimeout ||
+      !window.webContents.getURL().startsWith('file:')
+    )
+      throw error;
     try {
       const dragTrace = await evaluate(() => window.fixtureResizeTrace);
       if (dragTrace)
@@ -1323,6 +1405,138 @@ async function screenshot(
   const path = join(output, `${name}.png`);
   writeFileSync(path, image.toPNG());
   report.screenshots.push(path);
+}
+
+function startupProjectCwd(name) {
+  return join(
+    directory,
+    'workspaces',
+    'repository-with-project-resources-to-exercise-native-prompt-wrapping',
+    name,
+  );
+}
+
+async function expectStartupProjectTrust(interaction) {
+  await until(
+    () =>
+      document.getElementById('extension-dialog').matches(':modal') &&
+      document.getElementById('extension-dialog-title').textContent ===
+        'Trust project folder?' &&
+      !!document.querySelector('#extension-dialog-terminal .xterm'),
+    'Startup project trust did not open the native terminal dialog',
+  );
+  const dialog = interaction.ui.snapshot().dialogs[0];
+  assert.deepEqual(dialog.options, [
+    'Trust',
+    `Trust parent folder (${realpathSync(dirname(interaction.cwd))})`,
+    'Trust (this session only)',
+    'Do not trust',
+    'Do not trust (this session only)',
+  ]);
+  const output = stripVTControlCharacters(dialog.terminal.output).replace(
+    /\s/g,
+    '',
+  );
+  assert.ok(output.includes(interaction.cwd));
+  assert.ok(
+    output.includes(
+      'Thisallowsvarisdevtoload.varisdevsettingsandresources,installmissingprojectpackages,andexecuteprojectextensions.',
+    ),
+    'The terminal receives the full Pi trust prompt',
+  );
+  assert.deepEqual(
+    await evaluate(() => ({
+      session: document.getElementById('extension-dialog-session').textContent,
+      terminal: !document.getElementById('extension-dialog-terminal').hidden,
+      htmlControlsHidden: ['select', 'input', 'editor', 'search'].every(
+        kind => document.getElementById(`extension-dialog-${kind}`).hidden,
+      ),
+      continueHidden: document.getElementById('submit-extension-dialog').hidden,
+      focused: !!document.activeElement.closest(
+        '#extension-dialog-terminal .xterm',
+      ),
+    })),
+    {
+      session: interaction.name,
+      terminal: true,
+      htmlControlsHidden: true,
+      continueHidden: true,
+      focused: true,
+    },
+  );
+}
+
+async function startupProjectTrustLayouts(name, sizes) {
+  for (const [width, height, zoom] of sizes) {
+    window.setContentSize(width, height);
+    window.webContents.setZoomFactor(zoom);
+    await settle();
+    const deadline = Date.now() + 3000;
+    let synchronized = false;
+    while (!synchronized && Date.now() < deadline) {
+      const frame = startupInteraction.ui.snapshot().dialogs[0].terminal;
+      synchronized = await evaluate(
+        (width, height, zoom, frame) => {
+          const panel = document.getElementById('extension-dialog-terminal');
+          return (
+            Math.abs(innerWidth - width / zoom) < 1 &&
+            Math.abs(innerHeight - height / zoom) < 1 &&
+            panel.dataset.terminalColumns === panel.dataset.proposedColumns &&
+            panel.dataset.terminalRows === panel.dataset.proposedRows &&
+            panel.dataset.terminalColumns === String(frame.columns) &&
+            panel.dataset.terminalRows === String(frame.rows)
+          );
+        },
+        width,
+        height,
+        zoom,
+        frame,
+      );
+      if (!synchronized) await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(synchronized, 'Startup trust terminal size did not synchronize');
+    const layout = await evaluate(() => {
+      const dialog = document.getElementById('extension-dialog');
+      const rect = dialog.getBoundingClientRect();
+      const terminal = document.getElementById('extension-dialog-terminal');
+      const panel = terminal.getBoundingClientRect();
+      const cancel = document.getElementById('cancel-extension-dialog');
+      const action = cancel.getBoundingClientRect();
+      return {
+        dialogFits:
+          rect.left >= 0 &&
+          rect.top >= 0 &&
+          rect.right <= innerWidth &&
+          rect.bottom <= innerHeight,
+        terminalFits:
+          panel.width > 200 &&
+          panel.height > 120 &&
+          panel.right <= rect.right &&
+          panel.bottom <= rect.bottom,
+        cancelReachable:
+          action.bottom <= rect.bottom &&
+          document.elementFromPoint(
+            action.left + action.width / 2,
+            action.top + action.height / 2,
+          ) === cancel,
+        pageScroll: document.scrollingElement.scrollTop,
+        geometry: {panel: panel.toJSON(), dialog: rect.toJSON()},
+      };
+    });
+    const {geometry, ...visibility} = layout;
+    assert.deepEqual(
+      visibility,
+      {
+        dialogFits: true,
+        terminalFits: true,
+        cancelReachable: true,
+        pageScroll: 0,
+      },
+      JSON.stringify({width, height, zoom, geometry}),
+    );
+    if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+      await screenshot(`${name}-${width}x${height}-${zoom}`);
+  }
 }
 
 async function focusRenderer() {
@@ -8303,6 +8517,673 @@ async function main() {
         'Cancel did not close the picker',
       );
       assert.equal(hub.sessions[0].session.status, 'running');
+    },
+  );
+
+  await run(
+    'startup project trust native dialogs work before any workspace exists',
+    async () => {
+      const first = startupInteraction;
+      await expectStartupProjectTrust(first);
+      assert.deepEqual(
+        await evaluate(() => ({
+          welcome: !document.getElementById('welcome').hidden,
+          workspaces: document.querySelectorAll('#parents .parent-card').length,
+          commandsDisabled: document.getElementById('open-commands').disabled,
+        })),
+        {welcome: true, workspaces: 0, commandsDisabled: true},
+      );
+      await evaluate(() => {
+        window.fixtureStartupTerminal = document.querySelector(
+          '#extension-dialog-terminal .xterm',
+        );
+      });
+      await publish();
+      assert.equal(
+        await evaluate(
+          () =>
+            window.fixtureStartupTerminal ===
+            document.querySelector('#extension-dialog-terminal .xterm'),
+        ),
+        true,
+        'An empty workspace snapshot keeps the startup terminal alive',
+      );
+      await startupProjectTrustLayouts('startup-trust-empty', [
+        [1600, 1000, 1],
+        [760, 760, 1],
+        [1100, 760, 1.5],
+      ]);
+      await press('Down');
+      await press('Down');
+      await press('Return');
+      assert.equal(
+        await uiOperation('Accept startup project trust', () => first.result),
+        true,
+      );
+      await until(
+        () => !document.getElementById('extension-dialog').open,
+        'Startup trust acceptance did not close the dialog',
+      );
+      assert.equal(hub.startup, undefined);
+      const accepted = calls.filter(
+        call =>
+          call.method === 'respondToDialog' &&
+          call.sessionId === first.id &&
+          ['\u001b[B', '\u001bOB', '\r'].includes(call.value?.input),
+      );
+      assert.equal(accepted.length, 3);
+      assert.ok(
+        accepted
+          .slice(0, 2)
+          .every(call => ['\u001b[B', '\u001bOB'].includes(call.value.input)),
+      );
+      assert.equal(accepted[2].value.input, '\r');
+      for (const cancellation of ['keyboard', 'button']) {
+        const interaction = await openStartupProjectTrust(
+          `startup-empty-${cancellation}`,
+          first.cwd,
+        );
+        await expectStartupProjectTrust(interaction);
+        if (cancellation === 'keyboard') await press('Escape');
+        else await clickPointer('#cancel-extension-dialog');
+        assert.equal(
+          await uiOperation(
+            'Cancel startup project trust',
+            () => interaction.result,
+          ),
+          false,
+        );
+        await until(
+          () => !document.getElementById('extension-dialog').open,
+          'Startup trust cancellation did not close the dialog',
+        );
+        assert.ok(
+          calls.some(
+            call =>
+              call.method === 'respondToDialog' &&
+              call.sessionId === interaction.id &&
+              (cancellation === 'keyboard'
+                ? call.value?.input === '\u001b' || call.value === undefined
+                : call.value === undefined),
+          ),
+          `${cancellation} cancellation uses the startup interaction owner`,
+        );
+      }
+      assert.deepEqual(featureRequests, [], 'Startup is not a feature session');
+      assert.deepEqual(hub.sessions, []);
+    },
+    1600,
+    1000,
+    async () => {
+      hub.sessions = [];
+      delete hub.selectedSessionId;
+      await openStartupProjectTrust(
+        'startup-empty',
+        startupProjectCwd('empty-project'),
+      );
+    },
+  );
+
+  await run(
+    'startup project trust preserves the selected workspace catalog and restores its native dialog',
+    async () => {
+      await evaluate(() => document.getElementById('open-commands').click());
+      await until(
+        () =>
+          document
+            .getElementById('command-catalog')
+            .textContent.includes('/skill:alpha-only'),
+        'Selected workspace catalog did not load',
+      );
+      await evaluate(() => document.getElementById('close-commands').click());
+      const workspace = hub.sessions[0];
+      workspace.ui = {
+        notifications: [
+          {id: 'alpha-notice', type: 'info', message: 'Alpha extension ready'},
+        ],
+        statuses: [{key: 'alpha', text: 'Selected workspace status'}],
+        editor: {id: 'alpha-draft', text: 'Keep the Alpha workspace draft'},
+        dialogs: [
+          {
+            id: 'workspace-question',
+            kind: 'select',
+            title: 'Workspace question',
+            options: ['Keep', 'Review'],
+            terminal: {
+              columns: 100,
+              rows: 28,
+              output: terminalMenuOutput('Workspace question', [
+                'Keep',
+                'Review',
+              ]),
+              revision: 1,
+            },
+          },
+        ],
+      };
+      await publish();
+      await until(
+        () =>
+          document.getElementById('extension-dialog-title').textContent ===
+          'Workspace question',
+        'Regular workspace dialog did not open',
+      );
+      const interaction = await openStartupProjectTrust(
+        'startup-over-selected',
+        startupProjectCwd('another-project'),
+      );
+      await expectStartupProjectTrust(interaction);
+      workspace.session.activity = 'Working while another project starts';
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          selected: document.querySelector('#parents [aria-pressed="true"]')
+            .dataset.contextSession,
+          inspector: document.getElementById('inspector-title').textContent,
+          catalog: document
+            .getElementById('command-catalog')
+            .textContent.includes('/skill:alpha-only'),
+          draft: document.getElementById('parent-prompt').value,
+          notice: document.getElementById('extension-notifications')
+            .textContent,
+          status: document.getElementById('extension-statuses').textContent,
+        })),
+        {
+          selected: 'alpha',
+          inspector: 'Alpha factory',
+          catalog: true,
+          draft: 'Keep the Alpha workspace draft',
+          notice: 'Alpha extension readyDismiss',
+          status: 'alpha: Selected workspace status',
+        },
+      );
+      await startupProjectTrustLayouts('startup-trust-selected', [
+        [760, 760, 1],
+        [1100, 760, 1.5],
+      ]);
+      await press('Escape');
+      assert.equal(
+        await uiOperation(
+          'Cancel startup over selected workspace',
+          () => interaction.result,
+        ),
+        false,
+      );
+      await until(
+        () =>
+          document.getElementById('extension-dialog').open &&
+          document.getElementById('extension-dialog-title').textContent ===
+            'Workspace question' &&
+          document.getElementById('extension-dialog-session').textContent ===
+            'Alpha factory' &&
+          !!document.activeElement.closest('#extension-dialog-terminal .xterm'),
+        'Selected workspace native dialog was not restored with terminal focus',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('startup-trust-restored-workspace');
+      await press('Down');
+      await press('Return');
+      await until(
+        () => !document.getElementById('extension-dialog').open,
+        'Restored workspace dialog did not accept keyboard input',
+      );
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'respondToDialog' &&
+            call.sessionId === 'alpha' &&
+            call.dialogId === 'workspace-question' &&
+            call.value?.input === '\r',
+        ),
+      );
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'respondToDialog' &&
+            call.sessionId === interaction.id &&
+            (call.value?.input === '\u001b' || call.value === undefined),
+        ),
+      );
+      assert.ok(featureRequests.every(id => id === 'alpha'));
+      await evaluate(() => document.getElementById('open-commands').click());
+      assert.equal(
+        await evaluate(() =>
+          document
+            .getElementById('command-catalog')
+            .textContent.includes('/skill:alpha-only'),
+        ),
+        true,
+      );
+      await evaluate(() => document.getElementById('close-commands').click());
+    },
+    1600,
+    1000,
+    () => {
+      resources.get('alpha').commands = [
+        {
+          name: 'skill:alpha-only',
+          source: 'skill',
+          description: 'Selected workspace skill',
+        },
+      ];
+    },
+  );
+
+  await run(
+    'startup project trust stays above the waiting New conversation modal',
+    async () => {
+      const cwd = startupProjectCwd('new-conversation-project');
+      chosenFolder = cwd;
+      await evaluate(() => document.getElementById('open-new-agent').click());
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'New conversation templates did not load',
+      );
+      await evaluate(() =>
+        document.getElementById('new-agent-choose-folder').click(),
+      );
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'New conversation folder selection did not finish',
+      );
+      startupOnCreate = 'startup-new-conversation';
+      await evaluate(() => {
+        document.getElementById('new-agent-name').value =
+          'Trusted conversation';
+        document.getElementById('new-agent-task').value =
+          'Inspect the trusted project';
+        document.getElementById('new-agent-create').click();
+      });
+      await until(
+        () =>
+          document.getElementById('extension-dialog-title').textContent ===
+          'Trust project folder?',
+        'Creating a conversation did not surface startup project trust',
+      );
+      const interaction = startupInteraction;
+      await expectStartupProjectTrust(interaction);
+      assert.deepEqual(
+        await evaluate(() => ({
+          creationModal: document
+            .getElementById('new-agent-dialog')
+            .matches(':modal'),
+          creating: document.getElementById('new-agent-create').disabled,
+          name: document.getElementById('new-agent-name').value,
+          task: document.getElementById('new-agent-task').value,
+          inspector: document.getElementById('inspector-title').textContent,
+        })),
+        {
+          creationModal: true,
+          creating: true,
+          name: 'Trusted conversation',
+          task: 'Inspect the trusted project',
+          inspector: 'Alpha factory',
+        },
+      );
+      assert.equal(hub.sessions.length, 2);
+      await startupProjectTrustLayouts('startup-trust-creation-modal', [
+        [760, 760, 1],
+        [1100, 760, 1.5],
+      ]);
+      await press('Return');
+      await until(
+        () =>
+          !document.getElementById('new-agent-dialog').open &&
+          !document.getElementById('extension-dialog').open &&
+          document.getElementById('factory-title').textContent ===
+            'Trusted conversation',
+        'Trust acceptance did not finish the waiting conversation creation',
+      );
+      assert.equal(await interaction.result, true);
+      assert.equal(hub.startup, undefined);
+      assert.ok(!featureRequests.includes(interaction.id));
+      assert.deepEqual(
+        calls.filter(call => call.method === 'createSession'),
+        [
+          {
+            method: 'createSession',
+            input: {cwd, templateId: 'default', name: 'Trusted conversation'},
+          },
+        ],
+      );
+      assert.deepEqual(
+        calls.filter(call => call.method === 'prompt'),
+        [
+          {
+            method: 'prompt',
+            sessionId: 'folder-parent',
+            request: {prompt: 'Inspect the trusted project'},
+          },
+        ],
+      );
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'respondToDialog' &&
+            call.sessionId === interaction.id &&
+            call.value?.input === '\r',
+        ),
+      );
+    },
+  );
+
+  await run(
+    'startup notifications merge with selected workspace notices and keep its dialog active',
+    async () => {
+      const selectedNotice = {
+        id: 'selected-workspace-notice',
+        type: 'info',
+        message: 'Selected workspace extension ready',
+      };
+      hub.sessions[0].ui = {
+        dialogs: [
+          {
+            id: 'selected-workspace-request',
+            kind: 'select',
+            title: 'Selected workspace request',
+            options: ['Continue'],
+            terminal: {
+              columns: 100,
+              rows: 28,
+              output: terminalMenuOutput('Selected workspace request', [
+                'Continue',
+              ]),
+              revision: 1,
+            },
+          },
+        ],
+        notifications: [selectedNotice],
+        statuses: [],
+      };
+      await publish();
+      await until(
+        () => document.getElementById('extension-dialog').open,
+        'Selected workspace dialog did not open',
+      );
+      await evaluate(() => {
+        window.fixtureSelectedTerminal = document.querySelector(
+          '#extension-dialog-terminal .xterm',
+        );
+      });
+      hub.startup = {
+        id: 'notification-only-startup',
+        name: 'Another project',
+        ui: {
+          dialogs: [],
+          notifications: [
+            selectedNotice,
+            {
+              id: 'starting-workspace-notice',
+              type: 'warning',
+              message: 'Another project is loading its resources',
+            },
+          ],
+          statuses: [],
+        },
+      };
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('extension-dialog-title').textContent,
+          owner: document.getElementById('extension-dialog-session')
+            .textContent,
+          terminalPreserved:
+            window.fixtureSelectedTerminal ===
+            document.querySelector('#extension-dialog-terminal .xterm'),
+          focused: !!document.activeElement.closest(
+            '#extension-dialog-terminal .xterm',
+          ),
+          messages: [
+            ...document.querySelectorAll('#extension-notifications p'),
+          ].map(item => item.textContent),
+        })),
+        {
+          title: 'Selected workspace request',
+          owner: 'Alpha factory',
+          terminalPreserved: true,
+          focused: true,
+          messages: [
+            'Selected workspace extension ready',
+            'Another project is loading its resources',
+          ],
+        },
+      );
+      await press('Return');
+      await until(
+        () => !document.getElementById('extension-dialog').open,
+        'Notification-only startup blocked the selected dialog response',
+      );
+      assert.ok(
+        calls.some(
+          call =>
+            call.method === 'respondToDialog' &&
+            call.sessionId === 'alpha' &&
+            call.dialogId === 'selected-workspace-request' &&
+            call.value?.input === '\r',
+        ),
+      );
+      await clickPointer(
+        '#extension-notifications .extension-notification:last-child button',
+        {scroll: true},
+      );
+      await publish();
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#extension-notifications p')].map(
+            item => item.textContent,
+          ),
+        ),
+        ['Selected workspace extension ready'],
+        'Dismissing a startup notice preserves the selected workspace notice',
+      );
+      delete hub.startup;
+      await publish();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('extension-notifications').hidden,
+        ),
+        false,
+      );
+      assert.ok(featureRequests.every(id => id === 'alpha'));
+    },
+  );
+
+  await run(
+    'startup notifications survive the native trust prompt and session handoff without duplicates',
+    async () => {
+      const interaction = startupInteraction;
+      await expectStartupProjectTrust(interaction);
+      assert.deepEqual(
+        await evaluate(() => ({
+          welcomeHost: !!document
+            .getElementById('extension-notifications')
+            .closest('#welcome'),
+          messages: [
+            ...document.querySelectorAll('#extension-notifications p'),
+          ].map(item => item.textContent),
+        })),
+        {
+          welcomeHost: true,
+          messages: [
+            'Startup extension warning',
+            'Project resources are loading',
+          ],
+        },
+      );
+      await evaluate(() => {
+        window.fixtureNotificationContainer = document.getElementById(
+          'extension-notifications',
+        );
+      });
+      await press('Return');
+      assert.equal(
+        await uiOperation(
+          'Accept trust with startup notifications',
+          () => interaction.result,
+        ),
+        true,
+      );
+      await until(
+        () =>
+          !document.getElementById('extension-dialog').open &&
+          document.getElementById('extension-notifications').checkVisibility(),
+        'Startup notices were not visible in the empty workspace after trust acceptance',
+      );
+      assert.equal(hub.sessions.length, 0);
+      assert.equal(hub.startup.ui.dialogs.length, 0);
+      assert.equal(hub.startup.ui.notifications.length, 2);
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('startup-notifications-welcome-1600x1000-1');
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await until(
+        () =>
+          Math.abs(innerWidth - 1100 / 1.5) < 1 &&
+          Math.abs(innerHeight - 760 / 1.5) < 1,
+        'Startup notification viewport did not settle',
+      );
+      await evaluate(() =>
+        document
+          .getElementById('extension-notifications')
+          .scrollIntoView({block: 'nearest'}),
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('startup-notifications-welcome-1100x760-1.5');
+      for (let index = 0; index < 8; index++)
+        interaction.ui.context.notify(
+          `Resource check ${index + 1}: ${'Repository extensions are still loading their project configuration. '.repeat(2)}`,
+          'warning',
+        );
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => {
+          const list = document.getElementById('extension-notifications');
+          return {
+            scrolls: list.scrollHeight > list.clientHeight,
+            actionsVisible: [
+              'welcome-create',
+              'welcome-accounts',
+              'app-menu-button',
+            ].every(id => {
+              const button = document.getElementById(id);
+              const rect = button.getBoundingClientRect();
+              return (
+                rect.top >= 0 &&
+                rect.bottom <= innerHeight &&
+                document.elementFromPoint(
+                  rect.left + rect.width / 2,
+                  rect.top + rect.height / 2,
+                ) === button
+              );
+            }),
+            pageScroll: document.scrollingElement.scrollTop,
+          };
+        }),
+        {scrolls: true, actionsVisible: true, pageScroll: 0},
+        'Long startup notifications scroll without hiding welcome actions',
+      );
+      await evaluate(() => {
+        const list = document.getElementById('extension-notifications');
+        list.scrollTop = list.scrollHeight;
+      });
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('startup-notifications-welcome-long-1100x760-1.5');
+      for (let index = 0; index < 8; index++)
+        await clickPointer(
+          '#extension-notifications .extension-notification:last-child button',
+          {scroll: true},
+        );
+      await clickPointer(
+        '#extension-notifications .extension-notification:first-child button',
+        {scroll: true},
+      );
+      await publish();
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#extension-notifications p')].map(
+            item => item.textContent,
+          ),
+        ),
+        ['Project resources are loading'],
+      );
+      window.setContentSize(1600, 1000);
+      window.webContents.setZoomFactor(1);
+      const parent = session('adopted-startup', interaction.name);
+      parent.session.status = 'idle';
+      parent.ui = interaction.ui.snapshot();
+      resources.set(parent.session.id, features());
+      hub.sessions = [parent];
+      hub.selectedSessionId = parent.session.id;
+      await publish();
+      assert.deepEqual(
+        await evaluate(() => ({
+          conversationHost: !!document
+            .getElementById('extension-notifications')
+            .closest('#panel-conversation'),
+          containerPreserved:
+            window.fixtureNotificationContainer ===
+            document.getElementById('extension-notifications'),
+          messages: [
+            ...document.querySelectorAll('#extension-notifications p'),
+          ].map(item => item.textContent),
+        })),
+        {
+          conversationHost: true,
+          containerPreserved: true,
+          messages: ['Project resources are loading'],
+        },
+        'Overlapping startup and parent snapshots deduplicate IDs and retain dismissal',
+      );
+      interaction.parent = parent;
+      delete hub.startup;
+      await publish();
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#extension-notifications p')].map(
+            item => item.textContent,
+          ),
+        ),
+        ['Project resources are loading'],
+        'The adopted parent retains the undismissed startup notice',
+      );
+      interaction.ui.context.notify('Session startup complete', 'info');
+      await publish();
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#extension-notifications p')].map(
+            item => item.textContent,
+          ),
+        ),
+        ['Project resources are loading', 'Session startup complete'],
+        'The same UI continues to publish notifications after adoption',
+      );
+      await clickPointer(
+        '#extension-notifications .extension-notification:first-child button',
+        {scroll: true},
+      );
+      await publish();
+      assert.deepEqual(
+        await evaluate(() =>
+          [...document.querySelectorAll('#extension-notifications p')].map(
+            item => item.textContent,
+          ),
+        ),
+        ['Session startup complete'],
+      );
+      assert.ok(!featureRequests.includes(interaction.id));
+    },
+    1600,
+    1000,
+    async () => {
+      hub.sessions = [];
+      delete hub.selectedSessionId;
+      recentProjects = [];
+      const interaction = await openStartupProjectTrust(
+        'startup-with-notices',
+        startupProjectCwd('notified-project'),
+      );
+      interaction.ui.context.notify('Startup extension warning', 'warning');
+      interaction.ui.context.notify('Project resources are loading', 'info');
     },
   );
 

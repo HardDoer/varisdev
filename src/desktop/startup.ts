@@ -4,7 +4,7 @@ import {
   type ExtensionContext,
   type FileEntry,
 } from '@earendil-works/pi-coding-agent';
-import {spawn} from 'node:child_process';
+import {spawn, type ChildProcess} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {closeSync, mkdirSync, openSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -85,14 +85,34 @@ export async function launchDesktop(
   } finally {
     closeSync(log);
   }
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(
-      () =>
-        fail(
-          new Error('The desktop did not finish starting within 60 seconds.'),
-        ),
-      60_000,
+  try {
+    await waitForDesktopStartup(child, startup, signal);
+  } catch (error) {
+    const details = readFileSync(logPath, 'utf8').slice(-8000).trim();
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${details ? `\n${details}` : ''}`,
     );
+  }
+}
+
+export function waitForDesktopStartup(
+  child: ChildProcess,
+  startup: DesktopStartup,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let waiting = false;
+    let settled = false;
+    const startDeadline = () => {
+      timer = setTimeout(
+        () =>
+          fail(
+            new Error('The desktop did not finish starting within 60 seconds.'),
+          ),
+        60_000,
+      );
+    };
     const cleanup = () => {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
@@ -101,10 +121,11 @@ export async function launchDesktop(
       child.off('message', message);
     };
     const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
       cleanup();
       child.kill();
-      const details = readFileSync(logPath, 'utf8').slice(-8000).trim();
-      reject(new Error(`${error.message}${details ? `\n${details}` : ''}`));
+      reject(error);
     };
     const abort = () => fail(new Error('Desktop startup cancelled.'));
     const exited = (code: number | null) =>
@@ -115,7 +136,18 @@ export async function launchDesktop(
         child.send({type: 'startup', startup}, error => {
           if (error) fail(error);
         });
+      } else if (
+        value.type === 'startup-interaction' &&
+        'waiting' in value &&
+        typeof value.waiting === 'boolean'
+      ) {
+        if (waiting === value.waiting) return;
+        waiting = value.waiting;
+        clearTimeout(timer);
+        // Give session initialization its full startup period after a prompt.
+        if (!waiting) startDeadline();
       } else if (value.type === 'startup-ready') {
+        settled = true;
         cleanup();
         child.disconnect();
         child.unref();
@@ -132,6 +164,7 @@ export async function launchDesktop(
     child.once('error', fail);
     child.once('exit', exited);
     signal.addEventListener('abort', abort, {once: true});
+    startDeadline();
     if (signal.aborted) abort();
   });
 }
