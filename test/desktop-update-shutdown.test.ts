@@ -187,6 +187,7 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
     (event: unknown) => Promise<{ok: boolean; value?: {phase: string}}>
   >();
   let sessionCloses = 0;
+  let snapshotDisposals = 0;
   const context = {
     app,
     mainWindow: window,
@@ -211,7 +212,7 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
     shuttingDown: false,
     cleanupFinished: false,
     restarting: false,
-    snapshotTimer: undefined,
+    snapshotDelivery: {dispose: () => snapshotDisposals++},
     updateTimer: undefined,
     sessionActions: new Set(),
     sessionOperations: 0,
@@ -250,6 +251,7 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
     updateUnsubscribes: () => updateUnsubscribes,
     didExit: () => didExit,
     sessionCloses: () => sessionCloses,
+    snapshotDisposals: () => snapshotDisposals,
     install: () =>
       handlers.get('varisdev:install-update')!({
         sender: webContents,
@@ -292,6 +294,7 @@ for (const outcome of ['success', 'failure'] as const)
           'The updater owner must stay alive',
         );
         assert.equal(desktop.sessionCloses(), 0);
+        assert.equal(desktop.snapshotDisposals(), 1);
         assert.equal(desktop.updateUnsubscribes(), 0);
         assert.equal(update.installs(), 1);
         assert.equal(
@@ -348,6 +351,7 @@ void test(
     desktop.finishSessions.resolve();
     await desktop.exited.promise;
     assert.equal(desktop.updateUnsubscribes(), 1);
+    assert.equal(desktop.snapshotDisposals(), 1);
     assert.equal(desktop.errors.length, 1);
     assert.equal(desktop.errors[0][1], error);
     await update.runtime.check();

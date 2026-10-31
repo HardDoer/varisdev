@@ -55,6 +55,7 @@ import {
   DesktopCompletionSound,
   playDesktopCompletionSound,
 } from './completion-sound.ts';
+import {DesktopSnapshotDelivery} from './snapshot-delivery.ts';
 import {DesktopPreferences} from './preferences.ts';
 import {DesktopTerminals} from './terminal.ts';
 import {openConversationFile, openConversationURL} from './files.ts';
@@ -170,7 +171,7 @@ const accounts = new DesktopAccounts({
       mainWindow.webContents.send('varisdev:accounts', state);
   },
 });
-let snapshotTimer: NodeJS.Timeout | undefined;
+const snapshotDelivery = new DesktopSnapshotDelivery(hub);
 let shuttingDown = false;
 let cleanupFinished = false;
 let restarting = false;
@@ -521,6 +522,7 @@ function showWindow(): void {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+  snapshotDelivery.refresh();
 }
 
 async function createWindow(): Promise<void> {
@@ -550,6 +552,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
     },
   });
+  snapshotDelivery.attach(mainWindow);
   if (windowsLauncher) mainWindow.setAppDetails(windowsLauncher.appDetails);
   mainWindow.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   mainWindow.webContents.on(
@@ -777,18 +780,6 @@ const unsubscribe = hub.subscribe(() => {
       process.send?.({type: 'startup-interaction', waiting});
     }
   }
-  if (shuttingDown || snapshotTimer) return;
-  snapshotTimer = setTimeout(() => {
-    snapshotTimer = undefined;
-    if (
-      mainWindow &&
-      !mainWindow.isDestroyed() &&
-      !mainWindow.webContents.isDestroyed()
-    ) {
-      mainWindow.webContents.send('pidev:snapshot', hub.deliverySnapshot());
-    }
-  }, 80);
-  snapshotTimer.unref();
 });
 
 function externalSnapshot(value: unknown): value is DashboardSnapshot {
@@ -855,7 +846,7 @@ process.on('disconnect', () => {
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  clearTimeout(snapshotTimer);
+  snapshotDelivery.dispose();
   clearInterval(updateTimer);
   unsubscribe();
   completionSound.dispose();

@@ -172,7 +172,7 @@ void test('Pi settlement through dashboard state and hub sounds only for unfocus
   }
 });
 
-void test('restored and newly attached workspaces establish their own completion baselines', () => {
+void test('restored and newly attached workspaces establish their own completion baselines', async () => {
   const dashboard = hub();
   let sounds = 0;
   const sound = new DesktopCompletionSound(dashboard, {
@@ -208,9 +208,172 @@ void test('restored and newly attached workspaces establish their own completion
     historical.updateSession({status: 'closed', completionId: 'shutdown'});
     dashboard.updateExternal(historical.snapshot());
     assert.equal(sounds, 2);
+    dashboard.closeExternal();
+    assert.equal(dashboard.completionStates()[0].status, 'closed');
+    historical.updateSession({status: 'idle'});
+    dashboard.updateExternal(historical.snapshot());
+    assert.equal(sounds, 2, 'Reconnecting with the same completion is silent');
+    historical.updateSession({id: 'restored', completionId: 'reattached'});
+    dashboard.updateExternal(historical.snapshot());
+    assert.equal(sounds, 2, 'A removed workspace establishes a fresh baseline');
+    historical.updateSession({completionId: 'reattached-live'});
+    dashboard.updateExternal(historical.snapshot());
+    assert.equal(sounds, 3);
+    await dashboard.closeSession('restored');
+    assert.deepEqual(dashboard.completionStates(), []);
+    historical.updateSession({completionId: 'dismissed'});
+    dashboard.updateExternal(historical.snapshot());
+    assert.deepEqual(dashboard.completionStates(), []);
+    assert.equal(sounds, 3, 'Updates from a dismissed workspace stay silent');
   } finally {
     sound.dispose();
   }
+});
+
+void test('completion metadata is detached and preserves state and hub delivery caches', () => {
+  const state = new DashboardState({
+    id: 'owned',
+    name: 'Owned',
+    cwd: process.cwd(),
+    status: 'running',
+    activity: 'Working',
+    startedAt: '2026-01-01',
+    updatedAt: '2026-01-01',
+    completionId: 'previous',
+  });
+  const dashboard = hub(state);
+  const external = state.snapshot();
+  external.session = {...external.session, id: 'external', status: 'idle'};
+  dashboard.updateExternal(external);
+  const stateCache = state.deliverySnapshot();
+  const hubCache = dashboard.deliverySnapshot();
+  const expected = [
+    {id: 'external', status: 'idle', completionId: 'previous'},
+    {id: 'owned', status: 'running', completionId: 'previous'},
+  ];
+  const metadata = state.completionState();
+  assert.deepEqual(metadata, expected[1]);
+  metadata.id = 'mutated';
+  metadata.status = 'closed';
+  metadata.completionId = 'mutated';
+  const states = dashboard.completionStates();
+  assert.deepEqual(states, expected);
+  for (const entry of states) {
+    entry.id = 'mutated';
+    entry.status = 'closed';
+    entry.completionId = 'mutated';
+  }
+  states.length = 0;
+  assert.deepEqual(dashboard.completionStates(), expected);
+  assert.deepEqual(state.completionState(), expected[1]);
+  assert.strictEqual(state.deliverySnapshot(), stateCache);
+  assert.strictEqual(dashboard.deliverySnapshot(), hubCache);
+  assert.equal(stateCache.session.id, 'owned');
+  assert.equal(hubCache.sessions[0].session.id, 'external');
+  state.updateSession({status: 'idle', completionId: 'finished'});
+  assert.deepEqual(dashboard.completionStates()[1], {
+    id: 'owned',
+    status: 'idle',
+    completionId: 'finished',
+  });
+  assert.notStrictEqual(state.deliverySnapshot(), stateCache);
+  assert.notStrictEqual(dashboard.deliverySnapshot(), hubCache);
+});
+
+void test('sound initialization and streaming avoid full delivery snapshots', t => {
+  function stream(legacy: boolean) {
+    const state = new DashboardState({
+      id: 'stream',
+      name: 'Streaming',
+      cwd: process.cwd(),
+      status: 'running',
+      activity: 'Working',
+      startedAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+    });
+    state.replaceConversation(
+      Array.from({length: 100}, (_, index) => ({
+        id: `history-${index}`,
+        role: 'assistant' as const,
+        text: 'Retained conversation history',
+        at: '2026-01-01',
+      })),
+    );
+    const dashboard = hub(state);
+    // Start with both delivery caches cold, as after a normal state change.
+    state.touch();
+    const hubDelivery = t.mock.method(dashboard, 'deliverySnapshot');
+    const stateDelivery = t.mock.method(state, 'deliverySnapshot');
+    let sounds = 0;
+    const sound = new DesktopCompletionSound(
+      legacy
+        ? {
+            subscribe: listener => dashboard.subscribe(listener),
+            // Reproduce the previous sound observer's full snapshot access.
+            completionStates: () =>
+              dashboard
+                .deliverySnapshot()
+                .sessions.map(({session: {id, status, completionId}}) => ({
+                  id,
+                  status,
+                  completionId,
+                })),
+          }
+        : dashboard,
+      {
+        window: () => ({isFocused: () => false, isDestroyed: () => false}),
+        play: () => {
+          sounds++;
+        },
+      },
+    );
+    const initialized = {
+      hub: hubDelivery.mock.callCount(),
+      state: stateDelivery.mock.callCount(),
+    };
+    try {
+      for (let token = 1; token <= 200; token++) {
+        state.updateConversation({
+          id: 'response',
+          role: 'assistant',
+          text: 'x'.repeat(token),
+          at: '2026-01-01',
+          streaming: true,
+        });
+      }
+      state.updateSession({status: 'idle', completionId: 'finished'});
+      assert.equal(sounds, 1);
+      const hubResults = hubDelivery.mock.calls.map(call => call.result);
+      const stateResults = stateDelivery.mock.calls.map(call => call.result);
+      return {
+        initialized,
+        calls: {hub: hubResults.length, state: stateResults.length},
+        constructions: {
+          hub: new Set(hubResults).size,
+          state: new Set(stateResults).size,
+        },
+      };
+    } finally {
+      sound.dispose();
+      hubDelivery.mock.restore();
+      stateDelivery.mock.restore();
+    }
+  }
+  const before = stream(true);
+  const after = stream(false);
+  assert.deepEqual(before, {
+    initialized: {hub: 1, state: 1},
+    calls: {hub: 202, state: 202},
+    constructions: {hub: 202, state: 202},
+  });
+  assert.deepEqual(after, {
+    initialized: {hub: 0, state: 0},
+    calls: {hub: 0, state: 0},
+    constructions: {hub: 0, state: 0},
+  });
+  t.diagnostic(
+    `Streaming snapshot constructions: ${JSON.stringify({before, after})}`,
+  );
 });
 
 void test('native playback uses the original WAV and Windows player with a bounded process tree', async () => {

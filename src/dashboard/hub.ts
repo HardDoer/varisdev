@@ -371,6 +371,18 @@ export class DashboardHub {
     for (const listener of this.listeners) listener();
   }
 
+  /** Fresh completion metadata for attached and owned sessions. */
+  completionStates(): Array<ReturnType<DashboardState['completionState']>> {
+    const states = [...this.sessions.values()].map(entry =>
+      entry.state.completionState(),
+    );
+    if (this.external) {
+      const {id, status, completionId} = this.external.session;
+      states.unshift({id, status, completionId});
+    }
+    return states;
+  }
+
   /** A cached snapshot for immediate IPC serialization. Do not mutate it. */
   deliverySnapshot(): DashboardHubSnapshot {
     if (this.cachedSnapshot) return this.cachedSnapshot;

@@ -1,4 +1,4 @@
-import type {DashboardHub, DashboardHubSnapshot} from '../dashboard/hub.ts';
+import type {DashboardHub} from '../dashboard/hub.ts';
 import {runRuntimeCommand} from '../runtime/manager.ts';
 
 interface CompletionWindow {
@@ -19,13 +19,13 @@ export class DesktopCompletionSound {
   private readonly options: CompletionSoundOptions;
 
   constructor(
-    hub: Pick<DashboardHub, 'deliverySnapshot' | 'subscribe'>,
+    hub: Pick<DashboardHub, 'completionStates' | 'subscribe'>,
     options: CompletionSoundOptions,
   ) {
     this.options = options;
-    this.observe(hub.deliverySnapshot());
+    this.observe(hub.completionStates());
     this.unsubscribe = hub.subscribe(() =>
-      this.observe(hub.deliverySnapshot()),
+      this.observe(hub.completionStates()),
     );
   }
 
@@ -36,10 +36,10 @@ export class DesktopCompletionSound {
     );
   };
 
-  private observe(snapshot: DashboardHubSnapshot): void {
+  private observe(states: ReturnType<DashboardHub['completionStates']>): void {
     let completed = false;
     const retained = new Set<string>();
-    for (const {session} of snapshot.sessions) {
+    for (const session of states) {
       retained.add(session.id);
       if (
         this.completions.has(session.id) &&

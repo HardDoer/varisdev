@@ -386,6 +386,12 @@ export class DashboardState {
     this.changed();
   }
 
+  /** Completion metadata without projecting conversation history. */
+  completionState(): Pick<DashboardSession, 'id' | 'status' | 'completionId'> {
+    const {id, status, completionId} = this.session;
+    return {id, status, completionId};
+  }
+
   /** A cached snapshot for immediate serialization. Callers must not mutate it. */
   deliverySnapshot(): DashboardSnapshot {
     return (this.cachedSnapshot ??= {
