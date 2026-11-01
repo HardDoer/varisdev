@@ -643,7 +643,7 @@ async function restartForUpdate(selectedSessionId?: unknown): Promise<void> {
       const restorePath = join(profile, 'update-restart.json');
       writeFileSync(restorePath, JSON.stringify(saved), {mode: 0o600});
       command.env.VARISDEV_DESKTOP_RESTORE = restorePath;
-      command.args = [join(installRoot, 'bin', 'varisdev.mjs'), '--overview'];
+      command.args.splice(1, 1, '--overview');
     }
     requireUpdateRestart(
       runtime.status(),

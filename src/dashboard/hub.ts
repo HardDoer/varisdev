@@ -557,7 +557,11 @@ export class DashboardHub {
     this.ensureOpen();
     const cwd = await sessionFolder(folder);
     const values = fields(input);
-    if (Object.keys(values).some(key => !['scope', 'id'].includes(key)))
+    if (
+      Object.keys(values).some(
+        key => !['scope', 'id', 'sourcePath'].includes(key),
+      )
+    )
       throw new DashboardInputError('Unknown agent template field.');
     await deleteAgentTemplate(cwd, values);
   }

@@ -11,6 +11,8 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
+import {runCommand} from '../scripts/test-installer.mjs';
+import {parseDesktopArguments} from '../src/runtime/cli.ts';
 import type {DashboardHubSnapshot} from '../src/dashboard/hub.ts';
 import type {UpdateStatus} from '../src/runtime/manager.ts';
 import {
@@ -132,6 +134,35 @@ void test('restart resolves the active generation through the original installat
     updateMessage('C:\\Users\\test\\.pi\\auth.json: Pi.'),
     'C:\\Users\\test\\.pi\\auth.json: VarisDev.',
   );
+});
+
+void test('update restart retains only an explicit display backend', () => {
+  for (const backend of [undefined, 'x11', 'wayland']) {
+    for (const project of [undefined, join(tmpdir(), 'project folder')]) {
+      const command = updateRestartCommand(
+        '/original',
+        '/node',
+        '/electron',
+        project,
+        [
+          'electron',
+          'main.js',
+          '--varisdev-launcher',
+          ...(backend ? [`--ozone-platform=${backend}`] : []),
+          '--varisdev-project=/old-project',
+        ],
+      );
+      assert.deepEqual(command.args, [
+        join('/original', 'bin', 'varisdev.mjs'),
+        project ?? '--overview',
+        ...(backend ? [`--ozone-platform=${backend}`] : []),
+      ]);
+      assert.deepEqual(parseDesktopArguments(command.args.slice(1), 'linux'), {
+        project,
+        ozonePlatform: backend,
+      });
+    }
+  }
 });
 
 void test(
@@ -289,6 +320,56 @@ void test(
     assert.equal(await second.exited, 0);
     assert.equal(first.child.exitCode, null);
     assert.equal(first.child.signalCode, null);
+  },
+);
+
+void test(
+  'application update restart preserves display choice with and without saved sessions',
+  {
+    timeout: 35_000,
+    skip:
+      process.platform === 'linux' &&
+      !process.env.DISPLAY &&
+      !process.env.WAYLAND_DISPLAY
+        ? 'Electron requires a display'
+        : false,
+  },
+  async t => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'varisdev-restart-display-'),
+    );
+    t.after(() =>
+      rm(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 100,
+      }),
+    );
+    const reportPath = join(directory, 'report.json');
+    const env = {...process.env};
+    delete env.ELECTRON_RUN_AS_NODE;
+    let launchError;
+    try {
+      await runCommand(
+        require('electron') as string,
+        [
+          fileURLToPath(
+            new URL('./fixtures/desktop-update-restart.cjs', import.meta.url),
+          ),
+          directory,
+          reportPath,
+          process.execPath,
+        ],
+        {cwd: process.cwd(), env, timeoutMs: 25_000},
+      );
+    } catch (error) {
+      launchError = error;
+    }
+    const report = JSON.parse(await readFile(reportPath, 'utf8'));
+    assert.ifError(report.error);
+    assert.ifError(launchError);
+    assert.equal(report.cases.length, 6);
   },
 );
 

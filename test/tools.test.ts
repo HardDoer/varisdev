@@ -189,6 +189,47 @@ void test('browse selects JSON fields and returns response details', async () =>
   }
 });
 
+void test('browse preserves HTML text and links with invalid numeric entities', async t => {
+  const tool = captureTool(registerBrowseTool);
+  const url = 'https://example.test/page';
+  t.mock.method(globalThis, 'fetch', async () =>
+    responseWithUrl(
+      '<html><head><title>Title &#1114112;</title></head><body>' +
+        '<p>Before &#x110000; &#0; &#xD800; &#999999999999999999999; after</p>' +
+        '<p>Valid &#65; &#x1F642; &amp;</p>' +
+        '<a href="/target?value=&#x110000;">Link &#1114112;</a>' +
+        '</body></html>',
+      {headers: {'content-type': 'text/html'}},
+      url,
+    ),
+  );
+
+  for (const view of ['auto', 'text', 'links', 'raw']) {
+    const result = await tool.execute(
+      'browse-entities',
+      {url, view},
+      undefined,
+      undefined,
+      {cwd: process.cwd()},
+    );
+    const details = result.details as {
+      response: {title: string; links: Array<{text: string; url: string}>};
+    };
+    assert.equal(details.response.title, 'Title \uFFFD');
+    assert.deepEqual(details.response.links, [
+      {text: 'Link \uFFFD', url: 'https://example.test/target?value=%EF%BF%BD'},
+    ]);
+    if (view === 'auto' || view === 'text') {
+      assert.match(
+        resultText(result),
+        /Before \uFFFD \uFFFD \uFFFD \uFFFD after/,
+      );
+      assert.match(resultText(result), /Valid A 🙂 &/);
+    }
+    if (view === 'raw') assert.match(resultText(result), /&#x110000;/);
+  }
+});
+
 void test('download saves relative paths under the tool cwd and reports details', async () => {
   const tool = captureTool(registerDownloadTool);
   const cwd = await makeTempDirectory('varisdev-download-');
@@ -320,6 +361,34 @@ void test('json_query filters, groups, and samples a nested collection', async (
     assert.match(resultText(result), /Totals: 3 matched of 4 items/);
   } finally {
     await rm(cwd, {recursive: true, force: true});
+  }
+});
+
+void test('structured queries preserve selected __proto__ fields and missing values', async t => {
+  const cwd = await makeTempDirectory('varisdev-query-fields-');
+  t.after(() => rm(cwd, {recursive: true, force: true}));
+  for (const [filename, register] of [
+    ['records.json', registerJsonQueryTool],
+    ['records.yy', registerGameMakerQueryTool],
+  ] as const) {
+    await writeFile(
+      join(cwd, filename),
+      '[{"name":"present","__proto__":{"id":7}},{"name":"missing"}]',
+    );
+    const tool = captureTool(register);
+    const result = await tool.execute(
+      'query-special-fields',
+      {path: filename, select: ['name', '__proto__'], sampleLimit: 2},
+      undefined,
+      undefined,
+      {cwd},
+    );
+    const details = result.details as QueryDetails;
+    assert.equal(details.summary.filesSucceeded, 1);
+    assert.deepEqual(details.files[0]?.samples, [
+      '{"__proto__":{"id":7},"name":"present"}',
+      '{"__proto__":"<missing>","name":"missing"}',
+    ]);
   }
 });
 

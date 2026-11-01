@@ -70,7 +70,7 @@ function runBundledPiCli(
       [
         join(
           runtimeRoot,
-          'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+          'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
         ),
         ...args,
       ],

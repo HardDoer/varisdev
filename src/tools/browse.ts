@@ -352,18 +352,15 @@ function decodeHtmlEntities(input: string): string {
     /&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]+);?/gi,
     (match, entity: string) => {
       const normalized = entity.toLowerCase();
-      if (normalized.startsWith('#x')) {
-        const codePoint = Number.parseInt(normalized.slice(2), 16);
-        return Number.isFinite(codePoint)
-          ? String.fromCodePoint(codePoint)
-          : match;
-      }
-
       if (normalized.startsWith('#')) {
-        const codePoint = Number.parseInt(normalized.slice(1), 10);
-        return Number.isFinite(codePoint)
+        const codePoint = normalized.startsWith('#x')
+          ? Number.parseInt(normalized.slice(2), 16)
+          : Number.parseInt(normalized.slice(1), 10);
+        return codePoint > 0 &&
+          codePoint <= 0x10ffff &&
+          !(codePoint >= 0xd800 && codePoint <= 0xdfff)
           ? String.fromCodePoint(codePoint)
-          : match;
+          : '\uFFFD';
       }
 
       return HTML_ENTITIES[normalized] ?? match;

@@ -596,6 +596,22 @@ export async function createDashboardParent(
     });
     refreshAutocomplete();
   };
+  const compact = async (
+    instructions: string | undefined,
+    signal: AbortSignal,
+  ) => {
+    signal.throwIfAborted();
+    // Pi creates the compaction controller after awaiting abort cleanup.
+    const unsubscribe = session.subscribe(event => {
+      if (event.type === 'compaction_start' && signal.aborted)
+        session.abortCompaction();
+    });
+    try {
+      await session.compact(instructions);
+    } finally {
+      unsubscribe();
+    }
+  };
   const localCommand = async (
     name: string,
     args: string,
@@ -634,7 +650,7 @@ export async function createDashboardParent(
       return;
     }
     if (name === 'compact') {
-      await session.compact(args || undefined);
+      await compact(args || undefined, signal);
       return;
     }
     if (name === 'reload') {
@@ -674,7 +690,7 @@ export async function createDashboardParent(
     throw new Error(`/${name} must be opened from the VarisDev desktop.`);
   };
   const sessionAction = async (
-    action: () => Promise<unknown>,
+    action: (signal: AbortSignal) => Promise<unknown>,
     allowRunning = false,
   ) => {
     requireOpen();
@@ -695,7 +711,7 @@ export async function createDashboardParent(
     activePrompts.add(running);
     running.operation = Promise.resolve()
       .then(async () => {
-        if (!running.cancelled) await action();
+        if (!running.cancelled) await action(running.controller.signal);
       })
       .finally(() => {
         activePrompts.delete(running);
@@ -731,7 +747,7 @@ export async function createDashboardParent(
     configure: configurationAction,
     lastAssistantText: () => session.getLastAssistantText(),
     compact: instructions =>
-      sessionAction(() => session.compact(instructions), true),
+      sessionAction(signal => compact(instructions, signal), true),
     reload: () => sessionAction(reload),
     async prompt(text, images) {
       requireOpen();

@@ -343,7 +343,9 @@ export function initInspectorPanels({selected, select, changed}) {
     },
     true,
   );
+  let contextTimer;
   function closeMenu(focus = false) {
+    window.clearTimeout(contextTimer);
     if (menu.matches(':popover-open')) menu.hidePopover();
     if (focus) contextTarget?.focus({preventScroll: true});
   }
@@ -362,12 +364,16 @@ export function initInspectorPanels({selected, select, changed}) {
     const panel = event.target.closest(panelSelector);
     if (!panel) return;
     event.preventDefault();
-    openMenu(
+    const source =
       panel.querySelector(
         '.detached-panel-heading, .factory-title-group, .section-heading',
-      ) || panel,
-      {x: event.clientX, y: event.clientY},
-    );
+      ) || panel;
+    const point = {x: event.clientX, y: event.clientY};
+    closeMenu();
+    // macOS dispatches contextmenu during mousedown, before popover dismissal.
+    contextTimer = window.setTimeout(() => {
+      if (source.isConnected) openMenu(source, point);
+    }, 0);
   });
   listen(minify, 'click', () => {
     const panel = contextTarget.closest(panelSelector);

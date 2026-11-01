@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -1253,7 +1254,7 @@ void test('uses cwd as the repository scope when no git ancestor exists', async 
   });
   const listed = await listAgentTemplates(standalone);
   const config = workspaceConfigPaths(standalone, paths.agentDir);
-  assert.equal(config.projectDir, standalone);
+  assert.equal(config.projectDir, await realpath(standalone));
   assert.equal(
     listed.sources.find(source => source.scope === 'repository')?.directory,
     join(config.repositoryConfigDir, 'agents'),

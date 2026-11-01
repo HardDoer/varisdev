@@ -14,6 +14,7 @@ import {
   type CommandSDK,
 } from '../src/runtime/commands.ts';
 import {mcpCliArguments} from '../src/runtime/cli.ts';
+import {runCommand} from '../scripts/test-installer.mjs';
 
 void test('MCP commands are forwarded with mcp as Pi argv[0]', () => {
   assert.deepEqual(mcpCliArguments(['mcp', 'list', '--json']), [
@@ -26,6 +27,62 @@ void test('MCP commands are forwarded with mcp as Pi argv[0]', () => {
     '--help',
   ]);
   assert.equal(mcpCliArguments(['run', '--help']), undefined);
+});
+
+void test('MCP commands launch the private Pi CLI in a production installation', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-mcp-cli-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  // Production omits root development and optional peer dependencies.
+  const bundle = join(
+    directory,
+    'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle',
+  );
+  await mkdir(bundle, {recursive: true});
+  await writeFile(join(directory, 'package.json'), '{"type":"module"}');
+  const report = join(directory, 'report.json');
+  await writeFile(
+    join(bundle, 'cli.js'),
+    `import {writeFileSync} from 'node:fs';
+    writeFileSync(${JSON.stringify(report)}, JSON.stringify({
+      entry: process.argv[1], args: process.argv.slice(2),
+      settings: process.env.PI_CODING_AGENT_DIR,
+      privateSettings: process.env.VARISDEV_CODING_AGENT_DIR,
+      installRoot: process.env.VARISDEV_INSTALL_ROOT,
+      sessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
+      packageDir: process.env.PI_PACKAGE_DIR,
+    }));
+    process.exitCode = 7;`,
+  );
+  const settings = join(directory, 'agent');
+  for (const args of [
+    ['mcp', 'list', '--json'],
+    ['run', 'mcp', 'list', '--json'],
+  ]) {
+    const script = `
+      import assert from 'node:assert/strict';
+      import {runCli} from ${JSON.stringify(new URL('../src/runtime/cli.ts', import.meta.url).href)};
+      assert.equal(await runCli(${JSON.stringify(args)}, ${JSON.stringify(directory)}), 7);
+    `;
+    await runCommand(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: directory,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        VARISDEV_DATA_DIR: join(directory, 'data'),
+        VARISDEV_SETTINGS_DIR: settings,
+        PI_CODING_AGENT_DIR: join(directory, 'regular-pi'),
+        PI_CODING_AGENT_SESSION_DIR: '/regular-pi/sessions',
+        PI_PACKAGE_DIR: '/regular-pi/package',
+      },
+    });
+    assert.deepEqual(JSON.parse(await readFile(report, 'utf8')), {
+      entry: join(bundle, 'cli.js'),
+      args: ['mcp', 'list', '--json'],
+      settings,
+      privateSettings: settings,
+      installRoot: directory,
+    });
+  }
 });
 
 function accountFixture() {

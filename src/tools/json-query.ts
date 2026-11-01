@@ -344,7 +344,7 @@ function sampleItem(item: unknown, select: ValuePath[]): string {
     return truncateChars(canonicalJson(item), MAX_SAMPLE_CHARS);
   }
 
-  const fields: Record<string, unknown> = {};
+  const fields: Record<string, unknown> = Object.create(null);
   for (const path of select) {
     const selected = resolveValue(item, path);
     fields[path.source] = selected.found ? selected.value : '<missing>';

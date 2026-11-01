@@ -12,6 +12,7 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {
+  AgentSession,
   ModelRegistry,
   ModelRuntime,
   ProjectTrustStore,
@@ -124,6 +125,14 @@ void test(
             ),
         );
         requests.push({body, headers: request.headers, worker});
+        if (
+          JSON.stringify(body.messages).includes(
+            'You are a context summarization assistant',
+          )
+        ) {
+          reply(response, 'COMPACTED: preserve the recorded decision.');
+          return;
+        }
         const userIndex = body.messages.findLastIndex(
           message => message.role === 'user',
         );
@@ -237,7 +246,11 @@ void test(
     );
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}, steeringMode: 'all'}),
+      JSON.stringify({
+        retry: {enabled: false},
+        steeringMode: 'all',
+        compaction: {enabled: false, keepRecentTokens: 48},
+      }),
     );
     new ProjectTrustStore(agentDir).set(otherCwd, true);
     await saveToolSettings('agents', {
@@ -833,6 +846,100 @@ void test(
     assert.equal(other.state.snapshot().session.status, 'idle');
     await other.close();
     assert.equal(other.state.snapshot().session.status, 'closed');
+
+    for (const mode of ['compact', 'slash'] as const) {
+      await t.test(
+        `stop cancels ${mode} while SDK compaction awaits abort cleanup`,
+        async cancellation => {
+          const cancelled = await createDashboardParent(
+            {cwd: otherCwd, name: `Cancelled ${mode}`},
+            inherited,
+          );
+          parents.push(cancelled);
+          await cancelled.prompt(
+            'independent-parent: record the decision. '.repeat(20),
+          );
+          await cancelled.prompt(
+            'independent-parent: continue the review. '.repeat(20),
+          );
+          const initialEntries = cancelled.restartSnapshot().entries;
+          const enteredCleanup = Promise.withResolvers<AgentSession>();
+          const releaseCleanup = Promise.withResolvers<void>();
+          cancellation.after(() => releaseCleanup.resolve());
+          const abort = AgentSession.prototype.abort;
+          let intercepted = false;
+          const barrier = cancellation.mock.method(
+            AgentSession.prototype,
+            'abort',
+            async function (this: AgentSession) {
+              if (!intercepted) {
+                intercepted = true;
+                enteredCleanup.resolve(this);
+                await releaseCleanup.promise;
+              }
+              return abort.call(this);
+            },
+          );
+          const summaryRequests = () =>
+            requests.filter(request =>
+              JSON.stringify(request.body.messages).includes(
+                'You are a context summarization assistant',
+              ),
+            ).length;
+          const summariesBefore = summaryRequests();
+          const operation =
+            mode === 'compact'
+              ? cancelled.compact('Keep the decision.')
+              : cancelled.prompt('/compact Keep the decision.');
+          // Attach a handler before Stop can reject the public compact promise.
+          const settled = Promise.allSettled([operation]);
+          const sdkSession = await enteredCleanup.promise;
+          let stopped = false;
+          const stopping = cancelled.abort().then(() => {
+            stopped = true;
+          });
+          await delay(10);
+          assert.equal(stopped, false, 'Stop waits for the pending compaction');
+          assert.equal(sdkSession.isCompacting, false);
+          releaseCleanup.resolve();
+          await Promise.all([settled, stopping]);
+          barrier.mock.restore();
+          assert.equal(
+            summaryRequests(),
+            summariesBefore,
+            'Cancelled compaction sends no successful summary request',
+          );
+          assert.deepEqual(cancelled.restartSnapshot().entries, initialEntries);
+          const file = cancelled.state.snapshot().session.sessionFile!;
+          assert.equal(
+            SessionManager.open(file)
+              .getEntries()
+              .some(entry => entry.type === 'compaction'),
+            false,
+            'Cancelled compaction is not persisted',
+          );
+          assert.equal(cancelled.state.snapshot().session.status, 'idle');
+          // A later compaction must not inherit the stopped operation's signal.
+          if (mode === 'compact') await cancelled.compact('Keep the decision.');
+          else await cancelled.prompt('/compact Keep the decision.');
+          assert.equal(summaryRequests(), summariesBefore + 1);
+          assert.equal(
+            SessionManager.open(file)
+              .getEntries()
+              .filter(entry => entry.type === 'compaction').length,
+            1,
+          );
+          await cancelled.prompt(
+            'independent-parent: continue after compaction.',
+          );
+          assert.equal(
+            cancelled.state.snapshot().session.response,
+            'Independent parent answer.',
+          );
+          await cancelled.close();
+        },
+      );
+    }
 
     for (const action of ['abort', 'close', 'steer'] as const) {
       await t.test(

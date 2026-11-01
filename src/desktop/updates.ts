@@ -35,7 +35,11 @@ export function updateRestartCommand(
   nodeExecutable: string | undefined,
   electronExecutable: string,
   project?: string,
+  argv: string[] = process.argv,
 ): {executable: string; args: string[]; env: NodeJS.ProcessEnv} {
+  const displayPlatform = argv.find(argument =>
+    /^--ozone-platform=(x11|wayland)$/.test(argument),
+  );
   const env = environmentForChild();
   if (nodeExecutable) delete env.ELECTRON_RUN_AS_NODE;
   else env.ELECTRON_RUN_AS_NODE = '1';
@@ -44,6 +48,7 @@ export function updateRestartCommand(
     args: [
       join(installRoot, 'bin', 'varisdev.mjs'),
       ...(project ? [project] : ['--overview']),
+      ...(displayPlatform ? [displayPlatform] : []),
     ],
     env,
   };

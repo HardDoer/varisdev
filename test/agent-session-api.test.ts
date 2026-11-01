@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import type {ChildProcess} from 'node:child_process';
 import {EventEmitter} from 'node:events';
-import {mkdir, mkdtemp, realpath, rm, writeFile} from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {test} from 'node:test';
@@ -389,6 +396,88 @@ void test(
       await entry.manager.wait([record.id]);
       assert.deepEqual(prompts, ['initial', 'hold']);
     }
+  },
+);
+
+void test(
+  'hub deletes the desktop template payload from its selected repository source',
+  {timeout: 10000},
+  async t => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'varisdev-template-delete-'),
+    );
+    const root = join(directory, 'repository');
+    const cwd = join(root, 'nested');
+    await mkdir(join(root, '.git'), {recursive: true});
+    await mkdir(cwd);
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, 'settings');
+    const hub = new DashboardHub(undefined, async () => owner('unused').parent);
+    t.after(async () => {
+      await hub.close();
+      if (previousAgentDir === undefined)
+        delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, {recursive: true, force: true});
+    });
+    const rootTemplate = await hub.saveAgentTemplate(root, {
+      scope: 'repository',
+      id: 'reviewer',
+      instructions: 'Root reviewer',
+    });
+    const nestedPath = join(
+      await realpath(cwd),
+      '.pi',
+      'agents',
+      'reviewer.md',
+    );
+    await mkdir(join(cwd, '.pi', 'agents'), {recursive: true});
+    await writeFile(nestedPath, '---\n---\nNested reviewer\n');
+    const listed = await hub.listAgentTemplates(cwd);
+    const copies = listed.allTemplates.filter(
+      item => item.scope === 'repository' && item.id === 'reviewer',
+    );
+    assert.equal(copies.length, 2);
+    const nested = copies.find(item => item.sourcePath === nestedPath)!;
+    assert.ok(nested);
+    const payload = {
+      scope: nested.scope,
+      id: nested.id,
+      sourcePath: nested.sourcePath,
+    };
+    await assert.rejects(
+      hub.deleteAgentTemplate(cwd, {...payload, extra: true}),
+      /Unknown agent template field/,
+    );
+    await hub.deleteAgentTemplate(cwd, payload);
+    await assert.rejects(readFile(nestedPath), {code: 'ENOENT'});
+    await assert.rejects(
+      hub.deleteAgentTemplate(cwd, {...payload, sourcePath: 42}),
+      /sourcePath/,
+    );
+    await assert.rejects(
+      hub.deleteAgentTemplate(cwd, {
+        ...payload,
+        sourcePath: join(directory, 'reviewer.md'),
+      }),
+      /sourcePath/,
+    );
+    assert.match(
+      await readFile(rootTemplate.sourcePath, 'utf8'),
+      /Root reviewer/,
+    );
+    assert.deepEqual(
+      (await hub.listAgentTemplates(cwd)).allTemplates
+        .filter(item => item.scope === 'repository' && item.id === 'reviewer')
+        .map(item => item.sourcePath),
+      [rootTemplate.sourcePath],
+    );
+    await hub.deleteAgentTemplate(cwd, {
+      scope: rootTemplate.scope,
+      id: rootTemplate.id,
+      sourcePath: rootTemplate.sourcePath,
+    });
+    await assert.rejects(readFile(rootTemplate.sourcePath), {code: 'ENOENT'});
   },
 );
 

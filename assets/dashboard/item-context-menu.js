@@ -8,6 +8,7 @@ export function initItemContextMenu({selected, select}) {
     '[data-context-session], [data-context-unit], #inspector-title, #item-actions-button';
   let target;
   let origin;
+  let contextTimer;
   const key = item => item && `${item.sessionId}:${item.unitId}`;
   const isOpen = () => menu.matches(':popover-open');
   const items = () =>
@@ -25,6 +26,7 @@ export function initItemContextMenu({selected, select}) {
     next.focus({preventScroll: true});
   }
   function close(focus = false) {
+    window.clearTimeout(contextTimer);
     if (!isOpen()) return;
     menu.hidePopover();
     button.setAttribute('aria-expanded', 'false');
@@ -77,12 +79,15 @@ export function initItemContextMenu({selected, select}) {
     const source = event.target.closest(targetSelector);
     if (!source || source.closest('[inert]')) return;
     event.preventDefault();
-    openTarget(
-      source,
+    const point =
       event.clientX || event.clientY
         ? {x: event.clientX, y: event.clientY}
-        : undefined,
-    );
+        : undefined;
+    close();
+    // macOS dispatches contextmenu during mousedown, before popover dismissal.
+    contextTimer = window.setTimeout(() => {
+      if (source.isConnected) openTarget(source, point);
+    }, 0);
   }
   function toggle() {
     if (isOpen()) close(true);
