@@ -53,7 +53,7 @@ Use **Updates → Check for updates** in the app, or run `varisdev update`.
 
 ## Commands
 
-Since VarisDev uses Pi under the hood many of the things you see in VarisDev work exactly like in Pidev. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#commands).
+Since VarisDev uses Pi under the hood many of the things you see in VarisDev work exactly like in Pi. See [Pi's documentation](https://github.com/earendil-works/pi/tree/main/packages/coding-agent#commands).
 
 ## VarisDev documentation
 
