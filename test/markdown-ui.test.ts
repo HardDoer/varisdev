@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {promisify} from 'node:util';
+import {runTerminalProcess} from './fixtures/terminal-process.mjs';
 
-const execFile = promisify(execFileCallback);
 const require = createRequire(import.meta.url);
 
 void test(
@@ -30,14 +28,14 @@ void test(
     delete env.ELECTRON_RUN_AS_NODE;
     let launchError: unknown;
     try {
-      await execFile(
+      await runTerminalProcess(
         require('electron') as string,
         [
           fileURLToPath(new URL('./fixtures/markdown-ui.cjs', import.meta.url)),
           directory,
           reportPath,
         ],
-        {env, timeout: 45_000, maxBuffer: 2 * 1024 * 1024},
+        {env, timeoutMs: 45_000},
       );
     } catch (error) {
       launchError = error;

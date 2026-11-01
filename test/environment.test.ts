@@ -411,7 +411,7 @@ void test(
     );
     const cli = join(
       f.home,
-      'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+      'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
     );
     await mkdir(dirname(cli), {recursive: true});
     await writeFile(

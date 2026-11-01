@@ -6488,7 +6488,10 @@ async function main() {
       await settle();
       featureGates.delete('alpha');
       await evaluate(() => document.getElementById('session-speed').focus());
-      await press('End');
+      // Native select type-ahead works on macOS, where End does not select an option.
+      await press('U');
+      window.webContents.sendInputEvent({type: 'char', keyCode: 'u'});
+      await press('Return');
       await until(
         () =>
           !document.getElementById('session-speed').disabled &&
@@ -11606,12 +11609,39 @@ async function main() {
         true,
         'Full history remains usable in a compact zoomed window',
       );
-      await evaluate(() => {
-        document
-          .querySelector('#conversation .conversation-text')
-          .scrollIntoView({block: 'start'});
+      const historyWheelPoint = await pointerPoint('#panel-conversation');
+      const historyWheelTop = await evaluate(
+        () => document.getElementById('panel-conversation').scrollTop,
+      );
+      const historyZoom = window.webContents.getZoomFactor();
+      // Scroll as a reader would, including when content-visibility skips layout.
+      window.webContents.sendInputEvent({
+        type: 'mouseWheel',
+        x: Math.round(historyWheelPoint.x * historyZoom),
+        y: Math.round(historyWheelPoint.y * historyZoom),
+        deltaX: 0,
+        deltaY: -48,
       });
-      await settle();
+      await until(() => {
+        const panel = document.getElementById('panel-conversation');
+        const body = panel.getBoundingClientRect();
+        const toolbar = panel
+          .querySelector('.feed-toolbar')
+          .getBoundingClientRect();
+        const text = document
+          .querySelector('#conversation .conversation-text')
+          .getBoundingClientRect();
+        return (
+          text.top >= Math.max(body.top, toolbar.bottom) - 1 &&
+          text.bottom <= body.bottom + 1
+        );
+      }, 'Native scrolling must reveal historical text below the sticky toolbar');
+      assert.ok(
+        (await evaluate(
+          () => document.getElementById('panel-conversation').scrollTop,
+        )) > historyWheelTop,
+        'The native wheel must move the compact conversation down',
+      );
       assert.equal(
         await evaluate(() => {
           const body = document

@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -482,11 +483,11 @@ void test('discovery resolves hashed stylesheet and scene URLs without executing
   assert.equal(custom.scene.apiVersion, 1);
   const moduleUrl = new URL(custom.scene.moduleUrl);
   assert.equal(moduleUrl.protocol, 'file:');
-  assert.equal(fileURLToPath(moduleUrl), modulePath);
+  assert.equal(fileURLToPath(moduleUrl), await realpath(modulePath));
   assert.match(moduleUrl.searchParams.get('v') || '', /^[a-f0-9]{64}$/);
   assert.ok(custom.stylesheetUrl);
   const cssUrl = new URL(custom.stylesheetUrl);
-  assert.equal(fileURLToPath(cssUrl), cssPath);
+  assert.equal(fileURLToPath(cssUrl), await realpath(cssPath));
   assert.match(cssUrl.searchParams.get('v') || '', /^[a-f0-9]{64}$/);
   assert.equal(custom.css, 'body {background-image: url("./wall.png");}');
   assert.equal(retro.appearance, 'year1998');
