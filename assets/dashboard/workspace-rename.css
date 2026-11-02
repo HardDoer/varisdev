@@ -1,0 +1,27 @@
+#rename-workspace-dialog {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 24px;
+}
+#rename-workspace-dialog .dialog-heading {
+  margin-bottom: 16px;
+}
+#rename-workspace-title {
+  margin: 0;
+}
+#rename-workspace-form label {
+  display: block;
+  margin-bottom: 6px;
+}
+#rename-workspace-dialog .dialog-footer {
+  margin-top: 20px;
+}
+@media (max-height: 440px), (max-width: 440px) {
+  #rename-workspace-dialog {
+    padding: 16px;
+  }
+  #rename-workspace-title {
+    font-size: 1.25rem;
+  }
+}

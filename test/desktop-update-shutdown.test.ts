@@ -106,7 +106,11 @@ async function updatingRuntime(t: TestContext, fail: boolean) {
   };
 }
 
-async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
+async function desktopLifecycle(
+  runtime: RuntimeManager,
+  closeError?: Error,
+  trayAvailable = false,
+) {
   const source = await readFile(
     new URL('../src/desktop/application.ts', import.meta.url),
     'utf8',
@@ -181,7 +185,15 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
       updates.push(status);
     },
   };
-  Object.assign(window, {webContents, isDestroyed: () => false});
+  let hidden = false;
+  let trayDisposed = false;
+  Object.assign(window, {
+    webContents,
+    isDestroyed: () => false,
+    hide: () => {
+      hidden = true;
+    },
+  });
   const handlers = new Map<
     string,
     (event: unknown) => Promise<{ok: boolean; value?: {phase: string}}>
@@ -221,6 +233,12 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
     clearInterval,
     unsubscribe: () => {},
     completionSound: {dispose: () => {}},
+    desktopTray: {
+      isAvailable: () => trayAvailable && !trayDisposed,
+      dispose: () => {
+        trayDisposed = true;
+      },
+    },
     terminals: {dispose: () => {}},
     accounts: {dispose: async () => {}},
     requests: {disconnect: () => {}},
@@ -250,6 +268,8 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
     errors,
     updateUnsubscribes: () => updateUnsubscribes,
     didExit: () => didExit,
+    hidden: () => hidden,
+    trayDisposed: () => trayDisposed,
     sessionCloses: () => sessionCloses,
     snapshotDisposals: () => snapshotDisposals,
     install: () =>
@@ -263,7 +283,7 @@ async function desktopLifecycle(runtime: RuntimeManager, closeError?: Error) {
 for (const outcome of ['success', 'failure'] as const)
   for (const quit of ['app', 'window'] as const)
     void test(
-      `${quit} quit waits for a pending installer and session shutdown after update ${outcome}`,
+      `${quit === 'window' ? 'window without tray' : quit} quit waits for a pending installer and session shutdown after update ${outcome}`,
       {timeout: 10_000},
       async t => {
         const update = await updatingRuntime(t, outcome === 'failure');
@@ -360,5 +380,43 @@ void test(
       0,
       'The update subscription must be removed',
     );
+  },
+);
+
+void test(
+  'closing to tray keeps an update and sessions alive; explicit quit still waits for cleanup',
+  {timeout: 10_000},
+  async t => {
+    const update = await updatingRuntime(t, false);
+    const desktop = await desktopLifecycle(update.runtime, undefined, true);
+    t.after(() => desktop.finishSessions.resolve());
+    const installing = desktop.install();
+    await update.installing.promise;
+    let prevented = false;
+    desktop.window.emit('close', {
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, true);
+    assert.equal(desktop.hidden(), true);
+    assert.equal(desktop.didExit(), false);
+    assert.equal(desktop.sessionCloses(), 0);
+    assert.equal(desktop.trayDisposed(), false);
+    // IPC remains usable after hiding; the running installer is reused.
+    const secondInstall = desktop.install();
+    desktop.app.quit();
+    assert.equal(desktop.trayDisposed(), true);
+    assert.equal((await desktop.install()).ok, false);
+    assert.equal(desktop.sessionCloses(), 0);
+    update.finishInstall.resolve();
+    assert.equal((await installing).ok, true);
+    assert.equal((await secondInstall).ok, true);
+    await desktop.closingSessions.promise;
+    assert.equal(desktop.didExit(), false);
+    desktop.finishSessions.resolve();
+    await desktop.exited.promise;
+    assert.equal(desktop.sessionCloses(), 1);
+    assert.deepEqual(desktop.errors, []);
   },
 );

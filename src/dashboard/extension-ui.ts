@@ -956,6 +956,10 @@ export class DesktopExtensionUI {
     this.onChange();
   }
 
+  hasPendingDialogs(): boolean {
+    return this.pending.length > 0;
+  }
+
   snapshot(): DesktopUIState {
     return {
       dialogs: this.pending.map(({dialog}) => ({

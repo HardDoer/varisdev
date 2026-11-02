@@ -229,14 +229,14 @@ void test(
     const childSource = `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(report)}, JSON.stringify({path: process.env.PATH, names: Object.keys(process.env).filter(name => name.toLowerCase() === 'path')}));`;
     for (const relative of [
       'scripts',
-      'node_modules/@earendil-works/pi-coding-agent/dist/bundle',
+      'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle',
     ])
       await mkdir(join(directory, relative), {recursive: true});
     await writeFile(join(directory, 'scripts/desktop-app.mjs'), childSource);
     await writeFile(
       join(
         directory,
-        'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+        'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
       ),
       childSource,
     );

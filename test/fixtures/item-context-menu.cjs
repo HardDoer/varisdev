@@ -321,6 +321,11 @@ async function main() {
     hub.sessions = hub.sessions.filter(item => item.session.id !== id);
     return {id};
   });
+  handle('pidev:rename-session', (id, name) => {
+    record('rename', id, name);
+    hub.sessions.find(item => item.session.id === id).session.name = name;
+    browser.webContents.send('pidev:snapshot', hub);
+  });
   handle('pidev:create-session', input => {
     record('create', input);
     const replacement = parent('replacement', 'Replacement workspace');
@@ -440,6 +445,7 @@ async function main() {
         await evaluate(() => ({
           title: document.getElementById('item-context-menu-title').textContent,
           close: document.getElementById('close-session').textContent.trim(),
+          renameHidden: document.getElementById('rename-workspace').hidden,
           resetHidden: document.getElementById('reset-item-session').hidden,
           cancelAllHidden: document.getElementById('cancel-all-agents').hidden,
           cancelEnabled: !document.getElementById('cancel-agent').disabled,
@@ -448,6 +454,7 @@ async function main() {
         {
           title: 'Review agent',
           close: 'Close agent',
+          renameHidden: true,
           resetHidden: true,
           cancelAllHidden: true,
           cancelEnabled: true,
@@ -1004,6 +1011,172 @@ async function main() {
   );
 
   await check(
+    'workspace rename targets the right-clicked tile and synchronizes names after saving',
+    async () => {
+      await openMenu('.parent-card[data-context-session="beta"]');
+      await act('rename-workspace');
+      await waitFor(
+        () => document.getElementById('rename-workspace-dialog').open,
+      );
+      assert.deepEqual(
+        await evaluate(() => {
+          const input = document.getElementById('rename-workspace-name');
+          return {
+            value: input.value,
+            focused: document.activeElement === input,
+            selection: input.value.slice(
+              input.selectionStart,
+              input.selectionEnd,
+            ),
+          };
+        }),
+        {
+          value: 'Harbor workspace',
+          focused: true,
+          selection: 'Harbor workspace',
+        },
+      );
+      await renameValue('  Harbor / α <release>  ');
+      await key('Enter');
+      await waitFor(
+        () => !document.getElementById('rename-workspace-dialog').open,
+      );
+      await selected('beta', 'Harbor / α <release>');
+      await waitFor(
+        () =>
+          document.querySelector(
+            '.parent-card[data-context-session="beta"] .parent-card-name',
+          ).textContent === 'Harbor / α <release>',
+      );
+      await openMenu();
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('item-context-menu-title').textContent,
+        ),
+        'Harbor / α <release>',
+      );
+      await key('Escape');
+      assert.deepEqual(calls, [['rename', 'beta', 'Harbor / α <release>']]);
+      assert.equal(hub.sessions[0].session.name, 'Orchard workspace');
+      await reload();
+      await click('.parent-card[data-context-session="beta"]');
+      await openMenu();
+      await act('rename-workspace');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('rename-workspace-name').value,
+        ),
+        'Harbor / α <release>',
+      );
+      await click('#rename-workspace-cancel');
+    },
+  );
+
+  await check(
+    'rename validates blank and long names and Cancel or Escape preserves the workspace',
+    async () => {
+      await openMenu();
+      await act('rename-workspace');
+      for (const value of ['   ', 'x'.repeat(121)]) {
+        await renameValue(value);
+        await click('#rename-workspace-save');
+        await waitFor(
+          () => !document.getElementById('rename-workspace-error').hidden,
+        );
+        assert.equal(
+          await evaluate(() =>
+            document
+              .getElementById('rename-workspace-name')
+              .getAttribute('aria-invalid'),
+          ),
+          'true',
+        );
+      }
+      await renameValue('Cancelled name');
+      await key('Escape');
+      await waitFor(
+        () => !document.getElementById('rename-workspace-dialog').open,
+      );
+      await openMenu();
+      await act('rename-workspace');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('rename-workspace-name').value,
+        ),
+        'Orchard workspace',
+      );
+      await renameValue('Another cancelled name');
+      await click('#rename-workspace-cancel');
+      assert.deepEqual(calls, []);
+      assert.equal(hub.sessions[0].session.name, 'Orchard workspace');
+    },
+  );
+
+  await check(
+    'rename errors retain the input for retry and attached workspaces can be renamed',
+    async () => {
+      hub.sessions[1].session.owned = false;
+      browser.webContents.send('pidev:snapshot', hub);
+      failures.set('rename', 'The attached workspace disconnected.');
+      await openMenu('.parent-card[data-context-session="beta"]');
+      await act('rename-workspace');
+      await renameValue('Attached renamed workspace');
+      await click('#rename-workspace-save');
+      await waitFor(
+        () => !document.getElementById('rename-workspace-error').hidden,
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('rename-workspace-error').textContent,
+        ),
+        'The attached workspace disconnected.',
+      );
+      assert.equal(hub.sessions[1].session.name, 'Harbor workspace');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('rename-workspace-name').value,
+        ),
+        'Attached renamed workspace',
+      );
+      failures.delete('rename');
+      await click('#rename-workspace-save');
+      await waitFor(
+        () => !document.getElementById('rename-workspace-dialog').open,
+      );
+      await selected('beta', 'Attached renamed workspace');
+      assert.deepEqual(calls, [
+        ['rename', 'beta', 'Attached renamed workspace'],
+        ['rename', 'beta', 'Attached renamed workspace'],
+      ]);
+    },
+  );
+
+  await check(
+    'rename closes when its workspace disappears and disconnected workspaces disable the action',
+    async () => {
+      await openMenu('.parent-card[data-context-session="beta"]');
+      await act('rename-workspace');
+      await renameValue('Stale name');
+      hub.sessions = hub.sessions.filter(item => item.session.id !== 'beta');
+      browser.webContents.send('pidev:snapshot', hub);
+      await waitFor(
+        () => !document.getElementById('rename-workspace-dialog').open,
+      );
+      hub.sessions[0].session.controllable = false;
+      hub.sessions[0].session.owned = false;
+      browser.webContents.send('pidev:snapshot', hub);
+      await openMenu('.parent-card[data-context-session="alpha"]');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('rename-workspace').disabled,
+        ),
+        true,
+      );
+      assert.deepEqual(calls, []);
+    },
+  );
+
+  await check(
     'every shipped theme renders workspace menus and compact zoomed agent menus',
     async () => {
       report.themes = await evaluate(() =>
@@ -1027,10 +1200,18 @@ async function main() {
         await openMenu();
         await assertMenuFits();
         await capture(`${theme}-workspace.png`);
-        await key('Escape');
+        await act('rename-workspace');
+        await assertRenameFits();
+        await capture(`${theme}-rename.png`);
+        await click('#rename-workspace-cancel');
         browser.setContentSize(1100, 760);
         await evaluate(() => window.pidev.setZoom(1.5));
         await settle();
+        await openMenu();
+        await act('rename-workspace');
+        await assertRenameFits();
+        await capture(`${theme}-compact-zoom-rename.png`);
+        await click('#rename-workspace-cancel');
         if (
           await evaluate(
             () =>
@@ -1085,6 +1266,42 @@ async function main() {
       ]);
     },
   );
+}
+async function renameValue(value) {
+  await evaluate(value => {
+    const input = document.getElementById('rename-workspace-name');
+    input.value = value;
+    input.dispatchEvent(new window.Event('input', {bubbles: true}));
+  }, value);
+}
+async function assertRenameFits() {
+  const geometry = await evaluate(() => {
+    const dialog = document.getElementById('rename-workspace-dialog');
+    const bounds = dialog.getBoundingClientRect();
+    const visible = [
+      ...dialog.querySelectorAll('input, button, h2, label'),
+    ].every(item => {
+      const rect = item.getBoundingClientRect();
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.left >= bounds.left &&
+        rect.right <= bounds.right &&
+        rect.top >= bounds.top &&
+        rect.bottom <= bounds.bottom
+      );
+    });
+    return {
+      visible,
+      fits:
+        bounds.left >= 0 &&
+        bounds.top >= 0 &&
+        bounds.right <= window.innerWidth &&
+        bounds.bottom <= window.innerHeight,
+      noScroll: dialog.scrollHeight <= dialog.clientHeight,
+    };
+  });
+  assert.deepEqual(geometry, {visible: true, fits: true, noScroll: true});
 }
 async function assertMenuFits() {
   const geometry = await evaluate(() => {

@@ -476,6 +476,7 @@ export function registerFactory(
             }
             if (parsed!.name === 'name' && parsed!.args) {
               pi.setSessionName(parsed!.args);
+              state.updateSession({name: parsed!.args});
               return;
             }
             throw new Error(`Run /${parsed!.name} in the attached terminal.`);

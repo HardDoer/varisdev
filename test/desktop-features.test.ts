@@ -23,6 +23,7 @@ import {
 } from '../src/dashboard/parent.ts';
 import {DesktopToolSettings} from '../src/desktop/tool-settings.ts';
 import {workspaceConfigPaths} from '../src/dashboard/workspace-config.ts';
+import {DashboardHub} from '../src/dashboard/hub.ts';
 
 interface Request {
   model: string;
@@ -864,6 +865,49 @@ void test(
     );
     assert.deepEqual(parent.ui.snapshot().dialogs, []);
     assert.equal(requests.length, 0);
+  },
+);
+
+void test(
+  'workspace rename updates the hub and persists when the saved conversation is resumed',
+  {timeout: 15000},
+  async t => {
+    const {parent, cwd, requests} = await fixture(t);
+    const hub = new DashboardHub(undefined, (request, interaction) =>
+      createDashboardParent(request, undefined, undefined, interaction),
+    );
+    t.after(() => hub.close());
+    hub.adoptSession(parent);
+    await parent.prompt('Remember this conversation');
+    const before = parent.state.snapshot();
+    const messages = (conversation: typeof before.conversation) =>
+      conversation.map(({id, role, text, at}) => ({id, role, text, at}));
+    const count = requests.length;
+    const name = 'Release / α <draft>';
+    await hub.renameSession(before.session.id, `  ${name}  `);
+    const renamed = hub.snapshot().sessions[0];
+    assert.equal(renamed.session.id, before.session.id);
+    assert.equal(renamed.session.sessionFile, before.session.sessionFile);
+    assert.equal(renamed.session.name, name);
+    assert.deepEqual(
+      messages(renamed.conversation),
+      messages(before.conversation),
+    );
+    assert.equal(requests.length, count);
+    const saved = (await hub.listSessions(cwd)).find(
+      item => item.id === before.session.id,
+    );
+    assert.equal(saved?.name, name);
+    await hub.closeSession(before.session.id);
+    await hub.createSession({cwd, sessionId: before.session.id});
+    const resumed = hub.snapshot().sessions[0];
+    assert.equal(resumed.session.id, before.session.id);
+    assert.equal(resumed.session.name, name);
+    assert.deepEqual(
+      messages(resumed.conversation),
+      messages(before.conversation),
+    );
+    assert.equal(requests.length, count);
   },
 );
 

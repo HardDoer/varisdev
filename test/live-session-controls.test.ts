@@ -19,6 +19,7 @@ import {
   type DesktopDashboardParent,
 } from '../src/dashboard/parent.ts';
 import {DashboardHub} from '../src/dashboard/hub.ts';
+import type {DashboardState} from '../src/dashboard/state.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import {registerAgentTools} from '../src/tools/agents.ts';
 import type {FactoryControl} from '../src/desktop/launcher.ts';
@@ -298,6 +299,7 @@ void test(
   async t => {
     const env = await fixture(t);
     let control: FactoryControl | undefined;
+    let attachedState: DashboardState | undefined;
     const runtime = await ModelRuntime.create({
       authPath: join(env.agentDir, 'auth.json'),
       modelsPath: null,
@@ -315,7 +317,8 @@ void test(
         pi =>
           registerFactory(pi, registerAgentTools(pi), {
             isOpen: () => false,
-            async launch(_state, current) {
+            async launch(state, current) {
+              attachedState = state;
               control = current;
               return {
                 show() {},
@@ -380,6 +383,9 @@ void test(
     );
     await control.prompt(`/model ${env.provider}/two`);
     await control.prompt('/thinking high');
+    await control.prompt('/name Attached workspace');
+    assert.equal(session.sessionManager.getSessionName(), 'Attached workspace');
+    assert.equal(attachedState!.snapshot().session.name, 'Attached workspace');
     for (const command of ['/model', '/settings', '/share', '/bug', '/export'])
       await assert.rejects(
         Promise.resolve().then(() => control!.prompt(command)),

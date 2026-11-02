@@ -2729,7 +2729,7 @@ async function main() {
                     r.right <= innerWidth &&
                     r.bottom <= innerHeight &&
                     drawer.querySelectorAll('#active-workers button').length ===
-                      3 &&
+                      4 &&
                     drawer.querySelectorAll('#history-workers button')
                       .length === 3
                   );
@@ -4403,7 +4403,7 @@ async function main() {
       await publish();
       await until(
         () =>
-          document.getElementById('metric-running').textContent === '2' &&
+          document.getElementById('metric-running').textContent === '3' &&
           document.getElementById('metric-queued').textContent === '0' &&
           document
             .getElementById('scene-labels')
@@ -5333,6 +5333,7 @@ async function main() {
           select.dispatchEvent(new Event('change', {bubbles: true}));
         }, theme);
         for (const name of [
+          'Alpha factory',
           'Working agent',
           'Queued agent',
           'Completed agent',
@@ -5368,6 +5369,8 @@ async function main() {
             contrast(result.card.taskColor, result.card.background) >= 4.5,
             `${theme}: the selected task must remain readable`,
           );
+          if (name === 'Alpha factory' && process.env.DESKTOP_UI_SCREENSHOT_DIR)
+            await screenshot(`main-agent-selection-${theme}`);
         }
       }
       await evaluate(() => {
@@ -10303,6 +10306,348 @@ async function main() {
   );
 
   await run(
+    'main agent stays in active agents with live state counts and closed history',
+    async () => {
+      const data = hub.sessions[0];
+      data.session.prompt = 'Inspect the main project';
+      const listed = () => {
+        const cards = id =>
+          [...document.querySelectorAll(`#${id} button`)].map(card => ({
+            id: card.dataset.contextUnit,
+            kind: card.dataset.agentKind,
+            name: card.querySelector('.worker-card-name, .history-row-name')
+              .textContent,
+            status: card.querySelector('.status-badge').textContent,
+          }));
+        return {
+          active: cards('active-workers'),
+          history: cards('history-workers'),
+          activeCount: document.getElementById('active-count').textContent,
+          historyCount: document.getElementById('history-count').textContent,
+          working: document.getElementById('metric-running').textContent,
+          failed: document.getElementById('metric-attention').textContent,
+          empty: !document.getElementById('no-workers').hidden,
+        };
+      };
+      await publish();
+      assert.deepEqual(await evaluate(listed), {
+        active: [
+          {
+            id: 'parent',
+            kind: 'main',
+            name: 'Alpha factory',
+            status: 'Working',
+          },
+        ],
+        history: [],
+        activeCount: '1',
+        historyCount: '0',
+        working: '1',
+        failed: '0',
+        empty: false,
+      });
+      data.agents = ['running', 'queued', 'completed', 'failed'].map(
+        status => ({
+          id: `main-list-${status}`,
+          name: `Worker ${status}`,
+          task: 'Inspect a delegated task',
+          activity: `Worker is ${status}`,
+          status,
+          createdAt: at,
+          startedAt: at,
+        }),
+      );
+      data.totalAgents = data.agents.length;
+      for (const [status, label, working, error] of [
+        ['idle', 'Ready', '1'],
+        ['running', 'Working', '2'],
+        ['compacting', 'Compacting', '2'],
+        ['idle', 'Error', '1', 'Provider connection failed'],
+        ['idle', 'Ready', '1'],
+      ]) {
+        data.session.status = status;
+        data.session.error = error;
+        data.session.activity = error || `Main is ${status}`;
+        await publish();
+        // Repeated snapshots must update the same card and counts.
+        await publish();
+        const result = await evaluate(listed);
+        assert.equal(result.activeCount, '3');
+        assert.equal(result.historyCount, '2');
+        assert.equal(result.working, working);
+        assert.equal(result.failed, error ? '2' : '1');
+        assert.equal(result.empty, false);
+        assert.deepEqual(result.active[0], {
+          id: 'parent',
+          kind: 'main',
+          name: 'Alpha factory',
+          status: label,
+        });
+        assert.equal(
+          [...result.active, ...result.history].filter(
+            card => card.id === 'parent',
+          ).length,
+          1,
+        );
+        assert.deepEqual(
+          await evaluate(() => ({
+            task: document.querySelector(
+              '#active-workers [data-context-unit="parent"] .worker-card-task',
+            ).textContent,
+            activity: document.querySelector(
+              '#active-workers [data-context-unit="parent"] .worker-card-activity',
+            ).textContent,
+            model: document.querySelector(
+              '#active-workers [data-context-unit="parent"] .worker-card-meta > span',
+            ).textContent,
+            queued: document.getElementById('metric-queued').textContent,
+            completed: document.getElementById('metric-completed').textContent,
+            hub: document.getElementById('hub-counts').textContent,
+          })),
+          {
+            task: 'Inspect the main project',
+            activity: error || `Main is ${status}`,
+            model: 'fixture/small',
+            queued: '1',
+            completed: '1',
+            hub: `2 workspaces · ${Number(working) + 1} working agents`,
+          },
+        );
+      }
+      data.session.status = 'closed';
+      await publish();
+      const closed = await evaluate(listed);
+      assert.equal(closed.activeCount, '2');
+      assert.equal(closed.historyCount, '3');
+      assert.deepEqual(closed.history[0], {
+        id: 'parent',
+        kind: 'main',
+        name: 'Alpha factory',
+        status: 'Closed',
+      });
+      assert.equal(
+        closed.active.some(card => card.id === 'parent'),
+        false,
+      );
+      await clickPointer('#history-workers [data-context-unit="parent"]', {
+        scroll: true,
+      });
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('inspector-title').textContent,
+        ),
+        'Alpha factory',
+      );
+      data.session.status = 'idle';
+      await publish();
+      assert.equal(
+        (await evaluate(listed)).history.some(card => card.id === 'parent'),
+        false,
+      );
+      await clickPointer('#parents [data-context-session="beta"]');
+      assert.deepEqual((await evaluate(listed)).active, [
+        {id: 'parent', kind: 'main', name: 'Beta factory', status: 'Working'},
+      ]);
+    },
+  );
+
+  for (const [width, height, zoom] of [
+    [1600, 1000, 1],
+    [1100, 760, 1.5],
+  ]) {
+    await run(
+      `main agent card selects its conversation and safe actions at ${width} zoom ${zoom}`,
+      async () => {
+        const data = hub.sessions[0];
+        data.session.status = 'idle';
+        data.session.activity = 'Ready for a task';
+        data.agents = [
+          {
+            id: 'main-selection-worker',
+            name: 'Review worker',
+            task: 'Review project files',
+            activity: 'Reading files',
+            status: 'running',
+            agentMode: 'primary',
+            model: 'fixture/small',
+            createdAt: at,
+            startedAt: at,
+            conversation: [
+              {
+                id: 'worker-answer',
+                role: 'assistant',
+                text: 'Worker conversation',
+                at,
+              },
+            ],
+          },
+        ];
+        data.totalAgents = 1;
+        await publish();
+        window.webContents.setZoomFactor(zoom);
+        await settle();
+        const compact = await evaluate(() =>
+          document.getElementById('factory-agents-button').checkVisibility(),
+        );
+        const openAgents = async () => {
+          if (
+            compact &&
+            !(await evaluate(() =>
+              document
+                .getElementById('factory-agents-drawer')
+                .matches(':popover-open'),
+            ))
+          )
+            await clickPointer('#factory-agents-button');
+        };
+        const fill = value =>
+          evaluate(value => {
+            const editor = document.getElementById('parent-prompt');
+            editor.value = value;
+            editor.dispatchEvent(new Event('input', {bubbles: true}));
+          }, value);
+        await fill('Main conversation draft');
+        await openAgents();
+        await clickPointer(
+          '#active-workers [data-context-unit="main-selection-worker"]',
+          {scroll: true},
+        );
+        await fill('Worker conversation draft');
+        await openAgents();
+        await clickPointer('#active-workers [data-context-unit="parent"]', {
+          scroll: true,
+        });
+        assert.deepEqual(
+          await evaluate(() => ({
+            selected: document.querySelector(
+              '#active-workers [aria-pressed="true"]',
+            ).dataset.contextUnit,
+            title: document.getElementById('inspector-title').textContent,
+            kind: document.getElementById('conversation-kind-label')
+              .textContent,
+            draft: document.getElementById('parent-prompt').value,
+            activeCount: document.getElementById('active-count').textContent,
+            cancelHidden: document.getElementById('cancel-agent').hidden,
+            removeHidden: document.getElementById('remove-agent').hidden,
+          })),
+          {
+            selected: 'parent',
+            title: 'Alpha factory',
+            kind: 'Main agent',
+            draft: 'Main conversation draft',
+            activeCount: '2',
+            cancelHidden: true,
+            removeHidden: true,
+          },
+        );
+        assert.match(
+          await evaluate(
+            () => document.getElementById('conversation').textContent,
+          ),
+          /I will inspect the project/,
+        );
+        assert.doesNotMatch(
+          await evaluate(
+            () => document.getElementById('conversation').textContent,
+          ),
+          /Worker conversation/,
+        );
+        await openAgents();
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`main-agent-${width}-${zoom}-agents`);
+        if (compact) await press('Escape');
+        await clickPointer('#item-actions-button');
+        assert.deepEqual(
+          await evaluate(() => ({
+            cancelHidden: document.getElementById('cancel-agent').hidden,
+            removeHidden: document.getElementById('remove-agent').hidden,
+            resetHidden: document.getElementById('reset-item-session').hidden,
+          })),
+          {cancelHidden: true, removeHidden: true, resetHidden: false},
+        );
+        await press('Escape');
+        await clickPointer('#send-prompt');
+        await until(
+          () => document.getElementById('parent-prompt').value === '',
+          'Main prompt did not submit',
+        );
+        assert.equal(
+          calls.filter(call => call.method === 'prompt').at(-1)?.sessionId,
+          'alpha',
+        );
+        assert.equal(
+          calls.filter(call => call.method === 'prompt').at(-1)?.request.prompt,
+          'Main conversation draft',
+        );
+        data.session.status = 'running';
+        await publish();
+        await clickPointer('#abort-parent');
+        await until(
+          () => !document.getElementById('abort-parent').disabled,
+          'Main stop did not settle',
+        );
+        assert.equal(
+          calls.filter(call => call.method === 'abort').at(-1)?.sessionId,
+          'alpha',
+        );
+        assert.equal(
+          calls.some(
+            call =>
+              call.method === 'cancelAgent' ||
+              (call.method === 'agentSession' &&
+                call.request.agentId === 'parent'),
+          ),
+          false,
+        );
+        assert.equal(
+          await evaluate(() =>
+            localStorage.getItem('varisdev.dismissed-agents.v1'),
+          ),
+          null,
+        );
+        await openAgents();
+        await clickPointer(
+          '#active-workers [data-context-unit="main-selection-worker"]',
+          {scroll: true},
+        );
+        assert.equal(
+          await evaluate(() => document.getElementById('parent-prompt').value),
+          'Worker conversation draft',
+        );
+        await openAgents();
+        await clickPointer('#active-workers [data-context-unit="parent"]', {
+          scroll: true,
+        });
+        const geometry = await evaluate(() => {
+          const scene = document
+            .getElementById('scene')
+            .getBoundingClientRect();
+          const composer = document
+            .getElementById('send-prompt')
+            .getBoundingClientRect();
+          return {
+            sceneWidth: scene.width,
+            sceneHeight: scene.height,
+            bodyOverflow: document.documentElement.scrollHeight > innerHeight,
+            composerVisible:
+              composer.top >= 0 && composer.bottom <= innerHeight,
+          };
+        });
+        assert.ok(
+          geometry.sceneWidth >= 180 && geometry.sceneHeight >= 160,
+          JSON.stringify(geometry),
+        );
+        assert.equal(geometry.bodyOverflow, false);
+        assert.equal(geometry.composerVisible, true);
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+          await screenshot(`main-agent-${width}-${zoom}-conversation`);
+      },
+      width,
+      height,
+    );
+  }
+
+  await run(
     'direct agent prompts resume retained conversations and isolate drafts cursor pending sends and errors',
     async () => {
       await until(
@@ -10724,27 +11069,28 @@ async function main() {
             );
           })(),
           workers: Object.fromEntries(
-            [...document.querySelectorAll('#active-workers .worker-card')].map(
-              card => {
-                const name =
-                  card.querySelector('.worker-card-name').textContent;
-                const glyph = card.querySelector('.robot-glyph');
-                return [
-                  name,
-                  {
-                    kind: card.dataset.agentKind,
-                    glyphKind: glyph.dataset.agentKind,
-                    primary: glyph.classList.contains('robot-primary'),
-                    subagent: glyph.classList.contains('robot-subagent'),
-                    crown:
-                      getComputedStyle(glyph.querySelector('.robot-crown'))
-                        .display !== 'none',
-                    role: glyph.getAttribute('role'),
-                    label: glyph.getAttribute('aria-label'),
-                  },
-                ];
-              },
-            ),
+            [
+              ...document.querySelectorAll(
+                '#active-workers .worker-card:not([data-context-unit="parent"])',
+              ),
+            ].map(card => {
+              const name = card.querySelector('.worker-card-name').textContent;
+              const glyph = card.querySelector('.robot-glyph');
+              return [
+                name,
+                {
+                  kind: card.dataset.agentKind,
+                  glyphKind: glyph.dataset.agentKind,
+                  primary: glyph.classList.contains('robot-primary'),
+                  subagent: glyph.classList.contains('robot-subagent'),
+                  crown:
+                    getComputedStyle(glyph.querySelector('.robot-crown'))
+                      .display !== 'none',
+                  role: glyph.getAttribute('role'),
+                  label: glyph.getAttribute('aria-label'),
+                },
+              ];
+            }),
           ),
         })),
         {
@@ -10821,7 +11167,11 @@ async function main() {
         editor.value = 'Unsent parent draft';
         editor.dispatchEvent(new Event('input', {bubbles: true}));
         document.querySelector('#conversation details summary').click();
-        document.querySelector('#active-workers button').click();
+        document
+          .querySelector(
+            '#active-workers button:not([data-context-unit="parent"])',
+          )
+          .click();
         document.querySelector('#conversation details').open = true;
       });
       await settle();
@@ -11949,7 +12299,11 @@ async function main() {
       hub.sessions[0].totalAgents = 1;
       await publish();
       await evaluate(() => {
-        document.querySelector('#active-workers button').click();
+        document
+          .querySelector(
+            '#active-workers button:not([data-context-unit="parent"])',
+          )
+          .click();
         document.getElementById('back-to-parent').click();
         document.getElementById('tab-context').focus();
         document.getElementById('tab-context').click();
@@ -13918,7 +14272,11 @@ async function main() {
         editor.value = 'Keep this draft in the working parent';
         editor.dispatchEvent(new Event('input', {bubbles: true}));
         editor.setSelectionRange(5, 15);
-        document.querySelector('#active-workers button').click();
+        document
+          .querySelector(
+            '#active-workers button:not([data-context-unit="parent"])',
+          )
+          .click();
         document.getElementById('app-menu-button').click();
       });
       assert.deepEqual(
@@ -14428,7 +14786,11 @@ async function main() {
         editor.dispatchEvent(new Event('select', {bubbles: true}));
         const {flushDrafts} = await import('./draft-storage.js');
         flushDrafts();
-        document.querySelector('#active-workers button').click();
+        document
+          .querySelector(
+            '#active-workers button:not([data-context-unit="parent"])',
+          )
+          .click();
         document.getElementById('back-to-parent').click();
         document.getElementById('item-actions-button').click();
         document.getElementById('close-session').click();

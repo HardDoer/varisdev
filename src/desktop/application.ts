@@ -8,7 +8,9 @@ import {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   shell,
+  Tray,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron';
@@ -57,6 +59,7 @@ import {
 } from './completion-sound.ts';
 import {DesktopSnapshotDelivery} from './snapshot-delivery.ts';
 import {DesktopPreferences} from './preferences.ts';
+import {DesktopTray} from './tray.ts';
 import {DesktopTerminals} from './terminal.ts';
 import {openConversationFile, openConversationURL} from './files.ts';
 import {DesktopAccounts} from './accounts.ts';
@@ -142,6 +145,7 @@ const toolSettings = new DesktopToolSettings({
   sessionFeatures: sessionId => hub.sessionFeatures(sessionId),
 });
 let mainWindow: BrowserWindow | undefined;
+let desktopTray: DesktopTray | undefined;
 const completionSound = new DesktopCompletionSound(hub, {
   window: () => mainWindow,
   play: shouldPlay =>
@@ -181,6 +185,7 @@ let updateTimer: NodeJS.Timeout | undefined;
 const sessionActions = new Set([
   'pidev:create-session',
   'pidev:close-session',
+  'pidev:rename-session',
   'pidev:prompt-session',
   'pidev:agent-session',
   'pidev:save-agent-template',
@@ -392,6 +397,9 @@ function installHandlers(): void {
       closingSessions.delete(parentId);
     }
   });
+  handle('pidev:rename-session', (sessionId, input) =>
+    hub.renameSession(id(sessionId), input),
+  );
   handle('pidev:prompt-session', (sessionId, input) =>
     hub.promptSession(id(sessionId), input),
   );
@@ -525,6 +533,29 @@ function showWindow(): void {
   snapshotDelivery.refresh();
 }
 
+function installTray(): void {
+  let tray: Tray | undefined;
+  try {
+    const size = process.platform === 'darwin' ? 18 : 22;
+    tray = new Tray(
+      process.platform === 'win32'
+        ? iconPath
+        : nativeImage
+            .createFromPath(iconPath)
+            .resize({width: size, height: size}),
+    );
+    desktopTray = new DesktopTray(hub, {
+      tray,
+      buildMenu: template => Menu.buildFromTemplate(template),
+      showWindow,
+      quit: () => app.quit(),
+    });
+  } catch (error) {
+    tray?.destroy();
+    console.error('Could not create the system tray icon:', error);
+  }
+}
+
 async function createWindow(): Promise<void> {
   const windowsLauncher =
     process.platform === 'win32'
@@ -576,10 +607,10 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.session.setPermissionCheckHandler(() => false);
   mainWindow.on('page-title-updated', event => event.preventDefault());
   mainWindow.on('close', event => {
-    if (!cleanupFinished) {
-      event.preventDefault();
-      app.quit();
-    }
+    if (cleanupFinished) return;
+    event.preventDefault();
+    if (!shuttingDown && desktopTray?.isAvailable()) mainWindow!.hide();
+    else app.quit();
   });
   mainWindow.once('ready-to-show', showWindow);
   mainWindow.once('closed', () => {
@@ -850,6 +881,7 @@ async function shutdown(): Promise<void> {
   clearInterval(updateTimer);
   unsubscribe();
   completionSound.dispose();
+  desktopTray?.dispose();
   try {
     await runtime.waitForUpdate();
     terminals.dispose();
@@ -900,6 +932,7 @@ if (!primaryInstance) {
       app.dock?.setIcon(iconPath);
       installHandlers();
       installMenu();
+      installTray();
       await createWindow();
       if (startupRequest) {
         process.send?.({type: 'startup-request'});

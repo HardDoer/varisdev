@@ -392,6 +392,17 @@ export class DashboardState {
     return {id, status, completionId};
   }
 
+  /** Work status without projecting conversation history. */
+  workState(): {
+    status: DashboardSession['status'];
+    agents: AgentRecord['status'][];
+  } {
+    return {
+      status: this.session.status,
+      agents: this.agents.map(agent => agent.status),
+    };
+  }
+
   /** A cached snapshot for immediate serialization. Callers must not mutate it. */
   deliverySnapshot(): DashboardSnapshot {
     return (this.cachedSnapshot ??= {

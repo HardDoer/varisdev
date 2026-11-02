@@ -383,6 +383,26 @@ export class DashboardHub {
     return states;
   }
 
+  /** Native work status stays cheap while renderer delivery is paused. */
+  workStates(): Array<
+    ReturnType<DashboardState['workState']> & {awaitingInput: boolean}
+  > {
+    const states = [...this.sessions.values()].map(entry => ({
+      ...entry.state.workState(),
+      awaitingInput: entry.parent?.ui?.hasPendingDialogs() ?? false,
+    }));
+    for (const pending of this.starting.values())
+      if (pending.ui.hasPendingDialogs())
+        states.push({status: 'idle', agents: [], awaitingInput: true});
+    if (this.external)
+      states.unshift({
+        status: this.external.session.status,
+        agents: this.external.agents.map(agent => agent.status),
+        awaitingInput: false,
+      });
+    return states;
+  }
+
   /** A cached snapshot for immediate IPC serialization. Do not mutate it. */
   deliverySnapshot(): DashboardHubSnapshot {
     if (this.cachedSnapshot) return this.cachedSnapshot;
@@ -1046,6 +1066,16 @@ export class DashboardHub {
     const attached = this.attached(id);
     if (attached) return attached.reload(id);
     await this.maintain(id, parent => parent.reload());
+  }
+
+  async renameSession(id: string, input: unknown): Promise<void> {
+    const name = text(input, 'Workspace name', 120);
+    if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(name))
+      throw new DashboardInputError('Workspace name must be a single line.');
+    const prompt = `/name ${name}`;
+    const attached = this.attached(id);
+    if (attached) return attached.prompt(id, prompt);
+    await this.maintain(id, parent => parent.prompt(prompt), true);
   }
 
   async promptSession(id: string, input: unknown): Promise<void> {

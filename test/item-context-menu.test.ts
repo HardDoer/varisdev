@@ -61,8 +61,8 @@ void test(
     assert.ifError(report.error);
     assert.deepEqual(failures, []);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 15);
+    assert.equal(report.cases.length, 19);
     assert.ok(report.themes.length >= 10);
-    assert.equal(report.screenshots.length, report.themes.length * 2 + 1);
+    assert.equal(report.screenshots.length, report.themes.length * 4 + 1);
   },
 );

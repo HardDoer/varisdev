@@ -93,6 +93,7 @@ contextBridge.exposeInMainWorld('pidev', {
     invoke('pidev:open-workspace-configuration', cwd),
   createSession: input => invoke('pidev:create-session', input),
   closeSession: id => invoke('pidev:close-session', id),
+  renameSession: (id, name) => invoke('pidev:rename-session', id, name),
   promptSession: (id, input) => invoke('pidev:prompt-session', id, input),
   abortSession: id => invoke('pidev:abort-session', id),
   listAgentTemplates: cwd => invoke('pidev:list-agent-templates', cwd),

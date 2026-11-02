@@ -120,6 +120,21 @@ void test('finished agents can be dismissed from one parent and return if resume
     },
   });
 
+  selected = 'parent';
+  controls.render();
+  assert.equal(nodes['cancel-agent'].hidden, true);
+  assert.equal(nodes['cancel-agent'].disabled, true);
+  assert.equal(nodes['remove-agent'].hidden, true);
+  assert.equal(nodes['remove-agent'].disabled, true);
+  // Selection can change before the next render disables an old action.
+  nodes['cancel-agent'].listeners.get('click')?.();
+  nodes['remove-agent'].listeners.get('click')?.();
+  controls.dismiss();
+  await setImmediate();
+  assert.deepEqual(cancelled, []);
+  assert.equal(stored.has('varisdev.dismissed-agents.v1'), false);
+  assert.equal(current.sessions[0].agents.length, 6);
+
   for (const id of ['queued', 'running', 'cancelling']) {
     selected = id;
     controls.render();

@@ -43,6 +43,8 @@ export function initItemContextMenu({selected, select}) {
       'aria-label',
       `${current.unitId === 'parent' ? 'Workspace' : 'Agent'} actions for ${current.name}`,
     );
+    document.getElementById('rename-workspace').hidden =
+      current.unitId !== 'parent';
     document.getElementById('reset-item-session').hidden =
       current.unitId !== 'parent';
     document.getElementById('cancel-all-agents').hidden =

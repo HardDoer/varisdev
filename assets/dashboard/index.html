@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="environment.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link rel="stylesheet" href="item-context-menu.css" />
+    <link rel="stylesheet" href="workspace-rename.css" />
     <link rel="stylesheet" href="live-view.css" />
     <link rel="stylesheet" href="speed-mode.css" />
     <link rel="stylesheet" href="agent-templates.css" />
@@ -51,6 +52,16 @@
       aria-labelledby="item-context-menu-title"
     >
       <h2 id="item-context-menu-title"></h2>
+      <button
+        id="rename-workspace"
+        class="quiet-button"
+        type="button"
+        role="menuitem"
+        tabindex="-1"
+        disabled
+      >
+        Rename workspace
+      </button>
       <button
         id="reset-item-session"
         class="quiet-button"
@@ -103,6 +114,47 @@
         Close workspace
       </button>
     </div>
+    <dialog
+      id="rename-workspace-dialog"
+      aria-labelledby="rename-workspace-title"
+    >
+      <form id="rename-workspace-form" novalidate>
+        <div class="dialog-heading">
+          <h2 id="rename-workspace-title">Rename workspace</h2>
+        </div>
+        <label for="rename-workspace-name">Workspace name</label>
+        <input
+          id="rename-workspace-name"
+          type="text"
+          maxlength="120"
+          required
+          autocomplete="off"
+          aria-describedby="rename-workspace-error"
+        />
+        <p
+          id="rename-workspace-error"
+          class="form-error"
+          role="alert"
+          hidden
+        ></p>
+        <div class="dialog-footer">
+          <button
+            id="rename-workspace-cancel"
+            class="quiet-button"
+            type="button"
+          >
+            Cancel
+          </button>
+          <button
+            id="rename-workspace-save"
+            class="primary-button"
+            type="submit"
+          >
+            Save
+          </button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="session-history-dialog" aria-labelledby="session-history-title">
       <div class="dialog-heading">
         <h2 id="session-history-title">Resume session</h2>

@@ -1025,6 +1025,85 @@ void test('native feature controls stay live during compaction and keep reload i
   await assert.rejects(hub.sessionFeatures('missing'), /Unknown/);
 });
 
+void test('workspace rename validates names, awaits the native command and forwards attached sessions', async t => {
+  const current = controlledParent('rename', process.cwd());
+  const actions: string[] = [];
+  const renamed = Promise.withResolvers<void>();
+  current.parent.prompt = async prompt => {
+    actions.push(prompt);
+    await renamed.promise;
+    current.parent.state.updateSession({name: prompt.slice('/name '.length)});
+  };
+  const hub = new DashboardHub(undefined, async () => current.parent);
+  t.after(() => hub.close());
+  await hub.createSession({cwd: process.cwd()});
+  current.parent.state.updateSession({status: 'running'});
+  for (const invalid of [undefined, null, 42, {}, '', '   ', 'x'.repeat(121)])
+    await assert.rejects(
+      hub.renameSession('rename', invalid),
+      /Workspace name/,
+    );
+  await assert.rejects(
+    hub.renameSession('rename', 'Two\nlines'),
+    /single line/,
+  );
+  assert.deepEqual(actions, []);
+  let finished = false;
+  const operation = hub
+    .renameSession('rename', '  Release / α <draft>  ')
+    .then(() => {
+      finished = true;
+    });
+  await nextTick();
+  assert.equal(finished, false);
+  renamed.resolve();
+  await operation;
+  assert.deepEqual(actions, ['/name Release / α <draft>']);
+  assert.equal(hub.snapshot().sessions[0].session.name, 'Release / α <draft>');
+  assert.equal(hub.snapshot().sessions[0].session.status, 'running');
+  assert.deepEqual(hub.snapshot().sessions[0].conversation, []);
+  await assert.rejects(hub.renameSession('missing', 'New name'), /Unknown/);
+  current.parent.prompt = async () => {
+    throw new Error('Session name could not be saved');
+  };
+  await assert.rejects(
+    hub.renameSession('rename', 'Retry name'),
+    /could not be saved/,
+  );
+  assert.equal(hub.snapshot().sessions[0].session.name, 'Release / α <draft>');
+  current.parent.state.updateSession({status: 'closed'});
+  await assert.rejects(hub.renameSession('rename', 'Closed name'), /idle/);
+
+  const attached = state('attached-rename');
+  hub.updateExternal(attached.snapshot());
+  const attachedActions: unknown[] = [];
+  hub.setExternalControl({
+    ...featureControls,
+    async prompt(id, prompt) {
+      attachedActions.push([id, prompt]);
+      attached.updateSession({name: prompt.slice('/name '.length)});
+      hub.updateExternal(attached.snapshot());
+    },
+    async abort() {
+      return {steering: [], followUp: []};
+    },
+  });
+  await hub.renameSession('attached-rename', '  Terminal workspace  ');
+  assert.deepEqual(attachedActions, [
+    ['attached-rename', '/name Terminal workspace'],
+  ]);
+  assert.equal(
+    hub.snapshot().sessions.find(item => item.session.id === 'attached-rename')!
+      .session.name,
+    'Terminal workspace',
+  );
+  hub.setExternalControl(undefined);
+  await assert.rejects(
+    hub.renameSession('attached-rename', 'Disconnected'),
+    /connected/,
+  );
+});
+
 void test('native extension dialogs appear in hub snapshots and receive validated responses during active work', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-dialogs-'));
   t.after(() => rm(directory, {recursive: true, force: true}));

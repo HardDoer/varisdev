@@ -21,6 +21,7 @@ import {initEnvironment} from './environment.js';
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
 import {initItemContextMenu} from './item-context-menu.js';
+import {initWorkspaceRename} from './workspace-rename.js';
 import {initLiveView} from './live-view.js';
 import {initPanelResize} from './panel-resize.js';
 import {initPanelLayout} from './panel-layout.js';
@@ -440,10 +441,14 @@ function duration(item) {
 }
 function counts(data) {
   return {
-    working: data.agents.filter(item => WORKING.has(item.status)).length,
+    working:
+      Number(['running', 'compacting'].includes(data.session.status)) +
+      data.agents.filter(item => WORKING.has(item.status)).length,
     queued: data.agents.filter(item => item.status === 'queued').length,
     completed: data.agents.filter(item => item.status === 'completed').length,
-    failed: data.agents.filter(item => item.status === 'failed').length,
+    failed:
+      Number(parentHasError(data.session)) +
+      data.agents.filter(item => item.status === 'failed').length,
   };
 }
 function orderedAgents(agents) {
@@ -793,10 +798,7 @@ function renderOverview() {
     },
   );
   const working = workspaces.reduce(
-    (sum, data) =>
-      sum +
-      Number(['running', 'compacting'].includes(data.session.status)) +
-      data.agents.filter(agent => WORKING.has(agent.status)).length,
+    (sum, data) => sum + counts(data).working,
     0,
   );
   text(
@@ -1053,7 +1055,7 @@ function createWorkerCard(agent) {
   const element = node('button', 'worker-card');
   element.type = 'button';
   const header = node('span', 'worker-card-header');
-  const mark = robot(conversationKind(agent));
+  const mark = robot(conversationKind(agent, agent.id === 'parent'));
   const name = node('span', 'worker-card-name');
   const status = node('span');
   header.append(mark, name, status);
@@ -1071,7 +1073,7 @@ function createWorkerCard(agent) {
 function createHistoryRow(agent) {
   const element = node('button', 'history-row');
   element.type = 'button';
-  const mark = robot(conversationKind(agent));
+  const mark = robot(conversationKind(agent, agent.id === 'parent'));
   const info = node('span', 'history-row-info');
   const name = node('span', 'history-row-name');
   const task = node('span', 'history-row-task');
@@ -1085,9 +1087,20 @@ function createHistoryRow(agent) {
 function renderWorkers() {
   const data = snapshot();
   if (!data) return;
+  const main = {
+    ...data.session,
+    id: 'parent',
+    task: data.session.prompt || 'Main agent conversation',
+  };
   const agents = orderedAgents(data.agents);
-  const active = agents.filter(item => LIVE.has(item.status));
-  const history = agents.filter(item => !LIVE.has(item.status));
+  const active = [
+    ...(main.status === 'closed' ? [] : [main]),
+    ...agents.filter(item => LIVE.has(item.status)),
+  ];
+  const history = [
+    ...(main.status === 'closed' ? [main] : []),
+    ...agents.filter(item => !LIVE.has(item.status)),
+  ];
   reconcile(
     $('active-workers'),
     workerNodes,
@@ -1095,7 +1108,8 @@ function renderWorkers() {
     item => item.id,
     createWorkerCard,
     (entry, agent) => {
-      const kind = conversationKind(agent);
+      const parent = agent.id === 'parent';
+      const kind = conversationKind(agent, parent);
       entry.element.classList.toggle('selected', state.unitId === agent.id);
       entry.element.setAttribute(
         'aria-pressed',
@@ -1106,12 +1120,18 @@ function renderWorkers() {
       entry.element.dataset.agentKind = kind;
       updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
-      badge(entry.status, agent.status);
+      if (parent) parentBadge(entry.status, agent);
+      else badge(entry.status, agent.status);
+      const activity = parent
+        ? (parentHasError(agent) && agent.error) ||
+          agent.activity ||
+          statusName(agent.status)
+        : agent.activity || 'Waiting for activity';
       text(entry.task, agent.task);
-      text(entry.activity, agent.activity || 'Waiting for activity');
+      text(entry.activity, activity);
       text(entry.model, agent.model);
       text(entry.time, duration(agent));
-      entry.element.title = `${conversationKindLabel(kind)} · ${agent.name}\n${agent.task}\n${agent.activity || ''}\n${agent.model}`;
+      entry.element.title = `${conversationKindLabel(kind)} · ${agent.name}\n${agent.task}\n${activity}\n${agent.model || ''}`;
     },
   );
   $('no-workers').hidden = active.length > 0;
@@ -1129,7 +1149,7 @@ function renderWorkers() {
     item => item.id,
     createHistoryRow,
     (entry, agent) => {
-      const kind = conversationKind(agent);
+      const kind = conversationKind(agent, agent.id === 'parent');
       entry.element.classList.toggle('selected', state.unitId === agent.id);
       entry.element.setAttribute(
         'aria-pressed',
@@ -2081,6 +2101,7 @@ function render() {
     updateMarkdownFiles();
   }
   itemContextMenu.sync();
+  workspaceRename.sync();
 }
 function receive(hub) {
   if (state.disposed) return;
@@ -2182,6 +2203,14 @@ function renderSessionActions() {
         : 'Reset conversation',
   );
   $('reset-item-session').disabled = $('start-session').disabled || !session;
+  $('rename-workspace').disabled =
+    !api?.renameSession ||
+    !parent ||
+    !session ||
+    !canControl(session) ||
+    session.status === 'closed' ||
+    stopping.has(session.id) ||
+    closingSessions.has(session.id);
   $('close-session').disabled =
     Boolean(creating) ||
     !session ||
@@ -2937,6 +2966,12 @@ const itemContextMenu = initItemContextMenu({
     return true;
   },
 });
+const workspaceRename = initWorkspaceRename({
+  api,
+  current: () => state.unitId === 'parent' && snapshot()?.session,
+  sessions: () => state.hub.sessions.map(item => item.session),
+  renamed: () => api.getState().then(receive).catch(showError),
+});
 const liveView = initLiveView();
 const cleanupPanelLayout = initPanelLayout({
   onChange({visualization}) {
@@ -3044,6 +3079,7 @@ window.addEventListener('unload', () => {
   toolSettings.dispose();
   appMenu.dispose();
   itemContextMenu.dispose();
+  workspaceRename.dispose();
   liveView.dispose();
   cleanupPanelLayout();
   inspectorPanels.dispose();
@@ -3071,7 +3107,11 @@ if (api) {
   clock = setInterval(() => {
     if (document.hidden || state.disposed) return;
     for (const [id, entry] of workerNodes) {
-      const agent = snapshot()?.agents.find(item => item.id === id);
+      const data = snapshot();
+      const agent =
+        id === 'parent'
+          ? data?.session
+          : data?.agents.find(item => item.id === id);
       if (agent) text(entry.time, duration(agent));
     }
     for (const message of conversationData()?.conversation || []) {

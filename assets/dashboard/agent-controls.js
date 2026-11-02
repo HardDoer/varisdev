@@ -137,7 +137,7 @@ export function initAgentControls({
 
   async function cancel(agentId) {
     const data = selected();
-    if (!api || !data || !agentId) return;
+    if (!api || !data || !agentId || agentId === 'parent') return;
     const sessionId = data.session.id;
     const id = key(sessionId, agentId);
     if (pending.has(id)) return;
@@ -160,6 +160,7 @@ export function initAgentControls({
     sessionId = selected()?.session.id,
     agentId = selectedAgent(),
   ) {
+    if (agentId === 'parent') return;
     const data = selected();
     const agent =
       data?.session.id === sessionId
