@@ -133,6 +133,7 @@ void test(
       'web-install',
       'release-web',
       'runtime-updates',
+      'runtime-cleanup',
       'node-version',
       'windows-environment',
       'installer-package',

@@ -540,8 +540,17 @@ async function check(name, fn) {
           .getBoundingClientRect();
         return {x: box.x, y: box.y, height: box.height};
       });
+      await evaluate(() =>
+        document
+          .querySelector('#active-workers [data-context-unit="worker"]')
+          .click(),
+      );
+      await until(
+        () =>
+          document.getElementById('inspector-title').dataset.contextUnit ===
+          'worker',
+      );
       await evaluate(() => {
-        document.querySelector('#active-workers button').click();
         document.querySelector('#conversation details').open = true;
       });
       await loaded();

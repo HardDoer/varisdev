@@ -257,7 +257,7 @@ void test('theme helpers and tool expansion keep normal extension API behavior',
   adapter.dispose();
 });
 
-async function selectorRuntime(t: TestContext) {
+async function selectorRuntime(t: TestContext, extraModels = 0) {
   const directory = await mkdtemp(join(tmpdir(), 'desktop-model-selector-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
   const modelsPath = join(directory, 'models.json');
@@ -272,6 +272,10 @@ async function selectorRuntime(t: TestContext) {
           models: [
             {id: 'alpha', name: 'Alpha model'},
             {id: 'beta', name: 'Beta model'},
+            ...Array.from({length: extraModels}, (_, index) => ({
+              id: `model-${String(index + 1).padStart(2, '0')}`,
+              name: `Paging model ${String(index + 1).padStart(2, '0')}`,
+            })),
           ],
         },
       },
@@ -285,8 +289,8 @@ async function selectorRuntime(t: TestContext) {
   return {
     modelRuntime,
     currentModel: modelRuntime.getModel('selector-fixture', 'alpha')!,
-    scopedModels: ['alpha', 'beta'].map(id => ({
-      model: modelRuntime.getModel('selector-fixture', id)!,
+    scopedModels: modelRuntime.getModels('selector-fixture').map(model => ({
+      model,
     })),
     initialSearch: 'selector-fixture/beta',
   };
@@ -1106,6 +1110,44 @@ void test('session settings switch real Pi selectors in one dialog and preserve 
   assert.equal(applied?.persist, false);
 });
 
+void test('session settings forward model paging after tab changes in a compact terminal', async t => {
+  const model = await selectorRuntime(t, 30);
+  const adapter = new DesktopExtensionUI(() => {});
+  t.after(() => adapter.dispose());
+  for (const [currentModel, page] of [
+    [model.currentModel, '\x1b[6~'],
+    [model.scopedModels.at(-1)!.model, '\x1b[5~'],
+  ] as const) {
+    const selection = adapter.selectSessionSettings({
+      activeTab: 'thinking',
+      model: {...model, currentModel, initialSearch: undefined},
+      thinking: {currentLevel: 'off', availableLevels: ['off', 'high']},
+    });
+    await waitFor(
+      () =>
+        adapter.snapshot().dialogs[0]?.terminal?.output.includes('off') ===
+        true,
+    );
+    const id = adapter.snapshot().dialogs[0].id;
+    adapter.respond(id, {action: 'tab:model'});
+    await waitFor(
+      () =>
+        adapter
+          .snapshot()
+          .dialogs[0]?.terminal?.output.includes(currentModel.name) === true,
+    );
+    adapter.respond(id, {columns: 42, rows: 6});
+    adapter.respond(id, {input: page});
+    adapter.respond(id, {action: 'session'});
+    const applied = await selection;
+    assert.equal(applied?.kind, 'model');
+    assert.ok(applied?.kind === 'model');
+    assert.equal(applied.model.provider, currentModel.provider);
+    assert.notEqual(applied.model.id, currentModel.id);
+    assert.equal(applied.persist, false);
+  }
+});
+
 void test('session thinking tab only applies supported levels and cancellation disposes the retained model selector', async t => {
   const model = await selectorRuntime(t);
   const adapter = new DesktopExtensionUI(() => {});
@@ -1199,11 +1241,12 @@ void test('generic Pi dialog keys use the terminal while direct confirmation res
   adapter.dispose();
 });
 
-void test('native component wrappers route focus, resize frames and clean up on abort', async () => {
+void test('native component wrappers dynamically route viewport keys to focus, resize and clean up on abort', async () => {
   const adapter = new DesktopExtensionUI(() => {});
   const controller = new AbortController();
   let disposed = 0;
   let focused = false;
+  let capturesViewportInput = false;
   const widths: number[] = [];
   const keys: string[] = [];
   const mouse: string[] = [];
@@ -1213,7 +1256,10 @@ void test('native component wrappers route focus, resize frames and clean up on 
       component: {
         render: width => {
           widths.push(width);
-          return [`Native width ${width}`];
+          return Array.from(
+            {length: 40},
+            (_, index) => `Native width ${width}, row ${index + 1}`,
+          );
         },
         invalidate() {},
         handleMouse: event => {
@@ -1225,6 +1271,9 @@ void test('native component wrappers route focus, resize frames and clean up on 
         },
       },
       focus: {
+        get capturesViewportInput() {
+          return capturesViewportInput;
+        },
         get focused() {
           return focused;
         },
@@ -1243,11 +1292,19 @@ void test('native component wrappers route focus, resize frames and clean up on 
   assert.equal(focused, true);
   adapter.respond(id, {columns: 1, rows: 2});
   assert.equal(adapter.snapshot().dialogs[0].terminal!.columns, 100);
-  adapter.respond(id, {columns: 62, rows: 14});
-  await waitFor(() => widths.includes(62));
-  assert.equal(adapter.snapshot().dialogs[0].terminal!.rows, 14);
+  adapter.respond(id, {columns: 42, rows: 6});
+  await waitFor(() => widths.includes(42));
+  assert.equal(adapter.snapshot().dialogs[0].terminal!.rows, 6);
+  adapter.respond(id, {input: '\x1b[5~'});
+  assert.deepEqual(keys, [], 'The viewport handles paging without capture');
+  capturesViewportInput = true;
+  adapter.respond(id, {input: '\x1b[5~'});
+  adapter.respond(id, {input: '\x1b[6~'});
+  assert.deepEqual(keys, ['\x1b[5~', '\x1b[6~']);
+  capturesViewportInput = false;
+  adapter.respond(id, {input: '\x1b[6~'});
   adapter.respond(id, {input: 'x'});
-  assert.deepEqual(keys, ['x']);
+  assert.deepEqual(keys, ['\x1b[5~', '\x1b[6~', 'x']);
   adapter.respond(id, {input: '\x1b[<0;1;1M\x1b[<0;1;1m'});
   assert.ok(mouse.includes('click'));
   controller.abort();

@@ -647,6 +647,9 @@ export class DesktopExtensionUI {
         if (!('component' in created)) return created;
         const {component, focus} = created;
         return {
+          get capturesViewportInput() {
+            return focus.capturesViewportInput ?? false;
+          },
           get focused() {
             return (
               (focus as TerminalComponent & {focused?: boolean}).focused ??
@@ -806,6 +809,11 @@ export class DesktopExtensionUI {
         };
         current();
         return {
+          get capturesViewportInput() {
+            return (
+              (current() as TerminalComponent).capturesViewportInput ?? false
+            );
+          },
           get focused() {
             return focused;
           },

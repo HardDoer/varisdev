@@ -274,6 +274,7 @@ export async function acquireUpdateLock(
   const lock = join(dataDir, 'update.lock');
   const token = randomUUID();
   const started = Date.now();
+  let retriedRecovery = false;
   while (true) {
     try {
       await mkdir(lock);
@@ -299,12 +300,13 @@ export async function acquireUpdateLock(
       };
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      if (!wait) return;
+      if (!wait && retriedRecovery) return;
     }
     if (Date.now() - started >= timeoutMs)
       throw new Error(
         'Another VarisDev update is still running. Please retry.',
       );
+    let recovered = false;
     try {
       const observed = await stat(lock);
       if (await lockIsStale(lock, observed.mtimeMs)) {
@@ -325,6 +327,7 @@ export async function acquireUpdateLock(
             await rename(lock, abandoned);
             await rm(abandoned, {recursive: true, force: true});
             elected = false;
+            recovered = true;
           }
         } catch (error) {
           if (error.code !== 'EEXIST') throw error;
@@ -337,6 +340,12 @@ export async function acquireUpdateLock(
       }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
+      recovered = true;
+    }
+    if (!wait) {
+      if (!recovered) return;
+      retriedRecovery = true;
+      continue;
     }
     await new Promise(fulfill => setTimeout(fulfill, 100));
   }

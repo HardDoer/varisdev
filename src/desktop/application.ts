@@ -967,6 +967,7 @@ if (!primaryInstance) {
         if (process.connected) process.send?.({type: 'ready'});
       }
       desktopReady = true;
+      void runtime.cleanupRuntimes();
       for (const project of pendingProjects.splice(0))
         await openProject(project);
       if (!process.env.PI_OFFLINE) {

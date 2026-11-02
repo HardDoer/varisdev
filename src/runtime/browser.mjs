@@ -33,6 +33,8 @@ function runInteropLauncher(command, args, timeoutMs) {
       stdio: 'ignore',
       windowsHide: true,
       detached: process.platform !== 'win32',
+      // Windows interop can reject a deep WSL cwd after translating it to UNC.
+      cwd: '/',
     });
     const timer = setTimeout(() => {
       try {

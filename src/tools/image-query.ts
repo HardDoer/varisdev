@@ -5,11 +5,8 @@ import {
   truncateHead,
   type ExtensionAPI,
   type TruncationResult,
-  withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
-import {mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {readFile, stat} from 'node:fs/promises';
 import {processImage} from '../sharp.ts';
 import {Type} from 'typebox';
 import {
@@ -18,6 +15,7 @@ import {
   getFileQueryMatches,
   type QueryFile as ImageFile,
 } from './file-matches.ts';
+import {saveQueryOutput} from './query-output.ts';
 
 const MAX_EXCLUDE_PATTERNS = 20;
 const MAX_IMAGE_BYTES = 100 * 1024 * 1024;
@@ -410,6 +408,7 @@ function formatImageQueryResult(details: ImageQueryToolDetails): string {
 async function truncateImageQueryOutput(
   output: string,
   details: ImageQueryToolDetails,
+  cwd: string,
 ): Promise<string> {
   const truncation = truncateHead(output, {
     maxLines: DEFAULT_MAX_LINES,
@@ -417,11 +416,7 @@ async function truncateImageQueryOutput(
   });
   if (!truncation.truncated) return output;
 
-  const tempDir = await mkdtemp(join(tmpdir(), 'pi-image-query-'));
-  const outputPath = join(tempDir, 'output.txt');
-  await withFileMutationQueue(outputPath, async () => {
-    await writeFile(outputPath, output, 'utf8');
-  });
+  const outputPath = await saveQueryOutput(cwd, 'image_query', output);
   details.truncation = truncation;
   details.fullOutputPath = outputPath;
 
@@ -433,7 +428,7 @@ export function registerImageQueryTool(pi: ExtensionAPI): void {
     name: 'image_query',
     label: 'Image Query',
     description:
-      'Inspect one or many local image files without writing an ad-hoc script. Reports dimensions, format, alpha-channel statistics, visible-pixel bounds, and optional fixed-size grid occupancy counts. Multi-page images inspect the first page. Output is truncated to 2000 lines or 50KB, with full output saved to a temporary file.',
+      'Inspect one or many local image files without writing an ad-hoc script. Reports dimensions, format, alpha-channel statistics, visible-pixel bounds, and optional fixed-size grid occupancy counts. Multi-page images inspect the first page. Output is truncated to 2000 lines or 50KB, with full output saved in the project’s .varisdev/tool-output directory.',
     promptSnippet:
       'Inspect image metadata, alpha occupancy, visible bounds, and per-cell pixel counts across files and globs.',
     promptGuidelines: [
@@ -526,7 +521,7 @@ export function registerImageQueryTool(pi: ExtensionAPI): void {
         content: [
           {
             type: 'text',
-            text: await truncateImageQueryOutput(output, details),
+            text: await truncateImageQueryOutput(output, details, ctx.cwd),
           },
         ],
         details,

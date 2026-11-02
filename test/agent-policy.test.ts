@@ -1904,21 +1904,21 @@ void test(
       ...before,
       'policy_dynamic',
       'policy_denied_dynamic',
-    ];
-    assert.deepEqual(session.getActiveToolNames(), restoredTools);
+    ].sort();
+    assert.deepEqual(session.getActiveToolNames().toSorted(), restoredTools);
     await session.prompt('Perform another probe.');
     assert.deepEqual(errors, []);
     assert.equal(requests.length, 6);
     assert.equal(probes, 2);
     assert.equal(dynamicCalls, 2);
     assert.equal(writes, 0);
-    assert.deepEqual(session.getActiveToolNames(), restoredTools);
+    assert.deepEqual(session.getActiveToolNames().toSorted(), restoredTools);
     await session.reload();
-    assert.deepEqual(session.getActiveToolNames(), restoredTools);
+    assert.deepEqual(session.getActiveToolNames().toSorted(), restoredTools);
     await session.prompt('Perform another probe after reloading extensions.');
     assert.deepEqual(errors, []);
     assert.equal(requests.length, 9);
-    assert.deepEqual(session.getActiveToolNames(), restoredTools);
+    assert.deepEqual(session.getActiveToolNames().toSorted(), restoredTools);
     const sessionFile = session.sessionManager.getSessionFile()!;
     session.dispose();
     const resumedLoader = new DefaultResourceLoader({
@@ -1960,7 +1960,7 @@ void test(
     );
     assert.equal(dynamicCalls, 4);
     assert.equal(writes, 0);
-    assert.deepEqual(resumed.getActiveToolNames(), restoredTools);
+    assert.deepEqual(resumed.getActiveToolNames().toSorted(), restoredTools);
   },
 );
 

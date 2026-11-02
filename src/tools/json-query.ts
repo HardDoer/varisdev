@@ -5,11 +5,8 @@ import {
   truncateHead,
   type ExtensionAPI,
   type TruncationResult,
-  withFileMutationQueue,
 } from '@earendil-works/pi-coding-agent';
-import {mkdtemp, readFile, stat, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {readFile, stat} from 'node:fs/promises';
 import {isDeepStrictEqual} from 'node:util';
 import {Type} from 'typebox';
 import {
@@ -18,6 +15,7 @@ import {
   getFileQueryMatches,
   type QueryFile,
 } from './file-matches.ts';
+import {saveQueryOutput} from './query-output.ts';
 
 const DEFAULT_MAX_GROUPS = 50;
 const MAX_GROUPS = 500;
@@ -528,6 +526,7 @@ async function truncateQueryOutput(
   output: string,
   details: JsonQueryToolDetails,
   toolName: string,
+  cwd: string,
 ): Promise<string> {
   const truncation = truncateHead(output, {
     maxLines: DEFAULT_MAX_LINES,
@@ -535,13 +534,7 @@ async function truncateQueryOutput(
   });
   if (!truncation.truncated) return output;
 
-  const tempDir = await mkdtemp(
-    join(tmpdir(), `pi-${toolName.replaceAll('_', '-')}-`),
-  );
-  const outputPath = join(tempDir, 'output.txt');
-  await withFileMutationQueue(outputPath, async () => {
-    await writeFile(outputPath, output, 'utf8');
-  });
+  const outputPath = await saveQueryOutput(cwd, toolName, output);
   details.truncation = truncation;
   details.fullOutputPath = outputPath;
 
@@ -625,7 +618,12 @@ export function registerQueryTool(
         content: [
           {
             type: 'text',
-            text: await truncateQueryOutput(output, details, config.name),
+            text: await truncateQueryOutput(
+              output,
+              details,
+              config.name,
+              ctx.cwd,
+            ),
           },
         ],
         details,
@@ -639,7 +637,7 @@ export function registerJsonQueryTool(pi: ExtensionAPI): void {
     name: 'json_query',
     label: 'JSON Query',
     description:
-      'Inspect and query one or many strict JSON files without writing an ad-hoc script. Supports globbing (including JSON stored under custom extensions), root-key inspection, exact nested-field filters, per-file group counts, and selected samples. Output is truncated to 2000 lines or 50KB, with full output saved to a temporary file.',
+      'Inspect and query one or many strict JSON files without writing an ad-hoc script. Supports globbing (including JSON stored under custom extensions), root-key inspection, exact nested-field filters, per-file group counts, and selected samples. Output is truncated to 2000 lines or 50KB, with full output saved in the project’s .varisdev/tool-output directory.',
     promptSnippet:
       'Inspect and summarize strict JSON files with globs, nested equality filters, group counts, and samples instead of writing one-off scripts.',
     promptGuidelines: [

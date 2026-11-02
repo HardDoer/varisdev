@@ -732,14 +732,20 @@ async function main() {
   hub.sessions[0].agents = [agent()];
   hub.sessions[0].totalAgents = 1;
   snapshot();
-  await waitFor(() => document.querySelector('.worker-card, .history-row'));
+  await waitFor(() =>
+    document.querySelector('#active-workers [data-context-unit="worker"]'),
+  );
   await evaluate(() =>
-    document.querySelector('.worker-card, .history-row').click(),
+    document
+      .querySelector('#active-workers [data-context-unit="worker"]')
+      .click(),
   );
   await waitFor(
     () =>
+      document.getElementById('inspector-title').dataset.contextUnit ===
+        'worker' &&
       document.getElementById('inspector').dataset.conversationKind ===
-      'subagent',
+        'subagent',
   );
   settings.agents.allowedModels = ['alpha/small', 'lost/old'];
   await open();

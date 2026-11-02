@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
@@ -46,6 +46,7 @@ async function fixture(
   enabled: boolean,
   replies: Reply[],
   workerReply?: (request: ProviderRequest) => Promise<Reply>,
+  auth: 'api-key' | 'oauth' = 'api-key',
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-compaction-'));
   const cwd = join(directory, 'project');
@@ -81,6 +82,11 @@ async function fixture(
         'https://compaction.invalid/v1/chat/completions',
       );
       const request = JSON.parse(String(options?.body)) as ProviderRequest;
+      if (auth === 'oauth')
+        assert.equal(
+          new Headers(options?.headers).get('authorization'),
+          'Bearer stored-oauth-access',
+        );
       let reply: Reply;
       if (request.model === 'worker-model') {
         assert.ok(workerReply, 'Unexpected worker request');
@@ -157,15 +163,41 @@ async function fixture(
     },
   );
 
+  const authPath = join(agentDir, 'auth.json');
+  if (auth === 'oauth')
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        'compaction-fixture': {
+          type: 'oauth',
+          access: 'stored-oauth-access',
+          refresh: 'stored-oauth-refresh',
+          expires: Date.now() + 3600000,
+        },
+      }),
+    );
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(agentDir, 'auth.json'),
+    authPath,
     modelsPath: null,
     refreshOnCreate: false,
     allowModelNetwork: false,
   });
   modelRuntime.registerProvider('compaction-fixture', {
     api: 'openai-completions',
-    apiKey: 'fixture-key',
+    ...(auth === 'api-key'
+      ? {apiKey: 'fixture-key'}
+      : {
+          oauth: {
+            name: 'Fixture OAuth',
+            async login() {
+              assert.fail('Use the stored OAuth login');
+            },
+            async refreshToken() {
+              assert.fail('The stored OAuth token is still valid');
+            },
+            getApiKey: (credential: {access: string}) => credential.access,
+          },
+        }),
     baseUrl: 'https://compaction.invalid/v1',
     models: ['fixture-model', 'worker-model'].map(id => ({
       id,
@@ -210,7 +242,69 @@ async function fixture(
     onError: error => errors.push(error),
   });
   t.after(() => assert.deepEqual(errors, []));
-  return {session, requests, summaries, events};
+  return {session, requests, summaries, events, modelRuntime, authPath};
+}
+
+for (const summary of ['compaction', 'branch'] as const) {
+  void test(
+    `VarisDev SDK ${summary} summary keeps stored OAuth authentication in the runtime`,
+    {timeout: 15000},
+    async t => {
+      const {session, summaries, modelRuntime, authPath} = await fixture(
+        t,
+        false,
+        [{text: 'Recorded decision: proceed.'}, {text: 'Review complete.'}],
+        undefined,
+        'oauth',
+      );
+      assert.equal(modelRuntime.isUsingOAuth('compaction-fixture'), true);
+      const savedAuth = await readFile(authPath, 'utf8');
+      await session.prompt(ORIGINAL);
+      await session.prompt(FOLLOW_UP);
+      const calls: Array<Parameters<ModelRuntime['streamSimple']>[2]> = [];
+      const stream = modelRuntime.streamSimple.bind(modelRuntime);
+      t.mock.method(
+        modelRuntime,
+        'streamSimple',
+        (...args: Parameters<ModelRuntime['streamSimple']>) => {
+          calls.push(args[2]);
+          return stream(...args);
+        },
+      );
+      if (summary === 'compaction') {
+        assert.equal((await session.compact()).summary, SUMMARY);
+        assert.ok(
+          session.sessionManager
+            .getEntries()
+            .some(entry => entry.type === 'compaction' && !entry.fromHook),
+        );
+      } else {
+        const target = session.sessionManager
+          .getEntries()
+          .find(
+            entry => entry.type === 'message' && entry.message.role === 'user',
+          );
+        assert.ok(target);
+        const result = await session.navigateTree(target.id, {summarize: true});
+        assert.equal(result.cancelled, false);
+        assert.ok(result.summaryEntry);
+        assert.ok(result.summaryEntry.summary.includes(SUMMARY));
+        assert.equal(result.summaryEntry.fromHook, false);
+      }
+      assert.equal(summaries.length, 1);
+      assert.match(
+        JSON.stringify(summaries[0].messages),
+        summary === 'compaction' ? /ORIGINAL REQUEST/ : /FOLLOW UP/,
+      );
+      assert.equal(calls.length, 1, 'Summary uses the SDK runtime stream');
+      assert.equal(
+        calls[0]?.apiKey,
+        undefined,
+        'The SDK must let the runtime resolve the stored OAuth credential',
+      );
+      assert.equal(await readFile(authPath, 'utf8'), savedAuth);
+    },
+  );
 }
 
 for (const reason of ['manual', 'threshold', 'overflow'] as const) {

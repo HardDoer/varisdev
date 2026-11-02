@@ -72,7 +72,11 @@ for (const shell of ['bash', 'zsh', 'fish', 'nu']) {
         cwd: tmpdir(),
         timeout: 10000,
       });
-      assert.equal(result.stdout.trim(), 'installed command');
+      // System shell startup files may print a banner before the command.
+      assert.equal(
+        result.stdout.trim().split(/\r?\n/).at(-1),
+        'installed command',
+      );
       assert.ok(activation);
       // The printed command also activates PATH in an already open shell.
       const current = await execute(

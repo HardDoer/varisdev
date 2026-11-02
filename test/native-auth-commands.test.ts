@@ -31,7 +31,7 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
   assert.ok(check(), message);
 }
 
-function harness(t: TestContext) {
+function harness(t: TestContext, availableProviders = providers) {
   const ui = new DesktopExtensionUI(() => {});
   t.after(() => ui.dispose());
   const controller = new AbortController();
@@ -58,9 +58,9 @@ function harness(t: TestContext) {
     scopedModels: [],
     settingsManager: SettingsManager.inMemory(),
     modelRuntime: {
-      getProviders: () => providers,
+      getProviders: () => availableProviders,
       getProvider: (id: string) =>
-        providers.find(provider => provider.id === id),
+        availableProviders.find(provider => provider.id === id),
       getProviderAuthStatus: () => ({configured: false}),
       isUsingOAuth: () => false,
       getAvailableSnapshot: () => [model],
@@ -167,6 +167,52 @@ void test(
     assert.equal(h.committed(), true);
     assert.deepEqual(h.refreshes, [['account']]);
     assert.deepEqual(h.configurations, [{}]);
+    assert.equal(h.ui.snapshot().dialogs.length, 0);
+  },
+);
+
+void test(
+  'native auth delegates paging to its changing provider focus in a compact terminal and cancels cleanly',
+  {timeout: 5000},
+  async t => {
+    const accounts = Array.from({length: 30}, (_, index) => ({
+      id: `account-${String(index + 1).padStart(2, '0')}`,
+      name: `Account ${String(index + 1).padStart(2, '0')}`,
+      auth: {oauth: {name: 'Account sign in', isSubscription: false}},
+    }));
+    const h = harness(t, accounts);
+    const command = runAuthCommand('login', '', h.ctx);
+    await h.text('Select authentication method');
+    const id = h.ui.snapshot().dialogs[0].id;
+    h.key('\r');
+    await h.text(accounts[0].name);
+    h.ui.respond(id, {columns: 42, rows: 6});
+    h.key('\x1b[6~');
+    h.key('\r');
+    await h.text('Enter API key');
+    assert.equal(h.logins.length, 1);
+    assert.notEqual(h.logins[0].provider, accounts[0].id);
+    assert.equal(h.logins[0].method, 'oauth');
+    h.key('\x1b');
+    await waitFor(
+      () => h.logins[0].interaction.signal?.aborted === true,
+      'The first login interaction should cancel',
+    );
+    await delay(30);
+    h.key('\x1b[6~');
+    h.key('\x1b[5~');
+    h.key('\r');
+    await waitFor(
+      () => h.logins.length === 2,
+      'Provider focus should be restored after cancelling the login prompt',
+    );
+    assert.equal(h.logins[1].provider, accounts[0].id);
+    h.controller.abort();
+    assert.equal(await command, true);
+    assert.equal(h.logins[1].interaction.signal?.aborted, true);
+    assert.equal(h.committed(), false);
+    assert.deepEqual(h.refreshes, []);
+    assert.deepEqual(h.configurations, []);
     assert.equal(h.ui.snapshot().dialogs.length, 0);
   },
 );

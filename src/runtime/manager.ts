@@ -12,8 +12,13 @@ import {
 } from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {dirname, join, resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {refreshMacLauncher} from './mac-launcher.ts';
+import {
+  cleanupRuntimeGenerations,
+  removeRuntimeGeneration,
+  type RuntimeProcess,
+} from './cleanup.ts';
 import {withNodePath} from './environment.mjs';
 import {
   acquireUpdateLock,
@@ -81,6 +86,8 @@ export interface RuntimeHooks {
   now?: () => Date;
   readRelease?: typeof readRelease;
   downloadRelease?: typeof downloadRelease;
+  /** Complete process snapshot; failures suppress cleanup. */
+  processes?: () => Promise<RuntimeProcess[]>;
 }
 
 export interface RuntimeManagerOptions {
@@ -95,6 +102,7 @@ export interface RuntimeManagerOptions {
 }
 
 interface ActiveRuntime {
+  platform?: NodeJS.Platform;
   generation: string;
   baseRoot: string;
   fingerprint: string;
@@ -314,6 +322,7 @@ export class RuntimeManager {
   private state: UpdateStatus;
   private updating?: Promise<UpdateStatus>;
   private checking?: Promise<UpdateStatus>;
+  private lastSelectedRoot?: string;
 
   constructor(options: RuntimeManagerOptions) {
     this.options = options;
@@ -356,6 +365,7 @@ export class RuntimeManager {
 
   async currentRoot(): Promise<string> {
     const root = await this.selectedRoot();
+    this.lastSelectedRoot = root;
     if (this.options.runningRoot)
       this.state.restartRequired = resolve(this.options.runningRoot) !== root;
     return root;
@@ -596,6 +606,33 @@ export class RuntimeManager {
     await this.updating?.catch(() => {});
   }
 
+  /** Reclaim owned runtimes after startup; a busy updater defers cleanup. */
+  async cleanupRuntimes(): Promise<void> {
+    let unlock: (() => Promise<void>) | undefined;
+    try {
+      unlock = await this.acquireLock(false);
+      if (unlock) await this.cleanupLocked();
+    } catch {
+      /* Cleanup is best effort, including read-only installations. */
+    } finally {
+      await unlock?.().catch(() => {});
+    }
+  }
+
+  private async cleanupLocked(protectedRoots: string[] = []): Promise<void> {
+    await cleanupRuntimeGenerations({
+      installRoot: this.installRoot,
+      dataDir: this.dataDir,
+      runningRoot: this.options.runningRoot,
+      protectedRoots: [
+        fileURLToPath(import.meta.url),
+        ...(this.lastSelectedRoot ? [this.lastSelectedRoot] : []),
+        ...protectedRoots,
+      ],
+      processes: this.options.hooks?.processes,
+    });
+  }
+
   private async performUpdate(): Promise<UpdateStatus> {
     this.publish({
       phase: 'updating',
@@ -623,6 +660,7 @@ export class RuntimeManager {
         checkedAt: this.now().toISOString(),
       });
       if (release.revision === currentRevision) {
+        await this.cleanupLocked([previousRoot, activeRoot]);
         const restartRequired =
           this.state.restartRequired || previousRoot !== activeRoot;
         return this.publish({
@@ -637,6 +675,20 @@ export class RuntimeManager {
       const generation = `app-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
       stage = join(this.dataDir, 'runtimes', generation);
       await mkdir(stage, {recursive: true});
+      // Record ownership before downloads or child processes can leave a stage
+      // behind. Older updaters share update.lock and cannot be pruned mid-build.
+      await writeFile(
+        join(stage, 'runtime.json'),
+        JSON.stringify({
+          generation,
+          platform: process.platform,
+          baseRoot: this.installRoot,
+          fingerprint,
+          version: currentVersion,
+          revision: release.revision,
+        }) + '\n',
+        {flag: 'wx'},
+      );
       const require = createRequire(join(activeRoot, 'package.json'));
       const executable =
         process.env.VARISDEV_NODE_EXECUTABLE || process.execPath;
@@ -769,6 +821,7 @@ export class RuntimeManager {
       cleanupEnvironment = replacement?.cleanup;
       const pointer: ActiveRuntime = {
         generation,
+        platform: process.platform,
         baseRoot: this.installRoot,
         fingerprint: replacement?.fingerprint ?? fingerprint,
         version,
@@ -788,6 +841,7 @@ export class RuntimeManager {
       restoreEnvironment = undefined;
       pointerTemp = undefined;
       stage = undefined;
+      await this.cleanupLocked([previousRoot, activeRoot]);
       return this.publish({
         phase: 'ready',
         currentVersion: version,
@@ -801,18 +855,26 @@ export class RuntimeManager {
         if (restoreEnvironment) await restoreEnvironment();
         restoreEnvironment = undefined;
       } catch (restoreError) {
+        await this.preserveRecovery(stage);
         stage = undefined;
         return this.fail(restoreError);
       }
-      if (error instanceof EnvironmentRestoreError) stage = undefined;
+      if (error instanceof EnvironmentRestoreError) {
+        await this.preserveRecovery(stage);
+        stage = undefined;
+      }
       return this.fail(error);
     } finally {
       if (!restoreEnvironment) await cleanupEnvironment?.();
       if (pointerTemp) await rm(pointerTemp, {force: true}).catch(() => {});
-      if (stage)
-        await rm(stage, {recursive: true, force: true}).catch(() => {});
+      if (stage) await removeRuntimeGeneration(stage).catch(() => {});
       if (unlock) await unlock();
     }
+  }
+
+  private async preserveRecovery(stage: string | undefined): Promise<void> {
+    if (!stage) return;
+    await writeFile(join(stage, 'recovery.json'), '{}\n').catch(() => {});
   }
 
   private now(): Date {

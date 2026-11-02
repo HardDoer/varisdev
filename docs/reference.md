@@ -76,6 +76,8 @@ In conversations, click file links or filenames in inline code, such as `src/mai
 
 The query tools accept paths or globs. JSON fields support dotted paths and RFC 6901 JSON Pointers. Common options include `collectionPath`, `where`, `groupBy`, `select`, and `sampleLimit`.
 
+When query output is truncated, the full result is saved in the project's `.varisdev/tool-output/` directory. These files remain available to saved conversations; delete them when you no longer need those results.
+
 ```json
 {
   "path": "data/*.json",

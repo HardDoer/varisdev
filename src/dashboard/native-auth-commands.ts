@@ -148,6 +148,9 @@ export async function runAuthCommand(
         if (!disposed) showSelector.call(host, create);
       };
       const component: Component & {dispose(): void; focused: boolean} = {
+        get capturesViewportInput() {
+          return focus.capturesViewportInput ?? false;
+        },
         get focused() {
           return (focus as Component & {focused?: boolean}).focused ?? false;
         },

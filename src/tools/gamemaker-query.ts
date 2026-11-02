@@ -7,7 +7,7 @@ export function registerGameMakerQueryTool(pi: ExtensionAPI): void {
     name: 'gamemaker_query',
     label: 'GameMaker Query',
     description:
-      "Inspect and query one or many GameMaker .yy and .yyp resource files without writing an ad-hoc script. Accepts GameMaker's JSON-like format, including trailing commas. Supports globbing, root-key inspection, exact nested-field filters, per-file group counts, and selected samples. Output is truncated to 2000 lines or 50KB, with full output saved to a temporary file.",
+      "Inspect and query one or many GameMaker .yy and .yyp resource files without writing an ad-hoc script. Accepts GameMaker's JSON-like format, including trailing commas. Supports globbing, root-key inspection, exact nested-field filters, per-file group counts, and selected samples. Output is truncated to 2000 lines or 50KB, with full output saved in the project's .varisdev/tool-output directory.",
     promptSnippet:
       'Inspect and summarize GameMaker .yy and .yyp resource files, including their trailing-comma JSON-like syntax.',
     promptGuidelines: [

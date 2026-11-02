@@ -4,6 +4,7 @@ build/
 .pi/npm/
 .pi/git/
 .pi/desktop/
+.varisdev/tool-output/
 *.tgz
 .DS_Store
 generated-images

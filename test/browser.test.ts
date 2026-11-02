@@ -19,6 +19,8 @@ const wsl = {
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-browser-'));
+  // Fake Node launchers must also work with TMP inside this ESM repository.
+  await writeFile(join(directory, 'package.json'), '{"type":"commonjs"}');
   t.after(async () => {
     try {
       process.kill(
@@ -178,6 +180,83 @@ void test('native Pi browser adapter retains generic file opening and is idempot
 });
 
 void test(
+  'patched Pi WSL browser helpers see root cwd and the complete OAuth URL',
+  {timeout: 6000, skip: process.platform === 'win32'},
+  async t => {
+    const directory = await fixture(t);
+    const utils = join(
+      directory,
+      'node_modules/@earendil-works/pi-coding-agent/dist/utils',
+    );
+    await mkdir(utils, {recursive: true});
+    await writeFile(join(utils, 'package.json'), '{"type":"module"}');
+    await writeFile(
+      join(utils, 'open-browser.js'),
+      await readFile(
+        new URL(
+          './utils/open-browser.js',
+          import.meta.resolve('@earendil-works/pi-coding-agent'),
+        ),
+      ),
+    );
+    await patchBundledBrowser(directory);
+    const helper = join(utils, 'varisdev-browser.mjs');
+    await writeFile(
+      helper,
+      (await readFile(helper, 'utf8')).replace(
+        '/mnt/c/Windows/System32/rundll32.exe',
+        join(directory, 'missing-mounted-browser'),
+      ),
+    );
+    const originalCwd = process.cwd();
+    const originalPath = process.env.PATH;
+    const originalDistro = process.env.WSL_DISTRO_NAME;
+    t.after(() => {
+      process.chdir(originalCwd);
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+      else process.env.WSL_DISTRO_NAME = originalDistro;
+    });
+    const deepCwd = join(
+      directory,
+      ...Array<string>(12).fill('project-folder'),
+    );
+    await mkdir(deepCwd, {recursive: true});
+    process.chdir(deepCwd);
+    process.env.PATH = directory;
+    process.env.WSL_DISTRO_NAME = 'Ubuntu';
+    const native = await import(
+      pathToFileURL(join(utils, 'open-browser.js')).href
+    );
+    const resultPath = join(directory, 'launch.json');
+    for (const command of ['rundll32.exe', 'wslview']) {
+      const launcher = join(directory, command);
+      await writeFile(
+        launcher,
+        `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({cwd: process.cwd(), args: process.argv.slice(2)}));`,
+      );
+      await chmod(launcher, 0o755);
+      native.openBrowser(url);
+      let result = '';
+      const deadline = Date.now() + 2000;
+      while (!result && Date.now() < deadline) {
+        result = await readFile(resultPath, 'utf8').catch(() => '');
+        if (!result) await delay(10);
+      }
+      assert.ok(result, `${command} did not launch`);
+      assert.deepEqual(JSON.parse(result), {
+        cwd: '/',
+        args:
+          command === 'wslview' ? [url] : ['url.dll,FileProtocolHandler', url],
+      });
+      await rm(launcher);
+      await rm(resultPath);
+    }
+  },
+);
+
+void test(
   'installed native login dialog reaches the WSL browser adapter and a local callback',
   {timeout: 8000, skip: process.platform === 'win32'},
   async t => {
@@ -187,6 +266,7 @@ void test(
       'node_modules/@earendil-works/pi-coding-agent/dist/utils',
     );
     await mkdir(utils, {recursive: true});
+    await writeFile(join(utils, 'package.json'), '{"type":"module"}');
     const pi = dirname(
       fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')),
     );

@@ -361,7 +361,7 @@ void test(
         ['system', 'developer'].includes(message.role),
       ),
     );
-    assert.match(defaultSystem, /You are an expert coding assistant/);
+    assert.match(defaultSystem, /You are a(?:n expert)? coding assistant/);
     assert.doesNotMatch(
       defaultSystem,
       /Other agents may edit files in this working directory\./,

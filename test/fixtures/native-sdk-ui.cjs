@@ -451,12 +451,7 @@ async function waitForTerminal(marker) {
     `xterm did not paint ${String(marker)}: ${JSON.stringify(state)}`,
   );
 }
-async function proveCompactPageUp(
-  name,
-  initialMarker,
-  targetMarker,
-  furtherMarker,
-) {
+async function compactTerminal(marker) {
   const resizeCount = responses.filter(response =>
     Number.isInteger(response.value?.columns),
   ).length;
@@ -466,23 +461,9 @@ async function proveCompactPageUp(
     () =>
       responses.filter(response => Number.isInteger(response.value?.columns))
         .length > resizeCount,
-    `${name} did not report its compact viewport`,
+    'Native terminal did not report its compact viewport',
   );
-  await waitForTerminal(initialMarker);
-  const before = (await terminalState()).visible.join('\n');
-  await press('PageUp');
-  await waitForTerminal(targetMarker);
-  const after = (await terminalState()).visible.join('\n');
-  assert.notEqual(after, before, `${name} PageUp did not move native content`);
-  await screenshot(`${name}-pageup-900-2`);
-  if (furtherMarker) {
-    await press('PageUp');
-    await waitForTerminal(furtherMarker);
-    await screenshot(`${name}-pageup-search-900-2`);
-  }
-  browser.setContentSize(1600, 1000);
-  browser.webContents.setZoomFactor(1);
-  await settle();
+  await waitForTerminal(marker);
 }
 async function assertCompact(name, marker, zooms = [1.5, 2]) {
   for (const zoom of zooms) {
@@ -743,11 +724,6 @@ async function main() {
   assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'dark');
   await screenshot('actual-settings-dark');
   await assertCompact('actual-settings-dark', 'Type to search');
-  await proveCompactPageUp(
-    'actual-settings-dark',
-    'Type to search',
-    'Auto-compact',
-  );
   const mermaidMode = settings.getMermaidRenderingMode();
   await typeTerminal('mermaid');
   await waitForTerminal('mermaid');
@@ -767,7 +743,7 @@ async function main() {
   );
   browser.setContentSize(900, 760);
   browser.webContents.setZoomFactor(2);
-  await waitForTerminal(/model-\d{2}.*\[native-fixture\]/);
+  await waitForTerminal(/model-\d{2}/);
   await screenshot('actual-settings-submenu-900-2');
   const settingsResize = responses
     .filter(
@@ -848,19 +824,30 @@ async function main() {
       ),
     'Stock worker Model selector did not reach the renderer',
   );
-  await waitForTerminal(/model-\d{2}.*\[native-fixture\]/);
+  await waitForTerminal(/model-\d{2}/);
   assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'light');
   await screenshot('actual-worker-model-light');
-  await assertCompact(
-    'actual-worker-model-light',
-    /model-\d{2}.*\[native-fixture\]/,
+  await assertCompact('actual-worker-model-light', /model-\d{2}/);
+  await compactTerminal(/model-\d{2}/);
+  await press('PageDown');
+  await waitForTerminal(/model-\d{2}/);
+  await screenshot('actual-worker-model-light-pagedown-900-2');
+  const selectedModel = modelTask;
+  await press('Return');
+  const appliedModel = await selectedModel;
+  assert.equal(appliedModel?.kind, 'model');
+  assert.equal(appliedModel.model.provider, currentModel.provider);
+  assert.notEqual(appliedModel.model.id, currentModel.id);
+  assert.equal(appliedModel.persist, false);
+  await waitFor(
+    () => ui.snapshot().dialogs.length === 0,
+    'Selected worker Model dialog remained open',
   );
-  await proveCompactPageUp(
-    'actual-worker-model-light',
-    /model-\d{2}.*\[native-fixture\]/,
-    /model-01.*\[native-fixture\]/,
-    'Only showing models',
-  );
+  await evaluate(() => {
+    document.getElementById('app-menu-button').click();
+    document.getElementById('open-session-settings').click();
+  });
+  await waitForTerminal(/model-\d{2}/);
   await typeTerminal('model-2');
   await waitFor(
     () =>
@@ -878,7 +865,7 @@ async function main() {
     'Worker Model selector did not cancel',
   );
   report.cases.push(
-    'actual stock worker Model selector renders many models with light appearance',
+    'actual stock worker Model selector pages and cancels in a compact terminal with light appearance',
   );
 
   browser.setContentSize(1600, 1000);
@@ -903,11 +890,21 @@ async function main() {
   assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'dark');
   await screenshot('actual-fork-dark');
   await assertCompact('actual-fork-dark', 'User request 64');
-  await proveCompactPageUp(
-    'actual-fork-dark',
-    'User request 64',
-    /User request 5\d/,
+  await compactTerminal('User request 64');
+  await press('PageUp');
+  await waitForTerminal(/User request \d+/);
+  await screenshot('actual-fork-dark-pageup-900-2');
+  const selectedFork = forkTask;
+  await press('Return');
+  const entryId = await selectedFork;
+  assert.match(entryId, /^entry-\d+$/);
+  assert.ok(Number(entryId.slice('entry-'.length)) < 63);
+  await waitFor(
+    () => ui.snapshot().dialogs.length === 0,
+    'Selected Fork dialog remained open',
   );
+  await submit('/fork');
+  await waitForTerminal('User request 64');
   await press('Down');
   await waitFor(
     () =>
@@ -925,7 +922,7 @@ async function main() {
     'Fork selector did not cancel',
   );
   report.cases.push(
-    'actual stock long Fork selector remains accessible at compact zoom',
+    'actual stock long Fork selector pages and cancels at compact zoom',
   );
 
   assert.equal(

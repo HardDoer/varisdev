@@ -133,6 +133,13 @@ async function fixture(t: {after: (fn: () => Promise<void>) => void}) {
   let smokeImports = 0;
   const urls: string[] = [];
   const hooks: RuntimeHooks = {
+    processes: async () => [
+      {
+        pid: process.pid,
+        paths: [process.execPath],
+        command: process.argv.join(' '),
+      },
+    ],
     now: () => new Date('2026-10-14T12:00:00.000Z'),
     run: async (command, args, options) => {
       if (command === 'git') {
@@ -532,6 +539,8 @@ void test('refreshEnvironment migrates an older updater and preserves its select
   const pointer = join(f.dataDir, 'active.json');
   const previous = JSON.parse(await readFile(pointer, 'utf8'));
   if (process.platform !== 'win32') await chmod(helper, 0o640);
+  // Mounted Windows drives may expose fixed modes without WSL metadata.
+  const helperMode = (await stat(helper)).mode & 0o777;
   const manager = new RuntimeManager({...f.options, runningRoot: f.active});
   await manager.refreshEnvironment();
   assert.equal(await readFile(helper, 'utf8'), await currentEnvironment());
@@ -541,8 +550,7 @@ void test('refreshEnvironment migrates an older updater and preserves its select
   assert.equal(await manager.currentRoot(), f.active);
   assert.equal(manager.status().restartRequired, false);
   assert.equal(await new RuntimeManager(f.options).currentRoot(), f.active);
-  if (process.platform !== 'win32')
-    assert.equal((await stat(helper)).mode & 0o777, 0o640);
+  assert.equal((await stat(helper)).mode & 0o777, helperMode);
   const old = new Date('2020-01-01T00:00:00.000Z');
   await utimes(helper, old, old);
   await utimes(pointer, old, old);
@@ -1367,4 +1375,145 @@ void test('application updates refresh only the Finder launcher belonging to tha
     'launch.json',
     'main.cjs',
   ]);
+});
+
+void test('repeated successful updates bound generations and a no-op update reclaims the prior selection', async t => {
+  const f = await fixture(t);
+  const generations = join(f.dataDir, 'runtimes');
+  for (const revision of ['b', 'c', 'd', 'e', 'f']) {
+    f.revision = revision.repeat(40);
+    await updateReady(f.manager);
+    assert.ok((await readdir(generations)).length <= 2);
+  }
+  await f.manager.update();
+  const pointer = JSON.parse(
+    await readFile(join(f.dataDir, 'active.json'), 'utf8'),
+  );
+  assert.deepEqual(await readdir(generations), [pointer.generation]);
+});
+
+void test('updates keep an older running generation and reclaim it on a later startup', async t => {
+  const f = await fixture(t);
+  await updateReady(f.manager);
+  const running = await f.manager.currentRoot();
+  const desktop = new RuntimeManager({...f.options, runningRoot: running});
+  f.revision = 'c'.repeat(40);
+  await updateReady(desktop);
+  f.revision = 'd'.repeat(40);
+  await updateReady(desktop);
+  await stat(running);
+  assert.equal((await readdir(join(f.dataDir, 'runtimes'))).length, 3);
+  await new RuntimeManager(f.options).cleanupRuntimes();
+  await assert.rejects(stat(running), {code: 'ENOENT'});
+  assert.equal((await readdir(join(f.dataDir, 'runtimes'))).length, 1);
+});
+
+void test('a failed environment rollback preserves recovery data through later cleanup', async t => {
+  const f = await legacyEnvironmentFixture(t);
+  f.revision = 'c'.repeat(40);
+  const rename = fs.rename;
+  const restore = mockRename(t, async (source, destination) => {
+    if (
+      String(destination) === join(f.dataDir, 'active.json') ||
+      String(source).endsWith('.bak')
+    )
+      throw new Error('Injected rollback failure');
+    return rename(source, destination);
+  });
+  try {
+    const result = await f.manager.update();
+    assert.equal(result.phase, 'error');
+    assert.match(result.error || '', /Could not restore/);
+  } finally {
+    restore();
+  }
+  const generations = await readdir(join(f.dataDir, 'runtimes'));
+  assert.equal(generations.length, 2);
+  const pointer = JSON.parse(
+    await readFile(join(f.dataDir, 'active.json'), 'utf8'),
+  );
+  const recovery = generations.find(
+    generation => generation !== pointer.generation,
+  );
+  assert.ok(recovery);
+  await stat(join(f.dataDir, 'runtimes', recovery, 'recovery.json'));
+  await new RuntimeManager(f.options).cleanupRuntimes();
+  assert.equal((await readdir(join(f.dataDir, 'runtimes'))).length, 2);
+});
+
+void test('a failed update retains ownership when staged files are locked and startup retries removal', async t => {
+  const f = await fixture(t);
+  let stage = '';
+  const remove = fs.rm;
+  const mocked = t.mock.method(
+    fs,
+    'rm',
+    async (...args: Parameters<typeof remove>) => {
+      const path = String(args[0]);
+      if (stage && (path === stage || path === join(stage, 'z-locked'))) {
+        // Windows recursive removal can delete metadata before a locked file fails.
+        if (path === stage)
+          await remove(join(stage, 'runtime.json'), {force: true});
+        throw Object.assign(new Error('Locked file'), {code: 'EPERM'});
+      }
+      return remove(...args);
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    const manager = new RuntimeManager({
+      ...f.options,
+      hooks: {
+        ...f.hooks,
+        run: async (command, args, options) => {
+          if (command === 'git' && args[0] === 'init') {
+            stage = options.cwd;
+            await put(join(stage, 'a-removable'), 'partial download');
+            await put(join(stage, 'z-locked'), 'in use');
+            throw new Error('Injected preparation failure');
+          }
+          return f.hooks.run!(command, args, options);
+        },
+      },
+    });
+    const result = await manager.update();
+    assert.equal(result.phase, 'error');
+    assert.match(result.error || '', /Injected preparation failure/);
+    assert.ok(stage);
+    await stat(join(stage, 'runtime.json'));
+    await stat(join(stage, 'z-locked'));
+    await assert.rejects(stat(join(stage, 'a-removable')), {code: 'ENOENT'});
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+  await new RuntimeManager(f.options).cleanupRuntimes();
+  await assert.rejects(stat(stage), {code: 'ENOENT'});
+});
+
+void test('ownership exists before installation starts and startup cleanup defers to the staging updater', async t => {
+  const f = await fixture(t);
+  let checked = false;
+  const manager = new RuntimeManager({
+    ...f.options,
+    hooks: {
+      ...f.hooks,
+      run: async (command, args, options) => {
+        if (command === 'git' && args[0] === 'init') {
+          const owner = JSON.parse(
+            await readFile(join(options.cwd, 'runtime.json'), 'utf8'),
+          );
+          assert.equal(owner.baseRoot, f.installRoot);
+          assert.equal(owner.platform, process.platform);
+          assert.match(owner.generation, /^app-[a-f0-9]{16}$/);
+          await new RuntimeManager(f.options).cleanupRuntimes();
+          await stat(options.cwd);
+          checked = true;
+        }
+        return f.hooks.run!(command, args, options);
+      },
+    },
+  });
+  await updateReady(manager);
+  assert.equal(checked, true);
 });
