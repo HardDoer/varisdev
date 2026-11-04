@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('pidev', {
   getToolSettings: sessionId => invoke('varisdev:get-tool-settings', sessionId),
   saveToolSettings: (section, value, sessionId) =>
     invoke('varisdev:save-tool-settings', section, value, sessionId),
+  getWhatsNew: () => invoke('varisdev:get-whats-new'),
+  markWhatsNewSeen: version => invoke('varisdev:mark-whats-new-seen', version),
   getAgentNotice: () => invoke('varisdev:get-agent-notice'),
   acknowledgeAgentNotice: () => invoke('varisdev:acknowledge-agent-notice'),
   getToolModels: () => invoke('varisdev:get-tool-models'),

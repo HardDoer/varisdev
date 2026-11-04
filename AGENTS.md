@@ -65,6 +65,11 @@
 - Give different effects purposeful accent colors and enough separation from their surroundings. A theme must not turn every effect into the same color.
 - Verify every shipped theme in the renderer as well as checking palette values. Include status distinctions, selected items, robot faces, and active effects in that review.
 
+# Changelists
+
+- Keep changelists stoic, concise, and focused on changes users can notice. Omit extensive technical descriptions, line references, and implementation history.
+- Include release notes for the target version in `src/desktop/whats-new.ts` before applying the final version bump.
+
 # Documentation
 
 - Documentation is for users of the software. Describe features, installation, configuration, usage, and relevant limitations, including supported plugin interfaces.

@@ -1,0 +1,54 @@
+#whats-new-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: clamp(12px, 3vw, 24px);
+  overflow: hidden;
+}
+#whats-new-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+#whats-new-dialog .dialog-heading {
+  flex: none;
+  margin-bottom: 8px;
+}
+#whats-new-dialog h2 {
+  margin: 0;
+}
+#whats-new-version {
+  flex: none;
+  margin: 0 0 16px;
+  font-size: 0.875rem;
+}
+.whats-new-content {
+  min-height: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.whats-new-content:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+#whats-new-changes {
+  margin: 0;
+  padding-left: 22px;
+  line-height: 1.6;
+}
+#whats-new-changes li + li {
+  margin-top: 10px;
+}
+#whats-new-dialog .dialog-footer {
+  flex: none;
+  margin-top: 20px;
+}
+@media (max-height: 400px) {
+  #whats-new-dialog {
+    padding: 12px;
+  }
+  #whats-new-version {
+    margin-bottom: 8px;
+  }
+  #whats-new-dialog .dialog-footer {
+    margin-top: 10px;
+  }
+}

@@ -20,6 +20,7 @@ import {initToolSettings} from './tool-settings.js';
 import {initEnvironment} from './environment.js';
 import {nativeCommand, parseSlashCommand} from './command-catalog.js';
 import {initAppMenu} from './app-menu.js';
+import {initWhatsNew} from './whats-new.js';
 import {initItemContextMenu} from './item-context-menu.js';
 import {initWorkspaceRename} from './workspace-rename.js';
 import {initLiveView} from './live-view.js';
@@ -2114,6 +2115,7 @@ function render() {
   }
   itemContextMenu.sync();
   workspaceRename.sync();
+  whatsNew.ready(snapshotVersion > 0 && !state.hub.startup);
 }
 function receive(hub) {
   if (state.disposed) return;
@@ -2953,6 +2955,7 @@ $('open-session-settings').addEventListener('click', async () => {
   }
 });
 const appMenu = initAppMenu();
+const whatsNew = initWhatsNew(api);
 const itemContextMenu = initItemContextMenu({
   selected: () => {
     const unit = selectedUnit();
@@ -3086,6 +3089,7 @@ window.addEventListener('unload', () => {
   cleanupUpdates();
   cleanupAccounts();
   cleanupEnvironment();
+  whatsNew.dispose();
   toolSettings.dispose();
   appMenu.dispose();
   itemContextMenu.dispose();

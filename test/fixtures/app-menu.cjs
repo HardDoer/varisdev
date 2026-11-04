@@ -357,7 +357,7 @@ async function main() {
         'open-environment',
         'open-accounts',
       ],
-      maintenance: ['open-about'],
+      maintenance: ['open-whats-new', 'open-about'],
       reset: {label: 'Reset panel layout', direct: true, inDetails: false},
       labelled: true,
     },

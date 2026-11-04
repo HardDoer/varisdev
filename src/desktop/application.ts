@@ -59,6 +59,7 @@ import {
 } from './completion-sound.ts';
 import {DesktopSnapshotDelivery} from './snapshot-delivery.ts';
 import {DesktopPreferences} from './preferences.ts';
+import {DesktopWhatsNew} from './whats-new.ts';
 import {DesktopTray} from './tray.ts';
 import {DesktopTerminals} from './terminal.ts';
 import {openConversationFile, openConversationURL} from './files.ts';
@@ -97,6 +98,10 @@ app.setPath('userData', profile);
 app.setPath('sessionData', profile);
 app.setPath('temp', join(profile, 'temp'));
 const preferences = new DesktopPreferences(profile);
+const whatsNew = new DesktopWhatsNew(
+  preferences,
+  runtime.status().currentVersion,
+);
 
 const pageUrl = new URL(
   '../../../../assets/dashboard/index.html',
@@ -128,6 +133,7 @@ const standalone = process.argv.includes('--varisdev-launcher');
 const primaryInstance =
   !standalone || app.requestSingleInstanceLock({project: launchProject});
 let desktopReady = false;
+const startupComplete = Promise.withResolvers<void>();
 const pendingProjects: Array<string | undefined> = [];
 let receiveStartup: ((startup: DesktopStartup) => void) | undefined;
 const startupRequest = replacingTerminal
@@ -293,6 +299,11 @@ function installHandlers(): void {
       sessionId === undefined ? undefined : id(sessionId),
     ),
   );
+  handle('varisdev:get-whats-new', async () => {
+    await startupComplete.promise;
+    return whatsNew.get();
+  });
+  handle('varisdev:mark-whats-new-seen', version => whatsNew.markSeen(version));
   handle('varisdev:get-agent-notice', () => ({
     acknowledged: preferences.agentNoticeAcknowledged(),
   }));
@@ -970,6 +981,7 @@ if (!primaryInstance) {
       void runtime.cleanupRuntimes();
       for (const project of pendingProjects.splice(0))
         await openProject(project);
+      startupComplete.resolve();
       if (!process.env.PI_OFFLINE) {
         void runtime.check().catch(() => {});
         updateTimer = setInterval(

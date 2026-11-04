@@ -34,6 +34,8 @@ For a permanent PATH entry, add that export to a shell startup file you can edit
 
 Use **Updates → Check for updates** or `varisdev update`. Restart when prompted.
 
+**What’s new** shows the installed version’s release notes once after installation or an update. Reopen them from **Menu → What’s new**.
+
 On Windows, Linux (including WSL2), and macOS, VarisDev removes obsolete downloaded runtimes at startup and after updates. It keeps the selected runtime and copies still used by running processes. Other running VarisDev commands can delay cleanup until they exit. Interrupted update files are removed during a later cleanup.
 
 If an older installation cannot update, quit VarisDev and run the [install command](../README.md#install) again with the same installation directory. Reinstalling preserves your sessions and settings.

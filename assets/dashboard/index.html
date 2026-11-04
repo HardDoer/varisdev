@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="markdown-files.css" />
     <link rel="stylesheet" href="visualizations.css" />
     <link rel="stylesheet" href="updates.css" />
+    <link rel="stylesheet" href="whats-new.css" />
     <link rel="stylesheet" href="accounts.css" />
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="environment.css" />
@@ -489,6 +490,39 @@
       </div>
     </dialog>
 
+    <dialog
+      id="whats-new-dialog"
+      aria-labelledby="whats-new-title"
+      aria-describedby="whats-new-version"
+    >
+      <div class="dialog-heading">
+        <h2 id="whats-new-title">What’s new</h2>
+      </div>
+      <p id="whats-new-version" class="muted"></p>
+      <div
+        class="whats-new-content"
+        tabindex="0"
+        role="region"
+        aria-label="Release notes"
+      >
+        <p id="whats-new-status" role="status" hidden></p>
+        <ul id="whats-new-changes"></ul>
+        <p id="whats-new-error" class="form-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-footer">
+        <button id="whats-new-retry" class="quiet-button" type="button" hidden>
+          Retry
+        </button>
+        <button
+          id="whats-new-close"
+          class="primary-button"
+          type="button"
+          autofocus
+        >
+          Close
+        </button>
+      </div>
+    </dialog>
     <dialog
       id="about-dialog"
       aria-labelledby="about-title"
@@ -1075,6 +1109,15 @@
               >
                 <h2 id="app-menu-maintenance-heading">Maintenance</h2>
                 <div class="app-menu-actions">
+                  <button
+                    id="open-whats-new"
+                    class="quiet-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-controls="whats-new-dialog"
+                  >
+                    What’s new
+                  </button>
                   <button
                     id="open-about"
                     class="quiet-button"

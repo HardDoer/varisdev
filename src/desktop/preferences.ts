@@ -38,6 +38,7 @@ export class DesktopPreferences {
   private lastFolder?: string;
   private recentFolders: string[] = [];
   private agentNoticeSeen = false;
+  private lastSeenReleaseVersion?: string;
   private readonly directory: string;
 
   constructor(directory: string) {
@@ -59,6 +60,17 @@ export class DesktopPreferences {
         this.agentNoticeSeen =
           'agentNoticeAcknowledged' in saved &&
           saved.agentNoticeAcknowledged === true;
+        if (
+          'lastSeenReleaseVersion' in saved &&
+          typeof saved.lastSeenReleaseVersion === 'string' &&
+          saved.lastSeenReleaseVersion.length <= 128 &&
+          saved.lastSeenReleaseVersion.trim() ===
+            saved.lastSeenReleaseVersion &&
+          /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
+            saved.lastSeenReleaseVersion,
+          )
+        )
+          this.lastSeenReleaseVersion = saved.lastSeenReleaseVersion;
       }
     } catch {
       // A new profile starts in the launch folder with its first-use notice.
@@ -89,6 +101,7 @@ export class DesktopPreferences {
     lastFolder: string | undefined,
     agentNoticeAcknowledged: boolean,
     recentProjects = this.recentFolders,
+    lastSeenReleaseVersion = this.lastSeenReleaseVersion,
   ): void {
     mkdirSync(this.directory, {recursive: true});
     const path = join(this.directory, 'settings.json');
@@ -101,6 +114,7 @@ export class DesktopPreferences {
             lastFolder,
             recentProjects,
             agentNoticeAcknowledged,
+            lastSeenReleaseVersion,
           },
           null,
           2,
@@ -114,6 +128,7 @@ export class DesktopPreferences {
     this.lastFolder = lastFolder;
     this.recentFolders = recentProjects;
     this.agentNoticeSeen = agentNoticeAcknowledged;
+    this.lastSeenReleaseVersion = lastSeenReleaseVersion;
   }
 
   rememberFolder(folder: string): void {
@@ -134,5 +149,18 @@ export class DesktopPreferences {
 
   acknowledgeAgentNotice(): void {
     this.save(this.lastFolder, true);
+  }
+
+  whatsNewSeen(version: string): boolean {
+    return this.lastSeenReleaseVersion === version;
+  }
+
+  markWhatsNewSeen(version: string): void {
+    this.save(
+      this.lastFolder,
+      this.agentNoticeSeen,
+      this.recentFolders,
+      version,
+    );
   }
 }
