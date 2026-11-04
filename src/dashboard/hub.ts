@@ -100,6 +100,12 @@ export interface ExternalSessionControl {
   reload(id: string): Promise<void>;
 }
 
+interface SessionReplacement {
+  id: string;
+  entry?: Headquarters;
+  external?: DashboardSnapshot;
+}
+
 interface Headquarters {
   state: DashboardState;
   parent?: DashboardParent;
@@ -266,9 +272,14 @@ export class DashboardHub {
   private startupDialogOwner?: string;
   private readonly resuming = new Map<string, Promise<StartedSession>>();
   private readonly resumeFolders = new Map<string, Promise<void>>();
+  private readonly replacing = new Map<
+    string,
+    {cwd: Promise<string>; operation: Promise<StartedSession>}
+  >();
+  private readonly activeReplacements = new Set<string>();
   private readonly closingSessions = new Map<string, Promise<void>>();
   private readonly dismissedExternalSessions = new Set<string>();
-  private readonly selectedSessionId?: string;
+  private selectedSessionId?: string;
   private external?: DashboardSnapshot;
   private externalControl?: ExternalSessionControl;
   private readonly launchCwd: string;
@@ -393,9 +404,15 @@ export class DashboardHub {
     }));
     for (const pending of this.starting.values())
       if (pending.ui.hasPendingDialogs())
-        states.push({status: 'idle', agents: [], awaitingInput: true});
+        states.push({
+          name: pending.name,
+          status: 'idle',
+          agents: [],
+          awaitingInput: true,
+        });
     if (this.external)
       states.unshift({
+        name: this.external.session.name,
         status: this.external.session.status,
         agents: this.external.agents.map(agent => agent.status),
         awaitingInput: false,
@@ -589,7 +606,47 @@ export class DashboardHub {
   async createSession(input: unknown): Promise<StartedSession> {
     this.ensureOpen();
     const values = fields(input);
-    const cwd = await sessionFolder(values.cwd);
+    const replaceId =
+      values.replaceSessionId === undefined
+        ? undefined
+        : text(values.replaceSessionId, 'Replacement session ID', 128);
+    if (replaceId !== undefined && values.sessionId !== undefined)
+      throw new DashboardInputError(
+        'Choose either a new replacement or a saved conversation.',
+      );
+    const pending =
+      replaceId === undefined ? undefined : this.replacing.get(replaceId);
+    const cwd = sessionFolder(values.cwd);
+    if (pending) {
+      const [previousFolder, nextFolder] = await Promise.all([
+        pending.cwd,
+        cwd,
+      ]);
+      if (previousFolder !== nextFolder)
+        throw new DashboardInputError(
+          'The replacement must use the same folder as the current workspace.',
+        );
+      return pending.operation;
+    }
+    const opening = this.openSession(values, cwd, replaceId);
+    if (replaceId === undefined) return opening;
+    this.replacing.set(replaceId, {cwd, operation: opening});
+    try {
+      return await opening;
+    } finally {
+      if (this.replacing.get(replaceId)?.operation === opening) {
+        this.replacing.delete(replaceId);
+        this.activeReplacements.delete(replaceId);
+      }
+    }
+  }
+
+  private async openSession(
+    values: Record<string, unknown>,
+    folder: Promise<string>,
+    replaceId?: string,
+  ): Promise<StartedSession> {
+    const cwd = await folder;
     if (values.sessionId !== undefined && values.templateId !== undefined)
       throw new DashboardInputError('Templates apply to new conversations.');
     if (values.sessionId !== undefined) {
@@ -655,10 +712,29 @@ export class DashboardHub {
       throw new DashboardInputError(
         'Choose an agent that supports primary use.',
       );
-    return this.startSession({
-      cwd,
-      name,
-      agentProfile: structuredClone(template),
+    const request = {cwd, name, agentProfile: structuredClone(template)};
+    if (replaceId === undefined) return this.startSession(request);
+    return this.inResumeFolder(cwd, async () => {
+      this.activeReplacements.add(replaceId);
+      const entry = this.sessions.get(replaceId);
+      const external =
+        this.external?.session.id === replaceId ? this.external : undefined;
+      if (!entry && !external)
+        throw new DashboardInputError('Unknown replacement workspace.');
+      if (entry?.closing)
+        throw new DashboardInputError('This session is closing.');
+      const folder = entry
+        ? entry.state.deliverySnapshot().session.cwd
+        : external!.session.cwd;
+      if ((await sessionFolder(folder)) !== cwd)
+        throw new DashboardInputError(
+          'The replacement must use the same folder as the current workspace.',
+        );
+      return this.startSession(
+        request,
+        [{id: replaceId, entry, external}],
+        true,
+      );
     });
   }
 
@@ -785,11 +861,8 @@ export class DashboardHub {
 
   private async startSession(
     request: ParentRequest,
-    replacements: Array<{
-      id: string;
-      entry?: Headquarters;
-      external?: DashboardSnapshot;
-    }> = [],
+    replacements: SessionReplacement[] = [],
+    atomicReplacement = false,
   ): Promise<StartedSession> {
     this.ensureOpen();
     const owned = [...this.sessions.values()].filter(
@@ -835,6 +908,22 @@ export class DashboardHub {
         throw new DashboardInputError('This session is already open.');
       }
 
+      if (atomicReplacement) {
+        try {
+          await this.publishReplacement(parent, replacements[0]);
+          return {id};
+        } catch (error) {
+          try {
+            await parent.close();
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              'Replacing the workspace and cleaning up its new session failed.',
+            );
+          }
+          throw error;
+        }
+      }
       const results = await Promise.allSettled(
         replacements.map(replacement => this.closeReplacement(replacement)),
       );
@@ -865,6 +954,63 @@ export class DashboardHub {
     } finally {
       this.creating.delete(creation);
       this.creationCredits.delete(creation);
+    }
+  }
+
+  private async publishReplacement(
+    parent: DashboardParent,
+    replacement: SessionReplacement,
+  ): Promise<void> {
+    const current = () =>
+      replacement.entry
+        ? this.sessions.get(replacement.id) === replacement.entry
+        : this.external?.session.id === replacement.id;
+    if (!current())
+      throw new DashboardInputError(
+        'The replacement workspace is no longer open.',
+      );
+    let stopping: Promise<void> | undefined;
+    try {
+      if (replacement.entry?.parent) {
+        stopping = this.closeOwnedSession(
+          replacement.id,
+          replacement.entry,
+          true,
+        );
+        await stopping;
+      }
+      this.ensureOpen();
+      if (!current())
+        throw new DashboardInputError(
+          'The replacement workspace is no longer open.',
+        );
+      const id = parent.state.deliverySnapshot().session.id;
+      if (this.sessions.has(id) || this.external?.session.id === id)
+        throw new DashboardInputError('This session is already open.');
+      const retainedOwned = [...this.sessions.values()].filter(
+        entry => entry.parent && entry !== replacement.entry,
+      ).length;
+      if (retainedOwned >= 8)
+        throw new DashboardInputError('The factory can hold eight workspaces.');
+      if (this.deliverySnapshot().selectedSessionId === replacement.id)
+        this.selectedSessionId = id;
+      // Keep the outgoing entry observable through cleanup, then publish both
+      // membership changes through the single notification from add().
+      if (replacement.entry) {
+        replacement.entry.unsubscribe();
+        this.sessions.delete(replacement.id);
+        if (!replacement.entry.parent)
+          this.dismissedExternalSessions.add(replacement.id);
+      } else {
+        this.dismissedExternalSessions.add(replacement.id);
+        this.external = undefined;
+        this.externalControl = undefined;
+      }
+      this.dismissedExternalSessions.delete(id);
+      this.add(parent.state, parent);
+    } finally {
+      if (stopping && this.closingSessions.get(replacement.id) === stopping)
+        this.closingSessions.delete(replacement.id);
     }
   }
 
@@ -1214,6 +1360,9 @@ export class DashboardHub {
 
   async closeSession(id: string): Promise<void> {
     this.ensureOpen();
+    const replacing = this.replacing.get(id);
+    if (replacing && this.activeReplacements.has(id))
+      return replacing.operation.then(() => {});
     const closing = this.closingSessions.get(id);
     if (closing) return closing;
     if (this.external?.session.id === id) {
@@ -1233,6 +1382,16 @@ export class DashboardHub {
       this.changed();
       return Promise.resolve();
     }
+    return this.closeOwnedSession(id, entry);
+  }
+
+  private closeOwnedSession(
+    id: string,
+    entry: Headquarters,
+    retain = false,
+  ): Promise<void> {
+    const closing = this.closingSessions.get(id);
+    if (closing) return closing;
     entry.stopping = true;
     entry.closing = true;
     const operation = Promise.resolve().then(async () => {
@@ -1259,13 +1418,15 @@ export class DashboardHub {
         });
         throw result.reason;
       }
-      entry.unsubscribe();
-      if (this.sessions.get(id) === entry) this.sessions.delete(id);
-      this.changed();
+      if (!retain) {
+        entry.unsubscribe();
+        if (this.sessions.get(id) === entry) this.sessions.delete(id);
+        this.changed();
+      }
     });
     const tracked = operation.then(
       () => {
-        if (this.closingSessions.get(id) === tracked)
+        if (!retain && this.closingSessions.get(id) === tracked)
           this.closingSessions.delete(id);
       },
       error => {
@@ -1311,6 +1472,7 @@ export class DashboardHub {
       await Promise.allSettled([
         ...this.creating,
         ...[...this.starting.values()].map(pending => pending.operation),
+        ...[...this.replacing.values()].map(pending => pending.operation),
       ]);
     })();
     return this.closing;

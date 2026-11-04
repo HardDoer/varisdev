@@ -1,5 +1,5 @@
 /* global process, __dirname, document, requestAnimationFrame, setTimeout, clearTimeout, console, localStorage,
-   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException, AbortController */
+   NodeFilter, Node, Event, KeyboardEvent, innerWidth, innerHeight, getComputedStyle, structuredClone, Storage, DOMException, AbortController, MutationObserver */
 const assert = require('node:assert/strict');
 const {mkdirSync, realpathSync, writeFileSync} = require('node:fs');
 const {basename, dirname, join, resolve} = require('node:path');
@@ -27,6 +27,8 @@ let savedSessions;
 let archivedSessions;
 let creationIds;
 let creationDelay;
+let creationGate;
+let publishCreation;
 let creationError;
 let closeDelay;
 let closeError;
@@ -53,6 +55,8 @@ let expectedResizeMouse = [];
 let resizeNativeTrace = [];
 let startupInteraction;
 let startupOnCreate;
+let stateDelay;
+let stateRequests;
 
 async function openStartupProjectTrust(id, cwd) {
   const host = pathToFileURL(
@@ -495,7 +499,11 @@ function reset() {
   cancellationError = undefined;
   creationIds = ['folder-parent'];
   creationDelay = 0;
+  creationGate = undefined;
+  publishCreation = true;
   creationError = undefined;
+  stateDelay = 0;
+  stateRequests = 0;
   closeDelay = 0;
   closeError = undefined;
   resumeError = undefined;
@@ -544,7 +552,12 @@ ipcMain.handle('fixture:terminal', (_event, action, sessionId, request) => {
       data: 'Fixture shell ready\r\n$ ',
     };
 });
-ipcMain.handle('fixture:state', () => hub);
+ipcMain.handle('fixture:state', async () => {
+  stateRequests++;
+  const snapshot = structuredClone(hub);
+  if (stateDelay) await new Promise(resolve => setTimeout(resolve, stateDelay));
+  return snapshot;
+});
 ipcMain.handle('fixture:recent-projects', async () => {
   const folders = [...recentProjects];
   const error = recentProjectsError;
@@ -859,6 +872,7 @@ ipcMain.handle('fixture:create-session', async (_event, input) => {
   calls.push({method: 'createSession', input});
   if (creationDelay)
     await new Promise(resolve => setTimeout(resolve, creationDelay));
+  if (creationGate) await creationGate;
   if (input.sessionId && resumeError) throw new Error(resumeError);
   if (!input.sessionId && creationError) throw new Error(creationError);
   if (startupOnCreate) {
@@ -881,6 +895,12 @@ ipcMain.handle('fixture:create-session', async (_event, input) => {
   parent.session.status = 'idle';
   parent.session.activity = 'Ready';
   if (!input.sessionId) parent.conversation = [];
+  if (input.replaceSessionId) {
+    if (closeDelay)
+      await new Promise(resolve => setTimeout(resolve, closeDelay));
+    if (closeError) throw new Error(closeError);
+    archiveSession(input.replaceSessionId);
+  }
   hub.sessions.push(parent);
   const listing = listFixtureAgentTemplates(input.cwd);
   const selectedProfile =
@@ -906,7 +926,7 @@ ipcMain.handle('fixture:create-session', async (_event, input) => {
         : undefined,
     ),
   );
-  window.webContents.send('fixture:snapshot', hub);
+  if (publishCreation) window.webContents.send('fixture:snapshot', hub);
   return {id: parent.session.id};
 });
 
@@ -914,6 +934,11 @@ ipcMain.handle('fixture:close-session', async (_event, sessionId) => {
   calls.push({method: 'closeSession', sessionId});
   if (closeDelay) await new Promise(resolve => setTimeout(resolve, closeDelay));
   if (closeError) throw new Error(closeError);
+  archiveSession(sessionId);
+  window.webContents.send('fixture:snapshot', hub);
+});
+
+function archiveSession(sessionId) {
   const index = hub.sessions.findIndex(item => item.session.id === sessionId);
   assert.notEqual(index, -1, `Unknown session ${sessionId}`);
   const [parent] = hub.sessions.splice(index, 1);
@@ -930,8 +955,7 @@ ipcMain.handle('fixture:close-session', async (_event, sessionId) => {
   resources.delete(sessionId);
   if (hub.selectedSessionId === sessionId)
     hub.selectedSessionId = hub.sessions[0]?.session.id;
-  window.webContents.send('fixture:snapshot', hub);
-});
+}
 
 ipcMain.handle('fixture:open-file', (_event, sessionId, path) => {
   calls.push({method: 'openFile', sessionId, path});
@@ -14247,7 +14271,7 @@ async function main() {
   );
 
   await run(
-    'New session closes the selected parent before creating in its folder',
+    'New session keeps the selected workspace visible until its replacement is ready',
     async () => {
       const currentFolder = join(directory, 'selected-parent-folder');
       hub.sessions[0].session.cwd = currentFolder;
@@ -14330,10 +14354,9 @@ async function main() {
           ),
         ),
         [
-          {method: 'closeSession', sessionId: 'alpha'},
           {
             method: 'createSession',
-            input: {cwd: currentFolder},
+            input: {cwd: currentFolder, replaceSessionId: 'alpha'},
           },
         ],
         'New session creates once in the selected parent folder without a picker',
@@ -14400,7 +14423,12 @@ async function main() {
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'createSession'),
-        [{method: 'createSession', input: {cwd: directory}}],
+        [
+          {
+            method: 'createSession',
+            input: {cwd: directory, replaceSessionId: 'alpha'},
+          },
+        ],
         'Repeated create clicks must share one request',
       );
       assert.deepEqual(
@@ -14408,7 +14436,7 @@ async function main() {
           disabled: document.getElementById('start-session').disabled,
           label: document.getElementById('start-session').textContent,
         })),
-        {disabled: false, label: 'Retry reset conversation'},
+        {disabled: false, label: 'Reset conversation'},
       );
 
       creationDelay = 0;
@@ -14472,10 +14500,7 @@ async function main() {
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'closeSession'),
-        [
-          {method: 'closeSession', sessionId: 'alpha'},
-          {method: 'closeSession', sessionId: 'retry-parent'},
-        ],
+        [{method: 'closeSession', sessionId: 'retry-parent'}],
         'Repeated close clicks must share one request',
       );
       assert.deepEqual(
@@ -14500,15 +14525,14 @@ async function main() {
       );
       assert.equal(
         calls.filter(call => call.method === 'closeSession').length,
-        3,
+        2,
       );
       assert.equal(
         await evaluate(() => document.getElementById('app-error').hidden),
         true,
         'Retry clears the previous close error',
       );
-      // Even after the final parent closes, a failed replacement can be retried
-      // in its original folder rather than the launch folder.
+      // A failed replacement leaves the final workspace available for retry.
       const lastFolder = join(directory, 'last-parent-folder');
       hub.sessions[0].session.cwd = lastFolder;
       creationIds = ['last-replacement'];
@@ -14517,9 +14541,9 @@ async function main() {
       await evaluate(() => document.getElementById('start-session').click());
       await until(
         () =>
-          !document.getElementById('welcome').hidden &&
+          document.getElementById('welcome').hidden &&
           !document.getElementById('app-error').hidden,
-        'Replacement failure did not reach welcome',
+        'Replacement failure did not preserve the workspace',
       );
       assert.deepEqual(
         await evaluate(() => ({
@@ -14527,21 +14551,23 @@ async function main() {
           disabled: document.getElementById('start-session').disabled,
           label: document.getElementById('start-session').textContent,
         })),
-        {hidden: false, disabled: false, label: 'Retry reset conversation'},
-      );
-      assert.deepEqual(calls.slice(-2), [
-        {method: 'closeSession', sessionId: 'beta'},
-        {method: 'createSession', input: {cwd: lastFolder}},
-      ]);
-      creationError = undefined;
-      await evaluate(() => document.getElementById('start-session').click());
-      await until(
-        () => !document.getElementById('factory-workspace').hidden,
-        'Retry did not leave welcome',
+        {hidden: false, disabled: false, label: 'Reset conversation'},
       );
       assert.deepEqual(calls.at(-1), {
         method: 'createSession',
-        input: {cwd: lastFolder},
+        input: {cwd: lastFolder, replaceSessionId: 'beta'},
+      });
+      creationError = undefined;
+      await evaluate(() => document.getElementById('start-session').click());
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Selected folder',
+        'Retry did not select the replacement',
+      );
+      assert.deepEqual(calls.at(-1), {
+        method: 'createSession',
+        input: {cwd: lastFolder, replaceSessionId: 'beta'},
       });
       assert.deepEqual(
         hub.sessions.map(item => item.session.id),
@@ -14567,9 +14593,31 @@ async function main() {
         },
       ];
       resources.set('alpha', {...features(), model: undefined, models: []});
+      hub.sessions = hub.sessions.slice(0, 1);
       creationIds = ['command-parent'];
-      creationDelay = 180;
+      let release;
+      creationGate = new Promise(resolve => {
+        release = resolve;
+      });
+      const initialRequests = stateRequests;
       await publish();
+      await evaluate(() => {
+        window.fixtureResetViews = [];
+        window.fixtureResetObserver = new MutationObserver(() => {
+          window.fixtureResetViews.push({
+            welcome: !document.getElementById('welcome').hidden,
+            workspace: !document.getElementById('factory-workspace').hidden,
+          });
+        });
+        window.fixtureResetObserver.observe(
+          document.getElementById('welcome'),
+          {attributes: true, attributeFilter: ['hidden']},
+        );
+        window.fixtureResetObserver.observe(
+          document.getElementById('factory-workspace'),
+          {attributes: true, attributeFilter: ['hidden']},
+        );
+      });
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = '/ne';
@@ -14600,18 +14648,55 @@ async function main() {
           document.getElementById('start-session').textContent === 'Creating…',
         '/new did not start session creation',
       );
-      await evaluate(() =>
-        document.getElementById('prompt-form').requestSubmit(),
-      );
+      try {
+        await evaluate(() =>
+          document.getElementById('prompt-form').requestSubmit(),
+        );
+        await publish();
+        assert.deepEqual(
+          await evaluate(() => ({
+            welcome: document.getElementById('welcome').hidden,
+            workspace: document.getElementById('factory-workspace').hidden,
+            disabled: document.getElementById('send-prompt').disabled,
+          })),
+          {welcome: true, workspace: false, disabled: true},
+        );
+        assert.equal(
+          stateRequests,
+          initialRequests,
+          'Reset must not wait for an intermediate state request',
+        );
+        if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+          await screenshot('new-session-pending');
+          window.setContentSize(1100, 760);
+          window.webContents.setZoomFactor(1.5);
+          await screenshot('new-session-pending-compact');
+          window.webContents.setZoomFactor(1);
+          window.setContentSize(1600, 1000);
+        }
+      } finally {
+        release();
+      }
       await until(
         () =>
           document.getElementById('factory-title').textContent ===
           'Selected folder',
         '/new did not select the fresh parent',
       );
+      assert.equal(
+        await evaluate(() => {
+          window.fixtureResetObserver.disconnect();
+          return window.fixtureResetViews.some(
+            view => view.welcome || !view.workspace,
+          );
+        }),
+        false,
+        'Reset must keep the workspace visible throughout the handoff',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('new-session-ready');
       assert.deepEqual(calls, [
-        {method: 'closeSession', sessionId: 'alpha'},
-        {method: 'createSession', input: {cwd}},
+        {method: 'createSession', input: {cwd, replaceSessionId: 'alpha'}},
       ]);
       const fresh = hub.sessions.find(
         item => item.session.id === 'command-parent',
@@ -14686,7 +14771,12 @@ async function main() {
         ),
         'Alpha factory',
       );
-      assert.deepEqual(calls, [{method: 'closeSession', sessionId: 'alpha'}]);
+      assert.deepEqual(calls, [
+        {
+          method: 'createSession',
+          input: {cwd: directory, replaceSessionId: 'alpha'},
+        },
+      ]);
       closeError = undefined;
       creationDelay = 180;
       creationIds = ['retry-command-parent'];
@@ -14708,9 +14798,14 @@ async function main() {
         '/new retry must select the fresh parent',
       );
       assert.deepEqual(calls, [
-        {method: 'closeSession', sessionId: 'alpha'},
-        {method: 'closeSession', sessionId: 'alpha'},
-        {method: 'createSession', input: {cwd: directory}},
+        {
+          method: 'createSession',
+          input: {cwd: directory, replaceSessionId: 'alpha'},
+        },
+        {
+          method: 'createSession',
+          input: {cwd: directory, replaceSessionId: 'alpha'},
+        },
       ]);
       assert.equal(
         hub.sessions.some(item => item.session.id === 'alpha'),
@@ -14749,6 +14844,61 @@ async function main() {
         sessionId: 'beta',
         request: {prompt: '/newspaper'},
       });
+    },
+  );
+
+  await run(
+    'workspace refresh keeps newer snapshots when a state request finishes late',
+    async () => {
+      creationIds = ['refreshed-parent'];
+      publishCreation = false;
+      stateDelay = 500;
+      const before = stateRequests;
+      await evaluate(() => document.getElementById('start-session').click());
+      await uiOperation('Wait for replacement state request', async () => {
+        while (stateRequests === before)
+          await new Promise(resolve => setTimeout(resolve, 10));
+      });
+      const fresh = hub.sessions.find(
+        item => item.session.id === 'refreshed-parent',
+      );
+      assert.ok(fresh);
+      fresh.session.name = 'Latest workspace';
+      fresh.conversation.push({
+        id: 'latest-reply',
+        role: 'assistant',
+        text: 'Newest workspace update',
+        at,
+      });
+      await publish();
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Latest workspace',
+        'New snapshot did not update the workspace while its request was pending',
+      );
+      await until(
+        () =>
+          document.getElementById('start-session').textContent ===
+          'Reset conversation',
+        'Replacement request did not finish',
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-title').textContent,
+        ),
+        'Latest workspace',
+      );
+      assert.match(
+        await evaluate(
+          () => document.getElementById('conversation').textContent,
+        ),
+        /Newest workspace update/,
+      );
+      assert.equal(
+        await evaluate(() => document.getElementById('welcome').hidden),
+        true,
+      );
     },
   );
 

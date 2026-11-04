@@ -7,9 +7,8 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type {AddressInfo} from 'node:net';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {test} from 'node:test';
+import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {
   AgentSession,
@@ -20,12 +19,20 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
+import type {CredentialStore} from '@earendil-works/pi-ai';
+import {piModuleURL} from '../src/runtime/pi-paths.ts';
 import {saveToolSettings} from '../src/tools/settings.ts';
 import type {AgentSessionController} from '../src/agents/team.ts';
 import {observeDashboardSession} from '../src/dashboard/observe.ts';
 import type {DashboardState} from '../src/dashboard/state.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 import type {DashboardParent} from '../src/dashboard/hub.ts';
+
+const {AuthStorage} = (await import(
+  piModuleURL('core/auth-storage.js').href
+)) as {
+  AuthStorage: {create(path: string): CredentialStore};
+};
 
 interface ProviderRequest {
   model: string;
@@ -88,12 +95,83 @@ async function waitFor(
   assert.ok(check(), description);
 }
 
+function holdCredentialChecks(
+  t: TestContext,
+  providerId: string,
+  completeOnAbort = false,
+) {
+  const credentials = Promise.withResolvers<void>();
+  const checks: Array<{runtime: ModelRuntime; signal?: AbortSignal}> = [];
+  let active = false;
+  let blocked = true;
+  const release = () => {
+    blocked = false;
+    credentials.resolve();
+  };
+  t.after(release);
+  const hasConfiguredAuth = ModelRuntime.prototype.hasConfiguredAuth;
+  const checkAuth = ModelRuntime.prototype.checkAuth;
+  t.mock.method(
+    ModelRuntime.prototype,
+    'hasConfiguredAuth',
+    function (this: ModelRuntime, provider: string) {
+      return active && provider === providerId
+        ? false
+        : hasConfiguredAuth.call(this, provider);
+    },
+  );
+  t.mock.method(
+    ModelRuntime.prototype,
+    'checkAuth',
+    async function (
+      this: ModelRuntime,
+      ...args: Parameters<ModelRuntime['checkAuth']>
+    ) {
+      if (active && args[0] === providerId) {
+        const signal = args[1]?.signal;
+        checks.push({runtime: this, signal});
+        if (blocked) {
+          const aborted = Promise.withResolvers<void>();
+          const cancel = () =>
+            completeOnAbort
+              ? aborted.resolve()
+              : aborted.reject(signal!.reason);
+          signal?.throwIfAborted();
+          signal?.addEventListener('abort', cancel, {once: true});
+          try {
+            await Promise.race([credentials.promise, aborted.promise]);
+          } finally {
+            signal?.removeEventListener('abort', cancel);
+          }
+          // Also exercise an auth result that succeeds as cancellation fires.
+          if (completeOnAbort && signal?.aborted)
+            return {type: 'api_key' as const};
+        }
+      }
+      return checkAuth.apply(this, args);
+    },
+  );
+  return {
+    checks,
+    start: () => {
+      active = true;
+      blocked = true;
+    },
+    allowNewChecks: () => {
+      blocked = false;
+    },
+    release,
+  };
+}
+
 void test(
   'dashboard parents use real SDK sessions, inherited credentials, native tools, workers and independent histories',
   {timeout: 25000},
   async t => {
+    const temporaryRoot = join(process.cwd(), '.varisdev', 'tmp');
+    await mkdir(temporaryRoot, {recursive: true});
     const directory = await mkdtemp(
-      join(tmpdir(), 'varisdev-dashboard-parent-'),
+      join(temporaryRoot, 'varisdev-dashboard-parent-'),
     );
     const agentDir = join(directory, 'config');
     const cwd = join(directory, 'chosen-project');
@@ -276,6 +354,15 @@ void test(
           maxTokens: 1000,
           headers: {'x-inherited-model': 'parent-model'},
           compat: {supportsReasoningEffort: true},
+        },
+        {
+          id: 'dashboard-alternate',
+          name: 'Alternate dashboard model',
+          reasoning: true,
+          input: ['text'],
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          contextWindow: 128000,
+          maxTokens: 1000,
         },
       ],
     });
@@ -953,48 +1040,19 @@ void test(
               'independent-parent: TEMPLATE $@',
             );
           }
+          const credentials = holdCredentialChecks(cancellation, providerId);
           const cancelled = await createDashboardParent(
             {cwd: otherCwd, name: `Cancelled during ${action}`},
             inherited,
           );
           parents.push(cancelled);
-          let releaseCredentials!: () => void;
-          const credentials = new Promise<void>(resolve => {
-            releaseCredentials = resolve;
-          });
-          cancellation.after(releaseCredentials);
-          let checkingCredentials = false;
-          const hasConfiguredAuth = ModelRuntime.prototype.hasConfiguredAuth;
-          const checkAuth = ModelRuntime.prototype.checkAuth;
-          cancellation.mock.method(
-            ModelRuntime.prototype,
-            'hasConfiguredAuth',
-            function (this: ModelRuntime, provider: string) {
-              return provider === providerId
-                ? false
-                : hasConfiguredAuth.call(this, provider);
-            },
-          );
-          cancellation.mock.method(
-            ModelRuntime.prototype,
-            'checkAuth',
-            async function (
-              this: ModelRuntime,
-              ...args: Parameters<ModelRuntime['checkAuth']>
-            ) {
-              if (args[0] === providerId) {
-                checkingCredentials = true;
-                await credentials;
-              }
-              return checkAuth.apply(this, args);
-            },
-          );
+          credentials.start();
           const requestCount = requests.length;
           const initialPrompt =
             'independent-parent: initial request before credentials resolve.';
           const prompting = cancelled.prompt(initialPrompt);
           await waitFor(
-            () => checkingCredentials,
+            () => credentials.checks.length > 0,
             'SDK prompt waits for credentials',
           );
           if (action === 'steer') {
@@ -1013,7 +1071,7 @@ void test(
               followUp: [],
             });
             assert.equal(requests.length, requestCount);
-            releaseCredentials();
+            credentials.release();
             await prompting;
             assert.equal(
               requests.length,
@@ -1036,19 +1094,14 @@ void test(
             await cancelled.close();
             return;
           }
-          let stopped = false;
-          const stopping = cancelled[action]().then(() => {
-            stopped = true;
-          });
-          await delay(10);
+          await Promise.all([prompting, cancelled[action]()]);
           assert.equal(
-            stopped,
-            false,
-            `${action} keeps the live session until preflight settles`,
+            credentials.checks[0].signal?.aborted,
+            true,
+            `${action} cancels credential preflight without releasing credentials`,
           );
-          assert.notEqual(cancelled.state.snapshot().session.status, 'closed');
-          releaseCredentials();
-          await Promise.all([prompting, stopping]);
+          credentials.release();
+          await delay(10);
           const cancelledSnapshot = cancelled.state.snapshot();
           assert.deepEqual(cancelledSnapshot.conversation, []);
           assert.equal(
@@ -1087,9 +1140,163 @@ void test(
       );
     }
 
+    for (const action of ['abort', 'close'] as const) {
+      for (const method of ['configure', 'slash'] as const) {
+        await t.test(
+          `${action} cancels ${method} model credential preflight`,
+          async cancellation => {
+            const credentials = holdCredentialChecks(
+              cancellation,
+              providerId,
+              method === 'configure',
+            );
+            const cancelled = await createDashboardParent(
+              {cwd: otherCwd, name: `Cancelled ${method} model change`},
+              inherited,
+            );
+            parents.push(cancelled);
+            await cancelled.prompt(
+              'independent-parent: history before model change.',
+            );
+            const before = cancelled.state.snapshot();
+            const file = before.session.sessionFile!;
+            const history = await readFile(file, 'utf8');
+            const settingsPath = join(agentDir, 'settings.json');
+            const settings = await readFile(settingsPath, 'utf8');
+            const requestCount = requests.length;
+            credentials.start();
+            const operation =
+              method === 'configure'
+                ? cancelled.configure({
+                    provider: providerId,
+                    modelId: 'dashboard-alternate',
+                    thinkingLevel: 'low',
+                    persist: true,
+                  })
+                : cancelled.prompt(`/model ${providerId}/dashboard-alternate`);
+            const settled = Promise.allSettled([operation]);
+            await waitFor(
+              () => credentials.checks.length > 0,
+              'Model selection waits for credentials',
+            );
+            await cancelled[action]();
+            const [result] = await settled;
+            assert.equal(
+              result.status,
+              method === 'configure' ? 'rejected' : 'fulfilled',
+            );
+            if (result.status === 'rejected')
+              assert.equal((result.reason as Error).name, 'AbortError');
+            assert.equal(credentials.checks[0].signal?.aborted, true);
+            const after = cancelled.state.snapshot();
+            assert.equal(after.session.model, before.session.model);
+            assert.equal(
+              after.session.thinkingLevel,
+              before.session.thinkingLevel,
+            );
+            assert.deepEqual(after.conversation, before.conversation);
+            assert.deepEqual(after.usage, before.usage);
+            assert.equal(
+              after.session.status,
+              action === 'close' ? 'closed' : 'idle',
+            );
+            assert.equal(await readFile(file, 'utf8'), history);
+            assert.equal(await readFile(settingsPath, 'utf8'), settings);
+            assert.equal(requests.length, requestCount);
+            // A late credential result cannot write the cancelled model selection.
+            credentials.release();
+            await delay(10);
+            assert.equal(await readFile(file, 'utf8'), history);
+            assert.equal(await readFile(settingsPath, 'utf8'), settings);
+            assert.equal(
+              cancelled.state.snapshot().session.model,
+              before.session.model,
+            );
+            if (action === 'abort') {
+              await cancelled.configure({
+                provider: providerId,
+                modelId: 'dashboard-alternate',
+                thinkingLevel: 'low',
+              });
+              assert.equal(credentials.checks.at(-1)!.signal?.aborted, false);
+              await cancelled.prompt(
+                'independent-parent: continue with the new model.',
+              );
+              assert.equal(requests.length, requestCount + 1);
+              assert.equal(requests.at(-1)!.body.model, 'dashboard-alternate');
+              assert.equal(
+                cancelled.state.snapshot().session.thinkingLevel,
+                'low',
+              );
+            } else {
+              await assert.rejects(
+                cancelled.configure({thinkingLevel: 'low'}),
+                /closed/,
+              );
+            }
+            await cancelled.close();
+          },
+        );
+      }
+    }
+
+    await t.test(
+      'credential cancellation preserves concurrent parents and caller signals',
+      async cancellation => {
+        const credentials = holdCredentialChecks(cancellation, providerId);
+        const first = await createDashboardParent({cwd: otherCwd}, inherited);
+        const second = await createDashboardParent({cwd: otherCwd}, inherited);
+        parents.push(first, second);
+        credentials.start();
+        const firstPrompt = first.prompt(
+          'independent-parent: cancelled parent.',
+        );
+        const secondPrompt = second.prompt(
+          'independent-parent: concurrent parent.',
+        );
+        await waitFor(
+          () => credentials.checks.length === 2,
+          'Both parents await credentials',
+        );
+        const [firstCheck, secondCheck] = credentials.checks;
+        assert.notEqual(firstCheck.runtime, secondCheck.runtime);
+        const caller = new AbortController();
+        const callerCheck = firstCheck.runtime.checkAuth(providerId, {
+          signal: caller.signal,
+        });
+        const callerSettled = assert.rejects(callerCheck, {name: 'AbortError'});
+        caller.abort();
+        await callerSettled;
+        assert.equal(firstCheck.signal?.aborted, false);
+        assert.equal(secondCheck.signal?.aborted, false);
+        const closeCaller = new AbortController();
+        const closeCheck = secondCheck.runtime.checkAuth(providerId, {
+          signal: closeCaller.signal,
+        });
+        const closeSettled = assert.rejects(closeCheck, {name: 'AbortError'});
+        const combinedCloseSignal = credentials.checks.at(-1)!.signal;
+        await Promise.all([firstPrompt, first.abort()]);
+        assert.equal(firstCheck.signal?.aborted, true);
+        assert.equal(secondCheck.signal?.aborted, false);
+        credentials.allowNewChecks();
+        // Stop renews only the first parent's signal, while the second stays pending.
+        await first.prompt(
+          'independent-parent: fresh request before old credentials resolve.',
+        );
+        assert.equal(credentials.checks.at(-1)!.signal?.aborted, false);
+        await Promise.all([second.close(), secondPrompt, closeSettled]);
+        assert.equal(combinedCloseSignal?.aborted, true);
+        assert.equal(closeCaller.signal.aborted, false);
+        credentials.release();
+        await first.close();
+      },
+    );
+
     await t.test(
       'cancelled credential preflight preserves and resumes the existing branch',
       async cancellation => {
+        const checkAuth = ModelRuntime.prototype.checkAuth;
+        const credentials = holdCredentialChecks(cancellation, providerId);
         const historical = await createDashboardParent(
           {cwd: otherCwd, name: 'Existing preflight history'},
           inherited,
@@ -1112,49 +1319,20 @@ void test(
         assert.ok(before.session.sessionFile);
         assert.equal(before.session.response, 'Independent parent answer.');
 
-        let releaseCredentials!: () => void;
-        const credentials = new Promise<void>(resolve => {
-          releaseCredentials = resolve;
-        });
-        cancellation.after(releaseCredentials);
-        let checkingCredentials = false;
-        const hasConfiguredAuth = ModelRuntime.prototype.hasConfiguredAuth;
-        const checkAuth = ModelRuntime.prototype.checkAuth;
-        cancellation.mock.method(
-          ModelRuntime.prototype,
-          'hasConfiguredAuth',
-          function (this: ModelRuntime, provider: string) {
-            return provider === providerId
-              ? false
-              : hasConfiguredAuth.call(this, provider);
-          },
-        );
-        cancellation.mock.method(
-          ModelRuntime.prototype,
-          'checkAuth',
-          async function (
-            this: ModelRuntime,
-            ...args: Parameters<ModelRuntime['checkAuth']>
-          ) {
-            if (args[0] === providerId) {
-              checkingCredentials = true;
-              await credentials;
-            }
-            return checkAuth.apply(this, args);
-          },
-        );
+        credentials.start();
 
         const requestCount = requests.length;
         const cancelledText =
           'independent-parent: this cancelled preflight must stay abandoned.';
         const prompting = historical.prompt(cancelledText);
         await waitFor(
-          () => checkingCredentials,
+          () => credentials.checks.length > 0,
           'existing session waits for credentials',
         );
-        const stopping = historical.abort();
-        releaseCredentials();
-        await Promise.all([prompting, stopping]);
+        await Promise.all([prompting, historical.abort()]);
+        assert.equal(credentials.checks[0].signal?.aborted, true);
+        credentials.release();
+        await delay(10);
         const after = historical.state.snapshot();
         assert.equal(requests.length, requestCount);
         assert.deepEqual(
@@ -1324,6 +1502,90 @@ void test(
     );
     await standalone.close();
     assert.equal(standalone.state.snapshot().session.status, 'closed');
+
+    await t.test(
+      'saved OAuth without an environment key permits staged startup during a credential lock',
+      async cancellation => {
+        const authPath = join(agentDir, 'auth.json');
+        const savedAuth = await readFile(authPath, 'utf8');
+        const previousKey = process.env.OPENAI_API_KEY;
+        cancellation.after(async () => {
+          if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+          else process.env.OPENAI_API_KEY = previousKey;
+          await writeFile(authPath, savedAuth);
+        });
+        delete process.env.OPENAI_API_KEY;
+        const oauthAuth = JSON.stringify({
+          ...JSON.parse(savedAuth),
+          openai: {
+            type: 'oauth',
+            access: 'saved-oauth-access',
+            refresh: 'saved-oauth-refresh',
+            expires: Date.now() + 3_600_000,
+          },
+        });
+        await writeFile(authPath, oauthAuth);
+        const credentials = holdCredentialChecks(cancellation, 'openai');
+        const oauthParent = await createDashboardParent({
+          cwd: otherCwd,
+          model: 'openai/gpt-4.1',
+        });
+        parents.push(oauthParent);
+        credentials.start();
+        credentials.allowNewChecks();
+        await oauthParent.configure({provider: 'openai', modelId: 'gpt-4.1'});
+        const oauthRuntime = credentials.checks[0].runtime;
+        const caller = new AbortController();
+        const auth = await oauthRuntime.checkAuth('openai', {
+          signal: caller.signal,
+        });
+        assert.equal(process.env.OPENAI_API_KEY, undefined);
+        assert.equal(auth?.type, 'oauth');
+        credentials.start();
+        const previousChecks = credentials.checks.length;
+        const requestCount = requests.length;
+        const prompting = oauthParent.prompt(
+          'Cancel saved OAuth credential preflight.',
+        );
+        await waitFor(
+          () => credentials.checks.length > previousChecks,
+          'Saved OAuth prompt waits for credential preflight',
+        );
+        const pendingCheck = credentials.checks.at(-1)!;
+        const locked = Promise.withResolvers<void>();
+        const releaseLock = Promise.withResolvers<void>();
+        // OAuth refresh holds the credential-store lock while obtaining new tokens.
+        const modifying = AuthStorage.create(authPath).modify(
+          'openai',
+          async () => {
+            locked.resolve();
+            await releaseLock.promise;
+            return undefined;
+          },
+        );
+        await locked.promise;
+        try {
+          const staged = await createDashboardParent({
+            cwd: otherCwd,
+            model: 'openai/gpt-4.1',
+          });
+          parents.push(staged);
+          assert.equal(staged.state.snapshot().session.model, 'openai/gpt-4.1');
+          assert.equal(pendingCheck.signal?.aborted, false);
+          await Promise.all([oauthParent.close(), prompting]);
+          assert.equal(pendingCheck.signal?.aborted, true);
+          assert.equal(caller.signal.aborted, false);
+          credentials.release();
+          assert.equal(requests.length, requestCount);
+          assert.deepEqual(oauthParent.state.snapshot().conversation, []);
+          assert.equal(await readFile(authPath, 'utf8'), oauthAuth);
+          await staged.close();
+        } finally {
+          releaseLock.resolve();
+          await modifying;
+        }
+      },
+    );
 
     // Extension providers must be registered before selecting a saved default,
     // including for a brand-new parent without startup or resume metadata.

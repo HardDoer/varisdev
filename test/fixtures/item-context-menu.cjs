@@ -330,6 +330,10 @@ async function main() {
     record('create', input);
     const replacement = parent('replacement', 'Replacement workspace');
     replacement.session.cwd = input.cwd;
+    if (input.replaceSessionId)
+      hub.sessions = hub.sessions.filter(
+        item => item.session.id !== input.replaceSessionId,
+      );
     hub.sessions.push(replacement);
     return {id: 'replacement'};
   });
@@ -985,7 +989,7 @@ async function main() {
   );
 
   await check(
-    'context reset uses the target workspace id and keeps reset recovery in the app menu',
+    'context reset uses the target workspace id and keeps reset available in the app menu',
     async () => {
       await openMenu('.parent-card[data-context-session="beta"]');
       await act('reset-item-session');
@@ -995,8 +999,7 @@ async function main() {
           'Replacement workspace',
       );
       assert.deepEqual(calls, [
-        ['close', 'beta'],
-        ['create', {cwd: join(directory, 'beta')}],
+        ['create', {cwd: join(directory, 'beta'), replaceSessionId: 'beta'}],
       ]);
       assert.ok(hub.sessions.some(item => item.session.id === 'alpha'));
       assert.equal(

@@ -251,8 +251,17 @@ async function main() {
     hub.sessions = hub.sessions.filter(item => item.session.id !== id);
     publish();
   });
-  handle('pidev:create-session', input => {
+  handle('pidev:create-session', async input => {
     created.push(input);
+    if (input.replaceSessionId) {
+      if (closeGate) {
+        closeGate.id = input.replaceSessionId;
+        await closeGate.promise;
+      }
+      hub.sessions = hub.sessions.filter(
+        item => item.session.id !== input.replaceSessionId,
+      );
+    }
     const id =
       input.sessionId === 'saved-session'
         ? 'resumed'
@@ -478,7 +487,7 @@ async function main() {
       () => document.getElementById('prompt-recipient').textContent === 'fresh',
     ),
   );
-  assert.deepEqual(created[1], {cwd: directory});
+  assert.deepEqual(created[1], {cwd: directory, replaceSessionId: 'origin'});
   await select('other');
   assert.equal(
     await evaluate(() => document.getElementById('parent-prompt').value),

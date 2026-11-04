@@ -145,7 +145,7 @@ async function main() {
   );
   assert.ok(context.desktopTray?.isAvailable());
   await waitFor(() => window.isVisible());
-  assert.equal(tooltip, 'VarisDev — No open workspaces');
+  assert.equal(tooltip, 'No open workspaces');
   window.close();
   await waitFor(() => !window.isVisible());
   assert.equal(window.isDestroyed(), false);
@@ -154,9 +154,14 @@ async function main() {
     'native close hides the window while keeping sessions alive',
   );
 
-  states.push({status: 'running', agents: ['queued'], awaitingInput: false});
+  states.push({
+    name: 'Native workspace',
+    status: 'running',
+    agents: ['queued'],
+    awaitingInput: false,
+  });
   events.emit('change');
-  assert.equal(tooltip, 'VarisDev — Working: 1 · Queued: 1');
+  assert.equal(tooltip, 'Native workspace: Working');
   assert.equal(menu.items[0].label, 'Working: 1 · Queued: 1');
   assert.equal(menu.items[0].enabled, false);
   report.cases.push('hidden work updates native tooltip and context menu');

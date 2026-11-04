@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath} from 'node:url';
@@ -22,7 +21,9 @@ void test(
         : false,
   },
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-desktop-tray-'));
+    const temporaryRoot = join(process.cwd(), '.varisdev', 'tmp');
+    await mkdir(temporaryRoot, {recursive: true});
+    const directory = await mkdtemp(join(temporaryRoot, 'desktop-tray-'));
     t.after(() => rm(directory, {recursive: true, force: true}));
     const reportPath = join(directory, 'report.json');
     const modulePath = join(directory, 'tray.mjs');

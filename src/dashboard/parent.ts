@@ -191,12 +191,12 @@ export async function createDashboardParent(
     args ? desktopResourceOptions(args) : {};
   let state: DashboardState | undefined;
   const ui = interaction?.ui ?? new DesktopExtensionUI(() => state?.touch());
-  let parentDialogs = new AbortController();
-  const parentUI = ui.forCommand(() =>
+  let parentCancellation = new AbortController();
+  const parentSignal = () =>
     interaction
-      ? AbortSignal.any([parentDialogs.signal, interaction.signal])
-      : parentDialogs.signal,
-  );
+      ? AbortSignal.any([parentCancellation.signal, interaction.signal])
+      : parentCancellation.signal;
+  const parentUI = ui.forCommand(parentSignal);
   const approval = createAgentApprovalRelay({hasUI: true, ui: ui.context});
   const approvalSignal = () => {
     const signals = [...activePrompts]
@@ -217,8 +217,20 @@ export async function createDashboardParent(
   const modelRuntime = await createDesktopModelRuntime({
     authPath: join(agentDir, 'auth.json'),
     modelsPath: join(agentDir, 'models.json'),
-    refreshOnCreate: !inherited,
+    refreshOnCreate: false,
   });
+  // Pi's prompt and model-selection preflights omit the caller's signal.
+  // Capture this parent's cancellation generation for each auth check.
+  const checkAuth = modelRuntime.checkAuth.bind(modelRuntime);
+  modelRuntime.checkAuth = async (provider, options) => {
+    const signal = options?.signal
+      ? AbortSignal.any([parentSignal(), options.signal])
+      : parentSignal();
+    signal.throwIfAborted();
+    const auth = await checkAuth(provider, {...options, signal});
+    signal.throwIfAborted();
+    return auth;
+  };
   const services = await createAgentSessionServices({
     cwd: request.cwd,
     agentDir,
@@ -513,7 +525,7 @@ export async function createDashboardParent(
   };
   const stop = () => {
     llama.cancel();
-    parentDialogs.abort();
+    parentCancellation.abort();
     preserveQueue();
     session.abortRetry();
     session.abortCompaction();
@@ -544,7 +556,7 @@ export async function createDashboardParent(
       .finally(() => {
         // Extensions may request another dialog while unwinding cancellation.
         // Keep those requests cancelled until all stopped work has settled.
-        if (!closed) parentDialogs = new AbortController();
+        if (!closed) parentCancellation = new AbortController();
         stopping = undefined;
         stoppedMessages = undefined;
       });

@@ -394,10 +394,12 @@ export class DashboardState {
 
   /** Work status without projecting conversation history. */
   workState(): {
+    name: string;
     status: DashboardSession['status'];
     agents: AgentRecord['status'][];
   } {
     return {
+      name: this.session.name,
       status: this.session.status,
       agents: this.agents.map(agent => agent.status),
     };

@@ -49,7 +49,7 @@ Interactive Pi settings commands keep their existing global or repository save b
 Open **Actions** beside the conversation title, or right-click a workspace, agent, history entry, or the conversation title. Right-clicking selects that item. With an item focused, **Shift+F10** or the menu key opens its actions; use the arrow keys to navigate and **Esc** to close. **Actions** remains available when the visualization is hidden.
 
 - **New conversation** automatically selects **Default**, or the eligible profile chosen by `default_agent`. You can choose another configuration; a name and initial task are optional. See [agent configurations](agents.md).
-- **Actions → Reset conversation** replaces the selected workspace with a fresh main-agent conversation in the same folder, stopping all of its agents. **Menu → Reset conversation** also offers reset and retry.
+- **Actions → Reset conversation**, **Menu → Reset conversation**, and `/new` replace the selected workspace with a fresh main-agent conversation in the same folder, stopping all of its agents. The workspace stays visible during reset; if the new conversation cannot start, the current one stays open.
 - **Menu → Resume session** reopens a saved conversation as a workspace, replacing other open workspaces in the same folder. Other projects stay open. Use **Choose folder** to browse another folder's history.
 - The start screen's **Recent projects** remembers up to twelve folders across app restarts.
 - **Actions → Close workspace** closes the selected workspace and stops all of its agents without deleting saved history. A workspace connected from a terminal is only dismissed from the app.

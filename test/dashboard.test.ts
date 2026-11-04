@@ -454,6 +454,422 @@ void test('closing sessions frees capacity and keeps the selected session valid 
   assert.ok(parents.every(parent => parent.closed));
 });
 
+void test('explicit replacement validates its target and folder before creating a parent', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-new-validation-'));
+  const other = join(directory, 'other');
+  await mkdir(other);
+  const outgoing = controlledParent('outgoing', directory);
+  let creations = 0;
+  const hub = new DashboardHub(undefined, async () => {
+    creations++;
+    return controlledParent('new', directory).parent;
+  });
+  t.after(async () => {
+    await hub.close();
+    await rm(directory, {recursive: true, force: true});
+  });
+  hub.adoptSession(outgoing.parent);
+  for (const replaceSessionId of ['', ' ', 1, null, 'x'.repeat(129)]) {
+    await assert.rejects(
+      hub.createSession({cwd: directory, replaceSessionId}),
+      /Replacement session ID/,
+    );
+  }
+  await assert.rejects(
+    hub.createSession({cwd: directory, replaceSessionId: 'missing'}),
+    /Unknown replacement workspace/,
+  );
+  await assert.rejects(
+    hub.createSession({cwd: other, replaceSessionId: 'outgoing'}),
+    /same folder/,
+  );
+  await assert.rejects(
+    hub.createSession({
+      cwd: directory,
+      replaceSessionId: 'outgoing',
+      sessionId: 'saved',
+    }),
+    /either a new replacement or a saved conversation/,
+  );
+  assert.equal(creations, 0);
+  assert.equal(outgoing.closed, false);
+  await hub.promptSession('outgoing', {prompt: 'Still available'});
+  assert.equal(outgoing.runs.length, 1);
+});
+
+void test('explicit replacement publishes one atomic swap after initialization, cleanup and pending work', async t => {
+  const cwd = process.cwd();
+  const outgoing = controlledParent('outgoing', cwd);
+  const unrelated = controlledParent('unrelated', cwd);
+  const incoming = controlledParent('incoming', cwd);
+  const initialization = Promise.withResolvers<DashboardParent>();
+  const cleanup = Promise.withResolvers<void>();
+  const work = Promise.withResolvers<void>();
+  let creations = 0;
+  let closeCalls = 0;
+  let workStarted = false;
+  let workFinished = false;
+  outgoing.parent.prompt = async () => {
+    workStarted = true;
+    await work.promise;
+    workFinished = true;
+  };
+  outgoing.parent.close = async () => {
+    closeCalls++;
+    await cleanup.promise;
+  };
+  const hub = new DashboardHub(undefined, async request => {
+    creations++;
+    assert.equal(request.agentProfile?.key, 'builtin:default');
+    return initialization.promise;
+  });
+  t.after(async () => {
+    initialization.resolve(incoming.parent);
+    cleanup.resolve();
+    work.resolve();
+    await hub.close();
+  });
+  hub.adoptSession(outgoing.parent);
+  hub.adoptSession(unrelated.parent);
+  const snapshots: Array<{ids: string[]; selected?: string}> = [];
+  hub.subscribe(() => {
+    const snapshot = hub.snapshot();
+    snapshots.push({
+      ids: snapshot.sessions.map(item => item.session.id).sort(),
+      selected: snapshot.selectedSessionId,
+    });
+  });
+  const request = {
+    cwd,
+    replaceSessionId: 'outgoing',
+    templateId: 'builtin:default',
+  };
+  const first = hub.createSession(request);
+  const second = hub.createSession(request);
+  await until(() => creations === 1);
+  await hub.promptSession('outgoing', {prompt: 'Work during initialization'});
+  assert.equal(workStarted, true);
+  assert.equal(closeCalls, 0);
+  assert.deepEqual(
+    hub.snapshot().sessions.map(item => item.session.id),
+    ['outgoing', 'unrelated'],
+  );
+  const concurrentClose = hub.closeSession('outgoing');
+  initialization.resolve(incoming.parent);
+  await until(() => closeCalls === 1);
+  await assert.rejects(
+    hub.promptSession('outgoing', {prompt: 'Too late'}),
+    /closing/,
+  );
+  cleanup.resolve();
+  await nextTick();
+  assert.equal(workFinished, false);
+  assert.equal(hub.snapshot().sessions[0].session.id, 'outgoing');
+  assert.equal(hub.snapshot().sessions[0].session.controllable, false);
+  work.resolve();
+  assert.deepEqual(await Promise.all([first, second]), [
+    {id: 'incoming'},
+    {id: 'incoming'},
+  ]);
+  await concurrentClose;
+  assert.equal(creations, 1);
+  assert.equal(closeCalls, 1);
+  assert.equal(workFinished, true);
+  assert.equal(incoming.closed, false);
+  assert.equal(unrelated.closed, false);
+  assert.equal(hub.snapshot().selectedSessionId, 'incoming');
+  assert.ok(snapshots.length > 0);
+  for (const snapshot of snapshots) {
+    if (snapshot.ids.includes('incoming')) {
+      assert.deepEqual(snapshot.ids, ['incoming', 'unrelated']);
+      assert.equal(snapshot.selected, 'incoming');
+    } else {
+      assert.deepEqual(snapshot.ids, ['outgoing', 'unrelated']);
+      assert.equal(snapshot.selected, 'outgoing');
+    }
+  }
+  assert.deepEqual(snapshots.at(-1)?.ids, ['incoming', 'unrelated']);
+});
+
+void test('explicit replacement failures dispose the candidate and leave the outgoing session usable', async t => {
+  const outgoing = controlledParent('outgoing', process.cwd());
+  const incoming = controlledParent('incoming', process.cwd());
+  let failInitialization = true;
+  let closeCalls = 0;
+  const hub = new DashboardHub(undefined, async () => {
+    if (failInitialization) throw new Error('initialization failed');
+    return incoming.parent;
+  });
+  t.after(() => hub.close());
+  hub.adoptSession(outgoing.parent);
+  const request = {cwd: process.cwd(), replaceSessionId: 'outgoing'};
+  await assert.rejects(hub.createSession(request), /initialization failed/);
+  assert.equal(outgoing.closed, false);
+  await hub.promptSession('outgoing', {prompt: 'Still working'});
+  await hub.abortSession('outgoing');
+  failInitialization = false;
+  outgoing.parent.close = async () => {
+    closeCalls++;
+    throw new Error('outgoing cleanup failed');
+  };
+  const observed: string[][] = [];
+  hub.subscribe(() => {
+    observed.push(hub.snapshot().sessions.map(item => item.session.id));
+  });
+  await assert.rejects(hub.createSession(request), /outgoing cleanup failed/);
+  assert.equal(closeCalls, 1);
+  assert.equal(incoming.closed, true);
+  assert.equal(hub.snapshot().sessions[0].session.controllable, true);
+  assert.match(hub.snapshot().sessions[0].session.activity, /Close failed/);
+  assert.ok(observed.every(ids => ids.length === 1 && ids[0] === 'outgoing'));
+  await hub.promptSession('outgoing', {prompt: 'Retry work'});
+  assert.equal(outgoing.runs.length, 2);
+  await hub.abortSession('outgoing');
+});
+
+void test('explicit replacements share capacity credits without opening a ninth workspace', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-new-capacity-'));
+  const incoming = controlledParent('incoming', directory);
+  const initialization = Promise.withResolvers<DashboardParent>();
+  let creations = 0;
+  const hub = new DashboardHub(undefined, async () => {
+    creations++;
+    return initialization.promise;
+  });
+  const outgoing = controlledParent('outgoing', directory);
+  const others = Array.from({length: 7}, (_, index) =>
+    controlledParent(`other-${index}`, directory),
+  );
+  t.after(async () => {
+    initialization.resolve(incoming.parent);
+    await hub.close();
+    await rm(directory, {recursive: true, force: true});
+  });
+  hub.adoptSession(outgoing.parent);
+  for (const parent of others) hub.adoptSession(parent.parent);
+  const request = {cwd: directory, replaceSessionId: 'outgoing'};
+  const first = hub.createSession(request);
+  await until(() => creations === 1);
+  const second = hub.createSession(request);
+  await assert.rejects(hub.createSession({cwd: directory}), /eight workspaces/);
+  initialization.resolve(incoming.parent);
+  assert.deepEqual(await Promise.all([first, second]), [
+    {id: 'incoming'},
+    {id: 'incoming'},
+  ]);
+  assert.equal(creations, 1);
+  assert.equal(outgoing.closed, true);
+  assert.ok(others.every(parent => !parent.closed));
+  assert.equal(hub.snapshot().sessions.length, 8);
+});
+
+void test('shutdown awaits explicit replacement initialization and candidate disposal', async t => {
+  for (const phase of ['initialization', 'cleanup'] as const) {
+    const outgoing = controlledParent('outgoing', process.cwd());
+    const incoming = controlledParent('incoming', process.cwd());
+    const initialization = Promise.withResolvers<DashboardParent>();
+    const cleanup = Promise.withResolvers<void>();
+    const disposal = Promise.withResolvers<void>();
+    let factoryStarted = false;
+    let outgoingCloses = 0;
+    let incomingCloses = 0;
+    outgoing.parent.close = async () => {
+      outgoingCloses++;
+      await cleanup.promise;
+    };
+    incoming.parent.close = async () => {
+      incomingCloses++;
+      await disposal.promise;
+    };
+    const hub = new DashboardHub(undefined, async () => {
+      factoryStarted = true;
+      return initialization.promise;
+    });
+    t.after(async () => {
+      initialization.resolve(incoming.parent);
+      cleanup.resolve();
+      disposal.resolve();
+      await hub.close();
+    });
+    hub.adoptSession(outgoing.parent);
+    const replacing = hub.createSession({
+      cwd: process.cwd(),
+      replaceSessionId: 'outgoing',
+    });
+    const rejected = assert.rejects(replacing, /closed/);
+    await until(() => factoryStarted);
+    if (phase === 'cleanup') {
+      initialization.resolve(incoming.parent);
+      await until(() => outgoingCloses === 1);
+    }
+    let closed = false;
+    const closing = hub.close().then(() => {
+      closed = true;
+    });
+    initialization.resolve(incoming.parent);
+    cleanup.resolve();
+    await until(() => incomingCloses === 1);
+    await nextTick();
+    assert.equal(closed, false);
+    disposal.resolve();
+    await Promise.all([closing, rejected]);
+    assert.equal(outgoingCloses, 1);
+    assert.equal(incomingCloses, 1);
+    assert.equal(
+      hub.snapshot().sessions.some(item => item.session.id === 'incoming'),
+      false,
+    );
+  }
+});
+
+void test('reopening the outgoing session waits for its staged replacement cleanup', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-new-reopen-'));
+  t.mock.method(SessionManager, 'list', async () => [
+    {
+      id: 'outgoing',
+      firstMessage: 'Saved work',
+      modified: new Date(),
+      messageCount: 1,
+      path: join(directory, 'outgoing.jsonl'),
+    },
+  ]);
+  const outgoing = controlledParent('outgoing', directory);
+  const incoming = controlledParent('incoming', directory);
+  const reopened = controlledParent('outgoing', directory);
+  const cleanup = Promise.withResolvers<void>();
+  let outgoingCloses = 0;
+  let resumeCalls = 0;
+  outgoing.parent.close = async () => {
+    outgoingCloses++;
+    await cleanup.promise;
+  };
+  const hub: DashboardHub = new DashboardHub(undefined, async request => {
+    if (request.resume) {
+      resumeCalls++;
+      assert.equal(outgoingCloses, 1);
+      assert.deepEqual(
+        hub.snapshot().sessions.map(item => item.session.id),
+        ['incoming'],
+      );
+      return reopened.parent;
+    }
+    return incoming.parent;
+  });
+  t.after(async () => {
+    cleanup.resolve();
+    await hub.close();
+    await rm(directory, {recursive: true, force: true});
+  });
+  hub.adoptSession(outgoing.parent);
+  const replacing = hub.createSession({
+    cwd: directory,
+    replaceSessionId: 'outgoing',
+  });
+  await until(() => outgoingCloses === 1);
+  const resuming = hub.createSession({cwd: directory, sessionId: 'outgoing'});
+  await nextTick();
+  assert.equal(resumeCalls, 0);
+  cleanup.resolve();
+  assert.deepEqual(await replacing, {id: 'incoming'});
+  assert.deepEqual(await resuming, {id: 'outgoing'});
+  assert.equal(resumeCalls, 1);
+  assert.equal(outgoingCloses, 1);
+  assert.equal(incoming.closed, true);
+  assert.equal(reopened.closed, false);
+});
+
+void test('a replacement queued behind a resume does not block removal of its outgoing session', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'varisdev-new-resume-queue-'));
+  t.mock.method(SessionManager, 'list', async () => [
+    {
+      id: 'saved',
+      firstMessage: 'Saved work',
+      modified: new Date(),
+      messageCount: 1,
+      path: join(directory, 'saved.jsonl'),
+    },
+  ]);
+  const outgoing = controlledParent('outgoing', directory);
+  const saved = controlledParent('saved', directory);
+  const initialization = Promise.withResolvers<DashboardParent>();
+  let resumeStarted = false;
+  const hub = new DashboardHub(undefined, async request => {
+    assert.ok(request.resume);
+    resumeStarted = true;
+    return initialization.promise;
+  });
+  t.after(async () => {
+    initialization.resolve(saved.parent);
+    await hub.close();
+    await rm(directory, {recursive: true, force: true});
+  });
+  hub.adoptSession(outgoing.parent);
+  const resuming = hub.createSession({cwd: directory, sessionId: 'saved'});
+  await until(() => resumeStarted);
+  const replacing = hub.createSession({
+    cwd: directory,
+    replaceSessionId: 'outgoing',
+  });
+  const rejected = assert.rejects(replacing, /Unknown replacement workspace/);
+  await nextTick();
+  initialization.resolve(saved.parent);
+  assert.deepEqual(await resuming, {id: 'saved'});
+  await rejected;
+  assert.equal(outgoing.closed, true);
+  assert.deepEqual(
+    hub.snapshot().sessions.map(item => item.session.id),
+    ['saved'],
+  );
+});
+
+void test('attached replacement dismisses the old session atomically without invoking terminal controls', async t => {
+  const initialization = Promise.withResolvers<DashboardParent>();
+  const incoming = controlledParent('incoming', process.cwd());
+  let factoryStarted = false;
+  const hub = new DashboardHub(undefined, async () => {
+    factoryStarted = true;
+    return initialization.promise;
+  });
+  t.after(async () => {
+    initialization.resolve(incoming.parent);
+    await hub.close();
+  });
+  hub.updateExternal(state('attached').snapshot());
+  hub.setExternalControl({
+    ...featureControls,
+    async prompt() {
+      assert.fail('Replacement must not send a terminal prompt');
+    },
+    async abort() {
+      assert.fail('Replacement must not abort the attached terminal');
+    },
+  });
+  const observed: string[][] = [];
+  hub.subscribe(() => {
+    observed.push(hub.snapshot().sessions.map(item => item.session.id));
+  });
+  const replacing = hub.createSession({
+    cwd: process.cwd(),
+    replaceSessionId: 'attached',
+  });
+  await until(() => factoryStarted);
+  hub.updateExternal(state('attached').snapshot());
+  assert.equal(hub.snapshot().sessions[0].session.controllable, true);
+  initialization.resolve(incoming.parent);
+  assert.deepEqual(await replacing, {id: 'incoming'});
+  assert.ok(
+    observed.every(
+      ids => ids.length === 1 && ['attached', 'incoming'].includes(ids[0]),
+    ),
+  );
+  assert.deepEqual(observed.at(-1), ['incoming']);
+  hub.updateExternal(state('attached').snapshot());
+  assert.deepEqual(
+    hub.snapshot().sessions.map(item => item.session.id),
+    ['incoming'],
+  );
+});
+
 void test('resuming a saved session waits for its successful close and preserves the saved file', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-close-resume-'));
   const savedPath = join(directory, 'saved-session.jsonl');

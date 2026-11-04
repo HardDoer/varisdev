@@ -39,7 +39,7 @@ Spawn, send, and cancel return short acknowledgements. Status and wait return re
 
 When a main agent finishes, VarisDev plays a completion sound only while the app window is unfocused. It waits for retries, automatic compaction, and queued work to settle. Cancelled runs stay silent. Windows and Linux use the original Windows 98 ding, with a system bell fallback; macOS uses its system bell.
 
-Closing the window hides VarisDev in the system tray while work continues. Hover over its tray icon to see work status, or right-click for **Open VarisDev** and **Quit VarisDev**. The tray menu also shows status for desktops without hover tooltips.
+Closing the window hides VarisDev in the system tray while work continues. Hover over its tray icon to see workspace names and their status, or right-click for **Open VarisDev** and **Quit VarisDev**. The tray menu also shows status for desktops without hover tooltips.
 
 **Stop** stops the selected agent's current work; other agents continue. Open **Actions** beside the conversation title to cancel or remove an additional agent, or cancel all agents in the selected workspace. You can also right-click a workspace, agent, history entry, or the conversation title; the menu selects that item and supports keyboard navigation.
 

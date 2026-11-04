@@ -10,12 +10,12 @@ import {
 } from '../src/dashboard/hub.ts';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
-import {DesktopTray} from '../src/desktop/tray.ts';
+import {DesktopTray, desktopWorkspaceToolTip} from '../src/desktop/tray.ts';
 
-function state(id = 'workspace') {
+function state(id = 'workspace', name = 'Tray workspace') {
   return new DashboardState({
     id,
-    name: 'Tray workspace',
+    name,
     cwd: process.cwd(),
     status: 'idle',
     activity: 'Ready',
@@ -97,7 +97,7 @@ void test('tray follows work across sessions without renderer updates and ignore
   const primary = state();
   const f = fixture(primary);
   try {
-    assert.equal(f.tooltips.at(-1), 'VarisDev — Idle · 1 workspace');
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Idle');
     primary.updateSession({status: 'running'});
     primary.updateTeam(
       [
@@ -110,16 +110,13 @@ void test('tray follows work across sessions without renderer updates and ignore
       ],
       [],
     );
-    assert.equal(
-      f.tooltips.at(-1),
-      'VarisDev — Working: 2 · Queued: 1 · Stopping: 1',
-    );
-    const external = state('external');
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Working');
+    const external = state('external', 'External workspace');
     external.updateSession({status: 'compacting'});
     f.hub.updateExternal(external.snapshot());
     assert.equal(
       f.tooltips.at(-1),
-      'VarisDev — Working: 2 · Compacting: 1 · Queued: 1 · Stopping: 1',
+      'Tray workspace: Working\nExternal workspace: Compacting',
     );
     const updates = f.tooltips.length;
     primary.updateSession({activity: 'Streaming output'});
@@ -128,17 +125,124 @@ void test('tray follows work across sessions without renderer updates and ignore
     primary.updateSession({status: 'idle'});
     external.updateSession({status: 'idle'});
     f.hub.updateExternal(external.snapshot());
-    assert.equal(f.tooltips.at(-1), 'VarisDev — Idle · 2 workspaces');
+    assert.equal(
+      f.tooltips.at(-1),
+      'External workspace: Idle\nTray workspace: Idle',
+    );
     external.updateSession({status: 'closed'});
     external.updateTeam([agent('stale', 'running')], []);
     f.hub.updateExternal(external.snapshot());
-    assert.equal(f.tooltips.at(-1), 'VarisDev — Idle · 1 workspace');
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Idle');
     primary.updateSession({status: 'closed'});
-    assert.equal(f.tooltips.at(-1), 'VarisDev — No open workspaces');
+    assert.equal(f.tooltips.at(-1), 'No open workspaces');
   } finally {
     f.tray.dispose();
   }
 });
+
+void test('tray summarizes agent activity even when the parent is idle', () => {
+  const primary = state();
+  const f = fixture(primary);
+  try {
+    primary.updateTeam([agent('queued', 'queued')], []);
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Queued');
+    primary.updateTeam(
+      [agent('queued', 'queued'), agent('stopping', 'cancelling')],
+      [],
+    );
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Stopping');
+    primary.updateSession({status: 'compacting'});
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Compacting');
+    primary.updateTeam([agent('active', 'running')], []);
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Working');
+    primary.updateSession({status: 'idle'});
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Working');
+    primary.updateTeam(
+      [
+        agent('done', 'completed'),
+        agent('error', 'failed'),
+        agent('aborted', 'cancelled'),
+      ],
+      [],
+    );
+    assert.equal(f.tooltips.at(-1), 'Tray workspace: Idle');
+  } finally {
+    f.tray.dispose();
+  }
+});
+
+void test('renaming a workspace refreshes the tooltip when aggregate work is unchanged', () => {
+  const primary = state();
+  const f = fixture(primary);
+  try {
+    const menu = f.menu;
+    primary.updateSession({name: 'Renamed workspace'});
+    assert.equal(f.tooltips.at(-1), 'Renamed workspace: Idle');
+    assert.equal(f.menu, menu);
+    const updates = f.tooltips.length;
+    primary.updateSession({activity: 'Ready for a task'});
+    assert.equal(f.tooltips.length, updates);
+  } finally {
+    f.tray.dispose();
+  }
+});
+
+void test('tooltip normalizes workspace names into one line', () => {
+  assert.equal(
+    desktopWorkspaceToolTip([
+      {
+        name: '  Tray\n\t\u0000 workspace  ',
+        status: 'idle',
+        agents: [],
+        awaitingInput: false,
+      },
+    ]),
+    'Tray workspace: Idle',
+  );
+});
+
+for (const platform of ['win32', 'darwin', 'linux'] as const)
+  void test(`tooltip fits ${platform} limits and preserves statuses and Unicode names`, () => {
+    const states: ReturnType<DashboardHub['workStates']> = Array.from(
+      {length: 80},
+      (_, index) => ({
+        name: `Workspace ${index} ${'🚀'.repeat(40)}`,
+        status: 'idle',
+        agents: [],
+        awaitingInput: false,
+      }),
+    );
+    states.push({
+      name: 'Attention',
+      status: 'idle',
+      agents: ['running'],
+      awaitingInput: true,
+    });
+    const tooltip = desktopWorkspaceToolTip(states, platform);
+    assert.ok(tooltip.startsWith('Attention: Awaiting input · Working\n'));
+    assert.ok(tooltip.length <= (platform === 'win32' ? 127 : 512));
+    assert.ok(tooltip.isWellFormed());
+    const lines = tooltip.split('\n');
+    const overflow = /^\+(\d+) more workspaces$/.exec(lines.pop()!);
+    assert.ok(overflow);
+    assert.equal(Number(overflow[1]), states.length - lines.length);
+    assert.ok(lines.length <= 8);
+    assert.ok(lines.slice(1).every(line => line.endsWith(': Idle')));
+    const longName = desktopWorkspaceToolTip(
+      [
+        {
+          name: 'x🚀'.repeat(1000),
+          status: 'compacting',
+          agents: [],
+          awaitingInput: false,
+        },
+      ],
+      platform,
+    );
+    assert.ok(longName.endsWith('…: Compacting'));
+    assert.ok(longName.length <= (platform === 'win32' ? 127 : 512));
+    assert.ok(longName.isWellFormed());
+  });
 
 void test('tray menu and click actions reopen or explicitly quit, and disposal removes status updates', () => {
   const primary = state();
@@ -190,11 +294,13 @@ void test('pending session input reaches the tray without projecting dialog or c
     throw new Error('Tray updates must not project conversations');
   };
   current.updateSession({activity: 'Waiting for confirmation'});
-  assert.equal(f.tooltips.at(-1), 'VarisDev — Awaiting input: 1');
+  assert.equal(f.tooltips.at(-1), 'Tray workspace: Awaiting input');
   assert.equal(f.menu[0].label, 'Awaiting input: 1');
+  current.updateTeam([agent('background', 'running')], []);
+  assert.equal(f.tooltips.at(-1), 'Tray workspace: Awaiting input · Working');
   ui.respond(dialogId, true);
   assert.equal(await confirmation, true);
-  assert.equal(f.tooltips.at(-1), 'VarisDev — Idle · 1 workspace');
+  assert.equal(f.tooltips.at(-1), 'Tray workspace: Working');
 });
 
 for (const existing of [false, true])
@@ -223,7 +329,7 @@ for (const existing of [false, true])
           ready();
           await confirmation;
           return {
-            state: state('opened'),
+            state: state('opened', 'Opened workspace'),
             ui: pendingUI,
             close: async () => pendingUI.dispose(),
           } as DashboardParent;
@@ -233,16 +339,22 @@ for (const existing of [false, true])
         f.tray.dispose();
         await f.hub.close();
       });
-      const opening = f.hub.startParent({cwd: process.cwd()});
+      const opening = f.hub.startParent({
+        cwd: process.cwd(),
+        name: 'Opening workspace',
+      });
       await started;
-      assert.equal(f.tooltips.at(-1), 'VarisDev — Awaiting input: 1');
+      assert.equal(
+        f.tooltips.at(-1),
+        `Opening workspace: Awaiting input${existing ? '\nTray workspace: Idle' : ''}`,
+      );
       assert.equal(f.menu[0].label, 'Awaiting input: 1');
       pendingUI.respond(dialogId, true);
       const parent = await opening;
       f.hub.adoptSession(parent);
       assert.equal(
         f.tooltips.at(-1),
-        `VarisDev — Idle · ${existing ? '2 workspaces' : '1 workspace'}`,
+        `${existing ? 'Tray workspace: Idle\n' : ''}Opened workspace: Idle`,
       );
     },
   );

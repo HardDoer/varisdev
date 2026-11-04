@@ -220,8 +220,9 @@ let conversationScrollTop;
 let lastLayout = [];
 let workspaceRendered = '';
 let creating = false;
-// Keep the original folder when closing succeeds but creation needs a retry.
-let pendingReplacement;
+// Retain the outgoing view until the replacement reply identifies its successor.
+let sessionReplacement;
+let latestHub = state.hub;
 let expandedEditor = null;
 let pendingDraftPosition = null;
 const composingEditors = new Set();
@@ -1038,7 +1039,9 @@ function renderFactory() {
   $('context-meter').hidden = !context;
   text(
     $('parent-activity'),
-    selected.activity || selected.task || 'Waiting for a task',
+    sessionReplacement?.session.id === state.sessionId
+      ? 'Resetting conversation…'
+      : selected.activity || selected.task || 'Waiting for a task',
   );
   $('parent-activity').title = $('parent-activity').textContent;
   renderProcessing(data);
@@ -1832,7 +1835,10 @@ function renderInspector() {
   else badge($('inspector-status'), unit.status);
   text(
     $('inspector-activity'),
-    unit.activity || (parent ? 'No current activity' : statusName(unit.status)),
+    parent && sessionReplacement?.session.id === state.sessionId
+      ? 'Resetting conversation…'
+      : unit.activity ||
+          (parent ? 'No current activity' : statusName(unit.status)),
   );
   $('back-to-parent').hidden = parent;
   $('tab-context').hidden =
@@ -1973,7 +1979,13 @@ function renderComposer(data, unit, parent) {
   text($('prompt-action'), steering ? 'Steer' : 'Message');
   text(
     $('send-prompt'),
-    sending.has(id) ? 'Sending…' : steering ? 'Steer' : 'Send',
+    sessionReplacement?.session.id === id
+      ? 'Resetting…'
+      : sending.has(id)
+        ? 'Sending…'
+        : steering
+          ? 'Steer'
+          : 'Send',
   );
   $('send-prompt').title = steering
     ? 'Steer this agent at its next model turn'
@@ -2106,6 +2118,18 @@ function render() {
 function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
+  latestHub = hub;
+  if (sessionReplacement) {
+    const current = hub.sessions.find(
+      item => item.session.id === sessionReplacement.session.id,
+    );
+    if (current) sessionReplacement = current;
+    else
+      hub = {
+        ...hub,
+        sessions: [...hub.sessions, sessionReplacement],
+      };
+  }
   state.hub = agentControls.filterHub(hub);
   void receiveNavigation(hub);
   scene?.updateHub(state.hub);
@@ -2158,13 +2182,18 @@ function applyMotion() {
         stopping.has(data.session.id) || pausedActivity.has(data.session.id),
     });
 }
+async function refreshState() {
+  const version = snapshotVersion;
+  const hub = await api.getState();
+  if (version === snapshotVersion) receive(hub);
+}
 async function selectOpenedSession(id) {
   terminalTabs.showPrompt();
   state.desiredSessionId = id;
   if (state.hub.sessions.some(item => item.session.id === id)) {
     selectSession(id);
     state.desiredSessionId = null;
-  } else receive(await api.getState());
+  } else await refreshState();
   $('parent-prompt').focus();
   void recentProjects.refresh();
 }
@@ -2184,23 +2213,19 @@ function renderSessionActions() {
   recentProjects.setBusy(Boolean(creating));
   for (const id of ['new-session', 'welcome-create'])
     $(id).disabled = Boolean(creating);
-  const replacementCwd = pendingReplacement?.cwd || session?.cwd;
+  const replacementCwd = session?.cwd;
   $('start-session').hidden = !parent || !replacementCwd;
   $('start-session').disabled =
     Boolean(creating) ||
     closingSessions.size > 0 ||
     !replacementCwd ||
-    !api?.closeSession;
+    !api?.createSession;
   $('start-session').title = replacementCwd
     ? `Reset the conversation in ${replacementCwd}`
     : '';
   text(
     $('start-session'),
-    creating === 'session'
-      ? 'Creating…'
-      : pendingReplacement
-        ? 'Retry reset conversation'
-        : 'Reset conversation',
+    creating === 'session' ? 'Creating…' : 'Reset conversation',
   );
   $('reset-item-session').disabled = $('start-session').disabled || !session;
   $('rename-workspace').disabled =
@@ -2252,7 +2277,6 @@ async function openFolder(folder) {
     const result = existing
       ? {id: existing.session.id}
       : await api.createSession({cwd});
-    pendingReplacement = undefined;
     await selectOpenedSession(result.id);
   } catch (error) {
     showError(error);
@@ -2263,51 +2287,37 @@ async function openFolder(folder) {
   }
 }
 async function startSession(submission) {
-  const session = submission
+  const current = submission
     ? state.hub.sessions.find(item => item.session.id === submission.id)
-        ?.session
-    : snapshot()?.session;
-  if (creating || closingSessions.size || !api?.closeSession) return false;
-  const retrying =
-    pendingReplacement &&
-    (!submission || submission.id === pendingReplacement.id);
-  const replacement =
-    (retrying && pendingReplacement) ||
-    (session && {
-      id: session.id,
-      cwd: session.cwd,
-      submission,
-    });
-  if (!replacement) return false;
+    : snapshot();
+  if (creating || closingSessions.size || !api?.createSession || !current)
+    return false;
+  const {id, cwd} = current.session;
   saveDraft();
   saveConversationDisclosures();
   creating = 'session';
+  sessionReplacement = current;
+  closingSessions.add(id);
   $('app-error').hidden = true;
-  renderSessionActions();
+  render();
   try {
-    if (!retrying) {
-      closingSessions.add(replacement.id);
-      render();
-      await api.closeSession(replacement.id);
-      pendingReplacement = replacement;
-      const version = snapshotVersion;
-      const hub = await api.getState();
-      if (version === snapshotVersion) receive(hub);
-      workspaceCache.delete(replacement.id);
-      pausedActivity.delete(replacement.id);
-    }
-    const result = await api.createSession({cwd: replacement.cwd});
-    pendingReplacement = undefined;
-    const submitted = replacement.submission;
-    if (submitted?.draft) clearSubmittedDraft(submitted.id, submitted.draft);
+    const result = await api.createSession({cwd, replaceSessionId: id});
+    workspaceCache.delete(id);
+    pausedActivity.delete(id);
+    if (submission?.draft) clearSubmittedDraft(id, submission.draft);
+    state.desiredSessionId = result.id;
+    sessionReplacement = undefined;
+    receive(latestHub);
     await selectOpenedSession(result.id);
     return true;
   } catch (error) {
     showError(error);
     return false;
   } finally {
-    closingSessions.delete(replacement.id);
+    sessionReplacement = undefined;
+    closingSessions.delete(id);
     creating = false;
+    receive(latestHub);
     render();
   }
 }
@@ -2970,7 +2980,7 @@ const workspaceRename = initWorkspaceRename({
   api,
   current: () => state.unitId === 'parent' && snapshot()?.session,
   sessions: () => state.hub.sessions.map(item => item.session),
-  renamed: () => api.getState().then(receive).catch(showError),
+  renamed: () => refreshState().catch(showError),
 });
 const liveView = initLiveView();
 const cleanupPanelLayout = initPanelLayout({
@@ -3012,7 +3022,7 @@ const cleanupSessionHistory = initSessionHistory({
 });
 const cleanupSessionSelection = api?.onSelectSession?.(id => {
   state.desiredSessionId = id;
-  api.getState().then(receive).catch(showError);
+  refreshState().catch(showError);
 });
 $('fallback').hidden = scene.hasCanvas();
 $('factory-canvas').hidden = !scene.hasCanvas();
