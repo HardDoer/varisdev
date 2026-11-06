@@ -62,6 +62,7 @@ import {DesktopPreferences} from './preferences.ts';
 import {DesktopWhatsNew} from './whats-new.ts';
 import {DesktopTray} from './tray.ts';
 import {DesktopTerminals} from './terminal.ts';
+import {DesktopTerminalProfiles} from './terminal-profiles.ts';
 import {openConversationFile, openConversationURL} from './files.ts';
 import {DesktopAccounts} from './accounts.ts';
 import {DesktopToolSettings} from './tool-settings.ts';
@@ -79,10 +80,6 @@ import type {
 
 app.setName('VarisDev');
 if (process.platform === 'win32') app.setAppUserModelId(windowsAppId);
-const terminals = new DesktopTerminals(event => {
-  if (mainWindow && !mainWindow.isDestroyed())
-    mainWindow.webContents.send('pidev:terminal', event);
-});
 const installRoot =
   process.env.VARISDEV_INSTALL_ROOT ??
   fileURLToPath(new URL('../../../../', import.meta.url));
@@ -98,6 +95,15 @@ app.setPath('userData', profile);
 app.setPath('sessionData', profile);
 app.setPath('temp', join(profile, 'temp'));
 const preferences = new DesktopPreferences(profile);
+const terminalProfiles = new DesktopTerminalProfiles(preferences);
+const terminals = new DesktopTerminals(
+  event => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('pidev:terminal', event);
+  },
+  undefined,
+  {profiles: terminalProfiles},
+);
 const whatsNew = new DesktopWhatsNew(
   preferences,
   runtime.status().currentVersion,
@@ -283,6 +289,51 @@ function handle(
   });
 }
 
+function terminalWorkspace(workspaceId: unknown) {
+  const selected = hub
+    .deliverySnapshot()
+    .sessions.find(item => item.session.id === id(workspaceId));
+  if (!selected || closingSessions.has(selected.session.id))
+    throw new DashboardInputError('Choose an open workspace.');
+  return selected.session;
+}
+
+function ownedTerminal(terminalId: unknown): string {
+  const selected = id(terminalId);
+  const workspaceId = terminals.workspaceFor(selected);
+  if (!workspaceId) throw new DashboardInputError('Choose an open terminal.');
+  terminalWorkspace(workspaceId);
+  return selected;
+}
+
+async function openWorkspaceTerminal(
+  workspaceId: unknown,
+  terminalId?: unknown,
+  profileId?: unknown,
+  create = false,
+) {
+  const selected = terminalWorkspace(workspaceId);
+  if (profileId !== undefined && typeof profileId !== 'string')
+    throw new DashboardInputError('Choose an installed shell profile.');
+  const terminal = await (create
+    ? terminals.create(selected.id, selected.cwd, profileId)
+    : terminals.open(
+        selected.id,
+        selected.cwd,
+        terminalId === undefined ? undefined : id(terminalId),
+      ));
+  if (
+    closingSessions.has(selected.id) ||
+    !hub
+      .deliverySnapshot()
+      .sessions.some(item => item.session.id === selected.id)
+  ) {
+    terminals.closeWorkspace(selected.id);
+    throw new DashboardInputError('This workspace has closed.');
+  }
+  return terminal;
+}
+
 function installHandlers(): void {
   handle('pidev:desktop-command', (action, input) =>
     desktopCommands.execute(action, input),
@@ -395,15 +446,15 @@ function installHandlers(): void {
         hub.deliverySnapshot().sessions.map(item => item.session.id),
       );
       for (const sessionId of previousIds)
-        if (!retained.has(sessionId)) terminals.close(sessionId);
+        if (!retained.has(sessionId)) terminals.closeWorkspace(sessionId);
     }
   });
   handle('pidev:close-session', async sessionId => {
     const parentId = id(sessionId);
     closingSessions.add(parentId);
     try {
+      terminals.closeWorkspace(parentId);
       await hub.closeSession(parentId);
-      terminals.close(parentId);
     } finally {
       closingSessions.delete(parentId);
     }
@@ -448,32 +499,46 @@ function installHandlers(): void {
   handle('pidev:save-markdown', (sessionId, path, content, version) =>
     hub.saveMarkdown(id(sessionId), path, content, version),
   );
-  handle('pidev:open-terminal', async sessionId => {
-    const parentId = id(sessionId);
-    const selected = hub
-      .deliverySnapshot()
-      .sessions.find(item => item.session.id === parentId);
-    if (!selected || closingSessions.has(parentId))
-      throw new DashboardInputError('Choose an open workspace.');
-    const terminal = await terminals.open(parentId, selected.session.cwd);
-    if (
-      closingSessions.has(parentId) ||
-      !hub
-        .deliverySnapshot()
-        .sessions.some(item => item.session.id === parentId)
-    ) {
-      terminals.close(parentId);
-      throw new DashboardInputError('This workspace has closed.');
-    }
-    return terminal;
+  handle('pidev:terminal-profiles', () => terminalProfiles.get());
+  handle('pidev:default-terminal-profile', profileId =>
+    terminalProfiles.setDefault(profileId),
+  );
+  handle('pidev:save-terminal-profile', input => terminalProfiles.save(input));
+  handle('pidev:remove-terminal-profile', profileId =>
+    terminalProfiles.remove(profileId),
+  );
+  handle('pidev:choose-terminal-executable', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: 'Choose a terminal application',
+      properties: ['openFile'],
+      buttonLabel: 'Choose application',
+      ...(process.platform === 'win32'
+        ? {filters: [{name: 'Executables', extensions: ['exe', 'com']}]}
+        : {}),
+    });
+    return result.canceled ? undefined : result.filePaths[0];
   });
-  handle('pidev:terminal-write', (sessionId, data) =>
-    terminals.write(id(sessionId), data),
+  handle('pidev:list-terminals', async workspaceId => {
+    const selected = terminalWorkspace(workspaceId);
+    const snapshots = await terminals.listReady(selected.id);
+    terminalWorkspace(selected.id);
+    return snapshots;
+  });
+  handle('pidev:create-terminal', (workspaceId, profileId) =>
+    openWorkspaceTerminal(workspaceId, undefined, profileId, true),
   );
-  handle('pidev:terminal-resize', (sessionId, cols, rows) =>
-    terminals.resize(id(sessionId), cols, rows),
+  handle('pidev:open-terminal', (workspaceId, terminalId) =>
+    openWorkspaceTerminal(workspaceId, terminalId),
   );
-  handle('pidev:terminal-close', sessionId => terminals.close(id(sessionId)));
+  handle('pidev:terminal-write', (terminalId, data) =>
+    terminals.write(ownedTerminal(terminalId), data),
+  );
+  handle('pidev:terminal-resize', (terminalId, cols, rows) =>
+    terminals.resize(ownedTerminal(terminalId), cols, rows),
+  );
+  handle('pidev:terminal-close', terminalId =>
+    terminals.close(ownedTerminal(terminalId)),
+  );
   handle('pidev:open-external', url =>
     openConversationURL(url, target =>
       openBrowser(target, {fallback: value => shell.openExternal(value)}),
@@ -814,7 +879,16 @@ const unsubscribeUpdates = runtime.subscribe(status => {
   }
 });
 
+let terminalWorkspaceIds = new Set(
+  hub.deliverySnapshot().sessions.map(item => item.session.id),
+);
 const unsubscribe = hub.subscribe(() => {
+  const retained = new Set(
+    hub.deliverySnapshot().sessions.map(item => item.session.id),
+  );
+  for (const workspaceId of terminalWorkspaceIds)
+    if (!retained.has(workspaceId)) terminals.closeWorkspace(workspaceId);
+  terminalWorkspaceIds = retained;
   if (transferringStartup && process.connected) {
     const waiting = Boolean(hub.deliverySnapshot().startup?.ui.dialogs.length);
     if (waiting !== startupInteractionWaiting) {

@@ -7,6 +7,14 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '1.12.0',
+    [
+      'Open multiple terminal tabs in each workspace and choose from installed shells.',
+      'Save custom shell locations and choose a default terminal profile.',
+      'Windows terminals use PowerShell 7 when installed and load your user profile and environment settings.',
+    ],
+  ],
+  [
     '1.11.0',
     [
       'Release notes appear after installing a new version.',

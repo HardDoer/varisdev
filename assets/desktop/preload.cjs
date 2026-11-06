@@ -115,7 +115,18 @@ contextBridge.exposeInMainWorld('pidev', {
     invoke('pidev:compact-session', id, instructions),
   reloadSession: id => invoke('pidev:reload-session', id),
   workspace: id => invoke('pidev:workspace', id),
-  openTerminal: id => invoke('pidev:open-terminal', id),
+  getTerminalProfiles: () => invoke('pidev:terminal-profiles'),
+  setDefaultTerminalProfile: profileId =>
+    invoke('pidev:default-terminal-profile', profileId),
+  saveTerminalProfile: input => invoke('pidev:save-terminal-profile', input),
+  removeTerminalProfile: profileId =>
+    invoke('pidev:remove-terminal-profile', profileId),
+  chooseTerminalExecutable: () => invoke('pidev:choose-terminal-executable'),
+  listTerminals: workspaceId => invoke('pidev:list-terminals', workspaceId),
+  createTerminal: (workspaceId, profileId) =>
+    invoke('pidev:create-terminal', workspaceId, profileId),
+  openTerminal: (workspaceId, terminalId) =>
+    invoke('pidev:open-terminal', workspaceId, terminalId),
   writeTerminal: (id, data) => invoke('pidev:terminal-write', id, data),
   resizeTerminal: (id, cols, rows) =>
     invoke('pidev:terminal-resize', id, cols, rows),

@@ -433,7 +433,12 @@ for (const recoverShell of [false, true]) {
     recoverShell
       ? 'source and build helpers migrate a legacy shell failure and initialize Bash once'
       : 'legacy singleton migration restores inherited fallbacks while applying saved settings to process.env',
-    {timeout: 15000, skip: recoverShell && process.platform !== 'linux'},
+    {
+      timeout: 15000,
+      skip: recoverShell
+        ? process.platform !== 'linux'
+        : process.platform === 'win32',
+    },
     async t => {
       const f = await fixture(t, '/bin/bash');
       if (!recoverShell) f.env.SHELL = join(f.home, 'missing/bash');
@@ -715,5 +720,89 @@ void test(
     await assert.rejects(access(environmentPath(env, 'linux')), {
       code: 'ENOENT',
     });
+  },
+);
+
+void test(
+  'source and standalone build helpers replace a cached v2 loader while preserving its saved setting fallbacks',
+  {timeout: 15000},
+  async t => {
+    const base = join(root, '.varisdev/test-environment');
+    await mkdir(base, {recursive: true});
+    const home = await mkdtemp(join(base, 'v2-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      LOCALAPPDATA: join(home, 'local'),
+      XDG_CONFIG_HOME: join(home, 'config'),
+      SHELL: join(home, 'missing/bash'),
+    };
+    // A broken executable produces an isolated startup failure on Windows.
+    await writeFile(
+      join(home, 'pwsh.exe'),
+      'invalid executable for isolated startup failure',
+    );
+    for (const name of Object.keys(env))
+      if (name.toLowerCase() === 'path') delete env[name];
+    Object.assign(env, {PATH: home});
+    const file = environmentPath(env);
+    await mkdir(dirname(file), {recursive: true});
+    const text = '{ "OPENAI_API_KEY": "saved-key" }\n';
+    await writeFile(file, text);
+    const copy = join(home, 'environment.mjs');
+    await writeFile(
+      copy,
+      await readFile(join(root, 'src/runtime/environment.mjs'), 'utf8'),
+    );
+    const script = `
+      import assert from 'node:assert/strict';
+      import {access, readFile} from 'node:fs/promises';
+      process.env.OPENAI_API_KEY = 'saved-key';
+      const v2 = Symbol.for('varisdev.environment-settings.v2');
+      const current = Symbol.for('varisdev.environment-settings.v3');
+      const legacy = Symbol.for('varisdev.environment-settings');
+      let reads = 0;
+      const stale = {
+        initialize() { throw new Error('The cached PATH-only loader must not run'); },
+        forChild(base) {
+          assert.equal(base, process.env);
+          reads++;
+          return {...base, OPENAI_API_KEY: 'launch-fallback'};
+        },
+      };
+      globalThis[v2] = stale;
+      globalThis[legacy] = {forChild() { throw new Error('v2 takes precedence'); }};
+      const source = await import(${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)});
+      const built = await import(${JSON.stringify(pathToFileURL(copy).href)});
+      const settings = source.environmentSettings();
+      assert.notEqual(settings, stale);
+      assert.equal(settings, built.environmentSettings());
+      assert.equal(settings, globalThis[current]);
+      assert.equal(settings, globalThis[v2]);
+      assert.equal(settings, globalThis[legacy]);
+      const state = await settings.initialize();
+      assert.match(state.error, /Could not start/);
+      assert.equal(state.values.OPENAI_API_KEY, 'saved-key');
+      assert.equal(process.env.OPENAI_API_KEY, 'saved-key');
+      assert.equal(settings.forChild().OPENAI_API_KEY, 'launch-fallback');
+      assert.equal(await readFile(${JSON.stringify(file)}, 'utf8'), ${JSON.stringify(text)});
+      await settings.save('OPENAI_API_KEY', null);
+      assert.equal(process.env.OPENAI_API_KEY, 'launch-fallback');
+      await assert.rejects(access(${JSON.stringify(file)}), {code: 'ENOENT'});
+      assert.equal(reads, 1);
+      console.log('v2-migration-ready');
+    `;
+    const output = await runRuntimeCommand(
+      process.execPath,
+      ['--input-type=module', '-e', script],
+      {
+        cwd: home,
+        env,
+        timeoutMs: 8000,
+      },
+    );
+    assert.match(output, /v2-migration-ready/);
   },
 );

@@ -24,6 +24,7 @@
     <link rel="stylesheet" href="accounts.css" />
     <link rel="stylesheet" href="tool-settings.css" />
     <link rel="stylesheet" href="environment.css" />
+    <link rel="stylesheet" href="terminal-settings.css" />
     <link rel="stylesheet" href="app-menu.css" />
     <link rel="stylesheet" href="item-context-menu.css" />
     <link rel="stylesheet" href="workspace-rename.css" />
@@ -646,6 +647,100 @@
         Cancel sign-in
       </button>
     </dialog>
+    <dialog
+      id="terminal-settings-dialog"
+      aria-labelledby="terminal-settings-title"
+    >
+      <form id="terminal-settings-form">
+        <div class="dialog-heading">
+          <h2 id="terminal-settings-title">Terminal settings</h2>
+          <button
+            id="terminal-settings-close"
+            class="quiet-button"
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+        <div class="terminal-settings-body">
+          <label for="terminal-settings-profile">Custom shells</label>
+          <div class="terminal-settings-row">
+            <select id="terminal-settings-profile"></select>
+            <button
+              id="terminal-settings-add"
+              class="quiet-button"
+              type="button"
+            >
+              Add
+            </button>
+          </div>
+          <div class="terminal-settings-field">
+            <label for="terminal-settings-name">Name</label>
+            <input
+              id="terminal-settings-name"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              required
+            />
+          </div>
+          <div class="terminal-settings-field">
+            <label for="terminal-settings-path">Executable path</label>
+            <div class="terminal-settings-row">
+              <input
+                id="terminal-settings-path"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                required
+              />
+              <button
+                id="terminal-settings-browse"
+                class="quiet-button"
+                type="button"
+              >
+                Browse…
+              </button>
+            </div>
+          </div>
+          <p id="terminal-settings-unavailable" hidden>
+            Executable unavailable.
+          </p>
+          <p
+            id="terminal-settings-error"
+            class="form-error"
+            role="alert"
+            hidden
+          ></p>
+          <button
+            id="terminal-settings-retry"
+            class="quiet-button"
+            type="button"
+            hidden
+          >
+            Retry
+          </button>
+        </div>
+        <div class="dialog-footer">
+          <p id="terminal-settings-status" role="status"></p>
+          <button
+            id="terminal-settings-remove"
+            class="quiet-button"
+            type="button"
+            hidden
+          >
+            Remove
+          </button>
+          <button
+            id="terminal-settings-save"
+            class="primary-button"
+            type="submit"
+          >
+            Save
+          </button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="environment-dialog" aria-labelledby="environment-title">
       <form id="environment-form">
         <div class="dialog-heading">
@@ -1081,6 +1176,15 @@
                       aria-controls="environment-dialog"
                     >
                       Environment
+                    </button>
+                    <button
+                      id="open-terminal-settings"
+                      class="quiet-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-controls="terminal-settings-dialog"
+                    >
+                      Terminal settings
                     </button>
                   </div>
                 </div>
@@ -1989,14 +2093,35 @@
                   aria-labelledby="terminal-tab"
                   hidden
                 >
+                  <div class="terminal-toolbar">
+                    <div
+                      id="terminal-tabs"
+                      role="tablist"
+                      aria-label="Project terminals"
+                    ></div>
+                    <div class="terminal-launcher">
+                      <button
+                        id="terminal-new"
+                        type="button"
+                        aria-label="New terminal"
+                        title="New terminal"
+                      >
+                        +
+                      </button>
+                      <button
+                        id="terminal-profiles"
+                        type="button"
+                        aria-label="Terminal profiles"
+                        title="Terminal profiles"
+                        aria-haspopup="menu"
+                        aria-controls="terminal-profile-menu"
+                        aria-expanded="false"
+                      >
+                        ⌄
+                      </button>
+                    </div>
+                  </div>
                   <div id="terminal-sessions"></div>
-                  <button
-                    id="terminal-close"
-                    class="quiet-button"
-                    type="button"
-                  >
-                    Close terminal
-                  </button>
                 </div>
               </form>
             </section>
@@ -2006,6 +2131,12 @@
       <p id="app-error" class="app-error" role="alert" hidden></p>
       <div id="native-navigation-actions"></div>
     </main>
+    <div
+      id="terminal-profile-menu"
+      popover="auto"
+      role="menu"
+      aria-label="Terminal profiles"
+    ></div>
     <dialog id="hotkeys-dialog" aria-labelledby="hotkeys-title">
       <div class="dialog-heading">
         <h2 id="hotkeys-title">VarisDev keyboard shortcuts</h2>

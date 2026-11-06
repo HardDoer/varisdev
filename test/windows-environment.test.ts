@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, win32} from 'node:path';
 import {test} from 'node:test';
+import {fileURLToPath} from 'node:url';
 import {
   copyEnvironment,
   createEnvironmentSettings,
   environmentPath,
+  readShellEnvironment,
+  resolveUserShell,
+  shellEnvironment,
   windowsEnvironment,
   withNodePath,
 } from '../src/runtime/environment.mjs';
@@ -295,3 +306,459 @@ void test(
     assert.equal(settings.forChild().Path, 'custom');
   },
 );
+
+void test('shell selection prefers PowerShell 7 on PATH and recovers normal installations with a restricted desktop PATH', () => {
+  const pathShell = 'D:\\User tools\\pwsh.exe';
+  const systemShell = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  const userShell =
+    'C:\\Users\\test\\AppData\\Local\\Microsoft\\PowerShell\\7\\pwsh.exe';
+  const fallback =
+    'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  for (const [env, installed, expected] of [
+    [
+      {Path: '"D:\\User tools";C:\\Windows\\System32'},
+      [pathShell, systemShell],
+      pathShell,
+    ],
+    [{PATH: 'C:\\Windows\\System32'}, [systemShell], systemShell],
+    [
+      {Path: '', LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local'},
+      [userShell],
+      userShell,
+    ],
+    [{SystemRoot: 'D:\\Windows', SHELL: '/bin/bash'}, [], fallback],
+    [
+      {ProgramW6432: 'D:\\Applications'},
+      ['D:\\Applications\\PowerShell\\7\\pwsh.exe'],
+      'D:\\Applications\\PowerShell\\7\\pwsh.exe',
+    ],
+  ] as const) {
+    const result = resolveUserShell({
+      env,
+      platform: 'win32',
+      exists: path => (installed as readonly string[]).includes(path),
+    });
+    assert.equal(result.file, expected);
+    assert.deepEqual(result.args, ['-NoLogo']);
+    assert.equal(result.kind, expected === fallback ? 'powershell' : 'pwsh');
+  }
+  assert.equal(
+    resolveUserShell({
+      env: {},
+      platform: 'win32',
+      shell: systemShell,
+      exists: () => false,
+    }).file,
+    systemShell,
+  );
+  for (const [file, args] of [
+    ['C:\\Windows\\System32\\cmd.exe', []],
+    ['C:\\Program Files\\Git\\bin\\bash.exe', ['--login', '-i']],
+    ['C:\\Tools\\nu.exe', ['-l']],
+  ] as const) {
+    assert.deepEqual(
+      resolveUserShell({platform: 'win32', env: {}, shell: file}).args,
+      args,
+    );
+  }
+});
+
+void test('Unix shell selection shares configured shell, account shell and platform fallbacks', () => {
+  for (const platform of ['darwin', 'linux'] as const) {
+    assert.deepEqual(
+      resolveUserShell({
+        platform,
+        env: {SHELL: '/custom/bin/nu'},
+        userShell: () => '/bin/bash',
+      }),
+      {file: '/custom/bin/nu', args: ['-l'], kind: 'nu'},
+    );
+    assert.equal(
+      resolveUserShell({
+        platform,
+        env: {},
+        userShell: () => '/bin/bash',
+      }).file,
+      '/bin/bash',
+    );
+    assert.equal(
+      resolveUserShell({
+        platform,
+        env: {},
+        userShell: () => undefined,
+      }).file,
+      platform === 'darwin' ? '/bin/zsh' : '/bin/sh',
+    );
+    assert.equal(
+      resolveUserShell({
+        platform,
+        env: {SHELL: '/bin/zsh'},
+        shell: '/bin/bash',
+      }).kind,
+      'bash',
+    );
+  }
+});
+
+void test('shell environments retain user PowerShell 7 modules and clear incompatible module paths for Windows PowerShell', () => {
+  const env = {
+    Path: 'C:\\Tools',
+    PSModulePath: 'C:\\User Modules',
+    PRIVATE_TOKEN: 'keep',
+  };
+  assert.deepEqual(shellEnvironment(env, 'pwsh', 'win32'), {
+    PATH: 'C:\\Tools',
+    PSMODULEPATH: 'C:\\User Modules',
+    PRIVATE_TOKEN: 'keep',
+  });
+  assert.deepEqual(shellEnvironment(env, 'powershell', 'win32'), {
+    PATH: 'C:\\Tools',
+    PRIVATE_TOKEN: 'keep',
+  });
+  assert.deepEqual(shellEnvironment(env, 'bash', 'linux'), env);
+  assert.equal(env.PSModulePath, 'C:\\User Modules');
+});
+
+const nativeShells =
+  process.platform === 'win32'
+    ? [
+        ...new Set([
+          resolveUserShell().file,
+          win32.join(
+            process.env.SystemRoot || 'C:\\Windows',
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+            'powershell.exe',
+          ),
+        ]),
+      ]
+    : [];
+for (const shell of nativeShells) {
+  void test(
+    `Windows startup with ${win32.basename(shell)} merges registered values, launch exports and isolated profiles before saved settings`,
+    {timeout: 30000},
+    async t => {
+      const base = new URL('../.varisdev/test-environment/', import.meta.url);
+      await mkdir(base, {recursive: true});
+      const directory = await mkdtemp(fileURLToPath(new URL('windows-', base)));
+      t.after(() => rm(directory, {recursive: true, force: true}));
+      const env: NodeJS.ProcessEnv = {
+        SystemRoot: process.env.SystemRoot,
+        HOME: directory,
+        USERPROFILE: directory,
+        LOCALAPPDATA: join(directory, 'local'),
+        Path: 'C:\\Launch tools',
+        LAUNCH_PLUGIN_TOKEN: 'launch-private',
+        STALE_PLUGIN_TOKEN: 'remove-me',
+        PSExecutionPolicyPreference: 'Bypass',
+      };
+      const profilePaths: string[] = [];
+      for (let index = 0; index < 4; index++) {
+        const profile = join(directory, `profile-${index}.ps1`);
+        profilePaths.push(profile);
+        await writeFile(
+          profile,
+          '\ufeff' +
+            `
+          Write-Output 'private startup noise'
+          [Console]::WriteLine('console-private-noise')
+          $env:PROFILE_ORDER += '${index}'
+          $env:OPENAI_API_KEY = $env:REGISTERED_PLUGIN_TOKEN + '-profile'
+          $env:PROFILE_MULTILINE = "first=ä\`nsecond=値"
+          $env:PATH = 'D:\\Profile tools;' + $env:PATH
+          Remove-Item Env:STALE_PLUGIN_TOKEN -ErrorAction SilentlyContinue
+        `,
+        );
+      }
+      const file = join(directory, 'environment.json');
+      const text =
+        '{ "OPENAI_API_KEY": "saved-private", "Path": "E:\\\\Saved tools" }\n';
+      await writeFile(file, text);
+      const settings = createEnvironmentSettings({
+        env,
+        file,
+        platform: 'win32',
+        shell,
+        timeoutMs: 5000,
+        windows: {
+          machineEnvironment: {
+            REGISTERED_PLUGIN_TOKEN: 'machine-private',
+            MACHINE_ONLY_SETTING: 'machine',
+            LAUNCH_PLUGIN_TOKEN: 'machine-launch',
+            Path: 'C:\\Machine tools',
+          },
+          userEnvironment: {
+            REGISTERED_PLUGIN_TOKEN: 'user-private',
+            USER_ONLY_SETTING: 'user',
+            LAUNCH_PLUGIN_TOKEN: 'user-launch',
+            Path: '%USER_TOOL_DIRECTORY%;C:\\Machine tools',
+            USER_TOOL_DIRECTORY: 'C:\\User tools',
+            EXPANDED_SETTING: '%MACHINE_ONLY_SETTING%/expanded',
+          },
+          profilePaths,
+        },
+      });
+      const state = await settings.initialize();
+      assert.equal(state.error, undefined);
+      assert.equal(env.OPENAI_API_KEY, 'saved-private');
+      assert.equal(env.REGISTERED_PLUGIN_TOKEN, 'user-private');
+      assert.equal(env.MACHINE_ONLY_SETTING, 'machine');
+      assert.equal(env.USER_ONLY_SETTING, 'user');
+      assert.equal(env.EXPANDED_SETTING, 'machine/expanded');
+      assert.equal(env.LAUNCH_PLUGIN_TOKEN, 'launch-private');
+      assert.equal(env.STALE_PLUGIN_TOKEN, undefined);
+      assert.equal(env.PROFILE_ORDER, '0123');
+      assert.equal(env.PROFILE_MULTILINE, 'first=ä\nsecond=値');
+      assert.equal(env.PATH, 'E:\\Saved tools');
+      assert.equal(await readFile(file, 'utf8'), text);
+      assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', 'PATH']);
+      const fallback = settings.forChild();
+      assert.equal(fallback.OPENAI_API_KEY, 'user-private-profile');
+      const fallbackPaths: string[] | undefined = fallback.PATH?.split(';');
+      assert.equal(fallbackPaths?.[0], 'D:\\Profile tools');
+      assert.deepEqual(
+        fallbackPaths?.filter(path => path !== win32.dirname(shell)),
+        [
+          'D:\\Profile tools',
+          'C:\\Launch tools',
+          'C:\\Machine tools',
+          'C:\\User tools',
+        ],
+      );
+      await settings.save('OPENAI_API_KEY', null);
+      assert.equal(env.OPENAI_API_KEY, 'user-private-profile');
+      assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {
+        Path: 'E:\\Saved tools',
+      });
+      await settings.save('Path', null);
+      assert.equal(env.PATH, fallback.PATH);
+      await settings.get();
+      await assert.rejects(access(file), {code: 'ENOENT'});
+    },
+  );
+}
+
+void test(
+  'native Windows startup recovers registry fields beyond PATH without writing registry or user profiles',
+  {skip: process.platform !== 'win32', timeout: 15000},
+  async () => {
+    const env = {
+      SystemRoot: process.env.SystemRoot,
+      Path: 'C:\\Launch tools',
+      CUSTOM_LAUNCH: 'keep',
+    };
+    const values = await readShellEnvironment({
+      env,
+      timeoutMs: 5000,
+      windows: {profilePaths: []},
+    });
+    assert.equal(values.CUSTOM_LAUNCH, 'keep');
+    assert.equal(
+      values.OS,
+      'Windows_NT',
+      'Registered machine values are available without inheriting them',
+    );
+    assert.ok(values.COMSPEC?.toLowerCase().endsWith('\\cmd.exe'));
+    assert.ok(values.PATH.split(';').includes('C:\\Launch tools'));
+    assert.ok(values.PATH.split(';').length > 1);
+    assert.equal(env.Path, 'C:\\Launch tools');
+  },
+);
+
+for (const shell of nativeShells) {
+  void test(
+    `Windows ${win32.basename(shell)} startup deadlines and cancellation stop profile descendants without exposing output`,
+    {timeout: 30000},
+    async t => {
+      const base = new URL('../.varisdev/test-environment/', import.meta.url);
+      await mkdir(base, {recursive: true});
+      const directory = await mkdtemp(
+        fileURLToPath(new URL('windows-timeout-', base)),
+      );
+      t.after(() => rm(directory, {recursive: true, force: true}));
+      const quote = (text: string) => "'" + text.replace(/'/g, "''") + "'";
+      for (const cancel of [false, true]) {
+        const pidFile = join(directory, `child-${cancel}.pid`);
+        const profile = join(directory, `profile-${cancel}.ps1`);
+        await writeFile(
+          profile,
+          '\ufeff' +
+            `
+          [Console]::WriteLine('private-profile-output')
+          $info = New-Object Diagnostics.ProcessStartInfo
+          $info.FileName = ${quote(process.execPath)}
+          $info.Arguments = '-e "setTimeout(() => {}, 30000)"'
+          $info.UseShellExecute = $false
+          $info.CreateNoWindow = $true
+          $child = [Diagnostics.Process]::Start($info)
+          [IO.File]::WriteAllText(${quote(pidFile)}, [string]$child.Id)
+          Start-Sleep -Seconds 30
+        `,
+        );
+        const controller = new AbortController();
+        const pending = readShellEnvironment({
+          env: {
+            SystemRoot: process.env.SystemRoot,
+            HOME: directory,
+            USERPROFILE: directory,
+            PSExecutionPolicyPreference: 'Bypass',
+          },
+          shell,
+          timeoutMs: cancel ? 8000 : 3500,
+          signal: controller.signal,
+          windows: {
+            machineEnvironment: {},
+            userEnvironment: {},
+            profilePaths: [profile],
+          },
+        });
+        const rejected = assert.rejects(pending, error => {
+          assert.match(String(error), cancel ? /cancelled/ : /timed out/);
+          assert.doesNotMatch(String(error), /private-profile-output/);
+          return true;
+        });
+        if (cancel) {
+          for (let index = 0; index < 400; index++) {
+            if (
+              await access(pidFile).then(
+                () => true,
+                () => false,
+              )
+            )
+              break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+          controller.abort();
+        }
+        await rejected;
+        const pid = Number(await readFile(pidFile, 'utf8'));
+        for (let index = 0; index < 100; index++) {
+          try {
+            process.kill(pid, 0);
+          } catch {
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.throws(() => process.kill(pid, 0), {code: 'ESRCH'});
+      }
+    },
+  );
+}
+
+for (const shell of nativeShells) {
+  void test(
+    `Windows ${win32.basename(shell)} captures profile exports and cleans background descendants after the shell exits`,
+    {timeout: 20000},
+    async t => {
+      const base = new URL('../.varisdev/test-environment/', import.meta.url);
+      await mkdir(base, {recursive: true});
+      const directory = await mkdtemp(
+        fileURLToPath(new URL('windows-background-', base)),
+      );
+      const quote = (text: string) => "'" + text.replace(/'/g, "''") + "'";
+      const pids = join(directory, 'pids.json');
+      const identities = join(directory, 'identities.json');
+      const background = join(directory, 'background.mjs');
+      await writeFile(
+        background,
+        `
+        import {spawn} from 'node:child_process';
+        import {writeFileSync} from 'node:fs';
+        const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {stdio: 'inherit'});
+        writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, child.pid]));
+        setTimeout(() => {}, 30000);
+      `,
+      );
+      const profile = join(directory, 'profile.ps1');
+      await writeFile(
+        profile,
+        '\ufeff' +
+          `
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = ${quote(process.execPath)}
+        $info.Arguments = ${quote('"' + background + '"')}
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $child = [Diagnostics.Process]::Start($info)
+        while (![IO.File]::Exists(${quote(pids)})) { Start-Sleep -Milliseconds 10 }
+        $ids = ConvertFrom-Json ([IO.File]::ReadAllText(${quote(pids)}))
+        $targets = @(foreach ($id in $ids) {
+          $p = [Diagnostics.Process]::GetProcessById($id)
+          try {
+            @{pid = $p.Id; started = ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds()}
+          } finally { $p.Dispose() }
+        })
+        [IO.File]::WriteAllText(${quote(identities)}, (ConvertTo-Json -Compress -InputObject $targets))
+        $env:BACKGROUND_PROFILE_SETTING = 'captured-after-spawn'
+      `,
+      );
+      // Retain each native handle while verifying creation time before cleanup.
+      t.after(async () => {
+        const targets = await readFile(identities, 'utf8').catch(() => '[]');
+        const cleanup = `
+          $targets = ConvertFrom-Json ${quote(targets)}
+          foreach ($target in $targets) {
+            try { $p = [Diagnostics.Process]::GetProcessById($target.pid) } catch { continue }
+            try {
+              $null = $p.Handle
+              if (([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() -eq $target.started) { $p.Kill() }
+            } finally { $p.Dispose() }
+          }
+          exit 0
+        `;
+        try {
+          await runTerminalProcess(
+            shell,
+            [
+              '-NoLogo',
+              '-NoProfile',
+              '-NonInteractive',
+              '-EncodedCommand',
+              Buffer.from(cleanup, 'utf16le').toString('base64'),
+            ],
+            {
+              cwd: directory,
+              timeoutMs: 5000,
+            },
+          );
+        } finally {
+          await rm(directory, {recursive: true, force: true});
+        }
+      });
+      const values = await readShellEnvironment({
+        env: {
+          SystemRoot: process.env.SystemRoot,
+          HOME: directory,
+          USERPROFILE: directory,
+          PSExecutionPolicyPreference: 'Bypass',
+        },
+        shell,
+        timeoutMs: 8000,
+        windows: {
+          machineEnvironment: {},
+          userEnvironment: {},
+          profilePaths: [profile],
+        },
+      });
+      assert.equal(values.BACKGROUND_PROFILE_SETTING, 'captured-after-spawn');
+      const descendants = JSON.parse(await readFile(identities, 'utf8')) as {
+        pid: number;
+        started: number;
+      }[];
+      assert.equal(descendants.length, 2);
+      for (const {pid} of descendants) {
+        for (let index = 0; index < 100; index++) {
+          try {
+            process.kill(pid, 0);
+          } catch {
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.throws(() => process.kill(pid, 0), {code: 'ESRCH'});
+      }
+    },
+  );
+}

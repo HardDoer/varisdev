@@ -56,6 +56,14 @@ Open **Actions** beside the conversation title, or right-click a workspace, agen
 - **Actions → Cancel agent** stops the selected additional agent; **Cancel all agents** is available from its workspace's actions.
 - **Actions → Remove agent** clears a stopped or finished additional agent from the dashboard. It reappears if it resumes.
 
+## Terminal
+
+Open **Terminal** beside the prompt to start a shell in the workspace's project folder. Use **New terminal** to add tabs, select a tab to switch between shells, and close a tab to stop that shell. Each workspace keeps its own terminals.
+
+Open **Terminal profiles** beside **New terminal** to launch an installed shell or choose **Select Default Profile…**. Windows starts with PowerShell 7 when installed, with Windows PowerShell as the fallback. macOS and Linux start with your configured shell. Each shell loads its normal user startup files. Changing the default applies to new terminals.
+
+To add a shell, open **Menu → Terminal settings**, enter a name, choose its executable file with **Browse…**, and save the profile. Saved profiles are available in **Terminal profiles** and can be set as the default.
+
 ## Panel layout and sizes
 
 **Menu → Appearance → Panel layout** controls the visualization, workspace list, and agents and history panels. Hide all three for a full-width conversation; **Info** and **Actions** beside the conversation title keep session details and actions accessible.
@@ -122,7 +130,7 @@ Open **Menu → Environment** to view or edit environment settings. Values are h
 
 Saving a value writes that variable to `environment.json`. Saved values take precedence over the machine environment. **Use environment value** deletes the saved entry and restores the environment value.
 
-On macOS and systems with Zsh, startup reads exported variables from `.zshrc` for both desktop and terminal launches. Native Windows preserves the inherited environment and adds missing entries from the system and user `Path`. Changes to tool credentials apply to subsequent requests; changes to startup paths require restarting the app.
+For both desktop and terminal launches, startup reads exported variables from your shell's startup files, including `.zshrc` for Zsh and login and interactive startup files for Bash. Windows loads user and system environment variables and PowerShell profile settings, preserving inherited launch values and adding missing system and user `Path` entries. Changes to tool credentials apply to subsequent requests; changes to shell startup files or the machine environment require restarting the app.
 
 The settings file is stored at:
 

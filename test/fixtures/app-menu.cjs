@@ -241,7 +241,21 @@ async function main() {
     aborted++;
     return {steering: [], followUp: []};
   });
-  handle('pidev:open-terminal', () => ({generation: 1, sequence: 0, data: ''}));
+  handle('pidev:terminal-profiles', () => ({
+    profiles: [{id: 'fixture-shell', label: 'Fixture shell', path: '/bin/sh'}],
+    defaultProfileId: 'fixture-shell',
+    customProfiles: [],
+  }));
+  handle('pidev:list-terminals', () => []);
+  handle('pidev:open-terminal', sessionId => ({
+    sessionId,
+    workspaceId: sessionId,
+    profileId: 'fixture-shell',
+    title: 'Fixture shell',
+    generation: 1,
+    sequence: 0,
+    data: '',
+  }));
   handle('pidev:terminal-resize', () => {});
   handle('pidev:terminal-write', () => {});
   handle('pidev:terminal-close', () => {});
@@ -355,6 +369,7 @@ async function main() {
         'open-approvals',
         'open-model-settings',
         'open-environment',
+        'open-terminal-settings',
         'open-accounts',
       ],
       maintenance: ['open-whats-new', 'open-about'],

@@ -86,6 +86,10 @@ void test('desktop terminal batches bursts, bounds history and orders exit event
 class FakeElement {
   children: FakeElement[] = [];
   className = '';
+  id = '';
+  style = {};
+  title = '';
+  type = '';
   hidden = false;
   disabled = false;
   required = false;
@@ -101,6 +105,39 @@ class FakeElement {
       child.parent = this;
       this.children.push(child);
     }
+  }
+  replaceChildren(...children: FakeElement[]) {
+    for (const child of this.children) child.parent = undefined;
+    this.children = [];
+    this.append(...children);
+  }
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
+  }
+  hasAttribute(name: string) {
+    return this.attributes.has(name);
+  }
+  getBoundingClientRect() {
+    return {top: 100, right: 500, bottom: 130, width: 240, height: 160};
+  }
+  hidePopover() {}
+  showPopover() {}
+  matches() {
+    return false;
+  }
+  scrollIntoView() {}
+  closest(selector: string): FakeElement | undefined {
+    if (
+      selector === 'button[data-terminal-id]' &&
+      this.hasAttribute('data-terminal-id')
+    )
+      return this;
+    if (selector === '[role="tab"]' && this.getAttribute('role') === 'tab')
+      return this;
+    return this.parent?.closest(selector);
+  }
+  querySelector() {
+    return this.children.find(child => child.type === 'button');
   }
   remove() {
     if (this.parent)
@@ -130,6 +167,10 @@ class FakeElement {
 }
 
 class FakeEvent {
+  readonly target?: FakeElement;
+  constructor(target?: FakeElement) {
+    this.target = target;
+  }
   key = '';
   preventDefault() {}
 }
@@ -137,8 +178,17 @@ class FakeEvent {
 const elements = new Map<string, FakeElement>();
 const fakeDocument = {
   activeElement: undefined as FakeElement | undefined,
+  documentElement: new FakeElement(),
   getElementById(id: string) {
-    return elements.get(id);
+    const find = (element: FakeElement): FakeElement | undefined => {
+      if (element.id === id) return element;
+      for (const child of element.children) {
+        const result = find(child);
+        if (result) return result;
+      }
+      return undefined;
+    };
+    return elements.get(id) || [...elements.values()].map(find).find(Boolean);
   },
   createElement() {
     return new FakeElement();
@@ -204,13 +254,27 @@ class FakeResizeObserver {
   }
 }
 
-function rendererHarness(openTerminal: () => Promise<TerminalSnapshot>) {
+function rendererHarness(
+  openTerminal: (workspaceId: string) => Promise<TerminalSnapshot>,
+  options: {
+    selectedSession?: () => string;
+    listTerminals?: (workspaceId: string) => Promise<TerminalSnapshot[]>;
+    createTerminal?: (
+      workspaceId: string,
+      profileId?: string,
+    ) => Promise<TerminalSnapshot>;
+    closeTerminal?: (id: string) => Promise<void>;
+  } = {},
+) {
   elements.clear();
   FakeTerminal.instances = [];
   for (const id of [
     'terminal-error',
     'terminal-panel',
-    'terminal-close',
+    'terminal-tabs',
+    'terminal-new',
+    'terminal-profiles',
+    'terminal-profile-menu',
     'terminal-sessions',
     'prompt-panel',
     'parent-prompt',
@@ -224,6 +288,12 @@ function rendererHarness(openTerminal: () => Promise<TerminalSnapshot>) {
   const fakeWindow = {
     Terminal: FakeTerminal,
     FitAddon: {FitAddon: FakeFitAddon},
+    addEventListener() {},
+    removeEventListener() {},
+    getComputedStyle: () => ({
+      getPropertyValue: () => '#edf4f6',
+      backgroundColor: '#10171d',
+    }),
     requestAnimationFrame(callback: () => void) {
       const id = nextFrame++;
       frames.set(id, callback);
@@ -237,11 +307,18 @@ function rendererHarness(openTerminal: () => Promise<TerminalSnapshot>) {
     document: fakeDocument,
     window: fakeWindow,
     ResizeObserver: FakeResizeObserver,
+    MutationObserver: FakeResizeObserver,
   });
   const controls = createTerminalTabs(
     {
       openTerminal,
-      closeTerminal: async () => {},
+      listTerminals: options.listTerminals || (async () => []),
+      createTerminal: options.createTerminal,
+      getTerminalProfiles: async () => ({
+        profiles: [{id: 'sh', label: 'sh', path: '/bin/sh'}],
+        defaultProfileId: 'sh',
+      }),
+      closeTerminal: options.closeTerminal || (async () => {}),
       resizeTerminal: async () => {},
       writeTerminal: async () => {},
       onTerminal(callback: (event: TerminalSnapshot) => void) {
@@ -249,7 +326,7 @@ function rendererHarness(openTerminal: () => Promise<TerminalSnapshot>) {
         return () => {};
       },
     },
-    () => 'session',
+    options.selectedSession || (() => 'session'),
   );
   controls.update();
   elements.get('terminal-tab')?.dispatch('click');
@@ -272,6 +349,9 @@ function rendererHarness(openTerminal: () => Promise<TerminalSnapshot>) {
 void test('terminal renderer paces burst writes and truncates Unicode safely', async () => {
   const harness = rendererHarness(async () => ({
     sessionId: 'session',
+    workspaceId: 'session',
+    profileId: 'sh',
+    title: 'sh',
     generation: 'one',
     sequence: 0,
     data: '',
@@ -282,6 +362,9 @@ void test('terminal renderer paces burst writes and truncates Unicode safely', a
   for (let sequence = 1; sequence <= 10_000; sequence++)
     harness.emit({
       sessionId: 'session',
+      workspaceId: 'session',
+      profileId: 'sh',
+      title: 'sh',
       generation: 'one',
       sequence,
       data: 'x',
@@ -295,6 +378,9 @@ void test('terminal renderer paces burst writes and truncates Unicode safely', a
   const unicode = '🙂'.repeat(400_000);
   harness.emit({
     sessionId: 'session',
+    workspaceId: 'session',
+    profileId: 'sh',
+    title: 'sh',
     generation: 'one',
     sequence: 10_001,
     data: unicode,
@@ -322,24 +408,36 @@ void test('terminal renderer bounds pre-open events and applies snapshot sequenc
   for (let sequence = 1; sequence <= 1500; sequence++)
     harness.emit({
       sessionId: 'session',
+      workspaceId: 'session',
+      profileId: 'sh',
+      title: 'sh',
       generation: 'one',
       sequence,
       data: '',
     });
   harness.emit({
     sessionId: 'session',
+    workspaceId: 'session',
+    profileId: 'sh',
+    title: 'sh',
     generation: 'one',
     sequence: 1501,
     data: '🙂'.repeat(400_000),
   });
   harness.emit({
     sessionId: 'session',
+    workspaceId: 'session',
+    profileId: 'sh',
+    title: 'sh',
     generation: 'one',
     sequence: 1502,
     data: 'after-snapshot',
   });
   resolveOpen({
     sessionId: 'session',
+    workspaceId: 'session',
+    profileId: 'sh',
+    title: 'sh',
     generation: 'one',
     sequence: 1501,
     data: 'snapshot',
@@ -359,4 +457,110 @@ void test('terminal renderer bounds pre-open events and applies snapshot sequenc
   );
   assert.ok(output.indexOf('after-snapshot') < output.indexOf('Shell exited'));
   harness.controls.dispose();
+});
+
+function terminalSnapshot(
+  workspaceId: string,
+  id = workspaceId,
+  sequence = 0,
+  data = '',
+): TerminalSnapshot {
+  return {
+    sessionId: id,
+    workspaceId,
+    profileId: 'sh',
+    title: 'sh',
+    generation: id,
+    sequence,
+    data,
+  };
+}
+
+void test('terminal renderer keeps pending creations with their workspace and retains other tabs on close', async () => {
+  let workspace = 'session';
+  let resolveCreate!: (snapshot: TerminalSnapshot) => void;
+  const creating = new Promise<TerminalSnapshot>(resolve => {
+    resolveCreate = resolve;
+  });
+  const closed: string[] = [];
+  const harness = rendererHarness(async id => terminalSnapshot(id), {
+    selectedSession: () => workspace,
+    createTerminal: () => creating,
+    closeTerminal: async id => {
+      closed.push(id);
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  const first = FakeTerminal.instances[0];
+  elements.get('terminal-new')?.dispatch('click');
+  harness.emit(terminalSnapshot('session', 'added', 2, 'after-snapshot'));
+  workspace = 'other';
+  harness.controls.update();
+  await Promise.resolve();
+  await Promise.resolve();
+  const other = FakeTerminal.instances[1];
+  resolveCreate(terminalSnapshot('session', 'added', 1, 'snapshot'));
+  await Promise.resolve();
+  const added = FakeTerminal.instances[2];
+  assert.equal(
+    fakeDocument.getElementById('terminal-view-other')?.hidden,
+    false,
+  );
+  assert.equal(
+    fakeDocument.getElementById('terminal-view-added')?.hidden,
+    true,
+  );
+  workspace = 'session';
+  harness.controls.update();
+  harness.drain(added);
+  assert.equal(added.writes.join(''), 'snapshotafter-snapshot');
+  assert.equal(
+    fakeDocument.getElementById('terminal-view-added')?.hidden,
+    false,
+  );
+  assert.equal(first.disposed, false);
+  const close = elements.get('terminal-tabs')?.children[0].children[1];
+  elements.get('terminal-tabs')?.dispatch('click', new FakeEvent(close));
+  await Promise.resolve();
+  assert.deepEqual(closed, ['session']);
+  assert.equal(first.disposed, true);
+  assert.equal(added.disposed, false);
+  assert.equal(other.disposed, false);
+  harness.controls.retain(['other']);
+  assert.equal(added.disposed, true);
+  assert.equal(other.disposed, false);
+  harness.controls.dispose();
+});
+
+void test('terminal renderer restores listed snapshots and ignores a creation completed after disposal', async () => {
+  let opened = 0;
+  let resolveCreate!: (snapshot: TerminalSnapshot) => void;
+  const creating = new Promise<TerminalSnapshot>(resolve => {
+    resolveCreate = resolve;
+  });
+  const harness = rendererHarness(
+    async id => {
+      opened++;
+      return terminalSnapshot(id);
+    },
+    {
+      listTerminals: async () => [
+        terminalSnapshot('session', 'existing', 4, 'retained-output'),
+      ],
+      createTerminal: () => creating,
+    },
+  );
+  await Promise.resolve();
+  const existing = FakeTerminal.instances[0];
+  harness.drain(existing);
+  assert.equal(opened, 0);
+  assert.equal(existing.writes.join(''), 'retained-output');
+  elements.get('terminal-new')?.dispatch('click');
+  harness.controls.dispose();
+  resolveCreate(terminalSnapshot('session', 'late'));
+  await Promise.resolve();
+  assert.equal(FakeTerminal.instances.length, 1);
+  assert.equal(existing.disposed, true);
+  assert.equal(elements.get('terminal-sessions')?.children.length, 0);
 });

@@ -5,6 +5,7 @@ import {setTimeout, clearTimeout} from 'node:timers';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {homedir, userInfo} from 'node:os';
+import {statSync} from 'node:fs';
 import {basename, dirname, join, win32} from 'node:path';
 import process from 'node:process';
 
@@ -151,20 +152,246 @@ export function windowsEnvironment(env, paths) {
   return values;
 }
 
-function loginShell(env, platform) {
-  if (env.SHELL) return env.SHELL;
+function isFile(file) {
   try {
-    const shell = userInfo().shell;
-    if (shell) return shell;
+    return statSync(file).isFile();
   } catch {
-    // A desktop launch may not have a user database entry.
+    return false;
   }
-  return platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
+}
+
+function accountShell() {
+  try {
+    return userInfo().shell;
+  } catch {
+    // Desktop launches may not have a user database entry.
+    return undefined;
+  }
 }
 
 /**
- * Read Windows PATH or the login shell's exports without logging values.
- * @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, shell?: string, timeoutMs?: number, signal?: AbortSignal}} [options]
+ * Select the same shell for startup environment reads and embedded terminals.
+ * @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, shell?: string, exists?: (file: string) => boolean, userShell?: () => string | null | undefined}} [options]
+ * @returns {{file: string, args: string[], kind: string}}
+ */
+export function resolveUserShell({
+  env = process.env,
+  platform = process.platform,
+  shell,
+  exists = isFile,
+  userShell = accountShell,
+} = {}) {
+  if (platform !== 'win32') {
+    const file =
+      shell ||
+      env.SHELL ||
+      userShell() ||
+      (platform === 'darwin' ? '/bin/zsh' : '/bin/sh');
+    return {file, args: ['-l'], kind: basename(file)};
+  }
+  const values = shellEnvironment(env, '', platform);
+  if (!shell) {
+    const candidates = [
+      ...(values.PATH || '')
+        .split(';')
+        .map(path => path.trim().replace(/^"(.*)"$/, '$1'))
+        .filter(Boolean)
+        .map(path => win32.join(path, 'pwsh.exe')),
+      ...new Set(
+        [
+          values.PROGRAMW6432,
+          values.PROGRAMFILES,
+          'C:\\Program Files',
+          values['PROGRAMFILES(X86)'],
+          'C:\\Program Files (x86)',
+        ]
+          .filter(Boolean)
+          .map(path => win32.join(path, 'PowerShell', '7', 'pwsh.exe')),
+      ),
+      ...(values.LOCALAPPDATA
+        ? [
+            win32.join(
+              values.LOCALAPPDATA,
+              'Microsoft',
+              'PowerShell',
+              '7',
+              'pwsh.exe',
+            ),
+            win32.join(
+              values.LOCALAPPDATA,
+              'Microsoft',
+              'WindowsApps',
+              'pwsh.exe',
+            ),
+          ]
+        : []),
+    ];
+    shell = candidates.find(exists);
+  }
+  const file =
+    shell ||
+    win32.join(
+      values.SYSTEMROOT || values.WINDIR || 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    );
+  const kind = win32
+    .basename(file)
+    .replace(/\.exe$/i, '')
+    .toLowerCase();
+  const args =
+    kind === 'pwsh' || kind === 'powershell'
+      ? ['-NoLogo']
+      : kind === 'cmd'
+        ? []
+        : kind === 'bash'
+          ? ['--login', '-i']
+          : ['-l'];
+  return {file, args, kind};
+}
+
+/**
+ * Windows PowerShell must rebuild module paths inherited from PowerShell 7.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} kind
+ * @param {NodeJS.Platform} [platform]
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function shellEnvironment(env, kind, platform = process.platform) {
+  const values = copyEnvironment(env, platform);
+  if (platform === 'win32' && kind === 'powershell') delete values.PSMODULEPATH;
+  return values;
+}
+
+function powerShellLiteral(value) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function windowsEnvironmentSource(values, target) {
+  if (values === undefined)
+    return `[Environment]::GetEnvironmentVariables('${target}')`;
+  return (
+    '@{' +
+    Object.entries(values)
+      .filter(([, value]) => typeof value === 'string')
+      .map(
+        ([name, value]) =>
+          `${powerShellLiteral(name)}=${powerShellLiteral(value)}`,
+      )
+      .join(';') +
+    '}'
+  );
+}
+
+const windowsStartupJob = `
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class VarisDevStartupJob {
+  [StructLayout(LayoutKind.Sequential)]
+  private struct BasicLimits {
+    public long ProcessTime, JobTime;
+    public uint Flags;
+    public UIntPtr MinWorkingSet, MaxWorkingSet;
+    public uint ActiveProcesses;
+    public UIntPtr Affinity;
+    public uint Priority, Scheduling;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct IoCounters {
+    public ulong ReadOperations, WriteOperations, OtherOperations;
+    public ulong ReadBytes, WriteBytes, OtherBytes;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct ExtendedLimits {
+    public BasicLimits Basic;
+    public IoCounters Io;
+    public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+  }
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern IntPtr CreateJobObject(IntPtr security, string name);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool SetInformationJobObject(IntPtr job, int type, ref ExtendedLimits limits, uint size);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll")]
+  private static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll")]
+  private static extern bool CloseHandle(IntPtr handle);
+  public static void Attach() {
+    IntPtr job = CreateJobObject(IntPtr.Zero, null);
+    if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    ExtendedLimits limits = new ExtendedLimits();
+    limits.Basic.Flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if (!SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimits))) ||
+        !AssignProcessToJobObject(job, GetCurrentProcess())) {
+      int error = Marshal.GetLastWin32Error();
+      CloseHandle(job);
+      throw new Win32Exception(error);
+    }
+    // The non-inheritable handle remains open until this PowerShell exits.
+  }
+}
+`;
+
+function windowsEnvironmentCommand(options, prefix, suffix) {
+  const profiles =
+    options.profilePaths === undefined
+      ? '@($PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost)'
+      : '@(' + options.profilePaths.map(powerShellLiteral).join(',') + ')';
+  return `
+    $ErrorActionPreference = 'Stop'
+    $machine = ${windowsEnvironmentSource(options.machineEnvironment, 'Machine')}
+    $user = ${windowsEnvironmentSource(options.userEnvironment, 'User')}
+    $inherited = @{}
+    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+      $inherited[$entry.Key] = $entry.Value
+    }
+    $registered = @{}
+    foreach ($scope in @($machine, $user)) {
+      foreach ($entry in $scope.GetEnumerator()) { $registered[$entry.Key] = $entry.Value }
+    }
+    foreach ($entry in $registered.GetEnumerator()) {
+      if (!$inherited.ContainsKey($entry.Key)) {
+        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
+      }
+    }
+    foreach ($entry in $registered.GetEnumerator()) {
+      if (!$inherited.ContainsKey($entry.Key)) {
+        [Environment]::SetEnvironmentVariable($entry.Key, [Environment]::ExpandEnvironmentVariables($entry.Value), 'Process')
+      }
+    }
+    $env:Path = (@(
+      $inherited['Path'],
+      [Environment]::ExpandEnvironmentVariables([string]$machine['Path']),
+      [Environment]::ExpandEnvironmentVariables([string]$user['Path'])
+    ) | Where-Object { $_ }) -join ';'
+    Add-Type -TypeDefinition ${powerShellLiteral(windowsStartupJob)}
+    [VarisDevStartupJob]::Attach()
+    $ErrorActionPreference = 'Continue'
+    foreach ($profilePath in ${profiles}) {
+      if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+        try { . $profilePath *> $null } catch { }
+      }
+    }
+    $ErrorActionPreference = 'Stop'
+    $values = @{}
+    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+      $values[$entry.Key] = $entry.Value
+    }
+    $json = Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress -InputObject $values
+    $bytes = [Text.Encoding]::UTF8.GetBytes(${powerShellLiteral(prefix)} + $json + ${powerShellLiteral(suffix)})
+    $output = [Console]::OpenStandardOutput()
+    $output.Write($bytes, 0, $bytes.Length)
+    $output.Flush()
+  `;
+}
+
+/**
+ * Read registered Windows values and shell profile exports without logging values.
+ * @param {{env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, shell?: string, timeoutMs?: number, signal?: AbortSignal, windows?: {machineEnvironment?: NodeJS.ProcessEnv, userEnvironment?: NodeJS.ProcessEnv, profilePaths?: string[]}}} [options]
  * @returns {Promise<Record<string, string>>}
  */
 export function readShellEnvironment({
@@ -173,30 +400,44 @@ export function readShellEnvironment({
   shell,
   timeoutMs = 8000,
   signal,
+  windows: windowsOptions = {},
 } = {}) {
   const windows = platform === 'win32';
-  const system32 = join(
-    env.SystemRoot ||
-      env.SYSTEMROOT ||
-      env.windir ||
-      env.WINDIR ||
-      'C:\\Windows',
+  const selected = resolveUserShell({env, platform, shell});
+  const childEnv = shellEnvironment(env, selected.kind, platform);
+  const system32 = win32.join(
+    childEnv.SYSTEMROOT || childEnv.WINDIR || 'C:\\Windows',
     'System32',
   );
-  shell ??= loginShell(env, platform);
-  const name = basename(shell);
+  const name = selected.kind;
   const label =
-    {zsh: 'Zsh', bash: 'Bash', fish: 'Fish', nu: 'Nushell'}[name] ||
-    'the shell';
-  const source = windows
-    ? 'Windows PATH'
-    : name === 'zsh'
-      ? '.zshrc'
-      : `${label} startup files`;
+    {
+      zsh: 'Zsh',
+      bash: 'Bash',
+      fish: 'Fish',
+      nu: 'Nushell',
+      pwsh: 'PowerShell 7',
+      powershell: 'Windows PowerShell',
+    }[name] || 'the shell';
+  const source = name === 'zsh' ? '.zshrc' : `${label} startup files`;
+  const token = randomUUID();
+  const prefix = `__VARISDEV_ENV_${token}_START__`;
+  const suffix = `__VARISDEV_ENV_${token}_END__`;
   // Bash login profiles need not source .bashrc. Read the login environment,
   // then exec an interactive shell so both startup contexts are honored.
-  const shellArgs =
-    name === 'bash'
+  const shellArgs = windows
+    ? [
+        ...selected.args,
+        // Defer profiles until registered variables are available to them.
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        Buffer.from(
+          windowsEnvironmentCommand(windowsOptions, prefix, suffix),
+          'utf16le',
+        ).toString('base64'),
+      ]
+    : name === 'bash'
       ? ['+m', '-lc', 'exec "$BASH" +m -ic \'/usr/bin/env -0 >&3\'']
       : name === 'nu'
         ? [
@@ -210,54 +451,63 @@ export function readShellEnvironment({
             '-lic',
             '/usr/bin/env -0 >&3',
           ];
+  const startFailure = () =>
+    new Error(
+      `Could not start ${label} to read ${name === 'zsh' ? '.zshrc' : 'its startup files'}.`,
+    );
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
-    const child = spawn(
-      windows
-        ? join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-        : shell,
-      windows
-        ? [
-            '-NoLogo',
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            "$ErrorActionPreference = 'Stop'; " +
-              '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); ' +
-              "ConvertTo-Json -Compress -InputObject @([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User'))",
-          ]
-        : shellArgs,
-      {
-        env,
-        cwd: env.HOME || env.USERPROFILE || homedir(),
+    let child;
+    try {
+      child = spawn(selected.file, shellArgs, {
+        env: childEnv,
+        cwd: childEnv.HOME || childEnv.USERPROFILE || homedir(),
         detached: !windows,
         windowsHide: true,
         stdio: windows
           ? ['ignore', 'pipe', 'ignore']
           : ['ignore', 'ignore', 'ignore', 'pipe'],
-      },
-    );
+      });
+    } catch {
+      reject(startFailure());
+      return;
+    }
     let output = Buffer.alloc(0);
     let failure;
+    let exited = false;
+    child.once('exit', () => {
+      exited = true;
+    });
+    const stream = child.stdio[windows ? 1 : 3];
     const stop = error => {
       if (failure) return;
       failure = error;
-      if (windows && child.pid) {
+      if (windows && child.pid && !exited) {
         const killer = spawn(
-          join(system32, 'taskkill.exe'),
+          win32.join(system32, 'taskkill.exe'),
           ['/PID', String(child.pid), '/T', '/F'],
-          {windowsHide: true, stdio: 'ignore', timeout: 5000},
+          {
+            windowsHide: true,
+            stdio: 'ignore',
+            timeout: 5000,
+            killSignal: 'SIGKILL',
+          },
         );
-        killer.once('error', () => child.kill('SIGKILL'));
+        killer.once('error', () => {
+          child.kill('SIGKILL');
+          stream.destroy();
+        });
         killer.once('close', code => {
           if (code !== 0) child.kill('SIGKILL');
+          stream.destroy();
         });
       } else {
         try {
-          if (child.pid) process.kill(-child.pid, 'SIGKILL');
+          if (!windows && child.pid) process.kill(-child.pid, 'SIGKILL');
         } catch {
           /* Already exited. */
         }
+        stream.destroy();
       }
     };
     const timer = setTimeout(
@@ -266,7 +516,7 @@ export function readShellEnvironment({
     );
     const abort = () => stop(new Error(`Reading ${source} was cancelled.`));
     signal?.addEventListener('abort', abort, {once: true});
-    child.stdio[windows ? 1 : 3].on('data', chunk => {
+    stream.on('data', chunk => {
       if (output.length + chunk.length > 1024 * 1024) {
         stop(new Error('The shell environment is too large.'));
         return;
@@ -274,11 +524,7 @@ export function readShellEnvironment({
       output = Buffer.concat([output, chunk]);
     });
     child.once('error', () => {
-      failure ??= new Error(
-        windows
-          ? 'Could not start PowerShell to read Windows PATH.'
-          : `Could not start ${label} to read ${name === 'zsh' ? '.zshrc' : 'its startup files'}.`,
-      );
+      failure ??= startFailure();
     });
     child.once('close', code => {
       clearTimeout(timer);
@@ -290,15 +536,21 @@ export function readShellEnvironment({
         );
       if (windows) {
         try {
-          const paths = JSON.parse(output.toString('utf8'));
+          const text = output.toString('utf8');
+          const start = text.indexOf(prefix);
+          const end = text.indexOf(suffix, start + prefix.length);
+          if (start < 0 || end < 0) throw new Error();
+          const values = JSON.parse(text.slice(start + prefix.length, end));
           if (
-            !Array.isArray(paths) ||
-            paths.some(value => value !== null && typeof value !== 'string')
+            !values ||
+            Array.isArray(values) ||
+            typeof values !== 'object' ||
+            Object.values(values).some(value => typeof value !== 'string')
           )
             throw new Error();
-          return resolve(windowsEnvironment(env, paths));
+          return resolve(windowsEnvironment(values, []));
         } catch {
-          return reject(new Error('Could not read Windows PATH.'));
+          return reject(new Error(`Could not read ${source}.`));
         }
       }
       const values = {};
@@ -312,7 +564,7 @@ export function readShellEnvironment({
   });
 }
 
-/** @param {{env?: NodeJS.ProcessEnv, initialEnv?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, file?: string, shell?: string, timeoutMs?: number, signal?: AbortSignal, readEnvironment?: typeof readShellEnvironment}} [options] */
+/** @param {{env?: NodeJS.ProcessEnv, initialEnv?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, file?: string, shell?: string, timeoutMs?: number, signal?: AbortSignal, windows?: {machineEnvironment?: NodeJS.ProcessEnv, userEnvironment?: NodeJS.ProcessEnv, profilePaths?: string[]}, readEnvironment?: typeof readShellEnvironment}} [options] */
 export function createEnvironmentSettings({
   env = process.env,
   initialEnv = env,
@@ -321,6 +573,7 @@ export function createEnvironmentSettings({
   shell,
   timeoutMs,
   signal,
+  windows,
   readEnvironment = readShellEnvironment,
 } = {}) {
   const inherited = fields(initialEnv, platform);
@@ -363,6 +616,7 @@ export function createEnvironmentSettings({
       shell,
       timeoutMs,
       signal,
+      windows,
     })
       .then(shellValues => (machineValues = fields(shellValues, platform)))
       .catch(cause => {
@@ -436,14 +690,17 @@ export function createEnvironmentSettings({
 }
 
 const stateKey = Symbol.for('varisdev.environment-settings');
-const versionedStateKey = Symbol.for('varisdev.environment-settings.v2');
+const previousStateKey = Symbol.for('varisdev.environment-settings.v2');
+const versionedStateKey = Symbol.for('varisdev.environment-settings.v3');
 export function environmentSettings() {
   if (!globalThis[versionedStateKey]) {
-    // Legacy helpers may cache a failed shell read. Recover their fallback
-    // so saved overrides do not become inherited values in the new settings.
-    const initialEnv = globalThis[stateKey]?.forChild(process.env);
+    // Older helpers may cache a failed or PATH-only shell read. Recover their
+    // fallback so saved overrides do not become inherited values.
+    const previous = globalThis[previousStateKey] || globalThis[stateKey];
+    const initialEnv = previous?.forChild(process.env);
     globalThis[versionedStateKey] = createEnvironmentSettings({initialEnv});
     globalThis[stateKey] = globalThis[versionedStateKey];
+    globalThis[previousStateKey] = globalThis[versionedStateKey];
   }
   return globalThis[versionedStateKey];
 }

@@ -2,6 +2,9 @@
 const {contextBridge, ipcRenderer, webFrame} = require('electron');
 
 contextBridge.exposeInMainWorld('pidev', {
+  getTerminalProfiles: () => ipcRenderer.invoke('fixture:terminal', 'profiles'),
+  listTerminals: workspaceId =>
+    ipcRenderer.invoke('fixture:terminal', 'list', workspaceId),
   openTerminal: sessionId =>
     ipcRenderer.invoke('fixture:terminal', 'open', sessionId),
   resizeTerminal: (sessionId, columns, rows) =>

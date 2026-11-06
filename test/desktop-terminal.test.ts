@@ -19,14 +19,18 @@ async function windowsTerminalEnvironment(
   directory: string,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  // Reproduce a desktop PATH missing Windows and Git, plus PowerShell 7
-  // modules that Windows PowerShell cannot import.
+  // Reproduce a desktop PATH missing Windows and Git with a custom module path.
   const modules = join(directory, 'modules');
-  await mkdir(join(modules, 'PSReadLine'), {recursive: true});
+  await mkdir(join(modules, 'VarisDevFixture'), {recursive: true});
   await writeFile(
-    join(modules, 'PSReadLine', 'PSReadLine.psd1'),
-    "@{ ModuleVersion = '99.0'; PowerShellVersion = '99.0'; GUID = 'b0372f07-b2a1-4076-9725-89a858e21dde' }",
+    join(modules, 'VarisDevFixture', 'VarisDevFixture.psd1'),
+    "@{ RootModule = 'VarisDevFixture.psm1'; ModuleVersion = '1.0'; PowerShellVersion = '5.1'; GUID = 'b0372f07-b2a1-4076-9725-89a858e21dde' }",
   );
+  await writeFile(
+    join(modules, 'VarisDevFixture', 'VarisDevFixture.psm1'),
+    "function Get-VarisDevFixtureValue { 'custom-module-ready' }; Export-ModuleMember -Function Get-VarisDevFixtureValue",
+  );
+  env.VARISDEV_FIXTURE_MODULE_PATH = modules;
   for (const key of Object.keys(env))
     if (['path', 'psmodulepath'].includes(key.toLowerCase())) delete env[key];
   env.PATH = dirname(process.execPath);
@@ -97,7 +101,7 @@ void test(
 void test(
   'Electron project terminals launch with a restricted Windows PATH and preserve controls',
   {
-    timeout: 30000,
+    timeout: 75000,
     skip:
       process.platform === 'linux' &&
       !process.env.DISPLAY &&
@@ -128,7 +132,7 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeoutMs: 25000},
+        {env, timeoutMs: 65000},
       );
     } catch (failure) {
       error = failure;
@@ -139,6 +143,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(error);
-    assert.equal(report.cases.length, 7);
+    assert.equal(report.cases.length, 18);
   },
 );

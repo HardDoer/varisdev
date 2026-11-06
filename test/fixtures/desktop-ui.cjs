@@ -545,8 +545,21 @@ function reset() {
 
 ipcMain.handle('fixture:terminal', (_event, action, sessionId, request) => {
   calls.push({method: 'terminal', action, sessionId, request});
+  if (action === 'profiles')
+    return {
+      profiles: [
+        {id: 'fixture-shell', label: 'Fixture shell', path: '/bin/sh'},
+      ],
+      defaultProfileId: 'fixture-shell',
+      customProfiles: [],
+    };
+  if (action === 'list') return [];
   if (action === 'open')
     return {
+      sessionId,
+      workspaceId: sessionId,
+      profileId: 'fixture-shell',
+      title: 'Fixture shell',
       generation: 1,
       sequence: 1,
       data: 'Fixture shell ready\r\n$ ',

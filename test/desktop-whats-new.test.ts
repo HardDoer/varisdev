@@ -110,14 +110,14 @@ void test('an older seen release leaves the running release unseen', async t => 
 void test('versions without bundled notes cannot return or acknowledge another release', async t => {
   const profile = await temporaryDirectory(t);
   const path = join(profile, 'settings.json');
-  const saved = JSON.stringify({lastSeenReleaseVersion: '1.12.0'});
+  const saved = JSON.stringify({lastSeenReleaseVersion: '1.13.0'});
   await writeFile(path, saved);
   const preferences = new DesktopPreferences(profile);
   for (const unknown of [
     '',
     '1.10.2',
     '1.11.1',
-    '1.12.0',
+    '1.13.0',
     '1.11.0-beta.1',
     'v1.11.0',
     'constructor',
