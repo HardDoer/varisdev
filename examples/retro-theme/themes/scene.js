@@ -66,7 +66,12 @@ export function createScene(canvas, {onSelect, onLayout, helpers}) {
       20,
     );
     const units = snapshot
-      ? [{id: 'parent', status: snapshot.session.status}, ...snapshot.agents]
+      ? [
+          ...(snapshot.primaryId === null
+            ? []
+            : [{id: 'parent', status: snapshot.session.status}]),
+          ...snapshot.agents,
+        ]
       : [];
     const columns = Math.max(
       1,
@@ -205,7 +210,11 @@ export function createScene(canvas, {onSelect, onLayout, helpers}) {
   return {
     update(next, selectedId) {
       if (disposed) return;
-      if (next?.session.id !== snapshot?.session.id) {
+      if (
+        next?.session.id !== snapshot?.session.id ||
+        next?.primaryId !== snapshot?.primaryId
+      ) {
+        parent.update(undefined);
         damage.reset();
         pendingPrompt = false;
         reaction = false;
@@ -214,7 +223,10 @@ export function createScene(canvas, {onSelect, onLayout, helpers}) {
       snapshot = next;
       selected = selectedId;
       parent.update(next?.session);
-      damage.retain(['parent', ...(next?.agents || []).map(agent => agent.id)]);
+      damage.retain([
+        ...(next?.primaryId === null ? [] : ['parent']),
+        ...(next?.agents || []).map(agent => agent.id),
+      ]);
       if (next?.session.status !== 'idle') pendingPrompt = false;
       draw();
     },

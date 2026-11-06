@@ -34,6 +34,8 @@ export interface AgentRecord extends AgentSpec {
   status: AgentStatus;
   resumable?: boolean;
   createdAt: string;
+  /** Stable order for agents created within the same clock tick. */
+  creationOrder?: number;
   startedAt?: string;
   finishedAt?: string;
   activity: string;
@@ -129,6 +131,8 @@ export class AgentOrchestrator {
   private readonly jobs = new Map<string, Job>();
   private readonly listeners = new Set<() => void>();
   private maxConcurrentAgents: number;
+  private primaryOpen = true;
+  private nextCreationOrder = 0;
   private active = 0;
   private closed = false;
   private closing?: Promise<void>;
@@ -138,7 +142,7 @@ export class AgentOrchestrator {
     this.setMaxConcurrentAgents(maxConcurrentAgents);
   }
 
-  /** The conversation's main agent always reserves one slot. */
+  /** The open starting conversation reserves one slot. */
   setMaxConcurrentAgents(maxConcurrentAgents: number): void {
     if (!Number.isSafeInteger(maxConcurrentAgents) || maxConcurrentAgents < 1) {
       throw new Error(
@@ -149,8 +153,17 @@ export class AgentOrchestrator {
     this.pump();
   }
 
+  setPrimaryOpen(open: boolean): void {
+    this.primaryOpen = open;
+    this.pump();
+  }
+
+  private get workerSlots(): number {
+    return this.maxConcurrentAgents - Number(this.primaryOpen);
+  }
+
   assertAdditionalAgentsAllowed(): void {
-    if (this.maxConcurrentAgents === 1)
+    if (!this.workerSlots)
       throw new Error(
         'Additional agents are disabled: maximum concurrent agents is 1, reserved for the main conversation. Change Menu → Tool models to allow more agents.',
       );
@@ -195,9 +208,24 @@ export class AgentOrchestrator {
   ): void {
     this.ensureOpen();
     for (const agent of agents) {
+      if (
+        Number.isSafeInteger(agent.creationOrder) &&
+        agent.creationOrder! >= 0
+      )
+        this.nextCreationOrder = Math.max(
+          this.nextCreationOrder,
+          agent.creationOrder! + 1,
+        );
+    }
+    for (const agent of agents) {
       if (this.jobs.has(agent.id)) continue;
       const {conversation: messages, conversationTruncated, ...saved} = agent;
       const record = copyRecord(saved);
+      if (
+        !Number.isSafeInteger(record.creationOrder) ||
+        record.creationOrder! < 0
+      )
+        record.creationOrder = this.nextCreationOrder++;
       if (!isAgentFinished(record.status)) {
         record.status = 'cancelled';
         record.activity = 'Interrupted';
@@ -264,6 +292,7 @@ export class AgentOrchestrator {
         resumable: true,
         activity: 'Waiting for a worker slot',
         createdAt,
+        creationOrder: this.nextCreationOrder++,
       },
       createWorker,
       input: spec.task,
@@ -650,8 +679,8 @@ export class AgentOrchestrator {
         resume.resolve();
       } else if (
         !job.waiters &&
-        (this.maxConcurrentAgents === 1 ||
-          this.active < this.maxConcurrentAgents - 1)
+        ((this.maxConcurrentAgents === 1 && this.primaryOpen) ||
+          this.active < this.workerSlots)
       ) {
         // Existing runs can finish after switching to main-only workflows.
         job.ownsSlot = true;
@@ -662,7 +691,7 @@ export class AgentOrchestrator {
     }
     if (this.closed) return;
     for (const job of this.jobs.values()) {
-      if (this.active >= this.maxConcurrentAgents - 1) break;
+      if (this.active >= this.workerSlots) break;
       if (job.record.status !== 'queued' || job.maintaining) continue;
       this.active++;
       job.ownsSlot = true;

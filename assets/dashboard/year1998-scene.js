@@ -196,6 +196,7 @@ function createScene(
     viewHeight = 265;
   let snapshot = null,
     sessionId,
+    primaryId = 'parent',
     selected = 'parent',
     initialized = false;
   let identity = factoryIdentity('');
@@ -1650,7 +1651,8 @@ function createScene(
     const points = [iso(-6.75, -1.5)];
     for (const unit of units) points.push(iso(...positionFor(unit)));
     const pose = parent.pose();
-    if (!visitors.isAway(sessionId)) points.push(iso(pose.x, pose.z));
+    if (primaryId !== null && !visitors.isAway(sessionId))
+      points.push(iso(pose.x, pose.z));
     for (const visitor of visitors.visitorsAt(sessionId))
       points.push(iso(visitor.x, visitor.z));
     // Keep the factory floor visible even when only the main robot is present.
@@ -1687,7 +1689,7 @@ function createScene(
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
     const pose = parent.pose();
     const shown = new Set([
-      'parent',
+      ...(primaryId === null ? [] : ['parent']),
       ...units.map(unit => unit.id),
       ...visiting.filter(v => v !== ownTravel).map(v => visitorCaneId(v.id)),
     ]);
@@ -1704,9 +1706,10 @@ function createScene(
       accent: colors.cyan,
     }));
     if (
-      !away ||
-      ownTravel ||
-      (damageHomes.has('parent') && unsettled(damage.pose('parent')))
+      primaryId !== null &&
+      (!away ||
+        ownTravel ||
+        (damageHomes.has('parent') && unsettled(damage.pose('parent'))))
     ) {
       const local = ownTravel || pose;
       items.push({
@@ -1813,7 +1816,11 @@ function createScene(
         [-11.25, 4.8],
       ])
         add(x, z, 0.56, 0.56, () => pottedPlant(x, z));
-    if (away && !items.some(item => item.id === 'parent')) {
+    if (
+      primaryId !== null &&
+      away &&
+      !items.some(item => item.id === 'parent')
+    ) {
       add(-6.25, 0, 1, 1, () => {
         const [x, y] = iso(-6.25, 0);
         diamond(x, y, 19, 9, '#365f5c');
@@ -1878,13 +1885,15 @@ function createScene(
     data('parentWork', parentWork());
     data(
       'parentMode',
-      unsettled(parentDamage)
-        ? parentDamage.phase === 'alive'
-          ? 'startled'
-          : parentDamage.phase
-        : reaction
-          ? 'startled'
-          : ownTravel?.phase || (away ? 'away' : pose.mode),
+      primaryId === null
+        ? 'absent'
+        : unsettled(parentDamage)
+          ? parentDamage.phase === 'alive'
+            ? 'startled'
+            : parentDamage.phase
+          : reaction
+            ? 'startled'
+            : ownTravel?.phase || (away ? 'away' : pose.mode),
     );
     data('parentActivity', away && !ownTravel ? detail : pose.activity || '');
     data(
@@ -1959,10 +1968,10 @@ function createScene(
       .map(visitor => visitor.name || visitor.id);
     const label = [
       factory
-        ? '2D factory with a main agent and agent workstations'
-        : 'Isometric office with a main agent and agent workstations',
-      detail ? `Main agent: ${detail}` : '',
-      foreign.length ? `Visiting main agents: ${foreign.join(', ')}` : '',
+        ? '2D factory with a primary agent and agent workstations'
+        : 'Isometric office with a primary agent and agent workstations',
+      detail ? `Primary agent: ${detail}` : '',
+      foreign.length ? `Visiting primary agents: ${foreign.join(', ')}` : '',
     ]
       .filter(Boolean)
       .join('. ');
@@ -1998,7 +2007,8 @@ function createScene(
           unit => unit.status === 'running' && !unsettled(damage.pose(unit.id)),
         )
         .map(unit => unit.id),
-      Boolean(reaction) ||
+      primaryId === null ||
+        Boolean(reaction) ||
         unsettled(damage.pose('parent')) ||
         visitors.isAway(sessionId) ||
         !['rest', 'work'].includes(parent.pose().mode) ||
@@ -2176,6 +2186,23 @@ function createScene(
     update(value, selectedId = 'parent') {
       if (disposed) return;
       const id = value?.session?.id;
+      const nextPrimaryId =
+        value?.primaryId === undefined ? 'parent' : value.primaryId;
+      if (primaryId !== nextPrimaryId) {
+        reaction = null;
+        whip.cancel();
+        parent.update(undefined);
+        damage.retain([
+          ...units.map(unit => unit.id),
+          ...visitors
+            .visitorsAt(sessionId)
+            .filter(visitor => visitor.id !== sessionId)
+            .map(visitor => visitorCaneId(visitor.id)),
+        ]);
+        damageHomes.delete('parent');
+        serviceRoutes.delete('cleanup:parent');
+      }
+      primaryId = nextPrimaryId;
       if (id !== sessionId) {
         stop();
         sessionId = id;
@@ -2234,19 +2261,19 @@ function createScene(
       refresh();
     },
     prompt(id) {
-      if (disposed || id !== sessionId) return;
+      if (disposed || primaryId === null || id !== sessionId) return;
       whip.cancel();
       if (!visitors.prompt(id)) parent.prompt();
       parent.setAway(visitors.isAway(id));
       refresh();
     },
     cancelPrompt(id) {
-      if (disposed || id !== sessionId) return;
+      if (disposed || primaryId === null || id !== sessionId) return;
       parent.cancelPrompt();
       refresh();
     },
     startle(animate = true) {
-      if (disposed) return;
+      if (disposed || primaryId === null) return;
       whip.cancel();
       parent.stop();
       reaction = {age: 0, animated: motion && Boolean(animate)};

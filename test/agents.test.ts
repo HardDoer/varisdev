@@ -127,7 +127,7 @@ async function until(condition: () => boolean) {
   assert.fail('Expected state was not reached');
 }
 
-void test('five background agents plus the main conversation fill the default limit and drain queued work', async t => {
+void test('five background agents plus the starting conversation fill the default limit and drain queued work', async t => {
   const manager = new AgentOrchestrator();
   t.after(() => manager.close());
   const workers = Array.from({length: 8}, () => controlledWorker());
@@ -1210,7 +1210,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
   );
   await assert.rejects(
     execute(tools, 'agent_inbox', {messageId: firstParentMessageId}),
-    /Unknown main agent inbox message/,
+    /Unknown conversation inbox message/,
   );
   assert.equal(notifications.length, 0);
 
@@ -3175,3 +3175,58 @@ void test('switching to main only lets a running nested waiter finish while queu
     /Additional agents are disabled/,
   );
 });
+
+void test(
+  'closed starter releases its reserved concurrency slot for retained primary agents',
+  {timeout: 5000},
+  async t => {
+    const manager = new AgentOrchestrator(2);
+    t.after(() => manager.close());
+    const prompts: string[] = [];
+    const record = manager.spawn(
+      {
+        name: 'Primary',
+        agentMode: 'primary',
+        task: 'initial',
+        cwd: process.cwd(),
+        model: 'fixture/model',
+      },
+      async () => ({
+        async run(prompt) {
+          prompts.push(prompt);
+          return prompt;
+        },
+        async steer() {
+          return false;
+        },
+        dispose() {},
+      }),
+    );
+    await manager.wait([record.id]);
+    manager.setMaxConcurrentAgents(1);
+    await assert.rejects(manager.send(record.id, 'before closure'), /reserved/);
+    manager.setPrimaryOpen(false);
+    await manager.send(record.id, 'retained continuation');
+    await manager.wait([record.id]);
+    assert.deepEqual(prompts, ['initial', 'retained continuation']);
+    const next = manager.spawn(
+      {
+        name: 'Additional',
+        task: 'one free worker slot',
+        cwd: process.cwd(),
+        model: 'fixture/model',
+      },
+      async () => ({
+        async run(prompt) {
+          return prompt;
+        },
+        async steer() {
+          return false;
+        },
+        dispose() {},
+      }),
+    );
+    await manager.wait([next.id]);
+    assert.equal(manager.get(next.id).status, 'completed');
+  },
+);

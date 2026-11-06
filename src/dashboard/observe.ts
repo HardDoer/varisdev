@@ -9,6 +9,11 @@ import {
   type AgentSessionController,
 } from '../agents/team.ts';
 import {DashboardState, type ConversationMessage} from './state.ts';
+import {
+  primaryClosedEntry,
+  sessionPrimaryClosed,
+  isAvailablePrimary,
+} from './primary-session.ts';
 import {observeFileChanges} from './changes.ts';
 import {sessionAgentProfile} from './features.ts';
 import {sessionSpeedMode, type SpeedMode} from '../speed-modes.ts';
@@ -44,6 +49,7 @@ export interface DashboardSessionObserver {
   (message: DashboardCustomMessage, ctx: ExtensionContext): void;
   restore(ctx: ExtensionContext): void;
   restoreUsage(ctx: ExtensionContext): void;
+  syncTeam(): void;
 }
 
 export function observeDashboardSession(
@@ -158,10 +164,11 @@ export function observeDashboardSession(
   }
 
   observeFileChanges(pi, change => {
-    state?.recordChange({
+    if (!state) return;
+    state.recordChange({
       ...change,
       unitId: 'parent',
-      unitName: 'Main agent',
+      unitName: state.agentName(),
     });
   });
 
@@ -432,9 +439,16 @@ export function observeDashboardSession(
     userMessage = undefined;
     sessionId = ctx.sessionManager.getSessionId();
     const now = new Date().toISOString();
+    let primaryClosed = sessionPrimaryClosed(ctx.sessionManager);
+    const team = control.deliverySnapshot?.() ?? control.snapshot();
+    if (primaryClosed && !team?.agents.some(isAvailablePrimary)) {
+      pi.appendEntry(primaryClosedEntry, {closed: false});
+      primaryClosed = false;
+    }
     const session = {
       ...metadata(ctx),
       agentProfile: sessionAgentProfile(ctx.sessionManager),
+      primaryClosed,
       id: ctx.sessionManager.getSessionId(),
       status: ctx.isIdle() ? ('idle' as const) : ('running' as const),
       activity: ctx.isIdle() ? 'Ready for a task' : 'Working',
@@ -478,7 +492,7 @@ export function observeDashboardSession(
         error: undefined,
         response: '',
       });
-      state!.record('session', 'Main agent started working');
+      state!.record('session', `${state!.agentName()} started working`);
     });
   });
   pi.on('message_start', (event, ctx) => {
@@ -693,7 +707,9 @@ export function observeDashboardSession(
       });
       state!.record(
         'session',
-        lastError ? 'Run ended with an error' : 'Main agent finished',
+        lastError
+          ? 'Run ended with an error'
+          : `${state!.agentName()} finished`,
       );
     });
   });
@@ -789,5 +805,6 @@ export function observeDashboardSession(
   return Object.assign(showCustomMessage, {
     restore: restoreConversation,
     restoreUsage,
+    syncTeam,
   });
 }

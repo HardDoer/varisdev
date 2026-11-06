@@ -61,7 +61,7 @@ void test(
     assert.ifError(report.fatal);
     assert.equal(
       report.cases.length,
-      22,
+      27,
       'All host and renderer scenarios execute',
     );
     for (const result of report.cases)

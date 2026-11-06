@@ -33,6 +33,9 @@ export interface SceneAgent {
   [key: string]: unknown;
 }
 export interface SceneSnapshot {
+  /** Original unit ID in the large robot slot; null when no primary remains. */
+  primaryId?: string | null;
+  /** Displayed primary state, retaining the workspace ID. */
   session: SceneSession;
   agents: readonly SceneAgent[];
   [key: string]: unknown;
@@ -45,7 +48,7 @@ export interface SceneHubSnapshot {
 
 /** Coordinates relative to the canvas, normalized to 0–1. */
 export interface SceneAnchor {
-  /** 'parent' for the current session; agent ID otherwise. */
+  /** 'parent' for the displayed primary; agent ID for other robots. */
   id: string;
   x: number;
   y: number;

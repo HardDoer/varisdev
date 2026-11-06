@@ -32,6 +32,7 @@ let publishCreation;
 let creationError;
 let closeDelay;
 let closeError;
+let closeResponseGates;
 let resumeError;
 let recentProjects;
 let recentProjectsDelay;
@@ -506,6 +507,7 @@ function reset() {
   stateRequests = 0;
   closeDelay = 0;
   closeError = undefined;
+  closeResponseGates = new Map();
   resumeError = undefined;
   agentPromptError = undefined;
   agentPromptDelay = 0;
@@ -702,7 +704,46 @@ for (const method of ['prompt', 'abort', 'workspace', 'cancelAgent']) {
 ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
   calls.push({method: 'agentSession', sessionId, request});
   const owner = hub.sessions.find(item => item.session.id === sessionId);
-  const agent = owner?.agents.find(item => item.id === request.agentId);
+  assert.ok(owner, `Unknown workspace ${sessionId}`);
+  const agent = owner.agents.find(item => item.id === request.agentId);
+  if (request.action === 'close') {
+    const primary =
+      request.agentId === 'parent' || agent?.agentMode !== 'subagent';
+    const remainingPrimaries =
+      Number(!owner.session.primaryClosed) +
+      owner.agents.filter(
+        item => item.agentMode !== 'subagent' && item.resumable !== false,
+      ).length;
+    if (primary && remainingPrimaries <= 1) {
+      if (!request.confirmWorkspaceClose) {
+        const gate = closeResponseGates.get(sessionId);
+        if (gate) await gate;
+        return {requiresWorkspaceCloseConfirmation: true};
+      }
+      if (closeDelay)
+        await new Promise(resolve => setTimeout(resolve, closeDelay));
+      if (closeError) throw new Error(closeError);
+      archiveSession(sessionId);
+      window.webContents.send('fixture:snapshot', hub);
+      return {workspaceClosed: true};
+    }
+    if (closeDelay)
+      await new Promise(resolve => setTimeout(resolve, closeDelay));
+    if (closeError) throw new Error(closeError);
+    if (request.agentId === 'parent') {
+      owner.session.primaryClosed = true;
+      owner.session.status = 'idle';
+      owner.session.activity = 'Closed';
+      owner.queue = {steering: [], followUp: []};
+    } else {
+      assert.ok(agent, `Unknown agent ${sessionId}/${request.agentId}`);
+      agent.resumable = false;
+      if (['running', 'queued', 'cancelling'].includes(agent.status))
+        agent.status = 'cancelled';
+    }
+    window.webContents.send('fixture:snapshot', hub);
+    return;
+  }
   assert.ok(agent, `Unknown agent ${sessionId}/${request.agentId}`);
   const key = `${sessionId}:${agent.id}`;
   if (request.action === 'features') {
@@ -799,11 +840,6 @@ ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
     if (configuration.thinkingLevel)
       resource.thinkingLevel = configuration.thinkingLevel;
     resources.set(key, resource);
-  }
-  if (request.action === 'close') {
-    agent.resumable = false;
-    if (['running', 'queued', 'cancelling'].includes(agent.status))
-      agent.status = 'cancelled';
   }
   window.webContents.send('fixture:snapshot', hub);
 });
@@ -4502,15 +4538,35 @@ async function main() {
       await publish();
       await view();
       await detailsVisible(true);
+      for (const agent of data.agents) agent.agentMode = 'subagent';
+      await publish();
       await click('#item-actions-button');
       await click('#close-session');
       await until(
+        () => document.getElementById('close-primary-dialog').open,
+        'Closing the final primary did not request workspace confirmation',
+      );
+      await click('#confirm-close-primary');
+      await until(
         () => !document.getElementById('welcome').hidden,
-        'Close session action did not remove the session',
+        'Confirmed final primary close did not remove the workspace',
       );
       await view();
       assert.deepEqual(conversationActions(), [
-        {method: 'closeSession', sessionId: 'alpha'},
+        {
+          method: 'agentSession',
+          sessionId: 'alpha',
+          request: {agentId: 'parent', action: 'close'},
+        },
+        {
+          method: 'agentSession',
+          sessionId: 'alpha',
+          request: {
+            agentId: 'parent',
+            action: 'close',
+            confirmWorkspaceClose: true,
+          },
+        },
       ]);
     },
   );
@@ -5407,7 +5463,7 @@ async function main() {
             `${theme}: the selected task must remain readable`,
           );
           if (name === 'Alpha factory' && process.env.DESKTOP_UI_SCREENSHOT_DIR)
-            await screenshot(`main-agent-selection-${theme}`);
+            await screenshot(`starter-selection-${theme}`);
         }
       }
       await evaluate(() => {
@@ -5517,6 +5573,33 @@ async function main() {
         assert.equal(fallback.cardSelected, true);
         assert.ok(contrast(fallback.color, fallback.background) >= 4.5);
         assert.ok(contrast(fallback.background, fallback.otherBackground) >= 3);
+        for (let update = 0; update < 2; update++) {
+          await publish();
+          assert.deepEqual(
+            await evaluate(() => {
+              const station = document.querySelector(
+                '#fallback-units [data-unit-id="parent"]',
+              );
+              const glyph = station.querySelector('.robot-glyph');
+              return {
+                starter: glyph.classList.contains('robot-starter'),
+                primary: glyph.classList.contains('robot-primary'),
+                adapterClass: glyph.classList.contains('parent-fallback-glyph'),
+                hidden: getComputedStyle(glyph).display === 'none',
+                svgRobots: station.querySelectorAll('.parent-fallback-robot')
+                  .length,
+              };
+            }),
+            {
+              starter: true,
+              primary: true,
+              adapterClass: true,
+              hidden: true,
+              svgRobots: 1,
+            },
+            'Repeated snapshots retain the SVG starter and hide its original glyph',
+          );
+        }
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
           await screenshot('selected-agent-fallback');
       } finally {
@@ -6904,7 +6987,7 @@ async function main() {
         () =>
           !document.getElementById('session-speed').disabled &&
           document.getElementById('session-speed').value === 'fast',
-        'An owned main agent without an explicit control flag must retain its Speed control after reload',
+        'An owned primary agent without an explicit control flag must retain its Speed control after reload',
       );
       owner.session.controllable = false;
       await publish();
@@ -6917,7 +7000,7 @@ async function main() {
       await publish();
       await until(
         () => !document.getElementById('session-speed').disabled,
-        'The owned main agent did not regain its Speed control',
+        'The owned primary agent did not regain its Speed control',
       );
       window.setContentSize(1100, 760);
       await resizeZoom(1.5);
@@ -6950,7 +7033,7 @@ async function main() {
         () =>
           document.getElementById('session-speed').disabled &&
           document.getElementById('speed-status').checkVisibility(),
-        'Regular-only main models need a visible explanation for the disabled control',
+        'Regular-only primary models need a visible explanation for the disabled control',
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('speed-tab-parent-unavailable-compact');
@@ -6963,7 +7046,7 @@ async function main() {
         () =>
           !document.getElementById('session-speed').disabled &&
           document.getElementById('speed-status').hidden,
-        'Supported main-agent capabilities did not restore the Speed control',
+        'Supported primary-agent capabilities did not restore the Speed control',
       );
       await resizeZoom(1);
       window.setContentSize(1600, 1000);
@@ -9824,12 +9907,15 @@ async function main() {
         dialogs: [
           confirmation('permission-confirm', 'Permission worker · Run bash?'),
         ],
-        editor: {id: 'workspace-editor', text: 'Main conversation editor text'},
+        editor: {
+          id: 'workspace-editor',
+          text: 'Starter conversation editor text',
+        },
         notifications: [
           {
             id: 'workspace-notice',
             type: 'info',
-            message: 'Main conversation notice',
+            message: 'Starter conversation notice',
           },
         ],
       };
@@ -9866,7 +9952,7 @@ async function main() {
         await evaluate(() => document.getElementById('extension-dialog').open),
         true,
       );
-      assert.equal((await editor()).value, 'Main conversation editor text');
+      assert.equal((await editor()).value, 'Starter conversation editor text');
       await chooseWorker('Permission worker');
       assert.deepEqual(await editor(), {
         value: 'Keep this agent draft',
@@ -10343,10 +10429,10 @@ async function main() {
   );
 
   await run(
-    'main agent stays in active agents with live state counts and closed history',
+    'primary conversation starter stays in active agents with live state counts and closed history',
     async () => {
       const data = hub.sessions[0];
-      data.session.prompt = 'Inspect the main project';
+      data.session.prompt = 'Inspect the project';
       const listed = () => {
         const cards = id =>
           [...document.querySelectorAll(`#${id} button`)].map(card => ({
@@ -10371,7 +10457,7 @@ async function main() {
         active: [
           {
             id: 'parent',
-            kind: 'main',
+            kind: 'primary',
             name: 'Alpha factory',
             status: 'Working',
           },
@@ -10385,7 +10471,7 @@ async function main() {
       });
       data.agents = ['running', 'queued', 'completed', 'failed'].map(
         status => ({
-          id: `main-list-${status}`,
+          id: `starter-list-${status}`,
           name: `Worker ${status}`,
           task: 'Inspect a delegated task',
           activity: `Worker is ${status}`,
@@ -10404,7 +10490,7 @@ async function main() {
       ]) {
         data.session.status = status;
         data.session.error = error;
-        data.session.activity = error || `Main is ${status}`;
+        data.session.activity = error || `Starter is ${status}`;
         await publish();
         // Repeated snapshots must update the same card and counts.
         await publish();
@@ -10416,7 +10502,7 @@ async function main() {
         assert.equal(result.empty, false);
         assert.deepEqual(result.active[0], {
           id: 'parent',
-          kind: 'main',
+          kind: 'primary',
           name: 'Alpha factory',
           status: label,
         });
@@ -10442,8 +10528,8 @@ async function main() {
             hub: document.getElementById('hub-counts').textContent,
           })),
           {
-            task: 'Inspect the main project',
-            activity: error || `Main is ${status}`,
+            task: 'Inspect the project',
+            activity: error || `Starter is ${status}`,
             model: 'fixture/small',
             queued: '1',
             completed: '1',
@@ -10458,7 +10544,7 @@ async function main() {
       assert.equal(closed.historyCount, '3');
       assert.deepEqual(closed.history[0], {
         id: 'parent',
-        kind: 'main',
+        kind: 'primary',
         name: 'Alpha factory',
         status: 'Closed',
       });
@@ -10483,7 +10569,12 @@ async function main() {
       );
       await clickPointer('#parents [data-context-session="beta"]');
       assert.deepEqual((await evaluate(listed)).active, [
-        {id: 'parent', kind: 'main', name: 'Beta factory', status: 'Working'},
+        {
+          id: 'parent',
+          kind: 'primary',
+          name: 'Beta factory',
+          status: 'Working',
+        },
       ]);
     },
   );
@@ -10493,14 +10584,21 @@ async function main() {
     [1100, 760, 1.5],
   ]) {
     await run(
-      `main agent card selects its conversation and safe actions at ${width} zoom ${zoom}`,
+      `primary conversation starter card selects its conversation and safe actions at ${width} zoom ${zoom}`,
       async () => {
         const data = hub.sessions[0];
         data.session.status = 'idle';
         data.session.activity = 'Ready for a task';
+        data.session.agentProfile = {
+          id: 'coordinator',
+          name: 'Project coordinator',
+          mode: 'all',
+          color: '#74F3C0',
+        };
+        resources.set('alpha', features(data.session.agentProfile));
         data.agents = [
           {
-            id: 'main-selection-worker',
+            id: 'starter-selection-worker',
             name: 'Review worker',
             task: 'Review project files',
             activity: 'Reading files',
@@ -10521,6 +10619,13 @@ async function main() {
         ];
         data.totalAgents = 1;
         await publish();
+        await reloadPage();
+        await until(
+          () =>
+            document.getElementById('agent-profile-label').textContent ===
+            'Project coordinator',
+          'The saved starter profile did not load',
+        );
         window.webContents.setZoomFactor(zoom);
         await settle();
         const compact = await evaluate(() =>
@@ -10543,12 +10648,113 @@ async function main() {
             editor.value = value;
             editor.dispatchEvent(new Event('input', {bubbles: true}));
           }, value);
-        await fill('Main conversation draft');
+        const assertStarterRobot = async selected => {
+          await openAgents();
+          assert.deepEqual(
+            await evaluate(() => {
+              const cards = [
+                ...document.querySelectorAll('#active-workers .worker-card'),
+              ];
+              const starter = cards.find(
+                card => card.dataset.contextUnit === 'parent',
+              );
+              const glyph = starter.querySelector('.robot-glyph');
+              const bounds = glyph.getBoundingClientRect();
+              const mark = document.getElementById(
+                'selected-conversation-mark',
+              );
+              return {
+                selected: document.querySelector(
+                  '#active-workers [aria-pressed="true"]',
+                ).dataset.contextUnit,
+                kind: document.getElementById('inspector').dataset
+                  .conversationKind,
+                starters: cards
+                  .filter(card => card.querySelector('.robot-starter'))
+                  .map(card => card.dataset.contextUnit),
+                primary: glyph.classList.contains('robot-primary'),
+                crown:
+                  getComputedStyle(glyph.querySelector('.robot-crown'))
+                    .display !== 'none',
+                onlyLargeRobot: cards
+                  .filter(card => card !== starter)
+                  .every(card => {
+                    const other = card
+                      .querySelector('.robot-glyph')
+                      .getBoundingClientRect();
+                    return (
+                      bounds.width > other.width && bounds.height > other.height
+                    );
+                  }),
+                mark: {
+                  starter: mark.classList.contains('robot-starter'),
+                  primary: mark.classList.contains('robot-primary'),
+                  crown:
+                    getComputedStyle(mark.querySelector('.robot-crown'))
+                      .display !== 'none',
+                  label: mark.getAttribute('aria-label'),
+                },
+              };
+            }),
+            {
+              selected,
+              kind: 'primary',
+              starters: ['parent'],
+              primary: true,
+              crown: false,
+              onlyLargeRobot: true,
+              mark: {
+                starter: selected === 'parent',
+                primary: true,
+                crown: selected !== 'parent',
+                label: 'Primary agent',
+              },
+            },
+            'The conversation starter stays the only large robot when another primary is first in the agent data or selected',
+          );
+          if (compact) await press('Escape');
+        };
+        const screenshotThemes = async name => {
+          if (!process.env.DESKTOP_UI_SCREENSHOT_DIR) return;
+          const original = await evaluate(
+            () => document.getElementById('factory-theme').value,
+          );
+          const themes = await evaluate(() =>
+            [...document.getElementById('factory-theme').options].map(
+              option => option.value,
+            ),
+          );
+          for (const theme of themes) {
+            await evaluate(theme => {
+              const control = document.getElementById('factory-theme');
+              control.value = theme;
+              control.dispatchEvent(new Event('change', {bubbles: true}));
+            }, theme);
+            await settle();
+            await screenshot(`${name}-${theme}-${width}-${zoom}`);
+          }
+          await evaluate(theme => {
+            const control = document.getElementById('factory-theme');
+            control.value = theme;
+            control.dispatchEvent(new Event('change', {bubbles: true}));
+          }, original);
+          await settle();
+        };
+        await assertStarterRobot('parent');
+        await fill('Starter conversation draft');
         await openAgents();
         await clickPointer(
-          '#active-workers [data-context-unit="main-selection-worker"]',
+          '#active-workers [data-context-unit="starter-selection-worker"]',
           {scroll: true},
         );
+        await assertStarterRobot('starter-selection-worker');
+        assert.match(
+          await evaluate(
+            () => document.getElementById('conversation').textContent,
+          ),
+          /Worker conversation/,
+        );
+        await screenshotThemes('selected-primary');
         await fill('Worker conversation draft');
         await openAgents();
         await clickPointer('#active-workers [data-context-unit="parent"]', {
@@ -10570,13 +10776,15 @@ async function main() {
           {
             selected: 'parent',
             title: 'Alpha factory',
-            kind: 'Main agent',
-            draft: 'Main conversation draft',
+            kind: 'Primary agent',
+            draft: 'Starter conversation draft',
             activeCount: '2',
             cancelHidden: true,
             removeHidden: true,
           },
         );
+        await assertStarterRobot('parent');
+        await screenshotThemes('custom-starter');
         assert.match(
           await evaluate(
             () => document.getElementById('conversation').textContent,
@@ -10591,7 +10799,7 @@ async function main() {
         );
         await openAgents();
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-          await screenshot(`main-agent-${width}-${zoom}-agents`);
+          await screenshot(`starter-${width}-${zoom}-agents`);
         if (compact) await press('Escape');
         await clickPointer('#item-actions-button');
         assert.deepEqual(
@@ -10606,7 +10814,7 @@ async function main() {
         await clickPointer('#send-prompt');
         await until(
           () => document.getElementById('parent-prompt').value === '',
-          'Main prompt did not submit',
+          'Starter prompt did not submit',
         );
         assert.equal(
           calls.filter(call => call.method === 'prompt').at(-1)?.sessionId,
@@ -10614,14 +10822,14 @@ async function main() {
         );
         assert.equal(
           calls.filter(call => call.method === 'prompt').at(-1)?.request.prompt,
-          'Main conversation draft',
+          'Starter conversation draft',
         );
         data.session.status = 'running';
         await publish();
         await clickPointer('#abort-parent');
         await until(
           () => !document.getElementById('abort-parent').disabled,
-          'Main stop did not settle',
+          'Starter stop did not settle',
         );
         assert.equal(
           calls.filter(call => call.method === 'abort').at(-1)?.sessionId,
@@ -10644,7 +10852,7 @@ async function main() {
         );
         await openAgents();
         await clickPointer(
-          '#active-workers [data-context-unit="main-selection-worker"]',
+          '#active-workers [data-context-unit="starter-selection-worker"]',
           {scroll: true},
         );
         assert.equal(
@@ -10677,7 +10885,7 @@ async function main() {
         assert.equal(geometry.bodyOverflow, false);
         assert.equal(geometry.composerVisible, true);
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-          await screenshot(`main-agent-${width}-${zoom}-conversation`);
+          await screenshot(`starter-${width}-${zoom}-conversation`);
       },
       width,
       height,
@@ -10690,14 +10898,14 @@ async function main() {
       await until(
         () =>
           document.querySelectorAll('#scene-labels .scene-label').length === 1,
-        'A workspace with one agent must show only its main robot',
+        'A workspace with one agent must show only its starter robot',
       );
       assert.deepEqual(
         await evaluate(() => ({
           labels: [
             ...document.querySelectorAll('#scene-labels .scene-label'),
           ].map(label => ({
-            main: label.classList.contains('parent-label'),
+            starter: label.classList.contains('parent-label'),
             selected: label.getAttribute('aria-pressed'),
             name: label.textContent,
           })),
@@ -10705,7 +10913,7 @@ async function main() {
           counts: document.getElementById('hub-counts').textContent,
         })),
         {
-          labels: [{main: true, selected: 'true', name: 'Alpha factory'}],
+          labels: [{starter: true, selected: 'true', name: 'Alpha factory'}],
           workspaces: 2,
           counts: '2 workspaces · 2 working agents',
         },
@@ -11065,7 +11273,7 @@ async function main() {
             const crown = glyph.querySelector('.robot-crown');
             return {
               kind: glyph.dataset.agentKind,
-              main: glyph.classList.contains('robot-main'),
+              starter: glyph.classList.contains('robot-starter'),
               primary: glyph.classList.contains('robot-primary'),
               subagent: glyph.classList.contains('robot-subagent'),
               crown: getComputedStyle(crown).display !== 'none',
@@ -11079,7 +11287,7 @@ async function main() {
               const glyph = card.querySelector('.robot-glyph');
               return {
                 kind: glyph.dataset.agentKind,
-                main: glyph.classList.contains('robot-main'),
+                starter: glyph.classList.contains('robot-starter'),
                 crown:
                   getComputedStyle(glyph.querySelector('.robot-crown'))
                     .display !== 'none',
@@ -11089,11 +11297,13 @@ async function main() {
             },
           ),
           subagentSmaller: (() => {
-            const main = document
-              .querySelector('#parents .robot-main')
+            const starter = document
+              .querySelector('#parents .robot-starter')
               .getBoundingClientRect();
             const primary = document
-              .querySelector('#active-workers .robot-primary')
+              .querySelector(
+                '#active-workers .robot-primary:not(.robot-starter)',
+              )
               .getBoundingClientRect();
             const subagent = document
               .querySelector('#active-workers .robot-subagent')
@@ -11101,8 +11311,8 @@ async function main() {
             return (
               subagent.width < primary.width &&
               subagent.height < primary.height &&
-              subagent.width < main.width &&
-              subagent.height < main.height
+              subagent.width < starter.width &&
+              subagent.height < starter.height
             );
           })(),
           workers: Object.fromEntries(
@@ -11132,29 +11342,29 @@ async function main() {
         })),
         {
           selected: {
-            kind: 'main',
-            main: true,
-            primary: false,
+            kind: 'primary',
+            starter: true,
+            primary: true,
             subagent: false,
             crown: false,
             crownHidden: 'true',
             role: 'img',
-            label: 'Main agent',
+            label: 'Primary agent',
           },
           parents: [
             {
-              kind: 'main',
-              main: true,
+              kind: 'primary',
+              starter: true,
               crown: false,
               role: 'img',
-              label: 'Main agent',
+              label: 'Primary agent',
             },
             {
-              kind: 'main',
-              main: true,
+              kind: 'primary',
+              starter: true,
               crown: false,
               role: 'img',
-              label: 'Main agent',
+              label: 'Primary agent',
             },
           ],
           subagentSmaller: true,
@@ -11541,9 +11751,6 @@ async function main() {
               background: getComputedStyle(
                 document.querySelector('.inspector-heading'),
               ).backgroundImage,
-              mainIcon:
-                getComputedStyle(document.querySelector('.kind-main-icon'))
-                  .display !== 'none',
               primaryIcon:
                 getComputedStyle(document.querySelector('.kind-primary-icon'))
                   .display !== 'none',
@@ -11553,17 +11760,16 @@ async function main() {
             };
           });
         const parentKind = await inspectKind();
-        assert.equal(parentKind.label, 'Main agent');
-        assert.equal(parentKind.kind, 'main');
-        assert.equal(parentKind.marker, 'main');
+        assert.equal(parentKind.label, 'Primary agent');
+        assert.equal(parentKind.kind, 'primary');
+        assert.equal(parentKind.marker, 'primary');
         assert.equal(parentKind.title, 'Alpha factory');
         assert.equal(
           parentKind.complete,
           true,
           'Parent session label should be fully visible',
         );
-        assert.equal(parentKind.mainIcon, true);
-        assert.equal(parentKind.primaryIcon, false);
+        assert.equal(parentKind.primaryIcon, true);
         assert.equal(parentKind.subagentIcon, false);
         const parentBounds = await geometry();
         await evaluate(() =>
@@ -11626,13 +11832,12 @@ async function main() {
           true,
           'Agent conversation label should be fully visible',
         );
-        assert.equal(agentKind.mainIcon, false);
         assert.equal(agentKind.primaryIcon, true);
         assert.equal(agentKind.subagentIcon, false);
-        assert.notEqual(
+        assert.equal(
           agentKind.background,
           parentKind.background,
-          'Main and primary conversations use distinct heading accents',
+          'All primary conversations use the same heading accent',
         );
         for (const selector of Object.keys(parentBounds).filter(
           selector =>
@@ -11683,11 +11888,10 @@ async function main() {
         await settle();
         const returnedBounds = await geometry();
         const returnedKind = await inspectKind();
-        assert.equal(returnedKind.label, 'Main agent');
-        assert.equal(returnedKind.kind, 'main');
-        assert.equal(returnedKind.marker, 'main');
-        assert.equal(returnedKind.mainIcon, true);
-        assert.equal(returnedKind.primaryIcon, false);
+        assert.equal(returnedKind.label, 'Primary agent');
+        assert.equal(returnedKind.kind, 'primary');
+        assert.equal(returnedKind.marker, 'primary');
+        assert.equal(returnedKind.primaryIcon, true);
         assert.equal(returnedKind.subagentIcon, false);
         assert.deepEqual(
           returnedBounds,
@@ -11728,9 +11932,6 @@ async function main() {
                 label: mark.getAttribute('aria-label'),
               };
             })(),
-            mainIcon:
-              getComputedStyle(document.querySelector('.kind-main-icon'))
-                .display !== 'none',
             primaryIcon:
               getComputedStyle(document.querySelector('.kind-primary-icon'))
                 .display !== 'none',
@@ -11756,7 +11957,6 @@ async function main() {
             crown: false,
             label: 'Subagent',
           },
-          mainIcon: false,
           primaryIcon: false,
           subagentIcon: true,
           cardKind: 'subagent',
@@ -14482,6 +14682,14 @@ async function main() {
         document.getElementById('close-session').click();
       });
       await until(
+        () => document.getElementById('close-primary-dialog').open,
+        'The final primary close did not request confirmation',
+      );
+      await evaluate(() => {
+        document.getElementById('confirm-close-primary').click();
+        document.getElementById('confirm-close-primary').click();
+      });
+      await until(
         () =>
           document.getElementById('close-session').textContent === 'Closing…',
         'Close failure case did not enter its pending state',
@@ -14512,16 +14720,34 @@ async function main() {
         'A failed close keeps the selected parent open',
       );
       assert.deepEqual(
-        calls.filter(call => call.method === 'closeSession'),
-        [{method: 'closeSession', sessionId: 'retry-parent'}],
-        'Repeated close clicks must share one request',
+        calls.filter(
+          call =>
+            call.method === 'agentSession' && call.request.action === 'close',
+        ),
+        [
+          {
+            method: 'agentSession',
+            sessionId: 'retry-parent',
+            request: {agentId: 'parent', action: 'close'},
+          },
+          {
+            method: 'agentSession',
+            sessionId: 'retry-parent',
+            request: {
+              agentId: 'parent',
+              action: 'close',
+              confirmWorkspaceClose: true,
+            },
+          },
+        ],
+        'Repeated close and confirmation clicks share their pending requests',
       );
       assert.deepEqual(
         await evaluate(() => ({
           disabled: document.getElementById('close-session').disabled,
           label: document.getElementById('close-session').textContent,
         })),
-        {disabled: false, label: 'Close workspace'},
+        {disabled: false, label: 'Close agent'},
       );
 
       closeDelay = 0;
@@ -14531,14 +14757,24 @@ async function main() {
         document.getElementById('close-session').click();
       });
       await until(
+        () => document.getElementById('close-primary-dialog').open,
+        'Retry did not request confirmation for the final primary',
+      );
+      await evaluate(() =>
+        document.getElementById('confirm-close-primary').click(),
+      );
+      await until(
         () =>
           document.getElementById('factory-title').textContent ===
           'Beta factory',
-        'Close retry did not select a remaining parent',
+        'Close retry did not select a remaining workspace',
       );
       assert.equal(
-        calls.filter(call => call.method === 'closeSession').length,
-        2,
+        calls.filter(
+          call =>
+            call.method === 'agentSession' && call.request.action === 'close',
+        ).length,
+        4,
       );
       assert.equal(
         await evaluate(() => document.getElementById('app-error').hidden),
@@ -14585,6 +14821,177 @@ async function main() {
       assert.deepEqual(
         hub.sessions.map(item => item.session.id),
         ['last-replacement'],
+      );
+
+      const firstWorkspace = hub.sessions[0];
+      firstWorkspace.session.name = 'Pending workspace A';
+      firstWorkspace.session.primaryClosed = true;
+      const secondWorkspace = session('pending-close-b', 'Pending workspace B');
+      secondWorkspace.session.primaryClosed = true;
+      for (const [workspace, suffix] of [
+        [firstWorkspace, 'A'],
+        [secondWorkspace, 'B'],
+      ]) {
+        workspace.agents = [
+          {
+            id: `pending-${suffix}`,
+            name: `Pending agent ${suffix}`,
+            agentMode: 'primary',
+            task: 'Keep working until this workspace closes',
+            activity: 'Working on the pending close fixture',
+            status: 'running',
+            model: 'fixture/small',
+            cwd: directory,
+            resumable: true,
+            createdAt: at,
+            startedAt: at,
+            conversation: [],
+          },
+        ];
+        workspace.totalAgents = 1;
+      }
+      hub.sessions.push(secondWorkspace);
+      resources.set('pending-close-b', features());
+      const firstResponse = Promise.withResolvers();
+      const secondResponse = Promise.withResolvers();
+      closeResponseGates.set(firstWorkspace.session.id, firstResponse.promise);
+      closeResponseGates.set(
+        secondWorkspace.session.id,
+        secondResponse.promise,
+      );
+      await publish();
+      const pendingCloseCalls = () =>
+        calls.filter(
+          call =>
+            call.method === 'agentSession' &&
+            call.request.action === 'close' &&
+            ['pending-A', 'pending-B'].includes(call.request.agentId),
+        );
+      const startPendingClose = async (workspaceId, agentName) => {
+        await clickPointer(`#parents [data-context-session="${workspaceId}"]`);
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('inspector-title').textContent,
+          ),
+          agentName,
+          `The pending close did not select ${agentName}`,
+        );
+        await clickPointer('#item-actions-button');
+        await clickPointer('#close-session');
+      };
+      await startPendingClose(firstWorkspace.session.id, 'Pending agent A');
+      await startPendingClose(secondWorkspace.session.id, 'Pending agent B');
+      assert.equal(pendingCloseCalls().length, 2);
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('close-primary-dialog').open,
+        ),
+        false,
+        'Both workspace closes wait for their delayed backend responses',
+      );
+      firstResponse.resolve();
+      await until(
+        () =>
+          document.getElementById('close-primary-dialog').open &&
+          document.getElementById('close-primary-title').textContent ===
+            'Close Pending agent A in Pending workspace A?',
+        'The first close response did not show its own agent and workspace',
+      );
+      secondResponse.resolve();
+      await evaluate(async () => {
+        await window.pidev.getState();
+        await new Promise(resolve =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        );
+      });
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('close-primary-title').textContent,
+          description: document
+            .getElementById('close-primary-description')
+            .textContent.trim(),
+          open: document.getElementById('close-primary-dialog').open,
+        })),
+        {
+          title: 'Close Pending agent A in Pending workspace A?',
+          description:
+            'Closing this agent will close this workspace and stop its agents.',
+          open: true,
+        },
+        'The second close response must wait without replacing the open confirmation',
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('queued-close-primary-a');
+      await clickPointer('#confirm-close-primary');
+      await until(
+        () =>
+          document.getElementById('close-primary-dialog').open &&
+          document.getElementById('close-primary-title').textContent ===
+            'Close Pending agent B in Pending workspace B?' &&
+          !document.querySelector(
+            '#parents [data-context-session="last-replacement"]',
+          ),
+        'The next confirmation did not keep its target after the first workspace closed',
+      );
+      assert.deepEqual(
+        hub.sessions.map(item => item.session.id),
+        ['pending-close-b'],
+        'Confirming agent A closes only workspace A',
+      );
+      assert.deepEqual(
+        pendingCloseCalls()
+          .filter(call => call.request.confirmWorkspaceClose)
+          .map(call => [call.sessionId, call.request.agentId]),
+        [['last-replacement', 'pending-A']],
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('queued-close-primary-b');
+      await clickPointer('#cancel-close-primary');
+      await until(
+        () => !document.getElementById('close-primary-dialog').open,
+        'Cancelling the queued close did not release its dialog',
+      );
+      assert.equal(secondWorkspace.agents[0].resumable, true);
+      assert.equal(secondWorkspace.agents[0].status, 'running');
+      assert.equal(hub.sessions[0], secondWorkspace);
+      assert.equal(pendingCloseCalls().length, 3);
+
+      await startPendingClose(secondWorkspace.session.id, 'Pending agent B');
+      await until(
+        () =>
+          document.getElementById('close-primary-dialog').open &&
+          document.getElementById('close-primary-title').textContent ===
+            'Close Pending agent B in Pending workspace B?',
+        'The cancelled queued close could not open a new confirmation',
+      );
+      await press('Escape');
+      await until(
+        () => !document.getElementById('close-primary-dialog').open,
+        'Escape did not cancel the reopened confirmation',
+      );
+      assert.equal(hub.sessions[0], secondWorkspace);
+      await startPendingClose(secondWorkspace.session.id, 'Pending agent B');
+      await until(
+        () =>
+          document.getElementById('close-primary-dialog').open &&
+          document.getElementById('close-primary-title').textContent ===
+            'Close Pending agent B in Pending workspace B?',
+        'The confirmation queue did not recover after cancellation',
+      );
+      await clickPointer('#confirm-close-primary');
+      await until(
+        () => !document.getElementById('welcome').hidden,
+        'Confirming agent B did not close the remaining workspace',
+      );
+      assert.deepEqual(
+        pendingCloseCalls()
+          .filter(call => call.request.confirmWorkspaceClose)
+          .map(call => [call.sessionId, call.request.agentId]),
+        [
+          ['last-replacement', 'pending-A'],
+          ['pending-close-b', 'pending-B'],
+        ],
+        'Each confirmation closes its named workspace once after queued and cancelled requests',
       );
     },
   );
@@ -14916,31 +15323,348 @@ async function main() {
   );
 
   await run(
-    'Close session falls back and reaches welcome while preserving draft and history',
+    'closing primary agents preserves the workspace selects the second newest robot and confirms the final close with draft recovery',
     async () => {
-      hub.sessions[0].agents = [
+      const data = hub.sessions[0];
+      const primary = (id, name, minute, agentMode) => ({
+        id,
+        name,
+        ...(agentMode ? {agentMode} : {}),
+        task: `Continue ${name}`,
+        activity: `Working on ${name}`,
+        cwd: directory,
+        model: 'fixture/small',
+        status: 'running',
+        createdAt: `2026-01-01T12:${minute}:00.000Z`,
+        startedAt: at,
+        conversation: [
+          {id: `${id}-answer`, role: 'assistant', text: `${name} answer`, at},
+        ],
+      });
+      data.agents = [
+        primary('newest', 'Newest primary', '03'),
+        primary('delegated', 'Delegated subagent', '05', 'subagent'),
         {
-          id: 'close-session-agent',
-          name: 'Close session agent',
-          task: 'Keep working until the parent closes',
-          activity: 'Running in the active parent',
-          model: 'fixture/small',
-          status: 'running',
-          createdAt: at,
-          startedAt: at,
+          ...primary('disposed', 'Disposed primary', '06', 'primary'),
+          resumable: false,
+          status: 'cancelled',
         },
+        primary('older', 'Older primary', '01', 'primary'),
+        primary('middle', 'Middle primary', '02', 'all'),
       ];
-      hub.sessions[0].totalAgents = 1;
+      data.totalAgents = data.agents.length;
       await publish();
-      await clickPointer('#item-actions-button');
-      assert.equal(
-        await evaluate(() =>
-          document.getElementById('close-session').checkVisibility(),
-        ),
-        true,
-        'Close session must be accessible through Actions',
+      const choose = async id => {
+        await evaluate(id => {
+          const card = document.querySelector(
+            `#active-workers [data-context-unit="${id}"], #history-workers [data-context-unit="${id}"]`,
+          );
+          if (!card) throw new Error(`Missing agent card ${id}`);
+          card.click();
+        }, id);
+        await settle();
+      };
+      const closeSelected = async () => {
+        await clickPointer('#item-actions-button');
+        assert.deepEqual(
+          await evaluate(() => ({
+            label: document.getElementById('close-session').textContent,
+            workspaceClose: [
+              ...document.querySelectorAll(
+                '#item-context-menu [role="menuitem"]',
+              ),
+            ].some(item => /close workspace/i.test(item.textContent)),
+          })),
+          {label: 'Close agent', workspaceClose: false},
+          'The agent menu offers a single Close agent action',
+        );
+        await clickPointer('#close-session');
+      };
+      const bigRobot = async expected => {
+        await until(
+          () =>
+            document.querySelectorAll(
+              '#active-workers .robot-starter, #history-workers .robot-starter',
+            ).length === 1,
+          'The remaining primary did not acquire the big robot',
+        );
+        assert.deepEqual(
+          await evaluate(() => {
+            const cards = [
+              ...document.querySelectorAll(
+                '#active-workers .worker-card, #history-workers .history-row',
+              ),
+            ];
+            const large = cards.find(card =>
+              card.querySelector('.robot-starter'),
+            );
+            const glyph = large.querySelector('.robot-glyph');
+            const bounds = glyph.getBoundingClientRect();
+            return {
+              id: large.dataset.contextUnit,
+              primary: glyph.classList.contains('robot-primary'),
+              crown:
+                getComputedStyle(glyph.querySelector('.robot-crown'))
+                  .display !== 'none',
+              larger: cards
+                .filter(card => card !== large)
+                .every(card => {
+                  const other = card
+                    .querySelector('.robot-glyph')
+                    .getBoundingClientRect();
+                  return (
+                    bounds.width > other.width && bounds.height > other.height
+                  );
+                }),
+              starterListed: cards.some(
+                card => card.dataset.contextUnit === 'parent',
+              ),
+            };
+          }),
+          {
+            id: expected,
+            primary: true,
+            crown: false,
+            larger: true,
+            starterListed: expected === 'parent',
+          },
+          'Only the chosen remaining primary uses the big robot silhouette',
+        );
+      };
+      const selectRobot = async name => {
+        await evaluate(name => {
+          const label = [
+            ...document.querySelectorAll(
+              '#scene-labels button, #fallback-units button',
+            ),
+          ].find(
+            item =>
+              item.querySelector('.scene-label-name, strong')?.textContent ===
+              name,
+          );
+          if (!label) throw new Error(`Missing scene robot ${name}`);
+          label.click();
+        }, name);
+        await settle();
+        assert.equal(
+          await evaluate(
+            () => document.getElementById('inspector-title').textContent,
+          ),
+          name,
+          'Selecting the big robot opens its primary conversation',
+        );
+        assert.match(
+          await evaluate(
+            () => document.getElementById('conversation').textContent,
+          ),
+          new RegExp(`${name} answer`),
+        );
+      };
+      await choose('newest');
+      await bigRobot('parent');
+      await choose('parent');
+      await closeSelected();
+      await until(
+        () =>
+          !document.querySelector(
+            '#active-workers [data-context-unit="parent"]',
+          ),
+        'The closed starter is still listed',
       );
-      await press('Escape');
+      assert.equal(data.session.primaryClosed, true);
+      assert.equal(hub.sessions.length, 2);
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('close-primary-dialog').open,
+        ),
+        false,
+        'Other primaries keep the workspace open without confirmation',
+      );
+      assert.equal(
+        data.agents.filter(agent => agent.resumable !== false).length,
+        4,
+      );
+      await bigRobot('middle');
+      assert.deepEqual(
+        await evaluate(() => {
+          const card = document.querySelector(
+            '#parents [data-context-session="alpha"]',
+          );
+          return {
+            status: card.querySelector('.status-badge').textContent,
+            activity: card.querySelector('.parent-card-activity').textContent,
+          };
+        }),
+        {status: 'Working', activity: 'Working on Middle primary'},
+        'The open workspace reports its remaining primary activity',
+      );
+      await selectRobot('Middle primary');
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('promoted-primary');
+      data.agents.reverse();
+      await publish();
+      await bigRobot('middle');
+      await reloadPage();
+      assert.equal(data.session.primaryClosed, true);
+      await bigRobot('middle');
+      assert.equal(
+        await evaluate(
+          () =>
+            !!document.querySelector(
+              '#active-workers [data-context-unit="parent"], #history-workers [data-context-unit="parent"]',
+            ),
+        ),
+        false,
+        'Reload must preserve the closed starter instead of recreating it',
+      );
+      await selectRobot('Middle primary');
+      await closeSelected();
+      await until(
+        () =>
+          !document.querySelector(
+            '#active-workers [data-context-unit="middle"]',
+          ),
+        'The middle primary did not close',
+      );
+      await bigRobot('older');
+      await selectRobot('Older primary');
+      await closeSelected();
+      await until(
+        () =>
+          !document.querySelector(
+            '#active-workers [data-context-unit="older"]',
+          ),
+        'The older primary did not close',
+      );
+      await bigRobot('newest');
+      await selectRobot('Newest primary');
+      assert.equal(
+        data.agents.find(agent => agent.id === 'delegated').status,
+        'running',
+        'A newer subagent keeps working without being promoted',
+      );
+      const beforeConfirmation = structuredClone(data);
+      await closeSelected();
+      await until(
+        () => document.getElementById('close-primary-dialog').open,
+        'Closing the singleton primary did not request confirmation',
+      );
+      assert.deepEqual(data, beforeConfirmation);
+      assert.match(
+        await evaluate(() =>
+          document
+            .getElementById('close-primary-dialog')
+            .textContent.replace(/\s+/g, ' ')
+            .trim(),
+        ),
+        /Closing this agent will close this workspace and stop its agents\./,
+      );
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      assert.deepEqual(
+        await evaluate(() => {
+          const dialog = document.getElementById('close-primary-dialog');
+          return {
+            confirm: document
+              .getElementById('confirm-close-primary')
+              .textContent.trim(),
+            cancel: document
+              .getElementById('cancel-close-primary')
+              .textContent.trim(),
+            visible: ['confirm-close-primary', 'cancel-close-primary'].every(
+              id => {
+                const button = document.getElementById(id);
+                const bounds = button.getBoundingClientRect();
+                return (
+                  button.checkVisibility() &&
+                  dialog.contains(button) &&
+                  bounds.top >= 0 &&
+                  bounds.left >= 0 &&
+                  bounds.right <= innerWidth &&
+                  bounds.bottom <= innerHeight
+                );
+              },
+            ),
+          };
+        }),
+        {confirm: 'Close agent and workspace', cancel: 'Cancel', visible: true},
+      );
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
+        await screenshot('close-last-primary-compact');
+        const themes = await evaluate(() =>
+          [...document.getElementById('factory-theme').options].map(
+            option => option.value,
+          ),
+        );
+        const previousTheme = await evaluate(
+          () => document.getElementById('factory-theme').value,
+        );
+        for (const theme of themes) {
+          await evaluate(theme => {
+            const select = document.getElementById('factory-theme');
+            select.value = theme;
+            select.dispatchEvent(new Event('change'));
+          }, theme);
+          await screenshot(`close-last-primary-${theme}`);
+        }
+        await evaluate(theme => {
+          const select = document.getElementById('factory-theme');
+          select.value = theme;
+          select.dispatchEvent(new Event('change'));
+        }, previousTheme);
+      }
+      await clickPointer('#cancel-close-primary');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('close-primary-dialog').open,
+        ),
+        false,
+      );
+      assert.deepEqual(data, beforeConfirmation);
+      assert.equal(hub.sessions.length, 2);
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      await closeSelected();
+      await until(
+        () => document.getElementById('close-primary-dialog').open,
+        'The cancelled final close could not be retried',
+      );
+      await clickPointer('#confirm-close-primary');
+      await until(
+        () =>
+          document.getElementById('factory-title').textContent ===
+          'Beta factory',
+        'Confirmed final primary close did not select the other workspace',
+      );
+      assert.equal(
+        hub.sessions.some(item => item.session.id === 'alpha'),
+        false,
+      );
+      assert.equal(archivedSessions.get('alpha').session.primaryClosed, true);
+      assert.equal(
+        calls.some(call => call.method === 'closeSession'),
+        false,
+      );
+      assert.deepEqual(
+        calls
+          .filter(
+            call =>
+              call.method === 'agentSession' &&
+              call.sessionId === 'alpha' &&
+              call.request.action === 'close',
+          )
+          .map(call => call.request),
+        [
+          {agentId: 'parent', action: 'close'},
+          {agentId: 'middle', action: 'close'},
+          {agentId: 'older', action: 'close'},
+          {agentId: 'newest', action: 'close'},
+          {agentId: 'newest', action: 'close'},
+          {agentId: 'newest', action: 'close', confirmWorkspaceClose: true},
+        ],
+      );
       await evaluate(async () => {
         const editor = document.getElementById('parent-prompt');
         editor.value = 'Resume this draft after closing';
@@ -14949,80 +15673,44 @@ async function main() {
         editor.dispatchEvent(new Event('select', {bubbles: true}));
         const {flushDrafts} = await import('./draft-storage.js');
         flushDrafts();
-        document
-          .querySelector(
-            '#active-workers button:not([data-context-unit="parent"])',
-          )
-          .click();
-        document.getElementById('back-to-parent').click();
-        document.getElementById('item-actions-button').click();
-        document.getElementById('close-session').click();
       });
+      await closeSelected();
       await until(
-        () =>
-          document.getElementById('factory-title').textContent ===
-          'Beta factory',
-        'Closing the active parent did not select the remaining parent',
+        () => document.getElementById('close-primary-dialog').open,
+        'A starter-only workspace did not request confirmation',
       );
-      assert.deepEqual(
-        calls.filter(call => call.method === 'closeSession'),
-        [{method: 'closeSession', sessionId: 'alpha'}],
+      await clickPointer('#confirm-close-primary');
+      await until(
+        () => !document.getElementById('welcome').hidden,
+        'Closing the final workspace did not show welcome',
       );
-      assert.deepEqual(
-        await evaluate(() => ({
-          menuOpen: document
-            .getElementById('item-context-menu')
-            .matches(':popover-open'),
-          parents: [
-            ...document.querySelectorAll('#parents .parent-card-name'),
-          ].map(item => item.textContent),
-          draft: JSON.parse(
-            window.localStorage.getItem('varisdev.composer-drafts.v1'),
-          ).find(([id]) => id === 'alpha')?.[1]?.value,
-        })),
-        {
-          menuOpen: false,
-          parents: ['Beta factory'],
-          draft: 'Resume this draft after closing',
-        },
-        'Closing removes only the live parent and keeps its recovered draft',
-      );
-
       await evaluate(() => {
         document.getElementById('app-menu-button').click();
         document.getElementById('resume-session').click();
       });
       await until(
         () =>
-          document.querySelectorAll('#session-history-list button').length ===
-          2,
-        'Closed parent did not remain in session history',
+          document
+            .getElementById('session-history-list')
+            .textContent.includes('Beta factory'),
+        'The closed workspace is missing from session history',
       );
       assert.match(
         await evaluate(
           () => document.getElementById('session-history-list').textContent,
         ),
-        /Alpha factory.*3 messages/s,
+        /Beta factory.*3 messages/s,
       );
       await evaluate(() =>
         [...document.querySelectorAll('#session-history-list button')]
-          .find(item => item.textContent.includes('Alpha factory'))
+          .find(item => item.textContent.includes('Beta factory'))
           .click(),
       );
       await until(
         () =>
           document.getElementById('factory-title').textContent ===
-          'Alpha factory',
-        'Closed parent did not reopen from history',
-      );
-      assert.deepEqual(
-        calls.filter(call => call.method === 'createSession'),
-        [
-          {
-            method: 'createSession',
-            input: {cwd: directory, sessionId: 'alpha'},
-          },
-        ],
+          'Beta factory',
+        'The closed workspace did not reopen from history',
       );
       assert.deepEqual(
         await evaluate(() => {
@@ -15044,32 +15732,15 @@ async function main() {
         },
         'Reopening restores conversation history and its unsent draft',
       );
-
-      await evaluate(() => {
-        document.getElementById('item-actions-button').click();
-        document.getElementById('close-session').click();
-      });
+      await closeSelected();
       await until(
-        () =>
-          document.getElementById('factory-title').textContent ===
-          'Beta factory',
-        'Reopened parent did not fall back to the other parent',
+        () => document.getElementById('close-primary-dialog').open,
+        'The reopened final primary did not request confirmation',
       );
-      await evaluate(() => {
-        document.getElementById('open-commands').click();
-        document.getElementById('close-session').click();
-      });
+      await clickPointer('#confirm-close-primary');
       await until(
         () => !document.getElementById('welcome').hidden,
-        'Closing the final parent did not show welcome',
-      );
-      assert.deepEqual(
-        calls.filter(call => call.method === 'closeSession'),
-        [
-          {method: 'closeSession', sessionId: 'alpha'},
-          {method: 'closeSession', sessionId: 'alpha'},
-          {method: 'closeSession', sessionId: 'beta'},
-        ],
+        'The reopened workspace did not close after confirmation',
       );
       await evaluate(() => document.getElementById('app-menu-button').click());
       assert.deepEqual(
@@ -15094,7 +15765,7 @@ async function main() {
           settingsDisabled: true,
           openFolder: 'Open folder',
         },
-        'Parent-only actions are hidden when no parent remains',
+        'Workspace actions are hidden when no workspace remains',
       );
     },
   );

@@ -16,6 +16,7 @@ import {
 import type {UnitChange} from '../dashboard/changes.ts';
 import type {ConversationSnapshot} from '../conversation.ts';
 import {subscribeToolSettings} from '../tools/settings.ts';
+import {sessionPrimaryClosed} from '../dashboard/primary-session.ts';
 
 export interface AgentMessage {
   from: {id: string; name: string};
@@ -96,6 +97,7 @@ class AgentTeam {
     this.publish = changed;
     this.sessionId = ctx.sessionManager.getSessionId();
     if (ctx.sessionManager.getSessionFile?.()) {
+      this.manager.setPrimaryOpen(!sessionPrimaryClosed(ctx.sessionManager));
       this.history = new AgentHistoryStore(getAgentDir(), this.sessionId);
       const saved = this.history.read();
       if (saved) {
@@ -221,7 +223,7 @@ class AgentTeam {
   getMessage(id: string): ParentMessage {
     this.getManager();
     const message = this.messages.find(message => message.id === id);
-    if (!message) throw new Error(`Unknown main agent inbox message: ${id}`);
+    if (!message) throw new Error(`Unknown conversation inbox message: ${id}`);
     return copyMessage(message);
   }
 

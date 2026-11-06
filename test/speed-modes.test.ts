@@ -506,7 +506,7 @@ void test(
 );
 
 void test(
-  'main agent speed capabilities accept official OpenAI endpoints with a trailing slash',
+  'conversation agent speed capabilities accept official OpenAI endpoints with a trailing slash',
   options,
   async t => {
     const f = await fixture(t);
@@ -539,7 +539,7 @@ void test(
 );
 
 void test(
-  'main agent speed capabilities follow live credentials without replacing the session',
+  'conversation agent speed capabilities follow live credentials without replacing the session',
   options,
   async t => {
     const f = await fixture(t);

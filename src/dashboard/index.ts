@@ -1,4 +1,4 @@
-import {discoverAgentMentions} from '../agents/mentions.ts';
+import {discoverAgentMentions, parseAgentMention} from '../agents/mentions.ts';
 import {
   sessionEntryToContextMessages,
   type BuildSystemPromptOptions,
@@ -30,8 +30,13 @@ import {
   type FactoryWindow,
 } from '../desktop/launcher.ts';
 import {observeDashboardSession} from './observe.ts';
+import {primaryClosedEntry, persistPrimarySession} from './primary-session.ts';
 import type {DashboardState} from './state.ts';
-import {sessionConfiguration, compactionInstructions} from './hub.ts';
+import {
+  sessionConfiguration,
+  compactionInstructions,
+  agentSessionRequest,
+} from './hub.ts';
 import {
   supportedThinkingLevels,
   sessionAgentProfile,
@@ -188,10 +193,7 @@ export function registerFactory(
     if (managedProfiles.has(sessionId)) return;
     approvalController.abort();
     approvalController = new AbortController();
-    shared.approval = createAgentApprovalRelay(
-      ctx,
-      () => approvalController.signal,
-    );
+    shared.approval = createAgentApprovalRelay(ctx);
     shared.signal = () => approvalController.signal;
     shared.approvalUI = ctx.hasUI ? ctx.ui : undefined;
     if (!profile.permissions.length && profile.steps === undefined) return;
@@ -244,7 +246,12 @@ export function registerFactory(
       },
     })(nativePi);
   });
-  observeDashboardSession(pi, control, (state, ctx) => {
+  const observer = observeDashboardSession(pi, control, (state, ctx) => {
+    if (control.snapshot())
+      control
+        .getTeam(ctx)
+        .getManager()
+        .setPrimaryOpen?.(!state.deliverySnapshot().session.primaryClosed);
     const current: FactoryBinding = {
       state,
       ctx,
@@ -431,6 +438,12 @@ export function registerFactory(
             throw new Error('Prompt must contain 1 to 64000 characters.');
           const parsed = parseSlashCommand(prompt);
           const native = parsed && nativeCommand(parsed.name);
+          if (
+            state.deliverySnapshot().session.primaryClosed &&
+            !parseAgentMention(prompt) &&
+            parsed?.name !== 'name'
+          )
+            throw new Error('This primary agent has closed.');
           if (current.stopping || (current.maintaining && !native?.live))
             throw new Error(
               'This session is updating. Try again when it is idle.',
@@ -499,6 +512,8 @@ export function registerFactory(
               state.record('message', prompt.trim());
               return;
             }
+            if (state.deliverySnapshot().session.primaryClosed)
+              throw new Error('This primary agent has closed.');
             const commandName = prompt.startsWith('/')
               ? prompt.split(/\s+/, 1)[0].slice(1)
               : undefined;
@@ -531,8 +546,22 @@ export function registerFactory(
             current.submissions--;
           }
         },
-        async agentSession(request) {
+        async agentSession(input) {
           ensureAttached(current);
+          const request = agentSessionRequest(input);
+          if (request.agentId === 'parent' && request.action === 'close') {
+            if (!state.deliverySnapshot().session.primaryClosed) {
+              pi.appendEntry(primaryClosedEntry);
+              state.updateSession({primaryClosed: true});
+            }
+            await current.control.abort();
+            ensureAttached(current);
+            persistPrimarySession(ctx.sessionManager);
+            if (control.snapshot())
+              control.getTeam(ctx).getManager().setPrimaryOpen?.(false);
+            state.updateSession({activity: 'Primary agent closed'});
+            return;
+          }
           if (!control.snapshot())
             throw new Error('This session has no agent conversations.');
           const result = await runAgentSessionRequest(
@@ -540,6 +569,7 @@ export function registerFactory(
             request,
           );
           ensureAttached(current);
+          if (request.action === 'close') observer.syncTeam();
           return result;
         },
         async cancelAgent(agentId) {
@@ -603,11 +633,14 @@ export function registerFactory(
       binding.systemPromptOptions = event.systemPromptOptions;
   });
   pi.on('input', event => {
+    if (binding?.state.deliverySnapshot().session.primaryClosed)
+      return {action: 'handled'};
     if (event.source === 'interactive' || event.source === 'rpc') {
       cancelBeforeStart = false;
       if (approvalController.signal.aborted)
         approvalController = new AbortController();
     }
+    return;
   });
   pi.on('agent_start', (_event, ctx) => {
     if (
@@ -616,7 +649,10 @@ export function registerFactory(
         ctx.sessionManager.getSessionId()
     )
       return;
-    if (cancelBeforeStart) {
+    if (
+      cancelBeforeStart ||
+      binding?.state.deliverySnapshot().session.primaryClosed
+    ) {
       ctx.abort();
     }
   });

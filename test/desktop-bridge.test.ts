@@ -1156,3 +1156,55 @@ void test('native attached policies enforce shared rules and respect session-sco
   );
   assert.equal(neutral.selections.length, 0);
 });
+
+void test('attached starter close keeps terminal hosting and children active and restores its saved marker', async () => {
+  const desktop = fakeWindow();
+  const launcher = new FactoryLauncher(async () => desktop.window);
+  const source = extensionFixture('tui', 'attached-primary-close', launcher);
+  source.control.snapshot = () => ({
+    sessionId: 'attached-primary-close',
+    agents: [
+      {
+        id: 'worker',
+        name: 'Worker',
+        agentMode: 'all',
+        resumable: true,
+        status: source.worker.status,
+        task: 'Continue independently',
+        activity: 'Working',
+        cwd: '/fixture',
+        model: 'fixture/model',
+        createdAt: new Date().toISOString(),
+      },
+    ],
+    messages: [],
+    changes: [],
+  });
+  await source.emit('session_start');
+  await source.show();
+  const identity = desktop.current!.snapshot().session.id;
+  await desktop.callbacks.agentSession!({agentId: 'parent', action: 'close'});
+  assert.equal(desktop.closes, 0);
+  assert.equal(desktop.current!.snapshot().session.id, identity);
+  assert.equal(desktop.current!.snapshot().session.primaryClosed, true);
+  assert.equal(source.worker.status, 'running');
+  assert.equal(source.aborts, 1);
+  await assert.rejects(
+    async () => desktop.callbacks.prompt('Closed starter prompt'),
+    /primary agent has closed/,
+  );
+  assert.deepEqual(source.messages, []);
+  assert.ok(
+    (
+      await source.emit('input', {
+        source: 'interactive',
+        text: 'Terminal prompt after close',
+      })
+    ).some(result => JSON.stringify(result) === '{"action":"handled"}'),
+  );
+  await source.emit('session_start', {reason: 'reload'});
+  await source.show();
+  assert.equal(desktop.current!.snapshot().session.primaryClosed, true);
+  assert.equal(source.worker.status, 'running');
+  assert.equal(desktop.closes, 0);
+});

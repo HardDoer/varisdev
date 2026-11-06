@@ -10,7 +10,7 @@ import type {
   AgentSessionSnapshot,
 } from '../src/agents/team.ts';
 import {observeDashboardSession} from '../src/dashboard/observe.ts';
-import {DashboardState} from '../src/dashboard/state.ts';
+import {DashboardState, type DashboardSession} from '../src/dashboard/state.ts';
 
 type Handler = (event: never, ctx: ExtensionContext) => unknown;
 const epoch = Date.parse('2026-01-01T12:00:00Z');
@@ -29,7 +29,10 @@ const message = (
   extra = {},
 ) => ({role, timestamp: epoch + timestamp, content, ...extra});
 
-function observer(existingState?: DashboardState) {
+function observer(
+  existingState?: DashboardState,
+  profile?: DashboardSession['agentProfile'],
+) {
   const handlers = new Map<string, Handler[]>();
   const bus = new Map<string, (data: unknown) => void>();
   let branch: SessionEntry[] = [];
@@ -56,6 +59,16 @@ function observer(existingState?: DashboardState) {
       getSessionFile: () => '/fixture/session.jsonl',
       getHeader: () => ({timestamp: at(0)}),
       getBranch: () => branch,
+      getEntries: () =>
+        profile
+          ? [
+              {
+                type: 'custom',
+                customType: 'varisdev.agent-profile',
+                data: profile,
+              },
+            ]
+          : [],
     },
   } as unknown as ExtensionContext;
   let team: AgentSessionSnapshot | undefined;
@@ -109,6 +122,79 @@ function observer(existingState?: DashboardState) {
     },
   };
 }
+
+void test('session events and file changes retain saved primary and all agent identities', async () => {
+  for (const mode of ['primary', 'all'] as const) {
+    const profile = {id: 'saved-builder', name: 'Saved Builder', mode};
+    const fixture = observer(undefined, profile);
+    await fixture.emit('session_start');
+    await fixture.emit('agent_start');
+    await fixture.emit('tool_call', {
+      toolCallId: 'saved-edit',
+      toolName: 'edit',
+      input: {path: 'file.ts'},
+    });
+    await fixture.emit('tool_execution_end', {
+      toolCallId: 'saved-edit',
+      toolName: 'edit',
+      isError: false,
+      result: {content: [text('Updated')], details: {diff: '-old\n+new'}},
+    });
+    fixture.state.updateTeam(
+      [],
+      [
+        {
+          id: 'worker-message',
+          createdAt: at(1),
+          from: {id: 'worker', name: 'Worker'},
+          message: 'Ready for review',
+        },
+      ],
+    );
+    await fixture.emit('agent_settled');
+    const snapshot = fixture.state.snapshot();
+    assert.deepEqual(snapshot.session.agentProfile, profile);
+    assert.deepEqual(
+      snapshot.events
+        .filter(event => event.sourceId === 'parent')
+        .map(event => event.sourceName),
+      Array(5).fill(profile.name),
+    );
+    assert.equal(snapshot.events[1].message, 'Saved Builder started working');
+    assert.equal(snapshot.events.at(-1)?.message, 'Saved Builder finished');
+    const inbox = snapshot.events.find(event => event.kind === 'message');
+    assert.equal(inbox?.sourceName, 'Worker');
+    assert.equal(inbox?.message, 'To Saved Builder: Ready for review');
+    assert.equal(snapshot.changes.length, 1);
+    assert.equal(snapshot.changes[0].unitId, 'parent');
+    assert.equal(snapshot.changes[0].unitName, profile.name);
+    await fixture.emit('session_shutdown', {reason: 'reload'});
+    const reloaded = observer(fixture.state, profile);
+    await reloaded.emit('session_start');
+    assert.equal(reloaded.state, fixture.state);
+    assert.equal(
+      reloaded.state.snapshot().events.at(-1)?.sourceName,
+      profile.name,
+    );
+    await reloaded.emit('session_shutdown');
+  }
+});
+
+void test('session event sources use Primary agent when no profile is available', () => {
+  const state = new DashboardState({
+    id: 'unnamed',
+    name: 'Workspace name',
+    cwd: '/fixture',
+    status: 'idle',
+    activity: 'Ready',
+    startedAt: at(0),
+    updatedAt: at(0),
+  });
+  state.record('session', 'Session connected');
+  assert.equal(state.snapshot().events[0].sourceName, 'Primary agent');
+  state.record('message', 'Worker update', 'worker', 'Worker');
+  assert.equal(state.snapshot().events[1].sourceName, 'Worker');
+});
 
 void test('conversation streams parallel tools in call order and reconciles their result messages and reload', async () => {
   const fixture = observer();
@@ -407,7 +493,7 @@ void test('recovered assistant errors stop marking the current run as failed', a
   assert.equal(recovered.session.activity, 'Ready for a task');
   assert.equal(recovered.session.error, undefined);
   assert.equal(recovered.session.response, 'Recovered successfully.');
-  assert.equal(recovered.events.at(-1)?.message, 'Main agent finished');
+  assert.equal(recovered.events.at(-1)?.message, 'Default finished');
   assert.equal(
     recovered.conversation[0].error,
     'Provider temporarily unavailable',

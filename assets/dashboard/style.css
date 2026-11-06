@@ -409,7 +409,7 @@ main > .welcome {
   display: none;
   pointer-events: none;
 }
-.robot-glyph.robot-primary {
+.robot-glyph.robot-primary:not(.robot-starter) {
   width: 30px;
   height: 24px;
   border-radius: 9px 9px 6px 6px;
@@ -417,18 +417,18 @@ main > .welcome {
     -7px 7px 0 -3px var(--robot-outline, #5f8190),
     7px 7px 0 -3px var(--robot-outline, #5f8190);
 }
-.robot-glyph.robot-primary::before {
+.robot-glyph.robot-primary:not(.robot-starter)::before {
   display: none;
 }
-.robot-glyph.robot-primary::after {
+.robot-glyph.robot-primary:not(.robot-starter)::after {
   inset: 6px 2px 5px;
 }
-.robot-glyph.robot-primary i {
+.robot-glyph.robot-primary:not(.robot-starter) i {
   left: 5px;
   right: 5px;
   top: 10px;
 }
-.robot-glyph.robot-primary .robot-crown {
+.robot-glyph.robot-primary:not(.robot-starter) .robot-crown {
   display: block;
   position: absolute;
   z-index: 2;
@@ -935,9 +935,6 @@ main > .welcome {
   color: #bed3de;
   overflow-wrap: anywhere;
 }
-#inspector[data-conversation-kind='main'] {
-  --conversation-accent: var(--message-user);
-}
 #inspector[data-conversation-kind='primary'] {
   --conversation-accent: var(--amber);
 }
@@ -995,12 +992,10 @@ main > .welcome {
   stroke: var(--robot-outline);
   stroke-width: 1;
 }
-.kind-main-icon,
 .kind-primary-icon,
 .kind-subagent-icon {
   display: none;
 }
-#inspector[data-conversation-kind='main'] .kind-main-icon,
 #inspector[data-conversation-kind='primary'] .kind-primary-icon,
 #inspector[data-conversation-kind='subagent'] .kind-subagent-icon {
   display: inline;
@@ -1529,6 +1524,16 @@ dialog::backdrop {
 .dialog-heading h2 {
   font-size: 1.625rem;
   margin-top: 5px;
+}
+#close-primary-dialog {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+#close-primary-title {
+  overflow-wrap: anywhere;
+}
+#close-primary-dialog .dialog-footer {
+  flex-wrap: wrap;
 }
 .dialog-footer {
   display: flex;

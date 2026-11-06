@@ -42,7 +42,7 @@ async function select(ui: DesktopExtensionUI, value?: string) {
 }
 
 void test(
-  'main and subagent approval commands use their session identity and clean up native dialogs',
+  'conversation and subagent approval commands use their session identity and clean up native dialogs',
   {timeout: 15000},
   async t => {
     const root = await mkdtemp(

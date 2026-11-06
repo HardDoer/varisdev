@@ -113,9 +113,29 @@
         tabindex="-1"
         disabled
       >
-        Close workspace
+        Close agent
       </button>
     </div>
+    <dialog
+      id="close-primary-dialog"
+      aria-labelledby="close-primary-title"
+      aria-describedby="close-primary-description"
+    >
+      <div class="dialog-heading">
+        <h2 id="close-primary-title">Close primary agent?</h2>
+      </div>
+      <p id="close-primary-description">
+        Closing this agent will close this workspace and stop its agents.
+      </p>
+      <div class="dialog-footer">
+        <button id="cancel-close-primary" class="quiet-button" type="button">
+          Cancel
+        </button>
+        <button id="confirm-close-primary" class="primary-button" type="button">
+          Close agent and workspace
+        </button>
+      </div>
+    </dialog>
     <dialog
       id="rename-workspace-dialog"
       aria-labelledby="rename-workspace-title"
@@ -1237,7 +1257,8 @@
           </div>
         </div>
         <div class="welcome-machine" aria-hidden="true">
-          <span class="robot-glyph robot-main parent-session"><i></i></span
+          <span class="robot-glyph robot-primary robot-starter parent-session"
+            ><i></i></span
           ><span class="orbit orbit-one"></span
           ><span class="orbit orbit-two"></span>
         </div>
@@ -1387,10 +1408,10 @@
             <div class="parent-summary">
               <span
                 id="selected-conversation-mark"
-                class="robot-glyph robot-main"
-                data-agent-kind="main"
+                class="robot-glyph robot-primary robot-starter"
+                data-agent-kind="primary"
                 role="img"
-                aria-label="Main agent"
+                aria-label="Primary agent"
                 ><i></i><span class="robot-crown" aria-hidden="true"></span
               ></span>
               <div>
@@ -1511,15 +1532,6 @@
                   viewBox="0 0 18 18"
                   aria-hidden="true"
                 >
-                  <g class="kind-main-icon">
-                    <path class="kind-antenna" d="M9 5V2.5" />
-                    <path
-                      class="kind-shell"
-                      d="M4 5.5h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2Z"
-                    />
-                    <path class="kind-screen" d="M4.5 8h9v4.5h-9z" />
-                    <path class="kind-eyes" d="M6.5 10.25h1m3 0h1" />
-                  </g>
                   <g class="kind-primary-icon">
                     <path
                       class="kind-crown"
@@ -1542,7 +1554,7 @@
                     <path class="kind-eyes" d="M6.5 10.75h1m3 0h1" />
                   </g>
                 </svg>
-                <span id="conversation-kind-label">Main agent</span>
+                <span id="conversation-kind-label">Primary agent</span>
               </span>
               <p id="inspector-activity"></p>
               <span

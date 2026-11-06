@@ -9,6 +9,7 @@ export function initAgentControls({
   selectedAgent,
   refresh,
   removed = () => {},
+  closeAgent = /** @type {(() => unknown) | undefined} */ (undefined),
 }) {
   const all = document.getElementById('cancel-all-agents');
   const one = document.getElementById('cancel-agent');
@@ -65,7 +66,8 @@ export function initAgentControls({
         if (
           ids.has(agent.id) &&
           agent.resumable !== false &&
-          activeStatuses.has(agent.status)
+          (activeStatuses.has(agent.status) ||
+            (closeAgent && agent.agentMode !== 'subagent'))
         ) {
           ids.delete(agent.id);
           storageChanged = true;
@@ -180,6 +182,15 @@ export function initAgentControls({
 
   all.addEventListener('click', () => void cancel('all'));
   one.addEventListener('click', () => void cancel(selectedAgent()));
-  remove.addEventListener('click', () => dismiss());
+  remove.addEventListener('click', () => {
+    const agent = selected()?.agents.find(item => item.id === selectedAgent());
+    if (
+      closeAgent &&
+      agent?.agentMode !== 'subagent' &&
+      agent?.resumable !== false
+    )
+      void closeAgent();
+    else dismiss();
+  });
   return {render, filterHub, dismiss};
 }

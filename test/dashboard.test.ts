@@ -161,7 +161,13 @@ void test('dashboard keeps parallel parents isolated, forwards prompts immediate
   assert.deepEqual(parents[1].cancellations, []);
   await assert.rejects(hub.cancelAgent(one.id, {}), /Agent ID/);
   await assert.rejects(hub.cancelAgent('missing', 'all'), /Unknown workspace/);
+  parents[0].parent.state.updateSession({
+    agentProfile: {id: 'build', name: 'Saved Builder', mode: 'all'},
+  });
   await hub.abortSession(one.id);
+  const stopped = parents[0].parent.state.snapshot().events.at(-1);
+  assert.equal(stopped?.sourceName, 'Saved Builder');
+  assert.equal(stopped?.message, 'Saved Builder stopped');
   assert.equal(parents[0].runs.length, 3);
   assert.equal(parents[0].maximum, 3);
   assert.equal(hub.snapshot().sessions[2].session.status, 'running');
@@ -174,6 +180,9 @@ void test('dashboard keeps parallel parents isolated, forwards prompts immediate
   await assert.rejects(hub.createSession({cwd: '.'}), /absolute/);
   await assert.rejects(hub.createSession({cwd: ' '}), /Folder/);
   await hub.abortSession(two.id);
+  const fallback = parents[1].parent.state.snapshot().events.at(-1);
+  assert.equal(fallback?.sourceName, 'Primary agent');
+  assert.equal(fallback?.message, 'Primary agent stopped');
   unsubscribe();
   await hub.close();
   assert.ok(parents.every(parent => parent.closed));

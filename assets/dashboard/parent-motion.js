@@ -20,6 +20,7 @@ const REST_MIN_SECONDS = 15;
 const REST_MAX_SECONDS = 60;
 const TAU = Math.PI * 2;
 const active = status => status === 'running' || status === 'compacting';
+const INACTIVE = new Set(['idle', 'completed', 'cancelled', 'failed']);
 const smoothstep = value => {
   const t = Math.max(0, Math.min(1, value));
   return t * t * (3 - 2 * t);
@@ -31,6 +32,7 @@ export function createParentMotion() {
   let disposed = false;
   let motion = true;
   let status = 'idle';
+  let canIdle = true;
   let mode = 'rest';
   let activity = null;
   let elapsed = 0;
@@ -178,7 +180,7 @@ export function createParentMotion() {
     } else if (mode === 'idle') {
       face(0, dt);
       if (elapsed >= duration) rest();
-    } else if (mode === 'rest' && status === 'idle' && elapsed >= duration) {
+    } else if (mode === 'rest' && canIdle && elapsed >= duration) {
       pendingPrompt = false;
       roam();
     }
@@ -189,6 +191,7 @@ export function createParentMotion() {
       if (disposed) return;
       const previousStatus = status;
       status = snapshot?.status ?? 'idle';
+      canIdle = INACTIVE.has(status) && snapshot?.resumable !== false;
       if (!initialized || snapshot?.id !== sessionId) {
         reset(snapshot?.id);
         return;
@@ -208,14 +211,7 @@ export function createParentMotion() {
     },
 
     prompt() {
-      if (
-        disposed ||
-        !initialized ||
-        away ||
-        status !== 'idle' ||
-        pendingPrompt
-      )
-        return;
+      if (disposed || !initialized || away || !canIdle || pendingPrompt) return;
       stopRemaining = 0;
       if (wake()) pendingPrompt = true;
     },

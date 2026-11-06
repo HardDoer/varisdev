@@ -1,4 +1,4 @@
-/* global window, document, MouseEvent, Event, URL, ResizeObserver, process, __dirname, Buffer */
+/* global window, document, MouseEvent, Event, URL, ResizeObserver, structuredClone, process, __dirname, Buffer */
 const assert = require('node:assert/strict');
 const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
@@ -174,6 +174,7 @@ async function setupRenderer(moduleUrl) {
     delay = '',
     omit = '',
     exported = 1,
+    targets = [{id: 'builder', x: 0.5, y: 0.5}],
   } = {}) {
     const methods = [
       'update',
@@ -187,6 +188,7 @@ async function setupRenderer(moduleUrl) {
       'clearStartle',
       'caneTargets',
       'hitWithCane',
+      'burnRobot',
     ];
     return `${delay ? `await window.${delay};` : ''}
       export const apiVersion = ${exported};
@@ -199,8 +201,8 @@ async function setupRenderer(moduleUrl) {
             name => `${name}(...args) {
           window.pluginCalls.push([${JSON.stringify(name)}, ...args]);
           ${name === throws ? `throw new Error('${tag} ${name} failed');` : ''}
-          ${name === 'caneTargets' ? "return [{id:'builder',x:0.5,y:0.5}];" : ''}
-          ${name === 'hitWithCane' ? 'return true;' : ''}
+          ${name === 'caneTargets' ? `return ${JSON.stringify(targets)};` : ''}
+          ${['hitWithCane', 'burnRobot'].includes(name) ? 'return true;' : ''}
         }`,
           )
           .join(',')}};
@@ -405,6 +407,7 @@ async function main() {
       assert.equal(calls.filter(call => call[0] === 'update').length, 2);
       assert.deepEqual(calls.find(call => call[0] === 'update').slice(1), [
         {
+          primaryId: 'parent',
           session: {id: 'city-session', name: 'City session', status: 'idle'},
           agents: [
             {
@@ -439,6 +442,624 @@ async function main() {
         ),
       );
       assert.equal(calls.filter(call => call[0] === 'dispose').length, 1);
+    },
+  );
+
+  await run(
+    'primary projection maps plugin selection, layout and weapon ids across theme switches and closure',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        f.reset();
+        const agents = [
+          {id: 'oldest', status: 'idle', createdAt: '2026-01-01'},
+          {
+            id: 'promoted',
+            agentMode: 'all',
+            status: 'running',
+            createdAt: '2026-01-02',
+            modelId: 'primary-model',
+            conversation: [{text: 'Primary message'}],
+          },
+          {id: 'newest', status: 'idle', createdAt: '2026-01-03'},
+          {
+            id: 'builder',
+            agentMode: 'subagent',
+            status: 'running',
+            modelId: 'worker-model',
+            conversation: [{text: 'Worker message'}],
+          },
+        ];
+        const snapshot = {
+          session: {id: 'city-session', primaryClosed: true, status: 'idle'},
+          agents,
+        };
+        f.host().updateHub({
+          selectedSessionId: 'city-session',
+          sessions: [
+            snapshot,
+            {
+              session: {
+                id: 'closed-workspace',
+                primaryClosed: true,
+                status: 'idle',
+              },
+              agents: [],
+            },
+          ],
+        });
+        f.host().update(snapshot, 'promoted');
+        const entry = tag =>
+          f.plugin({
+            tag,
+            targets: [
+              {id: 'parent', x: 0.5, y: 0.5},
+              {id: 'builder'},
+              {id: 'visitor:other'},
+            ],
+          });
+        await f.theme(entry('projection'));
+        const options = window.pluginOptions.at(-1);
+        options.onSelect('parent');
+        options.onLayout([
+          {id: 'parent'},
+          {id: 'builder'},
+          {id: 'visitor:other'},
+        ]);
+        const before = f.inspect();
+        const targets = f.host().caneTargets();
+        const hit = f.host().hitWithCane('promoted', -1, 2);
+        const burn = f.host().burnRobot('promoted', 0.5);
+        f.host().hitWithCane('builder', 1, 1);
+        f.host().burnRobot('visitor:other', 0.2);
+        f.host().prompt('city-session');
+        await f.theme({scene: 'year1998'});
+        const builtin = f.inspect();
+        await f.theme(entry('replayed'));
+        const replayed = structuredClone(f.inspect());
+        f.host().update(
+          {
+            ...snapshot,
+            agents: agents.filter(agent => agent.agentMode === 'subagent'),
+          },
+          'builder',
+        );
+        window.pluginOptions.at(-1).onSelect('parent');
+        window.pluginOptions.at(-1).onLayout([{id: 'parent'}, {id: 'builder'}]);
+        const closed = {
+          ...f.inspect(),
+          targets: f.host().caneTargets(),
+          hit: f.host().hitWithCane('parent', 1, 1),
+          burn: f.host().burnRobot('parent', 1),
+        };
+        return {
+          before,
+          builtin,
+          replayed,
+          closed,
+          targets,
+          hit,
+          burn,
+          original: snapshot,
+        };
+      });
+      assert.equal(state.hit, true);
+      assert.equal(state.burn, true);
+      assert.deepEqual(state.before.selections, ['promoted']);
+      assert.deepEqual(
+        state.before.layout.map(item => item.id),
+        ['promoted', 'builder', 'visitor:other'],
+      );
+      assert.deepEqual(
+        state.targets.map(item => item.id),
+        ['promoted', 'builder', 'visitor:other'],
+      );
+      assert.ok(state.builtin.layout.some(item => item.id === 'promoted'));
+      assert.ok(!state.builtin.layout.some(item => item.id === 'parent'));
+      const updates = state.replayed.calls.filter(call => call[0] === 'update');
+      assert.equal(updates.length, 2);
+      for (const [, snapshot, selected] of updates) {
+        assert.equal(snapshot.primaryId, 'promoted');
+        assert.equal(snapshot.session.id, 'city-session');
+        assert.equal(snapshot.session.status, 'running');
+        assert.equal(snapshot.session.modelId, 'primary-model');
+        assert.deepEqual(snapshot.session.conversation, [
+          {text: 'Primary message'},
+        ]);
+        assert.equal(snapshot.session.primaryClosed, undefined);
+        assert.equal(selected, 'parent');
+        assert.deepEqual(
+          snapshot.agents.map(agent => agent.id),
+          ['oldest', 'newest', 'builder'],
+        );
+        assert.equal(snapshot.agents.at(-1).modelId, 'worker-model');
+        assert.deepEqual(snapshot.agents.at(-1).conversation, [
+          {text: 'Worker message'},
+        ]);
+      }
+      const calls = state.replayed.calls;
+      assert.ok(
+        calls.some(call => call[0] === 'hitWithCane' && call[1] === 'parent'),
+      );
+      assert.ok(
+        calls.some(call => call[0] === 'burnRobot' && call[1] === 'parent'),
+      );
+      assert.ok(
+        calls.some(call => call[0] === 'hitWithCane' && call[1] === 'builder'),
+      );
+      assert.ok(
+        calls.some(
+          call => call[0] === 'burnRobot' && call[1] === 'visitor:other',
+        ),
+      );
+      assert.ok(
+        calls.some(call => call[0] === 'prompt' && call[1] === 'city-session'),
+      );
+      const hub = calls.find(call => call[0] === 'updateHub')[1];
+      assert.equal(hub.selectedSessionId, 'city-session');
+      assert.equal(hub.sessions[0].primaryId, 'promoted');
+      assert.equal(hub.sessions[0].session.id, 'city-session');
+      assert.equal(hub.sessions[1].primaryId, null);
+      assert.equal(hub.sessions[1].session.status, 'closed');
+      assert.equal(state.original.agents.length, 4);
+      assert.equal(state.original.session.primaryClosed, true);
+      assert.deepEqual(state.closed.selections, ['promoted']);
+      assert.deepEqual(
+        state.closed.layout.map(item => item.id),
+        ['builder'],
+      );
+      assert.deepEqual(
+        state.closed.targets.map(item => item.id),
+        ['builder', 'visitor:other'],
+      );
+      assert.equal(state.closed.hit, false);
+      assert.equal(state.closed.burn, false);
+      assert.equal(
+        state.closed.calls.filter(call => call[0] === 'update').at(-1)[1]
+          .primaryId,
+        null,
+      );
+    },
+  );
+
+  await run(
+    'built-in renderers reset promoted robot motion and damage and retain workers without a primary',
+    async () => {
+      const states = await evaluate(async () => {
+        const f = window.fixture;
+        const results = [];
+        for (const kind of ['factory', 'factory-2d', 'year1998']) {
+          const action = async () => {
+            f.reset();
+            f.host().setMotion(false);
+            const snapshot = f.snapshot('idle');
+            snapshot.agents.push(
+              {id: 'oldest', status: 'running', createdAt: '2026-01-01'},
+              {
+                id: 'promoted',
+                agentMode: 'all',
+                status: 'running',
+                createdAt: '2026-01-02',
+              },
+              {
+                id: 'newest',
+                agentMode: 'primary',
+                status: 'idle',
+                createdAt: '2026-01-03',
+              },
+            );
+            f.host().update(snapshot);
+            await f.theme({scene: kind === 'factory-2d' ? 'factory' : kind});
+            const originalIdentity = f.inspect().data.factoryIdentity;
+            f.host().hitWithCane('parent', 1, 2);
+            f.host().startle(false);
+            const damaged = f.inspect();
+            snapshot.session.primaryClosed = true;
+            f.host().update(snapshot, 'promoted');
+            const promoted = f.inspect();
+            const selected = f.click('promoted');
+            const hit = f.host().hitWithCane('promoted', 1, 2);
+            const struck = f.inspect();
+            snapshot.agents = snapshot.agents.filter(
+              agent => agent.id !== 'promoted',
+            );
+            f.host().update(snapshot, 'oldest');
+            const replacement = f.inspect();
+            snapshot.agents = snapshot.agents.filter(
+              agent => agent.agentMode === 'subagent',
+            );
+            f.host().update(snapshot, 'builder');
+            const absent = f.inspect();
+            return {
+              kind,
+              originalIdentity,
+              damaged,
+              promoted,
+              selected,
+              hit,
+              struck,
+              replacement,
+              absent,
+              targets: f
+                .host()
+                .caneTargets()
+                .map(target => target.id),
+            };
+          };
+          results.push(
+            kind === 'factory-2d'
+              ? await f.withContexts('null', action)
+              : await action(),
+          );
+        }
+        return results;
+      });
+      for (const state of states) {
+        assert.equal(state.promoted.renderer, state.kind);
+        assert.equal(
+          state.promoted.data.factoryIdentity,
+          state.originalIdentity,
+        );
+        assert.ok(JSON.parse(state.damaged.data.robotDamage).parent.damage > 0);
+        assert.equal(
+          JSON.parse(state.promoted.data.robotDamage).parent.damage,
+          0,
+        );
+        assert.equal(state.promoted.data.parentMode, 'work');
+        assert.ok(!state.promoted.layout.some(item => item.id === 'parent'));
+        assert.equal(
+          state.promoted.layout.filter(item => item.id === 'promoted').length,
+          1,
+        );
+        assert.equal(state.selected.selections.at(-1), 'promoted');
+        assert.equal(state.hit, true);
+        assert.ok(JSON.parse(state.struck.data.robotDamage).parent.damage > 0);
+        assert.equal(
+          JSON.parse(state.replacement.data.robotDamage).parent.damage,
+          0,
+        );
+        assert.equal(state.replacement.data.parentMode, 'work');
+        assert.deepEqual(state.absent.layout.map(item => item.id).sort(), [
+          'builder',
+          'reviewer',
+        ]);
+        assert.equal(state.absent.data.parentMode, 'absent');
+        assert.equal(
+          JSON.parse(state.absent.data.robotDamage).parent,
+          undefined,
+        );
+        assert.deepEqual(state.targets.sort(), ['builder', 'reviewer']);
+        assert.deepEqual(state.absent.errors.filter(Boolean), []);
+      }
+    },
+  );
+
+  await run(
+    'DOM fallback hosts a promoted station and retains worker damage after primary removal',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        return f.withContexts('none', async () => {
+          f.reset();
+          document.querySelector('#fallback').innerHTML =
+            '<div class="fallback-station parent-session" data-unit-id="promoted"><span class="robot-glyph"></span></div><div class="fallback-station agent" data-unit-id="builder"><span class="robot-glyph" style="display:block;width:60px;height:60px"></span></div>';
+          const snapshot = {
+            session: {id: 'city-session', primaryClosed: true, status: 'idle'},
+            agents: [
+              {id: 'promoted', status: 'running'},
+              {id: 'builder', agentMode: 'subagent', status: 'running'},
+            ],
+          };
+          f.host().update(snapshot, 'promoted');
+          f.host().setMotion(false);
+          await f.theme({scene: 'factory'});
+          const svg = document.querySelector('.parent-fallback-robot');
+          const hostedId = svg?.parentElement.dataset.unitId;
+          const mode = svg?.dataset.mode;
+          snapshot.agents = snapshot.agents.filter(
+            agent => agent.id !== 'promoted',
+          );
+          document.querySelector('.parent-session').remove();
+          f.host().update(snapshot, 'builder');
+          const hit = f.host().hitWithCane('builder', 1, 2);
+          return {
+            hostedId,
+            mode,
+            hit,
+            parentRemaining: Boolean(
+              document.querySelector('.parent-fallback-robot'),
+            ),
+            targets: f
+              .host()
+              .caneTargets()
+              .map(target => target.id),
+            workerDamage: document.querySelector(
+              '[data-unit-id="builder"] .robot-glyph',
+            ).dataset.damage,
+          };
+        });
+      });
+      assert.equal(state.hostedId, 'promoted');
+      assert.equal(state.mode, 'work');
+      assert.equal(state.parentRemaining, false);
+      assert.deepEqual(state.targets, ['builder']);
+      assert.equal(state.hit, true);
+      assert.ok(Number(state.workerDamage) > 0);
+    },
+  );
+
+  await run(
+    'retained primary motion and visitor helpers animate inactive jobs while preserving their statuses',
+    async () => {
+      const states = await evaluate(async () => {
+        const f = window.fixture;
+        const states = [];
+        for (const status of ['completed', 'cancelled', 'failed']) {
+          f.reset();
+          const snapshot = {
+            session: {id: 'city-session', status: 'idle', primaryClosed: true},
+            agents: [{id: 'retained', status, resumable: true}],
+          };
+          const other = {
+            session: {id: 'other-session', status: 'idle'},
+            agents: [],
+          };
+          f.host().updateHub({sessions: [snapshot, other]});
+          f.host().update(snapshot, 'retained');
+          await f.theme(f.plugin({tag: status}));
+          const helpers = window.pluginOptions.at(-1).helpers;
+          const calls = f.inspect().calls;
+          const projected = calls.find(call => call[0] === 'update')[1];
+          const hub = calls.find(call => call[0] === 'updateHub')[1];
+          const motion = helpers.createParentMotion();
+          motion.update(projected.session);
+          let activity;
+          for (let second = 0; second < 90; second++) {
+            motion.tick(1);
+            if (motion.pose().activity) {
+              activity = motion.pose().activity;
+              break;
+            }
+          }
+          const visitors = helpers.createFactoryVisitors();
+          visitors.update(hub);
+          for (
+            let second = 0;
+            second < 75 && !visitors.isAway('city-session');
+            second++
+          )
+            visitors.tick(1);
+          const away = visitors.isAway('city-session');
+          const visitor = [
+            ...visitors.visitorsAt('city-session'),
+            ...visitors.visitorsAt('other-session'),
+          ].find(visitor => visitor.id === 'city-session');
+          motion.update({...projected.session, status: 'running'});
+          for (
+            let second = 0;
+            second < 20 && motion.pose().mode !== 'work';
+            second++
+          )
+            motion.tick(1);
+          visitors.update({
+            sessions: [
+              {
+                ...projected,
+                session: {...projected.session, status: 'running'},
+              },
+              other,
+            ],
+          });
+          for (
+            let second = 0;
+            second < 30 && visitors.isAway('city-session');
+            second++
+          )
+            visitors.tick(1);
+          states.push({
+            status,
+            projectedStatus: projected.session.status,
+            hubStatus: hub.sessions[0].session.status,
+            activity,
+            away,
+            visitorStatus: visitor?.status,
+            resumedMode: motion.pose().mode,
+            resumedAway: visitors.isAway('city-session'),
+          });
+          motion.dispose();
+          visitors.dispose();
+        }
+        return states;
+      });
+      for (const state of states) {
+        assert.equal(state.projectedStatus, state.status);
+        assert.equal(state.hubStatus, state.status);
+        assert.ok(state.activity, state.status + ' enables idle activities');
+        assert.equal(
+          state.away,
+          true,
+          state.status + ' enables factory visits',
+        );
+        assert.equal(state.visitorStatus, state.status);
+        assert.equal(state.resumedMode, 'work');
+        assert.equal(state.resumedAway, false);
+      }
+    },
+  );
+
+  await run(
+    'promoted completed primaries resume in all renderers and return to idle activities and visits after completion',
+    async () => {
+      const state = await evaluate(async () => {
+        const f = window.fixture;
+        const states = [];
+        for (const kind of ['factory', 'factory-2d', 'year1998', 'fallback']) {
+          const sample = async () => {
+            f.reset();
+            const snapshot = {
+              session: {
+                id: 'city-session',
+                status: 'idle',
+                primaryClosed: true,
+              },
+              agents: [{id: 'retained', status: 'completed', resumable: true}],
+            };
+            if (kind === 'fallback')
+              document.querySelector('#fallback').innerHTML =
+                '<div class="fallback-station parent-session" data-unit-id="retained"><span class="robot-glyph"></span></div>';
+            f.host().update(snapshot, 'retained');
+            f.host().setMotion(true);
+            await f.theme({
+              scene: ['factory-2d', 'fallback'].includes(kind)
+                ? 'factory'
+                : kind,
+            });
+            const inspect = () =>
+              kind === 'fallback'
+                ? {
+                    ...f.inspect(),
+                    mode: document.querySelector('.parent-fallback-robot')
+                      ?.dataset.mode,
+                  }
+                : {...f.inspect(), mode: f.inspect().data.parentMode};
+            const restored = inspect();
+            f.host().prompt('city-session');
+            const prompted = inspect();
+            snapshot.agents[0].status = 'running';
+            f.host().update(snapshot, 'retained');
+            for (
+              let frame = 0;
+              frame < 200 && inspect().mode !== 'work';
+              frame++
+            )
+              f.advance();
+            const resumed = inspect();
+            snapshot.agents[0].status = 'completed';
+            f.host().update(snapshot, 'retained');
+            f.advance(2);
+            const completed = inspect();
+            let activity,
+              away = false,
+              visited = false,
+              recalled = false;
+            if (kind === 'year1998') {
+              for (let frame = 0; frame < 1600 && !activity; frame++) {
+                f.advance();
+                activity = f.inspect().data.parentActivity;
+              }
+              const other = {
+                session: {id: 'other-session', status: 'idle'},
+                agents: [],
+              };
+              f.host().updateHub({sessions: [snapshot, other]});
+              for (
+                let frame = 0;
+                frame < 1400 && f.inspect().data.parentAway !== 'true';
+                frame++
+              )
+                f.advance();
+              away = f.inspect().data.parentAway === 'true';
+              f.host().update(other);
+              for (
+                let frame = 0;
+                frame < 500 &&
+                !f.inspect().data.factoryVisitors.includes('city-session');
+                frame++
+              )
+                f.advance();
+              visited = f
+                .inspect()
+                .data.factoryVisitors.includes('city-session');
+              snapshot.agents[0].status = 'running';
+              f.host().updateHub({sessions: [snapshot, other]});
+              for (
+                let frame = 0;
+                frame < 600 &&
+                f.inspect().data.factoryVisitors.includes('city-session');
+                frame++
+              )
+                f.advance();
+              recalled = !f
+                .inspect()
+                .data.factoryVisitors.includes('city-session');
+              f.host().update(snapshot, 'retained');
+              for (
+                let frame = 0;
+                frame < 600 && f.inspect().data.parentMode !== 'work';
+                frame++
+              )
+                f.advance();
+            }
+            return {
+              kind,
+              restored,
+              prompted,
+              resumed,
+              completed,
+              activity,
+              away,
+              visited,
+              recalled,
+              final: inspect(),
+            };
+          };
+          states.push(
+            kind === 'factory-2d'
+              ? await f.withContexts('null', sample)
+              : kind === 'fallback'
+                ? await f.withContexts('none', sample)
+                : await sample(),
+          );
+        }
+        return states;
+      });
+      for (const result of state) {
+        assert.equal(
+          result.restored.mode,
+          'rest',
+          result.kind + ' restores an inactive primary',
+        );
+        assert.equal(
+          result.prompted.mode,
+          'startled',
+          result.kind + ' accepts a prompt while retained',
+        );
+        assert.equal(
+          result.resumed.mode,
+          'work',
+          result.kind + ' resumes work',
+        );
+        assert.equal(
+          result.completed.mode,
+          'rest',
+          result.kind + ' settles after completion',
+        );
+        if (['year1998', 'factory-2d'].includes(result.kind)) {
+          assert.equal(result.restored.data.parentStatus, 'completed');
+          assert.equal(result.resumed.data.parentStatus, 'running');
+          assert.equal(result.completed.data.parentStatus, 'completed');
+        }
+        assert.deepEqual(result.final.errors.filter(Boolean), []);
+      }
+      const office = state.find(result => result.kind === 'year1998');
+      assert.ok(office.activity, 'Completed primary performs an idle activity');
+      assert.equal(
+        office.away,
+        true,
+        'Completed primary leaves to visit another workspace',
+      );
+      assert.equal(
+        office.visited,
+        true,
+        'Completed primary arrives as a visitor',
+      );
+      assert.equal(
+        office.recalled,
+        true,
+        'Resuming work recalls the visiting primary',
+      );
+      assert.equal(office.final.mode, 'work');
+      assert.equal(office.final.data.parentStatus, 'running');
     },
   );
 
@@ -911,7 +1532,17 @@ async function main() {
       );
       assert.deepEqual(
         state.final.calls.find(call => call[0] === 'updateHub')[1],
-        state.hub,
+        {
+          sessions: [
+            {
+              id: 'city-session',
+              name: 'City session',
+              status: 'running',
+              primaryId: 'parent',
+            },
+            {id: 'other-session', status: 'idle', primaryId: 'parent'},
+          ],
+        },
       );
       assert.equal(
         state.final.calls.find(call => call[0] === 'update')[1].agents.length,

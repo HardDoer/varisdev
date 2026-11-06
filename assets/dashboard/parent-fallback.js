@@ -281,7 +281,8 @@ export function createParentFallback(container) {
     whip.update(
       session?.id,
       whipTargets().map(element => element.dataset.unitId),
-      Boolean(reaction) ||
+      primaryId === null ||
+        Boolean(reaction) ||
         damage.pose('parent').panic > 0 ||
         damage.pose('parent').surprise > 0 ||
         damage.pose('parent').flinch > 0 ||
@@ -307,6 +308,7 @@ export function createParentFallback(container) {
   let station = null;
   let glyph = null;
   let session = null;
+  let primaryId = 'parent';
   let selected = false;
   let motion = true;
   let disposed = false;
@@ -809,9 +811,11 @@ export function createParentFallback(container) {
       fragments = [],
       cleanupShapes = [];
     const activeIds = new Set(agents.map(agent => agent.id));
-    const elements = new Map([
-      ['parent', {element: robot, geometry: robotGeometry}],
-    ]);
+    const elements = new Map(
+      station && primaryId !== null
+        ? [['parent', {element: robot, geometry: robotGeometry}]]
+        : [],
+    );
     for (const [id, visual] of agentElements)
       if (activeIds.has(id)) elements.set(id, {element: visual.glyph});
     for (const [id, visual] of visitorVisuals) elements.set(id, visual);
@@ -1167,9 +1171,14 @@ export function createParentFallback(container) {
   }
 
   function render() {
-    if (disposed || !station || !session) return;
+    if (disposed || !session) return;
     syncWhip();
     drawVisitors();
+    if (!station || primaryId === null) {
+      applyDamage();
+      drawEnvironment();
+      return;
+    }
     const parentDamage = damage.pose('parent');
     const corpse = ['exploding', 'charring', 'wrecked', 'cleanup'].includes(
       parentDamage.phase,
@@ -1545,7 +1554,7 @@ export function createParentFallback(container) {
     return (
       !disposed &&
       (motion || reaction?.animated) &&
-      station &&
+      (station || agents.length || visitorVisuals.size) &&
       session &&
       visible &&
       !document.hidden &&
@@ -1689,7 +1698,12 @@ export function createParentFallback(container) {
     update(data, selectedId) {
       if (disposed) return;
       let immediate = false;
-      const next = container.querySelector('.fallback-station.parent-session');
+      const nextPrimaryId =
+        data?.primaryId === undefined ? 'parent' : data.primaryId;
+      const next =
+        nextPrimaryId === null
+          ? null
+          : container.querySelector('.fallback-station.parent-session');
       const nextGlyph = next?.querySelector('.robot-glyph');
       if (next !== station || nextGlyph !== glyph) {
         immediate = true;
@@ -1701,6 +1715,20 @@ export function createParentFallback(container) {
           glyph.after(svg);
         }
       }
+      if (primaryId !== nextPrimaryId) {
+        immediate = true;
+        reaction = null;
+        damagedParentPose = null;
+        whip.cancel();
+        clearWhip();
+        controller.update(undefined);
+        clearDamageVisuals();
+        damage.retain([
+          ...agents.map(agent => agent.id),
+          ...visitorVisuals.keys(),
+        ]);
+      }
+      primaryId = nextPrimaryId;
       if (session?.id !== data?.session?.id) {
         immediate = true;
         reaction = null;
@@ -1734,7 +1762,7 @@ export function createParentFallback(container) {
       controller.update(session);
       visitors.observeLocalPose(session?.id, controller.pose());
       controller.setAway(visitors.isAway(session?.id));
-      if (!session || !station) stopFrame();
+      if (!session || (!station && !agents.length)) stopFrame();
       renderUpdate(immediate);
     },
     setMotion(enabled) {
@@ -1753,7 +1781,7 @@ export function createParentFallback(container) {
       schedule();
     },
     prompt(sessionId) {
-      if (disposed || sessionId !== session?.id) return;
+      if (disposed || primaryId === null || sessionId !== session?.id) return;
       whip.cancel();
       if (!visitors.prompt(sessionId)) controller.prompt();
       controller.setAway(visitors.isAway(sessionId));
@@ -1761,13 +1789,13 @@ export function createParentFallback(container) {
       schedule();
     },
     cancelPrompt(sessionId) {
-      if (disposed || sessionId !== session?.id) return;
+      if (disposed || primaryId === null || sessionId !== session?.id) return;
       controller.cancelPrompt();
       render();
       schedule();
     },
     startle(animate = true) {
-      if (disposed) return;
+      if (disposed || primaryId === null) return;
       whip.cancel();
       controller.stop();
       reaction = {age: 0, animated: Boolean(animate)};

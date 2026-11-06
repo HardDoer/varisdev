@@ -86,6 +86,11 @@ function restoreAgent(
     // Retain the conversation even when its usage summary is damaged.
   }
   const restored = {...agent, conversation, usage};
+  if (
+    !Number.isSafeInteger(restored.creationOrder) ||
+    restored.creationOrder! < 0
+  )
+    delete restored.creationOrder;
   for (const key of [
     'sessionFile',
     'resultFile',

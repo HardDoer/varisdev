@@ -17,6 +17,7 @@ export const HOME_ROUTE = Object.freeze([
 ]);
 
 const ACTIVE = new Set(['running', 'compacting']);
+const INACTIVE = new Set(['idle', 'completed', 'cancelled', 'failed']);
 const TAU = Math.PI * 2;
 const STARTLE_SECONDS = 0.7;
 const WAIT_MIN_SECONDS = 24;
@@ -25,7 +26,8 @@ const VISIT_MIN_SECONDS = 7;
 const VISIT_SPREAD_SECONDS = 8;
 
 const sessionOf = value => value?.session || value;
-const open = session => session?.id && session.status !== 'closed';
+const open = session =>
+  session?.id && session.status !== 'closed' && session.resumable !== false;
 
 function normalizedSessions(value) {
   const collection = Array.isArray(value)
@@ -253,7 +255,7 @@ export function createFactoryVisitors() {
     state.elapsed += dt;
     if (state.phase === 'wait') {
       if (
-        state.status === 'idle' &&
+        INACTIVE.has(state.status) &&
         openIds.length > 1 &&
         state.elapsed >= state.wait
       ) {

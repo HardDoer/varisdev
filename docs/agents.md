@@ -1,6 +1,6 @@
 # Agents and agent configurations
 
-A workspace contains a main agent and any additional agents. The main agent is the large robot in the factory. Select an agent to inspect its conversation, context, and current work. Primary and all-mode agents accept direct prompts; subagents receive work through their parent.
+The agent that starts a workspace conversation is the large robot in the factory. After it closes, the second most recently created remaining primary takes its place, or the only remaining primary. Agents with `primary` or `all` configurations can fill this role. Select an agent to inspect its conversation, context, and current work. Primary and all-mode agents accept direct prompts; subagents receive work through their parent.
 
 ## Start a conversation
 
@@ -8,15 +8,17 @@ Every conversation has a selected agent. **Default** is selected automatically a
 
 **New conversation** starts in the current workspace. Choose a saved folder from **Recent workspaces** or use **Choose folder** to work elsewhere. Recent workspaces use the same history as the welcome screen; folders that no longer exist are omitted. Selecting a folder reloads its available agent configurations and default agent. A name and initial message are optional; unnamed workspaces use the folder name. Set `default_agent` in Pi `settings.json` to choose a visible primary or all-mode agent automatically. An unavailable, hidden, disabled, or subagent-only choice falls back to Default. If an override makes Default unsuitable, the empty built-in Default remains available.
 
-Resumed conversations keep their saved agent configuration. The selected configuration appears beside the composer and in session settings.
+Resumed conversations keep their saved agent configuration and closed primary agents stay closed while another primary can continue. If none can continue, the starting conversation reopens. The selected configuration appears beside the composer and in session settings.
 
 Every new agent has its own message history. Starting one does not copy the calling conversation or other agents' messages. Resuming an agent retains its own history. Additional agents share workspace files and can exchange messages explicitly.
 
 **Menu → Resume session** restores the workspace's additional agents, conversations, results, recorded file changes, and inbox messages. Retained agents can continue from their saved conversations. Work interrupted by an app exit appears as stopped and waits for an explicit follow-up. Older saved workspaces recover available agent transcripts for viewing; those imported agents cannot continue because their launch settings were not saved.
 
+Use **Actions → Close agent**, or right-click an agent and choose **Close agent**, to close its conversation. Other primary agents keep the workspace open. Closing the final primary asks for confirmation, then closes the workspace and stops its agents.
+
 ## Other agents
 
-Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The main agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`. Quote names containing spaces, such as `@"Review Agent" Check the changes` or `@agent:"Team/Review Agent" Check the changes`; the mention picker inserts the appropriate form.
+Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The parent agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`. Quote names containing spaces, such as `@"Review Agent" Check the changes` or `@agent:"Team/Review Agent" Check the changes`; the mention picker inserts the appropriate form.
 
 Build and Plan are optional primary agents. General and Explore are optional subagents. Plan and Explore provide restricted tools for investigation; General can work broadly but cannot delegate further. Their instructions apply only when selected.
 

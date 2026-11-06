@@ -552,7 +552,7 @@ export function createFactoryScene(
   if (!gl) return null;
   const defaultCanvasLabel =
     canvas.getAttribute('aria-label') ||
-    'Workspace factory with a main agent and additional agents';
+    'Workspace factory with a primary agent and additional agents';
   const resources = {shaders: [], buffers: []};
   let program, attributes, uniforms;
   function releaseResources() {
@@ -624,7 +624,8 @@ export function createFactoryScene(
   let snapshot = null,
     selected = 'parent',
     firstSnapshot = true,
-    sessionId;
+    sessionId,
+    primaryId = 'parent';
   let previous = new Map(),
     units = [],
     slots = new Map(),
@@ -667,7 +668,8 @@ export function createFactoryScene(
             anchors.some(a => a.id === unit.id && a.visible),
         )
         .map(unit => unit.id),
-      Boolean(reaction) ||
+      primaryId === null ||
+        Boolean(reaction) ||
         unsettled(damage.pose('parent')) ||
         visitors.isAway(sessionId) ||
         !['rest', 'work'].includes(mode) ||
@@ -1971,7 +1973,7 @@ export function createFactoryScene(
     const ownAway = visitors.isAway(sessionId);
     const ownTravel = visiting.find(visitor => visitor.id === sessionId);
     const shownIds = new Set([
-      'parent',
+      ...(primaryId === null ? [] : ['parent']),
       ...units.map(unit => unit.id),
       ...visiting
         .filter(visitor => visitor !== ownTravel)
@@ -1984,7 +1986,11 @@ export function createFactoryScene(
     const physicalParent =
       damageHomes.has('parent') && unsettled(damage.pose('parent'));
     let parentPosition;
-    if (ownTravel) {
+    if (primaryId === null) {
+      setCanvasData('robotWhip', '');
+      setCanvasData('parentMode', 'absent');
+      setCanvasData('parentActivity', '');
+    } else if (ownTravel) {
       parentPosition = drawParentSession(g, fx, ownTravel, 'parent');
       setCanvasData('robotWhip', '');
       if (!physicalParent) {
@@ -2015,13 +2021,15 @@ export function createFactoryScene(
       setCanvasData('parentActivity', visitors.awayMessage(sessionId));
       setCanvasData('parentEyes', AWAKE_EYE_HEIGHT);
     }
-    const positions = [
-      {
-        id: 'parent',
-        targetable: !ownAway || Boolean(ownTravel) || physicalParent,
-        ...parentPosition,
-      },
-    ];
+    const positions = parentPosition
+      ? [
+          {
+            id: 'parent',
+            targetable: !ownAway || Boolean(ownTravel) || physicalParent,
+            ...parentPosition,
+          },
+        ]
+      : [];
     units.forEach((unit, i) =>
       positions.push({
         id: unit.id,
@@ -2083,7 +2091,8 @@ export function createFactoryScene(
         return [unit.id, [p[0], 0.25, p[2]]];
       }),
     );
-    homes.set('parent', [pose.x, pose.ground + 0.36, pose.z]);
+    if (primaryId !== null)
+      homes.set('parent', [pose.x, pose.ground + 0.36, pose.z]);
     for (const visitor of visiting)
       if (visitor !== ownTravel)
         homes.set(visitorCaneId(visitor.id), [visitor.x, 0.36, visitor.z]);
@@ -2161,9 +2170,9 @@ export function createFactoryScene(
       .filter(visitor => visitor.id !== sessionId)
       .map(visitor => visitor.name || visitor.id);
     const canvasDetails = [
-      parentAwayMessage ? `Main agent: ${parentAwayMessage}` : '',
+      parentAwayMessage ? `Primary agent: ${parentAwayMessage}` : '',
       foreignNames.length
-        ? `Visiting main agents: ${foreignNames.join(', ')}`
+        ? `Visiting primary agents: ${foreignNames.join(', ')}`
         : '',
     ].filter(Boolean);
     setCanvasAttribute(
@@ -2174,7 +2183,7 @@ export function createFactoryScene(
     );
     const lash = whip.pose();
     const lashTarget = lash && positions.find(p => p.id === lash.target);
-    if (lashTarget && positions[0].whipStart) {
+    if (lashTarget && positions[0]?.whipStart) {
       const endpoint = [...lashTarget.body];
       endpoint[1] += 0.22;
       drawRobotWhip(g, fx, robotC, positions[0].whipStart, endpoint, lash.age);
@@ -2566,6 +2575,23 @@ export function createFactoryScene(
       if (disposed) return;
       const id = data?.session?.id;
       const sessionChanged = id !== sessionId;
+      const nextPrimaryId =
+        data?.primaryId === undefined ? 'parent' : data.primaryId;
+      const primaryChanged = nextPrimaryId !== primaryId;
+      if (primaryChanged) {
+        reaction = null;
+        whip.cancel();
+        parentMotion.update(undefined);
+        damage.retain([
+          ...units.map(unit => unit.id),
+          ...visitors
+            .visitorsAt(sessionId)
+            .filter(visitor => visitor.id !== sessionId)
+            .map(visitor => visitorCaneId(visitor.id)),
+        ]);
+        damageHomes.delete('parent');
+      }
+      primaryId = nextPrimaryId;
       if (sessionChanged) {
         reaction = null;
         damage.reset();
@@ -2611,7 +2637,9 @@ export function createFactoryScene(
         cameraTarget =
           units.length === 0 ? [pose.x + 0.65, 1.6, pose.z] : [-0.5, 0.6, 0];
       }
-      renderUpdate(sessionChanged || layoutChanged || selectionChanged);
+      renderUpdate(
+        sessionChanged || primaryChanged || layoutChanged || selectionChanged,
+      );
     },
     setPalette(palette) {
       if (disposed) return;
@@ -2655,7 +2683,7 @@ export function createFactoryScene(
       schedule();
     },
     prompt(id) {
-      if (disposed || id !== sessionId) return;
+      if (disposed || primaryId === null || id !== sessionId) return;
       whip.cancel();
       if (!visitors.prompt(id)) parentMotion.prompt();
       parentMotion.setAway(visitors.isAway(id));
@@ -2663,13 +2691,13 @@ export function createFactoryScene(
       schedule();
     },
     cancelPrompt(id) {
-      if (disposed || id !== sessionId) return;
+      if (disposed || primaryId === null || id !== sessionId) return;
       parentMotion.cancelPrompt();
       render();
       schedule();
     },
     startle(animate = true) {
-      if (disposed || contextLost) return;
+      if (disposed || contextLost || primaryId === null) return;
       stop();
       whip.cancel();
       parentMotion.stop();

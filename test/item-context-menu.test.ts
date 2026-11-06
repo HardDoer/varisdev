@@ -10,7 +10,7 @@ import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 void test(
-  'workspace and agent context actions, keyboard controls, saved removal and rendered themes in Electron',
+  'agent context actions, final primary close confirmation, keyboard controls, saved removal and rendered themes in Electron',
   {
     timeout: 125_000,
     skip:
@@ -61,7 +61,7 @@ void test(
     assert.ifError(report.error);
     assert.deepEqual(failures, []);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 19);
+    assert.equal(report.cases.length, 21);
     assert.ok(report.themes.length >= 10);
     assert.equal(report.screenshots.length, report.themes.length * 4 + 1);
   },

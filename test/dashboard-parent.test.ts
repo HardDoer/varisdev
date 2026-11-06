@@ -26,7 +26,7 @@ import type {AgentSessionController} from '../src/agents/team.ts';
 import {observeDashboardSession} from '../src/dashboard/observe.ts';
 import type {DashboardState} from '../src/dashboard/state.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
-import type {DashboardParent} from '../src/dashboard/hub.ts';
+import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 
 const {AuthStorage} = (await import(
   piModuleURL('core/auth-storage.js').href
@@ -717,6 +717,206 @@ void test(
     assert.equal(parent.state.snapshot().session.response, parentResponse);
     assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
 
+    await t.test(
+      'closing starter preserves live children and persists across reload and resume',
+      async () => {
+        const closureParent = await createDashboardParent(
+          {cwd: otherCwd},
+          inherited,
+        );
+        parents.push(closureParent);
+        const hub = new DashboardHub(undefined, async () => closureParent);
+        hub.adoptSession(closureParent);
+        const workspaceId = closureParent.state.snapshot().session.id;
+        heldResponse = undefined;
+        heldDisconnected = false;
+        await closureParent.prompt(
+          'start-held-worker: keep this primary running after starter close.',
+        );
+        await waitFor(
+          () => !!heldResponse,
+          'child starts before starter close',
+        );
+        const child = closureParent.state.snapshot().agents[0];
+        assert.equal(child.agentMode, 'all');
+        steeringResponse = undefined;
+        const rootRun = closureParent.prompt(
+          'steer-held-parent: close this starter.',
+        );
+        await waitFor(() => !!steeringResponse, 'starter runs beside child');
+        await hub.agentSession(workspaceId, {
+          agentId: 'parent',
+          action: 'close',
+        });
+        await rootRun;
+        assert.equal(
+          closureParent.state.snapshot().session.primaryClosed,
+          true,
+        );
+        assert.equal(closureParent.state.snapshot().session.id, workspaceId);
+        assert.equal(closureParent.state.snapshot().session.status, 'idle');
+        assert.equal(
+          closureParent.state.snapshot().agents[0].status,
+          'running',
+        );
+        assert.equal(heldDisconnected, false);
+        await assert.rejects(
+          closureParent.prompt('Root prompt after closure'),
+          /primary agent has closed/,
+        );
+        await hub.renameSession(workspaceId, 'Workspace after starter close');
+        assert.equal(
+          closureParent.state.snapshot().session.name,
+          'Workspace after starter close',
+        );
+        reply(heldResponse!, 'Completed after starter closure.');
+        await waitFor(
+          () => closureParent.state.snapshot().agents[0].status === 'completed',
+          'child completes after starter closure',
+        );
+        await hub.agentSession(workspaceId, {
+          agentId: child.id,
+          action: 'prompt',
+          prompt: 'direct-worker-marker after starter closure',
+        });
+        await waitFor(
+          () => closureParent.state.snapshot().agents[0].status === 'completed',
+          'child accepts another turn',
+        );
+        await saveToolSettings('agents', {
+          allowedModels: [`${providerId}/dashboard-model`],
+          maxConcurrentAgents: 1,
+        });
+        await closureParent.reload();
+        assert.equal(
+          closureParent.state.snapshot().session.primaryClosed,
+          true,
+        );
+        await assert.rejects(
+          closureParent.prompt('Root prompt after reload'),
+          /primary agent has closed/,
+        );
+        const savedPath = closureParent.state.snapshot().session.sessionFile!;
+        assert.deepEqual(
+          await hub.agentSession(workspaceId, {
+            agentId: child.id,
+            action: 'close',
+          }),
+          {requiresWorkspaceCloseConfirmation: true},
+        );
+        assert.deepEqual(
+          await hub.agentSession(workspaceId, {
+            agentId: child.id,
+            action: 'close',
+            confirmWorkspaceClose: true,
+          }),
+          {workspaceClosed: true},
+        );
+        await hub.close();
+        const resumed = await createDashboardParent(
+          {cwd: otherCwd, resume: {id: workspaceId, path: savedPath}},
+          inherited,
+        );
+        parents.push(resumed);
+        assert.equal(resumed.state.snapshot().session.primaryClosed, true);
+        assert.equal(
+          resumed.state.snapshot().agents.find(agent => agent.id === child.id)
+            ?.resumable,
+          true,
+        );
+        await assert.rejects(
+          resumed.prompt('Root prompt after resume'),
+          /primary agent has closed/,
+        );
+        await resumed.agentSession!({
+          agentId: child.id,
+          action: 'prompt',
+          prompt: 'direct-worker-marker after workspace resume',
+        });
+        await waitFor(
+          () => resumed.state.snapshot().agents[0].status === 'completed',
+          'saved child resumes while starter remains closed',
+        );
+        await resumed.agentSession!({agentId: child.id, action: 'close'});
+        await resumed.close();
+        const recovered = await createDashboardParent(
+          {cwd: otherCwd, resume: {id: workspaceId, path: savedPath}},
+          inherited,
+        );
+        parents.push(recovered);
+        assert.equal(
+          recovered.state.snapshot().session.primaryClosed,
+          false,
+          'starter reopens if no retained primary can resume',
+        );
+        await recovered.prompt(
+          'independent-parent: recovered workspace starter',
+        );
+        assert.equal(
+          recovered.state.snapshot().session.response,
+          'Independent parent answer.',
+        );
+        await recovered.reload();
+        assert.equal(
+          recovered.state.snapshot().session.primaryClosed,
+          false,
+          'reopened state is persisted for later reloads',
+        );
+        await recovered.close();
+        await saveToolSettings('agents', {
+          allowedModels: [`${providerId}/dashboard-model`],
+          maxConcurrentAgents: 6,
+        });
+        const blank = await createDashboardParent({cwd: otherCwd}, inherited);
+        parents.push(blank);
+        await blank.prompt('@default Write the worker fixture and report.');
+        await waitFor(
+          () => blank.state.snapshot().agents[0]?.status === 'completed',
+          'agent runs while starter has no conversation',
+        );
+        const blankSnapshot = blank.state.snapshot();
+        assert.ok(
+          !blankSnapshot.conversation.some(message => message.role === 'user'),
+        );
+        await blank.agentSession!({agentId: 'parent', action: 'close'});
+        await blank.prompt('/name Saved host with closed starter');
+        await blank.close();
+        const blankResumed = await createDashboardParent(
+          {
+            cwd: otherCwd,
+            resume: {
+              id: blankSnapshot.session.id,
+              path: blankSnapshot.session.sessionFile!,
+            },
+          },
+          inherited,
+        );
+        parents.push(blankResumed);
+        assert.equal(blankResumed.state.snapshot().session.primaryClosed, true);
+        assert.equal(
+          blankResumed.state.snapshot().session.name,
+          'Saved host with closed starter',
+        );
+        await blankResumed.agentSession!({
+          agentId: blankSnapshot.agents[0].id,
+          action: 'prompt',
+          prompt: 'direct-worker-marker after empty starter resume',
+        });
+        await waitFor(
+          () => blankResumed.state.snapshot().agents[0].status === 'completed',
+          'child resumes from host without root messages',
+        );
+        await blankResumed.close();
+        heldResponse = undefined;
+        heldDisconnected = false;
+        steeringResponse = undefined;
+        await saveToolSettings('agents', {
+          allowedModels: [`${providerId}/dashboard-model`],
+          maxConcurrentAgents: 6,
+        });
+      },
+    );
+
     await parent.reload();
     const steeredRun = parent.prompt(
       'steer-held-parent: begin a task with a tool call.',
@@ -869,7 +1069,7 @@ void test(
           .agents.filter(
             agent => agent.name === 'Held worker' && agent.status === 'running',
           ).length === 5,
-      'five background agents and the main conversation fill the default limit',
+      'five background agents and the starting conversation fill the default limit',
     );
     assert.equal(
       parent.state.snapshot().agents.filter(agent => agent.status === 'queued')

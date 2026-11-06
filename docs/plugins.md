@@ -171,9 +171,9 @@ export function createScene(canvas, {apiVersion, onSelect, onLayout, helpers}) {
 }
 ```
 
-`options.apiVersion` is `1`. `onSelect(id)` selects `parent` or an agent ID. `onLayout(anchors)` reports robot positions for the app's activity effects and accessible selection controls using `{id, x, y, visible, away?, detail?}`; `x` and `y` are normalized canvas coordinates. Do not use parent session IDs for selection: the current session's selection ID is `parent`.
+`options.apiVersion` is `1`. Use `parent` in `onSelect(id)`, layout anchors, and robot hit targets for the displayed primary; use agent IDs for other robots. `onLayout(anchors)` reports robot positions for the app's activity effects and accessible selection controls using `{id, x, y, visible, away?, detail?}`; `x` and `y` are normalized canvas coordinates.
 
-The required methods are `update(snapshot, selectedId)`, `setPalette(palette)`, `setMotion(enabled)`, and `dispose()`. A snapshot contains `session` and `agents`; it can be `null` before a session is available. Palette values are RGB triples in the range 0–1, keyed by the scene colors listed above.
+The required methods are `update(snapshot, selectedId)`, `setPalette(palette)`, `setMotion(enabled)`, and `dispose()`. A snapshot contains `session` and `agents`; it can be `null` before a session is available. `session` supplies the displayed primary's state while retaining the workspace ID. `primaryId` identifies that primary's original unit ID: `parent` for the conversation starter, an agent ID after promotion, or `null` when no primary remains. Omit the large robot when it is `null`, and reset its motion and damage when the ID changes. The displayed primary is excluded from `agents`. Palette values are RGB triples in the range 0–1, keyed by the scene colors listed above.
 
 Optional hooks provide these actions:
 

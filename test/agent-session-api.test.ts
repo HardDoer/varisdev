@@ -12,6 +12,7 @@ import {
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {test} from 'node:test';
+import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {
   AgentOrchestrator,
   type AgentWorker,
@@ -66,6 +67,8 @@ function owner(id: string) {
       [],
     ),
   );
+  let workspaceCloses = 0;
+  let starterCloses = 0;
   const parent: DashboardParent = {
     state: current,
     prompt: async () => {
@@ -82,10 +85,29 @@ function owner(id: string) {
     configure: async () => {},
     compact: async () => {},
     reload: async () => {},
-    agentSession: request => runAgentSessionRequest(manager, request),
-    close: () => manager.close(),
+    async agentSession(request) {
+      if (request.agentId === 'parent' && request.action === 'close') {
+        starterCloses++;
+        current.updateSession({primaryClosed: true});
+        return;
+      }
+      return runAgentSessionRequest(manager, request);
+    },
+    close: () => {
+      workspaceCloses++;
+      return manager.close();
+    },
   };
-  return {manager, parent};
+  return {
+    manager,
+    parent,
+    get workspaceCloses() {
+      return workspaceCloses;
+    },
+    get starterCloses() {
+      return starterCloses;
+    },
+  };
 }
 
 void test('agent session validation accepts only fields for the chosen action', () => {
@@ -100,6 +122,14 @@ void test('agent session validation accepts only fields for the chosen action', 
       action: 'prompt',
       prompt: 'continue',
     },
+  );
+  assert.deepEqual(
+    agentSessionRequest({
+      agentId: 'parent',
+      action: 'close',
+      confirmWorkspaceClose: false,
+    }),
+    {agentId: 'parent', action: 'close', confirmWorkspaceClose: false},
   );
   for (const input of [
     null,
@@ -118,6 +148,14 @@ void test('agent session validation accepts only fields for the chosen action', 
       configuration: {thinkingLevel: 'high', extra: true},
     },
     {agentId: 'worker', action: 'abort', prompt: 'unexpected'},
+    {
+      agentId: 'worker',
+      action: 'prompt',
+      prompt: 'x',
+      confirmWorkspaceClose: true,
+    },
+    {agentId: 'worker', action: 'abort', confirmWorkspaceClose: true},
+    {agentId: 'worker', action: 'close', confirmWorkspaceClose: 'yes'},
     {agentId: 'worker', action: 'compact', instructions: 123},
     {agentId: 'worker', action: 'command', command: ''},
     {
@@ -777,3 +815,647 @@ void test('attached agent requests validate and carry results without reaching o
   bridge.detach();
   requests.disconnect();
 });
+
+async function primaryWorker(
+  entry: ReturnType<typeof owner>,
+  agentMode: 'primary' | 'all' | 'subagent' = 'all',
+) {
+  const prompts: string[] = [];
+  let disposals = 0;
+  const record = entry.manager.spawn(
+    {
+      name: agentMode,
+      agentMode,
+      task: 'initial',
+      cwd: process.cwd(),
+      model: 'fixture/model',
+    },
+    async () => ({
+      async run(prompt) {
+        prompts.push(prompt);
+        return prompt;
+      },
+      async steer() {
+        return false;
+      },
+      dispose() {
+        disposals++;
+      },
+    }),
+  );
+  await entry.manager.wait([record.id]);
+  return {
+    id: record.id,
+    prompts,
+    get disposals() {
+      return disposals;
+    },
+  };
+}
+
+void test(
+  'closing starter keeps other primary conversations and workspace identity usable',
+  {timeout: 10000},
+  async t => {
+    const entry = owner('starter-close');
+    const worker = await primaryWorker(entry);
+    const hub = new DashboardHub(undefined, async () => entry.parent);
+    hub.adoptSession(entry.parent);
+    t.after(() => hub.close());
+    assert.equal(
+      await hub.agentSession('starter-close', {
+        agentId: 'parent',
+        action: 'close',
+      }),
+      undefined,
+    );
+    assert.equal(entry.starterCloses, 1);
+    assert.equal(entry.workspaceCloses, 0);
+    const snapshot = hub.snapshot().sessions[0];
+    assert.equal(snapshot.session.id, 'starter-close');
+    assert.equal(snapshot.session.primaryClosed, true);
+    assert.equal(snapshot.session.status, 'idle');
+    assert.equal(worker.disposals, 0);
+    await hub.agentSession('starter-close', {
+      agentId: worker.id,
+      action: 'prompt',
+      prompt: 'continue',
+    });
+    await entry.manager.wait([worker.id]);
+    assert.deepEqual(worker.prompts, ['initial', 'continue']);
+    const before = hub.snapshot();
+    assert.deepEqual(
+      await hub.agentSession('starter-close', {
+        agentId: worker.id,
+        action: 'close',
+      }),
+      {requiresWorkspaceCloseConfirmation: true},
+    );
+    assert.deepEqual(
+      await hub.agentSession('starter-close', {
+        agentId: worker.id,
+        action: 'close',
+        confirmWorkspaceClose: false,
+      }),
+      {requiresWorkspaceCloseConfirmation: true},
+    );
+    assert.deepEqual(hub.snapshot(), before);
+    assert.equal(worker.disposals, 0);
+    assert.deepEqual(
+      await hub.agentSession('starter-close', {
+        agentId: worker.id,
+        action: 'close',
+        confirmWorkspaceClose: true,
+      }),
+      {workspaceClosed: true},
+    );
+    assert.equal(entry.workspaceCloses, 1);
+    assert.equal(worker.disposals, 1);
+    assert.equal(hub.snapshot().sessions.length, 0);
+  },
+);
+
+void test(
+  'auto-cleanup after starter closure confirms workspace close for any existing agent',
+  {timeout: 10000},
+  async t => {
+    for (const kind of ['owned', 'attached'] as const) {
+      for (const selected of ['parent', 'primary', 'subagent'] as const) {
+        await t.test(`${kind}: ${selected}`, async t => {
+          const id = `auto-cleanup-${kind}-${selected}`;
+          const source = owner(id);
+          const hub = new DashboardHub(undefined, async () => source.parent);
+          let unsubscribe = () => {};
+          if (kind === 'owned') hub.adoptSession(source.parent);
+          else {
+            hub.updateExternal(source.parent.state.snapshot());
+            unsubscribe = source.parent.state.subscribe(() =>
+              hub.updateExternal(source.parent.state.snapshot()),
+            );
+            hub.setExternalControl({
+              prompt: async () => {},
+              abort: async () => ({steering: [], followUp: []}),
+              cancelAgent: async () => {},
+              features: async () => features(),
+              configure: async () => {},
+              compact: async () => {},
+              reload: async () => {},
+              agentSession: async (_id, request) =>
+                source.parent.agentSession!(request),
+            });
+          }
+          const finishPrimary = Promise.withResolvers<void>();
+          t.after(async () => {
+            finishPrimary.resolve();
+            unsubscribe();
+            await hub.close();
+            if (kind === 'attached') await source.parent.close();
+          });
+          const primaryStarted = Promise.withResolvers<void>();
+          const subagentStarted = Promise.withResolvers<AbortSignal>();
+          let primaryDisposals = 0;
+          let subagentDisposals = 0;
+          const primary = source.manager.spawn(
+            {
+              name: 'Temporary primary',
+              agentMode: 'all',
+              autoCleanup: true,
+              task: 'Finish after the starter closes',
+              cwd: process.cwd(),
+              model: 'fixture/model',
+            },
+            async () => ({
+              async run(_prompt, signal) {
+                signal.addEventListener(
+                  'abort',
+                  () => finishPrimary.resolve(),
+                  {
+                    once: true,
+                  },
+                );
+                primaryStarted.resolve();
+                await finishPrimary.promise;
+                signal.throwIfAborted();
+                return 'Finished after starter closure';
+              },
+              async steer() {
+                return false;
+              },
+              dispose() {
+                primaryDisposals++;
+              },
+            }),
+          );
+          const subagent = source.manager.spawn(
+            {
+              name: 'Live subagent',
+              agentMode: 'subagent',
+              task: 'Wait for workspace shutdown',
+              cwd: process.cwd(),
+              model: 'fixture/model',
+            },
+            async () => ({
+              async run(_prompt, signal) {
+                await new Promise<void>(resolve => {
+                  signal.addEventListener('abort', () => resolve(), {
+                    once: true,
+                  });
+                  subagentStarted.resolve(signal);
+                });
+                signal.throwIfAborted();
+                return 'Stopped';
+              },
+              async steer() {
+                return false;
+              },
+              dispose() {
+                subagentDisposals++;
+              },
+            }),
+          );
+          await primaryStarted.promise;
+          const subagentSignal = await subagentStarted.promise;
+          assert.equal(source.manager.get(primary.id).status, 'running');
+          assert.equal(
+            await hub.agentSession(id, {agentId: 'parent', action: 'close'}),
+            undefined,
+          );
+          assert.equal(source.starterCloses, 1);
+          assert.equal(
+            source.parent.state.snapshot().session.primaryClosed,
+            true,
+          );
+          assert.equal(source.manager.get(primary.id).status, 'running');
+          finishPrimary.resolve();
+          await source.manager.wait([primary.id], {timeoutMs: 1000});
+          assert.equal(source.manager.get(primary.id).status, 'completed');
+          assert.equal(source.manager.get(primary.id).resumable, false);
+          assert.equal(primaryDisposals, 1);
+          const before = hub.snapshot();
+          assert.equal(before.sessions[0].session.primaryClosed, true);
+          assert.equal(before.sessions[0].session.controllable, true);
+          assert.equal(before.sessions[0].session.status, 'idle');
+          const subagentBefore = source.manager.get(subagent.id);
+          const agentId =
+            selected === 'parent'
+              ? 'parent'
+              : selected === 'primary'
+                ? primary.id
+                : subagent.id;
+          await assert.rejects(
+            hub.agentSession(id, {
+              agentId: 'missing',
+              action: 'close',
+              confirmWorkspaceClose: true,
+            }),
+            /Unknown agent/,
+          );
+          for (const confirmWorkspaceClose of [undefined, false]) {
+            assert.deepEqual(
+              await hub.agentSession(id, {
+                agentId,
+                action: 'close',
+                ...(confirmWorkspaceClose === undefined
+                  ? {}
+                  : {confirmWorkspaceClose}),
+              }),
+              {requiresWorkspaceCloseConfirmation: true},
+            );
+            assert.deepEqual(hub.snapshot(), before);
+            assert.deepEqual(source.manager.get(subagent.id), subagentBefore);
+            assert.equal(source.workspaceCloses, 0);
+            assert.equal(source.starterCloses, 1);
+            assert.equal(subagentDisposals, 0);
+            assert.equal(subagentSignal.aborted, false);
+          }
+          assert.deepEqual(
+            await hub.agentSession(id, {
+              agentId,
+              action: 'close',
+              confirmWorkspaceClose: true,
+            }),
+            {workspaceClosed: true},
+          );
+          assert.equal(hub.snapshot().sessions.length, 0);
+          assert.equal(source.starterCloses, 1);
+          assert.equal(primaryDisposals, 1);
+          assert.equal(source.workspaceCloses, Number(kind === 'owned'));
+          assert.equal(subagentDisposals, Number(kind === 'owned'));
+          assert.equal(subagentSignal.aborted, kind === 'owned');
+          assert.equal(
+            source.manager.get(subagent.id).status,
+            kind === 'owned' ? 'cancelled' : 'running',
+          );
+        });
+      }
+    }
+  },
+);
+
+void test(
+  'subagents and explicitly closed primary workers do not keep the workspace open',
+  {timeout: 10000},
+  async t => {
+    const entry = owner('last-starter');
+    const primary = await primaryWorker(entry, 'primary');
+    const subagent = await primaryWorker(entry, 'subagent');
+    const hub = new DashboardHub(undefined, async () => entry.parent);
+    hub.adoptSession(entry.parent);
+    t.after(() => hub.close());
+    await hub.agentSession('last-starter', {
+      agentId: primary.id,
+      action: 'close',
+    });
+    assert.equal(primary.disposals, 1);
+    assert.equal(entry.manager.get(primary.id).resumable, false);
+    const before = hub.snapshot();
+    assert.deepEqual(
+      await hub.agentSession('last-starter', {
+        agentId: 'parent',
+        action: 'close',
+      }),
+      {requiresWorkspaceCloseConfirmation: true},
+    );
+    assert.deepEqual(hub.snapshot(), before);
+    assert.equal(entry.starterCloses, 0);
+    assert.equal(subagent.disposals, 0);
+    assert.deepEqual(
+      await hub.agentSession('last-starter', {
+        agentId: 'parent',
+        action: 'close',
+        confirmWorkspaceClose: true,
+      }),
+      {workspaceClosed: true},
+    );
+    assert.equal(entry.starterCloses, 0);
+    assert.equal(entry.workspaceCloses, 1);
+    assert.equal(subagent.disposals, 1);
+  },
+);
+
+void test(
+  'nonprimary closes dispose workers when the starter is already closed',
+  {timeout: 10000},
+  async t => {
+    const entry = owner('subagent-close');
+    const primary = await primaryWorker(entry);
+    const subagent = await primaryWorker(entry, 'subagent');
+    const hub = new DashboardHub(undefined, async () => entry.parent);
+    hub.adoptSession(entry.parent);
+    t.after(() => hub.close());
+    await hub.agentSession('subagent-close', {
+      agentId: 'parent',
+      action: 'close',
+    });
+    assert.equal(
+      await hub.agentSession('subagent-close', {
+        agentId: subagent.id,
+        action: 'close',
+      }),
+      undefined,
+    );
+    assert.equal(subagent.disposals, 1);
+    assert.equal(primary.disposals, 0);
+    assert.equal(entry.workspaceCloses, 0);
+  },
+);
+
+void test(
+  'concurrent final closes are serialized before counting remaining primary conversations',
+  {timeout: 10000},
+  async t => {
+    for (const confirm of [false, true]) {
+      const id = `concurrent-${confirm}`;
+      const entry = owner(id);
+      const primary = await primaryWorker(entry, 'primary');
+      const hub = new DashboardHub(undefined, async () => entry.parent);
+      hub.adoptSession(entry.parent);
+      t.after(() => hub.close());
+      const results = await Promise.all([
+        hub.agentSession(id, {
+          agentId: primary.id,
+          action: 'close',
+          confirmWorkspaceClose: confirm,
+        }),
+        hub.agentSession(id, {
+          agentId: 'parent',
+          action: 'close',
+          confirmWorkspaceClose: confirm,
+        }),
+      ]);
+      assert.deepEqual(results, [
+        undefined,
+        confirm
+          ? {workspaceClosed: true}
+          : {requiresWorkspaceCloseConfirmation: true},
+      ]);
+      assert.equal(primary.disposals, 1);
+      assert.equal(entry.starterCloses, 0);
+      assert.equal(entry.workspaceCloses, Number(confirm));
+    }
+  },
+);
+
+void test(
+  'attached final closes use confirmed workspace dismissal despite delayed terminal snapshots',
+  {timeout: 10000},
+  async t => {
+    const source = owner('attached-close');
+    const primary = await primaryWorker(source);
+    const hub = new DashboardHub(undefined, async () => source.parent);
+    t.after(async () => {
+      await hub.close();
+      await source.parent.close();
+    });
+    const stale = source.parent.state.snapshot();
+    hub.updateExternal(stale);
+    hub.setExternalControl({
+      prompt: async () => {},
+      abort: async () => ({steering: [], followUp: []}),
+      cancelAgent: async () => {},
+      features: async () => features(),
+      configure: async () => {},
+      compact: async () => {},
+      reload: async () => {},
+      agentSession: async (_id, request) =>
+        source.parent.agentSession!(request),
+    });
+    const results = await Promise.all([
+      hub.agentSession('attached-close', {agentId: 'parent', action: 'close'}),
+      hub.agentSession('attached-close', {
+        agentId: primary.id,
+        action: 'close',
+      }),
+    ]);
+    assert.deepEqual(results, [
+      undefined,
+      {requiresWorkspaceCloseConfirmation: true},
+    ]);
+    hub.updateExternal(stale);
+    assert.equal(hub.snapshot().sessions[0].session.primaryClosed, true);
+    assert.equal(primary.disposals, 0);
+    assert.deepEqual(
+      await hub.agentSession('attached-close', {
+        agentId: primary.id,
+        action: 'close',
+        confirmWorkspaceClose: true,
+      }),
+      {workspaceClosed: true},
+    );
+    assert.equal(hub.snapshot().sessions.length, 0);
+    assert.equal(source.workspaceCloses, 0);
+  },
+);
+
+void test(
+  'same hub recounts recovered starters and restored primaries when a saved workspace resumes',
+  {timeout: 10000},
+  async t => {
+    const cwd = process.cwd();
+    for (const restoreStarter of [true, false]) {
+      const id = `same-hub-resume-${restoreStarter}`;
+      const savedPath = join(cwd, `${id}.jsonl`);
+      t.mock.method(SessionManager, 'list', async () => [
+        {
+          id,
+          path: savedPath,
+          firstMessage: 'Saved workspace',
+          modified: new Date(),
+          messageCount: 1,
+        },
+      ]);
+      const original = owner(id);
+      const child = await primaryWorker(original, 'primary');
+      const resumed = owner(id);
+      let target = 'parent';
+      if (!restoreStarter) {
+        const saved = original.manager.get(child.id);
+        resumed.parent.state.updateSession({primaryClosed: true});
+        resumed.manager.restore(
+          [
+            {
+              ...saved,
+              sessionFile: savedPath,
+              resumable: true,
+              conversation: [],
+              conversationTruncated: false,
+            },
+          ],
+          async () => ({
+            async run(prompt) {
+              return prompt;
+            },
+            async steer() {
+              return false;
+            },
+            dispose() {},
+          }),
+        );
+        target = child.id;
+      }
+      const hub = new DashboardHub(undefined, async request => {
+        assert.deepEqual(request.resume, {id, path: savedPath});
+        return resumed.parent;
+      });
+      hub.adoptSession(original.parent);
+      t.after(() => hub.close());
+      await hub.agentSession(id, {
+        agentId: restoreStarter ? 'parent' : child.id,
+        action: 'close',
+      });
+      await hub.closeSession(id);
+      assert.deepEqual(await hub.createSession({cwd, sessionId: id}), {id});
+      const before = hub.snapshot();
+      assert.deepEqual(
+        await hub.agentSession(id, {agentId: target, action: 'close'}),
+        {requiresWorkspaceCloseConfirmation: true},
+      );
+      assert.deepEqual(hub.snapshot(), before);
+      assert.equal(resumed.starterCloses, 0);
+      assert.equal(resumed.workspaceCloses, 0);
+      assert.deepEqual(
+        await hub.agentSession(id, {
+          agentId: target,
+          action: 'close',
+          confirmWorkspaceClose: true,
+        }),
+        {workspaceClosed: true},
+      );
+      assert.equal(resumed.workspaceCloses, 1);
+    }
+  },
+);
+
+void test(
+  'pending attached closure markers do not affect an owned resume with the same workspace ID',
+  {timeout: 10000},
+  async t => {
+    const id = 'attached-owned-resume';
+    const cwd = process.cwd();
+    const savedPath = join(cwd, `${id}.jsonl`);
+    t.mock.method(SessionManager, 'list', async () => [
+      {
+        id,
+        path: savedPath,
+        firstMessage: 'Saved workspace',
+        modified: new Date(),
+        messageCount: 1,
+      },
+    ]);
+    const terminal = owner(id);
+    await primaryWorker(terminal);
+    const resumed = owner(id);
+    const hub = new DashboardHub(undefined, async () => resumed.parent);
+    t.after(async () => {
+      await hub.close();
+      await terminal.parent.close();
+    });
+    hub.updateExternal(terminal.parent.state.snapshot());
+    hub.setExternalControl({
+      prompt: async () => {},
+      abort: async () => ({steering: [], followUp: []}),
+      cancelAgent: async () => {},
+      features: async () => features(),
+      configure: async () => {},
+      compact: async () => {},
+      reload: async () => {},
+      agentSession: async (_id, request) =>
+        terminal.parent.agentSession!(request),
+    });
+    await hub.agentSession(id, {agentId: 'parent', action: 'close'});
+    await hub.closeSession(id);
+    await hub.createSession({cwd, sessionId: id});
+    assert.equal(hub.snapshot().sessions[0].session.primaryClosed, undefined);
+    assert.deepEqual(
+      await hub.agentSession(id, {agentId: 'parent', action: 'close'}),
+      {requiresWorkspaceCloseConfirmation: true},
+    );
+    assert.equal(resumed.starterCloses, 0);
+    assert.equal(resumed.workspaceCloses, 0);
+  },
+);
+
+void test(
+  'any remaining agent confirms and dismisses ownerless workspaces without dispatching',
+  {timeout: 10000},
+  async t => {
+    for (const kind of ['observed', 'disconnected', 'closed'] as const) {
+      for (const selected of ['parent', 'primary', 'subagent'] as const) {
+        const id = `uncontrolled-${kind}-${selected}`;
+        const source = owner(id);
+        const primary = await primaryWorker(source, 'primary');
+        const subagent = await primaryWorker(source, 'subagent');
+        const agentId =
+          selected === 'parent'
+            ? 'parent'
+            : selected === 'primary'
+              ? primary.id
+              : subagent.id;
+        if (selected !== 'parent')
+          source.parent.state.updateSession({primaryClosed: true});
+        const hub = new DashboardHub(
+          kind === 'observed' ? source.parent.state : undefined,
+          async () => {
+            assert.fail('Dismissal must not create a parent');
+          },
+        );
+        t.after(async () => {
+          await hub.close();
+          await source.parent.close();
+        });
+        if (kind !== 'observed') {
+          hub.updateExternal(source.parent.state.snapshot());
+          if (kind === 'closed') {
+            hub.setExternalControl({
+              prompt: async () => {
+                assert.fail('Dead terminal prompt');
+              },
+              abort: async () => {
+                assert.fail('Dead terminal abort');
+              },
+              cancelAgent: async () => {
+                assert.fail('Dead terminal cancellation');
+              },
+              features: async () => features(),
+              configure: async () => {},
+              compact: async () => {},
+              reload: async () => {},
+              agentSession: async () => {
+                assert.fail('Dead terminal agent dispatch');
+              },
+            });
+            source.parent.state.updateSession({status: 'closed'});
+            hub.updateExternal(source.parent.state.snapshot());
+          }
+        }
+        const before = hub.snapshot();
+        assert.deepEqual(
+          await hub.agentSession(id, {agentId, action: 'close'}),
+          {requiresWorkspaceCloseConfirmation: true},
+        );
+        assert.deepEqual(
+          await hub.agentSession(id, {
+            agentId,
+            action: 'close',
+            confirmWorkspaceClose: false,
+          }),
+          {requiresWorkspaceCloseConfirmation: true},
+        );
+        assert.deepEqual(hub.snapshot(), before);
+        assert.equal(source.starterCloses, 0);
+        assert.deepEqual(
+          await hub.agentSession(id, {
+            agentId,
+            action: 'close',
+            confirmWorkspaceClose: true,
+          }),
+          {workspaceClosed: true},
+        );
+        assert.equal(hub.snapshot().sessions.length, 0);
+        assert.equal(source.workspaceCloses, 0);
+        assert.equal(primary.disposals, 0);
+        assert.equal(subagent.disposals, 0);
+      }
+    }
+  },
+);

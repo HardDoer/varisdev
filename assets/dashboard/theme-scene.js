@@ -7,6 +7,35 @@ import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {createRobotWhip} from './robot-whip.js';
 import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
+import {primaryUnit} from './scene-primary.js';
+
+function projectSnapshot(data) {
+  if (!data) return data;
+  const primary = primaryUnit(data);
+  return {
+    ...data,
+    primaryId: primary?.id ?? null,
+    session: primary
+      ? {...primary.unit, id: data.session.id}
+      : {...data.session, status: 'closed'},
+    agents: (data.agents || []).filter(agent => agent.id !== primary?.id),
+  };
+}
+
+function projectHub(value) {
+  if (!value?.sessions) return value;
+  return {
+    ...value,
+    sessions: value.sessions.map(entry => {
+      if (entry.session) return projectSnapshot(entry);
+      const {agents, ...session} = entry;
+      const projected = projectSnapshot({session, agents});
+      return {...projected.session, primaryId: projected.primaryId};
+    }),
+  };
+}
+const workspaceId = entry => (entry.session || entry).id;
+const projectedPrimaryId = entry => entry.primaryId;
 
 const HELPERS = Object.freeze({
   createParentMotion,
@@ -43,6 +72,8 @@ export function createThemeScene(
   let palette;
   let snapshot;
   let hub;
+  let renderedHub;
+  let projection;
   let selected = 'parent';
   let motion = false;
   let startled;
@@ -53,6 +84,7 @@ export function createThemeScene(
     removeContextLoss = undefined;
     const previous = renderer;
     renderer = undefined;
+    renderedHub = undefined;
     rendererRevision++;
     try {
       if (typeof previous?.dispose === 'function') previous.dispose();
@@ -70,15 +102,68 @@ export function createThemeScene(
     canvas = next;
   }
   function sceneSnapshot() {
-    return snapshot && rendererKind !== 'plugin' && agentsForBuiltin
-      ? {...snapshot, agents: agentsForBuiltin(snapshot)}
-      : snapshot;
+    return projection && rendererKind !== 'plugin' && agentsForBuiltin
+      ? {...projection, agents: agentsForBuiltin(projection)}
+      : projection;
+  }
+  function internalId(id) {
+    const primaryId = projection ? projection.primaryId : 'parent';
+    if (id === 'parent' && primaryId !== 'parent') return null;
+    return primaryId === id ? 'parent' : id;
+  }
+  function externalId(id) {
+    return id === 'parent'
+      ? projection
+        ? projection.primaryId
+        : 'parent'
+      : id;
+  }
+  function externalLayout(layout) {
+    return layout.flatMap(item => {
+      const id = externalId(item.id);
+      return id === null ? [] : [{...item, id}];
+    });
+  }
+  function sceneHub() {
+    return hub
+      ? projectHub(hub)
+      : projection
+        ? {sessions: [projection]}
+        : undefined;
+  }
+  function updateRendererHub(value) {
+    if (!value) return;
+    const previous = new Map(
+      (renderedHub?.sessions || []).map(entry => [
+        workspaceId(entry),
+        projectedPrimaryId(entry),
+      ]),
+    );
+    const changed = new Set(
+      (value.sessions || [])
+        .filter(
+          entry =>
+            previous.has(workspaceId(entry)) &&
+            previous.get(workspaceId(entry)) !== projectedPrimaryId(entry),
+        )
+        .map(workspaceId),
+    );
+    // Remove the previous traveller before the replacement keeps its workspace id.
+    if (changed.size)
+      renderer?.updateHub?.({
+        ...value,
+        sessions: value.sessions.filter(
+          entry => !changed.has(workspaceId(entry)),
+        ),
+      });
+    renderer?.updateHub?.(value);
+    renderedHub = value;
   }
   function replay() {
     renderer.setMotion(motion);
     if (palette) renderer.setPalette?.(palette);
-    if (hub) renderer.updateHub?.(hub);
-    if (snapshot) renderer.update(sceneSnapshot(), selected);
+    updateRendererHub(sceneHub());
+    if (snapshot) renderer.update(sceneSnapshot(), internalId(selected));
     if (startled !== undefined) renderer.startle?.(startled);
   }
   function install(create, kind) {
@@ -93,12 +178,15 @@ export function createThemeScene(
       apiVersion: 1,
       helpers: HELPERS,
       onSelect(id) {
-        if (!disposed && current === rendererRevision) onSelect(id);
+        if (!disposed && current === rendererRevision) {
+          const actual = externalId(id);
+          if (actual !== null) onSelect(actual);
+        }
       },
       onLayout(layout) {
         if (disposed || current !== rendererRevision) return;
         latestLayout = layout;
-        if (!installing) onLayout(layout);
+        if (!installing) onLayout(externalLayout(layout));
       },
     };
     renderer = create(canvas, callbacks);
@@ -132,7 +220,7 @@ export function createThemeScene(
     replay();
     if (disposed || current !== rendererRevision) return;
     installing = false;
-    onLayout(latestLayout);
+    onLayout(externalLayout(latestLayout));
   }
   function installFactory2D() {
     try {
@@ -217,16 +305,44 @@ export function createThemeScene(
       }
     },
     updateHub(value) {
+      if (disposed) return;
       hub = value;
-      invoke('updateHub', value);
+      try {
+        updateRendererHub(sceneHub());
+      } catch (error) {
+        recover(error);
+      }
     },
     update(value, id = 'parent') {
-      if (snapshot?.session?.id !== value?.session?.id) {
+      if (disposed) return;
+      const next = projectSnapshot(value);
+      if (
+        snapshot?.session?.id !== value?.session?.id ||
+        projection?.primaryId !== next?.primaryId
+      ) {
         startled = undefined;
       }
       snapshot = value;
+      projection = next;
       selected = id;
-      invoke('update', sceneSnapshot(), id);
+      if (hub?.sessions) {
+        hub = {
+          ...hub,
+          sessions: hub.sessions.map(entry =>
+            workspaceId(entry) === value?.session?.id
+              ? entry.session
+                ? {...entry, ...value}
+                : {...value.session, agents: value.agents}
+              : entry,
+          ),
+        };
+      }
+      try {
+        updateRendererHub(sceneHub());
+      } catch (error) {
+        recover(error);
+      }
+      invoke('update', sceneSnapshot(), internalId(id));
     },
     setMotion(enabled) {
       motion = Boolean(enabled);
@@ -246,10 +362,13 @@ export function createThemeScene(
       startled = undefined;
       invoke('clearStartle');
     },
-    caneTargets: () => invoke('caneTargets') || [],
+    caneTargets: () => externalLayout(invoke('caneTargets') || []),
     hitWithCane: (id, direction, strength) =>
-      invoke('hitWithCane', id, direction, strength) || false,
-    burnRobot: (id, seconds) => invoke('burnRobot', id, seconds) || false,
+      internalId(id) !== null &&
+      (invoke('hitWithCane', internalId(id), direction, strength) || false),
+    burnRobot: (id, seconds) =>
+      internalId(id) !== null &&
+      (invoke('burnRobot', internalId(id), seconds) || false),
     environmentTargets: () => invoke('environmentTargets') || [],
     hitEnvironment: (id, weapon, amount, contact) =>
       invoke('hitEnvironment', id, weapon, amount, contact) || false,
@@ -258,7 +377,7 @@ export function createThemeScene(
       disposed = true;
       revision++;
       release();
-      snapshot = hub = undefined;
+      snapshot = projection = hub = undefined;
     },
   };
 }

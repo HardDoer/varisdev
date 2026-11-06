@@ -19,6 +19,7 @@ import {
 } from '../src/agents/templates.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
+import {sessionPrimaryClosed} from '../src/dashboard/primary-session.ts';
 import type {DashboardState} from '../src/dashboard/state.ts';
 import type {FactoryControl} from '../src/desktop/launcher.ts';
 import {
@@ -235,6 +236,24 @@ void test(
       () =>
         state!.snapshot().agents.length === 2 &&
         state!.snapshot().agents.every(agent => agent.status === 'completed'),
+    );
+    assert.equal(requests.length, 2);
+    assert.ok(
+      !state.snapshot().conversation.some(message => message.role === 'user'),
+    );
+    await control.agentSession!({agentId: 'parent', action: 'close'});
+    assert.equal(state.snapshot().session.primaryClosed, true);
+    assert.ok(state.snapshot().agents.every(agent => agent.resumable));
+    await assert.rejects(
+      async () => control!.prompt('Closed root prompt'),
+      /primary agent has closed/,
+    );
+    await control.prompt('/name Attached host after starter closure');
+    const savedHost = SessionManager.open(sessionManager.getSessionFile()!);
+    assert.equal(sessionPrimaryClosed(savedHost), true);
+    assert.equal(
+      savedHost.getSessionName(),
+      'Attached host after starter closure',
     );
     assert.equal(requests.length, 2);
   },

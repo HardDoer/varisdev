@@ -24,7 +24,7 @@ function instructions(
     name: basename(file.path),
     kind: 'instructions',
     status: 'included',
-    description: 'Automatically included in the main agent system prompt.',
+    description: 'Automatically included in the system prompt.',
     content: file.content,
   }));
 }
@@ -173,15 +173,15 @@ function retainedDocuments(messages: Messages, cwd: string): ContextFile[] {
           .join('\n');
         if (!result) continue;
         const portion = `Read from line ${call.offset ?? 1}${call.limit === undefined ? '' : `, requested up to ${call.limit} lines`}.`;
-        description = `${portion} The successful read result is retained in the main agent context and may contain only part of the file.`;
+        description = `${portion} The successful read result is retained in the conversation context and may contain only part of the file.`;
         content = `${portion}\n${result}`;
       } else if (call.name === 'write') {
         description =
-          'The full content supplied to a successful write call is retained in the main agent context.';
+          'The full content supplied to a successful write call is retained in the conversation context.';
         content = `Written content:\n${call.content}`;
       } else {
         description =
-          'Only the old and new replacement snippets from a successful edit call are retained in the main agent context.';
+          'Only the old and new replacement snippets from a successful edit call are retained in the conversation context.';
         content = call.edits
           .map(
             (edit, index) =>
@@ -213,7 +213,7 @@ function retainedDocuments(messages: Messages, cwd: string): ContextFile[] {
         kind: 'skill',
         status: 'included',
         description:
-          'Invoked skill body retained in a user message in the main agent context.',
+          'Invoked skill body retained in a user message in the conversation context.',
         content: skill.content,
       });
     }
@@ -274,7 +274,7 @@ export function loaderContextFiles(
       name: basename(systemSource.path),
       kind: 'system',
       status: 'included',
-      description: 'Replaces the default main agent system prompt.',
+      description: 'Replaces the default system prompt.',
       content: systemContent,
     });
   const appendSources = loader.getAppendSystemPromptSources();
@@ -288,7 +288,7 @@ export function loaderContextFiles(
         name: basename(source.path),
         kind: 'append',
         status: 'included',
-        description: 'Automatically appended to the main agent system prompt.',
+        description: 'Automatically appended to the system prompt.',
         ...(appendSources.length === appendContent.length
           ? {content: appendContent[index]}
           : {}),

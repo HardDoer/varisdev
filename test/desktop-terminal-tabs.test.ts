@@ -8,6 +8,10 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import type {IPty} from '@lydell/node-pty';
 import {DashboardInputError} from '../src/dashboard/errors.ts';
+import type {
+  AgentSessionRequest,
+  AgentSessionResult,
+} from '../src/dashboard/hub.ts';
 import {DesktopPreferences} from '../src/desktop/preferences.ts';
 import {
   DesktopTerminals,
@@ -656,6 +660,10 @@ async function applicationBridge(
   terminalProfiles: DesktopTerminalProfiles,
   preferences: DesktopPreferences,
   cwd: string,
+  agentSession: (
+    id: string,
+    request: AgentSessionRequest,
+  ) => Promise<AgentSessionResult> = async () => {},
 ) {
   const source = await readFile(
     new URL('../src/desktop/application.ts', import.meta.url),
@@ -729,12 +737,17 @@ async function applicationBridge(
     transferringStartup: false,
     sessionOperations: 0,
     closingSessions: new Set(),
-    sessionActions: new Set(['pidev:create-session', 'pidev:close-session']),
+    sessionActions: new Set([
+      'pidev:create-session',
+      'pidev:close-session',
+      'pidev:agent-session',
+    ]),
     updateMessage: (message: string) => message,
     getToolModels: () => {},
     saveToolModel: () => {},
     restartForUpdate: () => {},
     hub: {
+      agentSession,
       deliverySnapshot: () => ({sessions}),
       subscribe: (listener: () => void) => {
         changed = listener;
@@ -780,6 +793,10 @@ async function applicationBridge(
     resizeTerminal(id: string, cols: number, rows: number): Promise<void>;
     closeTerminal(id: string): Promise<void>;
     closeSession(id: string): Promise<void>;
+    agentSession(
+      id: string,
+      request: AgentSessionRequest,
+    ): Promise<AgentSessionResult>;
     createSession(input: unknown): Promise<{id: string}>;
   };
   vm.runInNewContext(
@@ -893,6 +910,100 @@ void test('preload and application validate workspace ownership and manage every
     /open terminal/,
   );
   await assert.rejects(bridge.listTerminals('replacement'), /open workspace/);
+});
+
+void test('application agent closure preserves native tabs until the backend confirms workspace closure', async t => {
+  const directory = await temporary(t);
+  const preferences = new DesktopPreferences(directory);
+  const {profiles, env} = windowsProfiles(preferences);
+  const loader = ptyLoader();
+  const terminals = new DesktopTerminals(() => {}, loader.load, {
+    profiles,
+    env,
+    platform: 'win32',
+  });
+  t.after(() => terminals.dispose());
+  const requests: Array<{id: string; request: AgentSessionRequest}> = [];
+  const results: AgentSessionResult[] = [
+    undefined,
+    {requiresWorkspaceCloseConfirmation: true},
+    {workspaceClosed: true},
+  ];
+  const {bridge} = await applicationBridge(
+    terminals,
+    profiles,
+    preferences,
+    directory,
+    async (id, request) => {
+      requests.push({id, request});
+      // The close reply can arrive before the snapshot removes the workspace.
+      return results.shift();
+    },
+  );
+  const first = await bridge.createTerminal('first');
+  const second = await bridge.createTerminal('first');
+  const other = await bridge.createTerminal('second');
+  loader.shells[0].output('workspace history');
+  assert.equal(
+    await bridge.agentSession('first', {agentId: 'parent', action: 'close'}),
+    undefined,
+  );
+  assert.deepEqual(
+    (await bridge.listTerminals('first')).map(terminal => terminal.sessionId),
+    [first.sessionId, second.sessionId],
+  );
+  assert.deepEqual(
+    loader.shells.map(shell => shell.kills()),
+    [0, 0, 0],
+  );
+  assert.deepEqual(
+    await bridge.agentSession('first', {agentId: 'primary', action: 'close'}),
+    {requiresWorkspaceCloseConfirmation: true},
+  );
+  assert.deepEqual(
+    loader.shells.map(shell => shell.kills()),
+    [0, 0, 0],
+  );
+  const restored = await bridge.openTerminal('first', first.sessionId);
+  assert.equal(restored.generation, first.generation);
+  assert.equal(restored.data, 'workspace history');
+  assert.deepEqual(
+    await bridge.agentSession('first', {
+      agentId: 'primary',
+      action: 'close',
+      confirmWorkspaceClose: true,
+    }),
+    {workspaceClosed: true},
+  );
+  assert.deepEqual(requests, [
+    {id: 'first', request: {agentId: 'parent', action: 'close'}},
+    {id: 'first', request: {agentId: 'primary', action: 'close'}},
+    {
+      id: 'first',
+      request: {
+        agentId: 'primary',
+        action: 'close',
+        confirmWorkspaceClose: true,
+      },
+    },
+  ]);
+  assert.deepEqual(
+    loader.shells.map(shell => shell.kills()),
+    [1, 1, 0],
+  );
+  assert.deepEqual(terminals.list('first'), []);
+  await assert.rejects(
+    bridge.writeTerminal(first.sessionId, 'stale'),
+    /open terminal/,
+  );
+  await assert.rejects(
+    bridge.writeTerminal(second.sessionId, 'stale'),
+    /open terminal/,
+  );
+  assert.equal(
+    (await bridge.openTerminal('second', other.sessionId)).generation,
+    other.generation,
+  );
 });
 
 void test('application and preload save, edit, remove and choose custom terminal executables', async t => {

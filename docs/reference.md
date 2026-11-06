@@ -16,28 +16,28 @@ The **Agent models** section in **Menu → Tool models** controls model choices 
 | `agent_list`      | List active agents, history, or both.                                            |
 | `agent_status`    | Read progress or results; use `details: true` for metadata and transcript paths. |
 | `agent_send`      | Steer active work or resume a completed agent.                                   |
-| `agent_inbox`     | Read messages sent to the workspace's main agent.                                |
+| `agent_inbox`     | Read messages sent to the conversation's starting agent.                         |
 | `agent_wait`      | Wait for selected agents to finish.                                              |
 | `agent_cancel`    | Cancel an agent and its queued messages.                                         |
 | `agent_templates` | List, read, save, or delete scoped Markdown agent configurations.                |
 
 `agent_spawn` requires `task`. It automatically selects Default when `template` is omitted; `name` is optional. A spawned configuration must use `subagent` or `all` mode. Hidden configurations can be referenced directly; disabled configurations cannot be launched. Optional fields include `instructions`, `context` (`workspace` or `task`), `cwd`, `model` (`provider/model`), `thinkingLevel`, `timeoutMs`, and `autoCleanup`. A configuration's model pin takes precedence over `model`. Other explicit spawn values refine the resolved configuration, while omitted model and thinking values inherit from the calling agent when the configuration does not set them.
 
-In the main conversation, start a message with `@configuration-id task` to launch that configuration directly, for example `@review Check the changes in src/`. For a nested configuration ID, use `@agent:quality/review task`. Typing `@` offers visible, enabled `subagent` and `all` configurations allowed by the parent. The launch uses the current working directory and the same configuration model pins, permissions, and approval rules as `agent_spawn`. Each mention creates a new delegated conversation; retained subagents receive follow-up work through the parent agent. Only a leading, known configuration ID followed by a task invokes an agent; file mentions, email addresses, and unknown IDs remain ordinary input.
+In the workspace conversation, start a message with `@configuration-id task` to launch that configuration directly, for example `@review Check the changes in src/`. For a nested configuration ID, use `@agent:quality/review task`. Typing `@` offers visible, enabled `subagent` and `all` configurations allowed by the parent. The launch uses the current working directory and the same configuration model pins, permissions, and approval rules as `agent_spawn`. Each mention creates a new delegated conversation; retained subagents receive follow-up work through the parent agent. Only a leading, known configuration ID followed by a task invokes an agent; file mentions, email addresses, and unknown IDs remain ordinary input.
 
 Agent configurations are optional. `agent_templates` is available through Pi's `tool_search`; listing uses `offset` and `limit` with a default of 20 entries and returns `nextOffset` when more remain. Configuration bodies are returned only by `get`.
 
 Configuration permissions apply to the conversation created from that profile. The calling agent's `subagent` permission also controls which configured agents it may launch. See [agent configurations](agents.md) for scope merging, modes, defaults, and Markdown fields.
 
-The default concurrency limit is six agents per conversation, including its main agent; additional agents queue. Change **Menu → Tool models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional agent launches and resumptions. Each workspace can hold 64 additional agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
+The default concurrency limit is six agents per workspace, including the conversation starter while it is open; additional agents queue. Closing the starter releases its slot. Change **Menu → Tool models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions while the starter is open. Each workspace can hold 64 additional agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
 
 Agents have no execution deadline unless `timeoutMs` is set. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
 
-Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current workspace. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not trigger main-agent turns.
+Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current workspace. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not start a new turn in the receiving conversation.
 
 Spawn, send, and cancel return short acknowledgements. Status and wait return results; truncated output includes `outputTruncated` and `resultFile` for reading the full text.
 
-When a main agent finishes, VarisDev plays a completion sound only while the app window is unfocused. It waits for retries, automatic compaction, and queued work to settle. Cancelled runs stay silent. Windows and Linux use the original Windows 98 ding, with a system bell fallback; macOS uses its system bell.
+When the workspace conversation finishes a run, VarisDev plays a completion sound only while the app window is unfocused. It waits for retries, automatic compaction, and queued work to settle. Cancelled runs stay silent. Windows and Linux use the original Windows 98 ding, with a system bell fallback; macOS uses its system bell.
 
 Closing the window hides VarisDev in the system tray while work continues. Hover over its tray icon to see workspace names and their status, or right-click for **Open VarisDev** and **Quit VarisDev**. The tray menu also shows status for desktops without hover tooltips.
 
@@ -45,13 +45,13 @@ Closing the window hides VarisDev in the system tray while work continues. Hover
 
 Right-click a workspace tile and choose **Rename workspace**, or use **Actions → Rename workspace**. The name is saved with the conversation and restored when resumed.
 
-Select a workspace and choose **Actions → Close workspace**. Closing a workspace stops all of its agents, closes its embedded terminal, and frees its workspace slot. Saved history remains available through **Menu → Resume session**. Closing the last workspace returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. For a workspace attached from another terminal, **Close workspace** dismisses it from this window.
+Choose **Actions → Close agent** to close the selected conversation. Other primary agents keep the workspace open. Closing the last primary asks for confirmation, then closes the workspace, stops its agents, and closes its embedded terminals. Saved history remains available through **Menu → Resume session**. Closing the last workspace returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. A workspace attached from another terminal is dismissed from this window.
 
 Resuming a saved conversation replaces other open workspaces in the same folder, stopping their agents; workspaces in other folders stay open. If the chosen conversation is already open, its workspace is reused rather than duplicated. If it cannot be loaded, the current workspaces stay open.
 
 If WebGL is unavailable, the factory uses an animated 2D scene with robot activity, agent selection, and theme colors.
 
-Each workspace factory has a stable, theme-aware color and architectural variation. Idle main agents can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
+Each workspace factory has a stable, theme-aware color and architectural variation. Idle conversation robots can visit other idle factories, then hurry back when prompted or when their workspace starts working. Visiting robots react to hits and recover before continuing their trip. **Menu → Appearance → Motion** (and your system's reduced-motion preference) controls these animations.
 
 In **Menu → Appearance → Weapons**, choose **Cane** to swing at robots by waving the mouse, **Gun** to aim and click to shoot, or **Flamethrower** to spray flames while holding the left mouse button. Burning robots scream and run around; sustained flames leave a charred wreck for the cleaner. Right-click or press **Esc** to put away a weapon.
 

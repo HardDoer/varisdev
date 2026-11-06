@@ -7,6 +7,14 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '1.13.0',
+    [
+      'Agents use configuration names and primary or subagent labels.',
+      'The large robot follows the conversation starter, then the second most recent remaining primary.',
+      'Close primary agents individually. Closing the last primary asks for confirmation and closes the workspace.',
+    ],
+  ],
+  [
     '1.12.0',
     [
       'Open multiple terminal tabs in each workspace and choose from installed shells.',

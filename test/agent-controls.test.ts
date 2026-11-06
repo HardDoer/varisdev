@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {setImmediate} from 'node:timers/promises';
-import {test} from 'node:test';
+import {test, type TestContext} from 'node:test';
 
 import {initAgentControls} from '../assets/dashboard/agent-controls.js';
 
@@ -64,7 +64,7 @@ function hub() {
   };
 }
 
-void test('finished agents can be dismissed from one parent and return if resumed', async t => {
+function environment(t: TestContext) {
   const originalDocument = Object.getOwnPropertyDescriptor(
     globalThis,
     'document',
@@ -97,7 +97,11 @@ void test('finished agents can be dismissed from one parent and return if resume
     configurable: true,
     value: localStorage,
   });
+  return {nodes, stored};
+}
 
+void test('finished agents can be dismissed from one parent and return if resumed', async t => {
+  const {nodes, stored} = environment(t);
   let current = hub();
   let selected = 'running';
   let cancelError = false;
@@ -253,4 +257,110 @@ void test('finished agents can be dismissed from one parent and return if resume
   assert.equal(visibleAgain.sessions[0].agents.length, 6);
   assert.equal(visibleAgain.sessions[0].totalAgents, 6);
   assert.equal(stored.has('varisdev.dismissed-agents.v1'), false);
+});
+
+void test('saved primary dismissals migrate to backend closure while closed agents and finished subagents stay dismissed', t => {
+  const {nodes, stored} = environment(t);
+  const storageKey = 'varisdev.dismissed-agents.v1';
+  const agents = [
+    {...agent('primary', 'completed'), agentMode: 'primary', resumable: true},
+    agent('legacy-primary', 'failed'),
+    {...agent('cancelled-primary', 'cancelled'), agentMode: 'primary'},
+    {
+      ...agent('closed-primary', 'completed'),
+      agentMode: 'primary',
+      resumable: false,
+    },
+    {
+      ...agent('closed-running-primary', 'running'),
+      agentMode: 'primary',
+      resumable: false,
+    },
+    {...agent('subagent', 'completed'), agentMode: 'subagent', resumable: true},
+    {
+      ...agent('active-subagent', 'running'),
+      agentMode: 'subagent',
+      resumable: true,
+    },
+  ];
+  const source = {
+    ...hub(),
+    sessions: [
+      {
+        ...hub().sessions[0],
+        session: {...hub().sessions[0].session, primaryClosed: true},
+        agents,
+        totalAgents: agents.length,
+      },
+    ],
+  };
+  const before = structuredClone(source);
+  stored.set(
+    storageKey,
+    JSON.stringify([
+      ['parent-one', agents.map(item => item.id)],
+      ['parent-two', ['primary']],
+    ]),
+  );
+  let current = source;
+  let selected = 'primary';
+  const closed: string[] = [];
+  let removed = 0;
+  const controls = initAgentControls({
+    api: undefined,
+    selected: () => current.sessions[0],
+    selectedAgent: () => selected,
+    refresh: () => {},
+    removed: () => removed++,
+    closeAgent: () => closed.push(selected),
+  });
+  current = controls.filterHub(source);
+  const visible = [
+    'primary',
+    'legacy-primary',
+    'cancelled-primary',
+    'active-subagent',
+  ];
+  assert.deepEqual(
+    current.sessions[0].agents.map(item => item.id),
+    visible,
+  );
+  assert.equal(current.sessions[0].totalAgents, visible.length);
+  assert.deepEqual(source, before);
+  const retainedDismissals = [
+    ['parent-one', ['closed-primary', 'closed-running-primary', 'subagent']],
+    ['parent-two', ['primary']],
+  ];
+  assert.deepEqual(JSON.parse(stored.get(storageKey)!), retainedDismissals);
+
+  for (const id of ['primary', 'legacy-primary', 'cancelled-primary']) {
+    selected = id;
+    controls.render();
+    assert.equal(nodes['remove-agent'].hidden, false);
+    assert.equal(nodes['remove-agent'].disabled, false);
+    nodes['remove-agent'].click();
+  }
+  assert.deepEqual(closed, ['primary', 'legacy-primary', 'cancelled-primary']);
+  assert.equal(removed, 0);
+  assert.deepEqual(JSON.parse(stored.get(storageKey)!), retainedDismissals);
+  assert.deepEqual(
+    controls
+      .filterHub(source)
+      .sessions[0].agents.map((item: {id: string}) => item.id),
+    visible,
+  );
+
+  const reloaded = initAgentControls({
+    api: undefined,
+    selected: () => source.sessions[0],
+    selectedAgent: () => 'primary',
+    refresh: () => {},
+    closeAgent: () => {},
+  });
+  const restored = reloaded.filterHub(source);
+  assert.deepEqual(
+    restored.sessions[0].agents.map((item: {id: string}) => item.id),
+    visible,
+  );
+  assert.equal(restored.sessions[0].totalAgents, visible.length);
 });

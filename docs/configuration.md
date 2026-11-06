@@ -49,10 +49,10 @@ Interactive Pi settings commands keep their existing global or repository save b
 Open **Actions** beside the conversation title, or right-click a workspace, agent, history entry, or the conversation title. Right-clicking selects that item. With an item focused, **Shift+F10** or the menu key opens its actions; use the arrow keys to navigate and **Esc** to close. **Actions** remains available when the visualization is hidden.
 
 - **New conversation** automatically selects **Default**, or the eligible profile chosen by `default_agent`. You can choose another configuration; a name and initial task are optional. See [agent configurations](agents.md).
-- **Actions → Reset conversation**, **Menu → Reset conversation**, and `/new` replace the selected workspace with a fresh main-agent conversation in the same folder, stopping all of its agents. The workspace stays visible during reset; if the new conversation cannot start, the current one stays open.
+- **Actions → Reset conversation**, **Menu → Reset conversation**, and `/new` replace the selected workspace with a fresh conversation in the same folder, stopping all of its agents. The workspace stays visible during reset; if the new conversation cannot start, the current one stays open.
 - **Menu → Resume session** reopens a saved conversation as a workspace, replacing other open workspaces in the same folder. Other projects stay open. Use **Choose folder** to browse another folder's history.
 - The start screen's **Recent projects** remembers up to twelve folders across app restarts.
-- **Actions → Close workspace** closes the selected workspace and stops all of its agents without deleting saved history. A workspace connected from a terminal is only dismissed from the app.
+- **Actions → Close agent** closes the selected agent. Closing the final primary asks for confirmation, then closes the workspace and stops its agents without deleting saved history. A workspace connected from a terminal is dismissed from the app.
 - **Actions → Cancel agent** stops the selected additional agent; **Cancel all agents** is available from its workspace's actions.
 - **Actions → Remove agent** clears a stopped or finished additional agent from the dashboard. It reappears if it resumes.
 
@@ -108,7 +108,7 @@ Provider details: [Anthropic Fast mode](https://platform.claude.com/docs/en/buil
 
 ### Agent models
 
-**Menu → Tool models → Maximum concurrent agents** sets the total allowed per conversation, including its main agent. The default is **6**, leaving five slots for additional agents. Set **1** to use only the main agent. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
+**Menu → Tool models → Maximum concurrent agents** sets the workspace's agent limit. The default is **6**, including the conversation starter while it is open and leaving five slots for additional agents. Closing the starter releases its slot. A limit of **1** prevents additional launches and resumptions while the starter is open. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
 
 The **Agent models** section in **Menu → Tool models** controls which models background agents may use when their configuration has no explicit model. Fresh settings start with none selected.
 

@@ -840,7 +840,7 @@ async function main() {
     await evaluate(
       () => document.getElementById('agent-max-concurrent-help').textContent,
     ),
-    /Includes the main conversation/,
+    /Includes the primary conversation/,
   );
   const beforeInvalidConcurrency = writes.length;
   for (const invalid of ['0', '1.5', '']) {
@@ -867,7 +867,7 @@ async function main() {
   await setConcurrency('6');
   await save();
   report.cases.push(
-    'concurrency includes the main agent, validates whole numbers, saves across reload, and cancels draft changes',
+    'concurrency includes the primary agent, validates whole numbers, saves across reload, and cancels draft changes',
   );
 
   for (const zoom of [1, 1.25]) {

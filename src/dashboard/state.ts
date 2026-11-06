@@ -24,6 +24,7 @@ export interface DashboardSession {
   speedMode?: import('../speed-modes.ts').SpeedMode;
   agentProfile?: AgentRecord['agentProfile'];
   sessionFile?: string;
+  primaryClosed?: boolean;
   status: 'idle' | 'running' | 'compacting' | 'closed';
   activity: string;
   startedAt: string;
@@ -31,7 +32,7 @@ export interface DashboardSession {
   prompt?: string;
   response?: string;
   error?: string;
-  /** Identifies a live, non-aborted main-agent settlement. Never restored from history. */
+  /** Identifies a live, non-aborted conversation settlement. Never restored from history. */
   completionId?: string;
   context?: AgentRecord['context'];
 }
@@ -134,6 +135,7 @@ export class DashboardState {
   private queue: DashboardSnapshot['queue'];
   private readonly usage = new ModelUsageTracker();
   private previousAgents = new Map<string, DashboardAgent>();
+  private nextCreationOrder = 0;
   private seenMessages = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private cachedSnapshot?: DashboardSnapshot;
@@ -186,11 +188,15 @@ export class DashboardState {
     this.changed();
   }
 
+  agentName(): string {
+    return this.session.agentProfile?.name || 'Primary agent';
+  }
+
   private append(
     kind: DashboardEvent['kind'],
     message: string,
     sourceId = 'parent',
-    sourceName = 'Main agent',
+    sourceName = this.agentName(),
     context: EventContext = {},
   ): void {
     const details: Record<string, string> = {};
@@ -267,6 +273,18 @@ export class DashboardState {
     messages: ParentMessage[],
     conversationsArePublic = false,
   ): void {
+    records = records.map(agent => {
+      let creationOrder = agent.creationOrder;
+      if (!Number.isSafeInteger(creationOrder) || creationOrder! < 0)
+        creationOrder = this.previousAgents.get(agent.id)?.creationOrder;
+      if (!Number.isSafeInteger(creationOrder) || creationOrder! < 0)
+        creationOrder = this.nextCreationOrder;
+      this.nextCreationOrder = Math.max(
+        this.nextCreationOrder,
+        creationOrder! + 1,
+      );
+      return {...agent, creationOrder};
+    });
     const nextTotalAgents = records.length;
     const active = records.filter(agent => !isAgentFinished(agent.status));
     const history = records
@@ -326,7 +344,7 @@ export class DashboardState {
       if (!this.seenMessages.has(message.id)) {
         this.append(
           'message',
-          `To main agent: ${message.message}`,
+          `To ${this.agentName()}: ${message.message}`,
           message.from.id,
           message.from.name,
         );

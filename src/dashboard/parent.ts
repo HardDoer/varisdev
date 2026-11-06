@@ -41,6 +41,8 @@ import {
 } from './features.ts';
 import {DesktopExtensionUI} from './extension-ui.ts';
 import {observeDashboardSession} from './observe.ts';
+import {primaryClosedEntry, persistPrimarySession} from './primary-session.ts';
+import {agentSessionRequest} from './hub.ts';
 import type {DashboardState} from './state.ts';
 import type {DesktopStartup} from '../desktop/startup.ts';
 import {desktopResourceOptions, restoreDesktopSession} from './startup.ts';
@@ -286,12 +288,24 @@ export async function createDashboardParent(
               approval,
               signal: approvalSignal,
             });
+            pi.on('input', () => {
+              if (state?.deliverySnapshot().session.primaryClosed)
+                return {action: 'handled'};
+              return;
+            });
             showCustomMessage = observeDashboardSession(
               pi,
               control,
               (current, ctx) => {
                 state = current;
                 context = ctx;
+                if (control?.snapshot())
+                  control
+                    .getTeam(ctx)
+                    .getManager()
+                    .setPrimaryOpen(
+                      !current.deliverySnapshot().session.primaryClosed,
+                    );
               },
               state,
             );
@@ -467,7 +481,7 @@ export async function createDashboardParent(
     interaction?.signal.throwIfAborted();
     refreshAutocomplete();
     if (!state || !context || !control)
-      throw new Error('Main agent observation did not start.');
+      throw new Error('Conversation observation did not start.');
     state.updateQueue(
       session.getSteeringMessages(),
       session.getFollowUpMessages(),
@@ -503,6 +517,8 @@ export async function createDashboardParent(
   // Extension commands can start model turns without returning their promises.
   const sendUserMessage = session.sendUserMessage.bind(session);
   session.sendUserMessage = (...args) => {
+    if (state!.deliverySnapshot().session.primaryClosed)
+      return Promise.reject(new Error('This primary agent has closed.'));
     const operation = sendUserMessage(...args);
     for (const prompt of extensionPrompts)
       if (prompt.trackExtensionOperations)
@@ -511,6 +527,8 @@ export async function createDashboardParent(
   };
   const sendCustomMessage = session.sendCustomMessage.bind(session);
   session.sendCustomMessage = (message, options) => {
+    if (options?.triggerTurn && state!.deliverySnapshot().session.primaryClosed)
+      return Promise.reject(new Error('This primary agent has closed.'));
     const operation = sendCustomMessage(message, options);
     if (options?.triggerTurn)
       for (const prompt of extensionPrompts)
@@ -564,12 +582,12 @@ export async function createDashboardParent(
   };
   const requireOpen = () => {
     if (closed) throw new Error('This workspace has closed.');
-    if (stopping) throw new Error('The main agent is stopping.');
+    if (stopping) throw new Error('The agent is stopping.');
   };
   const requireIdle = () => {
     requireOpen();
     if (activePrompts.size || session.isStreaming || session.isCompacting)
-      throw new Error('The main agent is already working.');
+      throw new Error('The agent is already working.');
   };
   const configure = async (options: SessionConfiguration) => {
     let model = session.model;
@@ -764,6 +782,12 @@ export async function createDashboardParent(
     async prompt(text, images) {
       requireOpen();
       const parsed = parseSlashCommand(text);
+      if (
+        state!.deliverySnapshot().session.primaryClosed &&
+        !parseAgentMention(text) &&
+        parsed?.name !== 'name'
+      )
+        throw new Error('This primary agent has closed.');
       const name = parsed?.name;
       const args = parsed?.args ?? '';
       const local = name ? nativeCommand(name) : undefined;
@@ -874,7 +898,7 @@ export async function createDashboardParent(
     restartSnapshot() {
       requireIdle();
       if (maintaining || !session.isIdle)
-        throw new Error('The main agent is already working.');
+        throw new Error('The agent is already working.');
       const manager = session.sessionManager;
       const header = manager.getHeader();
       return structuredClone({
@@ -895,14 +919,29 @@ export async function createDashboardParent(
         ],
       });
     },
-    async agentSession(request) {
+    async agentSession(input) {
       if (closed) throw new Error('This workspace has closed.');
+      const request = agentSessionRequest(input);
+      if (request.agentId === 'parent' && request.action === 'close') {
+        if (!state!.deliverySnapshot().session.primaryClosed) {
+          sessionManager.appendCustomEntry(primaryClosedEntry);
+          state!.updateSession({primaryClosed: true});
+        }
+        await abort();
+        persistPrimarySession(sessionManager);
+        if (control!.snapshot())
+          control!.getTeam(context!).getManager().setPrimaryOpen(false);
+        state!.updateSession({activity: 'Primary agent closed'});
+        return;
+      }
       if (!control!.snapshot())
         throw new Error('This session has no agent conversations.');
-      return runAgentSessionRequest(
+      const result = await runAgentSessionRequest(
         control!.getTeam(context!).getManager(),
         request,
       );
+      if (request.action === 'close') showCustomMessage!.syncTeam();
+      return result;
     },
     async cancelAgent(agentId) {
       if (closed) throw new Error('This workspace has closed.');

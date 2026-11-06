@@ -473,9 +473,13 @@ function installHandlers(): void {
   handle('pidev:delete-agent-template', (cwd, input) =>
     hub.deleteAgentTemplate(cwd, input),
   );
-  handle('pidev:agent-session', (sessionId, request) =>
-    hub.agentSession(id(sessionId), request),
-  );
+  handle('pidev:agent-session', async (sessionId, request) => {
+    const workspaceId = id(sessionId);
+    const result = await hub.agentSession(workspaceId, request);
+    if (result && 'workspaceClosed' in result && result.workspaceClosed)
+      terminals.closeWorkspace(workspaceId);
+    return result;
+  });
   handle('pidev:cancel-agent', (sessionId, agentId) =>
     hub.cancelAgent(id(sessionId), agentId),
   );
