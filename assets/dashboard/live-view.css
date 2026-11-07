@@ -49,7 +49,7 @@
 #factory-info:not([popover]) {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 6px 12px;
   padding-bottom: 4px;
@@ -71,24 +71,6 @@
 }
 #factory-effort {
   flex: 0 0 auto;
-}
-#factory-info .context-meter {
-  grid-column: 1;
-  color: var(--muted);
-  font-size: 0.75rem;
-  overflow-wrap: anywhere;
-}
-.factory-file-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  grid-column: 2;
-  grid-row: 1 / span 2;
-}
-.factory-file-actions button {
-  min-height: 32px;
-  padding: 5px 8px;
-  font-size: 0.75rem;
 }
 #factory-info[popover] {
   position: fixed;
@@ -123,12 +105,6 @@
   flex-basis: 100%;
   overflow-wrap: anywhere;
   white-space: normal;
-}
-#factory-info[popover] .factory-file-actions {
-  grid-column: auto;
-  grid-row: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
 }
 #factory-agents-button {
   anchor-name: --factory-agents-button;
@@ -194,20 +170,8 @@
   #factory-info:not([popover]) .factory-model-settings {
     grid-column: 1 / -1;
   }
-  #factory-info:not([popover]) .factory-file-actions {
-    grid-row: 2;
-  }
   .scene-legend {
     display: none;
-  }
-}
-@container (max-width: 420px) {
-  #factory-info:not([popover]) .factory-file-actions {
-    grid-column: 1 / -1;
-    grid-row: 3;
-  }
-  #factory-info:not([popover]) .context-meter {
-    grid-column: 1 / -1;
   }
 }
 @media (max-width: 950px), (max-height: 700px) {
@@ -270,7 +234,7 @@
     font-size: 0.75rem;
   }
   .inspector-heading {
-    padding: 8px 12px;
+    padding: 6px 12px;
   }
   .inspector-tabs button {
     padding: 8px 6px;

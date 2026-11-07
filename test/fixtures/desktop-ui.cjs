@@ -4213,12 +4213,7 @@ async function main() {
               `Expected ${collapsed ? 'collapsed' : 'inline'} details at ${innerWidth}x${innerHeight}; panel ${JSON.stringify($('factory-panel').getBoundingClientRect().toJSON())}`,
             );
           if (!collapsed) {
-            for (const id of [
-              'factory-model',
-              'factory-effort',
-              'context-meter',
-              'markdown-launcher',
-            ]) {
+            for (const id of ['factory-model', 'factory-effort']) {
               const element = $(id);
               const r = element.getBoundingClientRect();
               const panel = $('factory-panel').getBoundingClientRect();
@@ -4231,6 +4226,24 @@ async function main() {
               )
                 throw new Error(`Inline details clipped: ${id}`);
             }
+          }
+          for (const id of ['context-meter', 'markdown-launcher']) {
+            const element = $(id);
+            if (element.hidden) continue;
+            const r = element.getBoundingClientRect();
+            const inspector = $('inspector').getBoundingClientRect();
+            if (
+              !element.checkVisibility() ||
+              !element.closest('.inspector-heading') ||
+              r.width < 50 ||
+              r.left < inspector.left ||
+              r.right > inspector.right ||
+              r.bottom >
+                document
+                  .querySelector('.inspector-tabs')
+                  .getBoundingClientRect().top
+            )
+              throw new Error(`Selected agent header clipped: ${id}`);
           }
           const actions = $('item-actions-button');
           if (
@@ -4422,31 +4435,25 @@ async function main() {
             throw new Error(
               `Info outside ${innerWidth}x${innerHeight}: ${JSON.stringify(bounds.toJSON())}`,
             );
-          return ['factory-model', 'factory-effort', 'context-meter'].map(
-            id => {
-              const item = $(id);
-              item.scrollIntoView({block: 'nearest'});
-              const r = item.getBoundingClientRect();
-              const range = document.createRange();
-              range.selectNodeContents(item);
-              const lines = [...range.getClientRects()];
-              if (
-                r.top < bounds.top ||
-                r.bottom > bounds.bottom ||
-                (collapsed && item.scrollWidth > item.clientWidth + 1) ||
-                parseFloat(getComputedStyle(item).fontSize) < 12 ||
-                (collapsed && id === 'factory-model' && lines.length < 2)
-              )
-                throw new Error(`Unreadable or clipped ${id}`);
-              return item.textContent.replace(/(\d)[\s,](?=\d)/g, '$1');
-            },
-          );
+          return ['factory-model', 'factory-effort'].map(id => {
+            const item = $(id);
+            item.scrollIntoView({block: 'nearest'});
+            const r = item.getBoundingClientRect();
+            const range = document.createRange();
+            range.selectNodeContents(item);
+            const lines = [...range.getClientRects()];
+            if (
+              r.top < bounds.top ||
+              r.bottom > bounds.bottom ||
+              (collapsed && item.scrollWidth > item.clientWidth + 1) ||
+              parseFloat(getComputedStyle(item).fontSize) < 12 ||
+              (collapsed && id === 'factory-model' && lines.length < 2)
+            )
+              throw new Error(`Unreadable or clipped ${id}`);
+            return item.textContent.replace(/(\d)[\s,](?=\d)/g, '$1');
+          });
         }, collapsed);
-        assert.deepEqual(details, [
-          data.session.model,
-          'Effort: medium',
-          '25% · 32000 / 128000 tokens',
-        ]);
+        assert.deepEqual(details, [data.session.model, 'Effort: medium']);
         if (collapsed) {
           if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
             await screenshot('live-view-info-small');
@@ -4469,7 +4476,7 @@ async function main() {
       window.setContentSize(1100, 760);
       await settle();
       await detailsVisible(true);
-      await view('factory-info-button');
+      await view('markdown-launcher');
       data.agents[1].status = 'running';
       data.agents[0].name = 'Updated live worker';
       data.session.activity = 'Thinking about the latest snapshot';
@@ -12469,6 +12476,180 @@ async function main() {
   );
 
   await run(
+    'Selected agent context and Markdown files stay accessible with the visualization hidden',
+    async () => {
+      const data = hub.sessions[0];
+      data.session.context = {tokens: 3200, window: 64000, percent: 5};
+      data.agents = [
+        {
+          id: 'context-worker',
+          name: 'Context worker',
+          task: 'Read project files',
+          cwd: directory,
+          status: 'running',
+          createdAt: at,
+          startedAt: at,
+          context: {tokens: 8000, window: 32000, percent: 25},
+        },
+      ];
+      data.totalAgents = 1;
+      await publish();
+      await clickPointer('#app-menu-button');
+      await evaluate(() => {
+        document.getElementById('app-menu-layout').open = true;
+      });
+      await clickPointer('#layout-visualization');
+      await press('Escape');
+      await reloadPage();
+      assert.equal(
+        await evaluate(() => document.getElementById('factory-panel').hidden),
+        true,
+        'The visualization stays hidden after reload',
+      );
+      const contextText = () =>
+        evaluate(() =>
+          document
+            .getElementById('context-meter')
+            .textContent.replace(/(\d)[\s,](?=\d)/g, '$1'),
+        );
+      assert.equal(await contextText(), 'Context: 5% · 3200 / 64000 tokens');
+      await clickPointer(
+        '#active-workers [data-context-unit="context-worker"]',
+      );
+      assert.equal(await contextText(), 'Context: 25% · 8000 / 32000 tokens');
+      data.agents[0].context = {tokens: 9600, window: 32000, percent: 30};
+      await publish();
+      assert.equal(await contextText(), 'Context: 30% · 9600 / 32000 tokens');
+      await clickPointer('#markdown-launcher');
+      await until(
+        () => !document.getElementById('markdown-panel').hidden,
+        'Markdown files did not open from the selected agent header',
+      );
+      await clickPointer('#markdown-close');
+      assert.equal(
+        await evaluate(() => document.activeElement.id),
+        'markdown-launcher',
+        'Closing Markdown returns focus to the header button',
+      );
+      await clickPointer('#back-to-parent');
+      assert.equal(await contextText(), 'Context: 5% · 3200 / 64000 tokens');
+      const themes = await evaluate(() =>
+        [...document.getElementById('factory-theme').options].map(
+          option => option.value,
+        ),
+      );
+      for (const theme of themes) {
+        for (const [width, height, zoom] of [
+          [1600, 1000, 1],
+          [1100, 760, 1.5],
+          [900, 760, 1.5],
+          [1600, 1000, 2],
+        ]) {
+          window.setContentSize(width, height);
+          window.webContents.setZoomFactor(zoom);
+          await evaluate(theme => {
+            const select = document.getElementById('factory-theme');
+            select.value = theme;
+            select.dispatchEvent(new Event('change'));
+          }, theme);
+          await settle();
+          await evaluate(
+            async (width, height, zoom) => {
+              const deadline = Date.now() + 2000;
+              let previous;
+              let stable = 0;
+              while (Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 20));
+                const inspector = document
+                  .getElementById('inspector')
+                  .getBoundingClientRect();
+                const controls = [
+                  'parent-prompt',
+                  'abort-parent',
+                  'send-prompt',
+                ].map(id =>
+                  document.getElementById(id).getBoundingClientRect(),
+                );
+                const geometry = JSON.stringify([
+                  innerWidth,
+                  innerHeight,
+                  inspector,
+                  ...controls,
+                ]);
+                const ready =
+                  Math.abs(innerWidth - width / zoom) <= 1 &&
+                  Math.abs(innerHeight - height / zoom) <= 1 &&
+                  controls.every(
+                    rect =>
+                      rect.height > 0 &&
+                      rect.top >= inspector.top &&
+                      rect.bottom <= inspector.bottom,
+                  );
+                stable = ready && geometry === previous ? stable + 1 : 0;
+                if (stable >= 2) return;
+                previous = geometry;
+              }
+              throw new Error(
+                `Selected agent layout did not settle at ${width}x${height}/${zoom}: ${previous}`,
+              );
+            },
+            width,
+            height,
+            zoom,
+          );
+          await evaluate(() => {
+            const inspector = document
+              .getElementById('inspector')
+              .getBoundingClientRect();
+            const tabs = document
+              .querySelector('.inspector-tabs')
+              .getBoundingClientRect();
+            for (const id of ['context-meter', 'markdown-launcher']) {
+              const item = document.getElementById(id);
+              const rect = item.getBoundingClientRect();
+              const range = document.createRange();
+              range.selectNodeContents(item);
+              if (
+                !item.checkVisibility() ||
+                !item.closest('.inspector-heading') ||
+                rect.left < inspector.left ||
+                rect.right > inspector.right ||
+                rect.top < inspector.top ||
+                rect.bottom > tabs.top ||
+                [...range.getClientRects()].some(
+                  line => line.left < rect.left || line.right > rect.right + 1,
+                ) ||
+                parseFloat(getComputedStyle(item).fontSize) < 12
+              )
+                throw new Error(`Selected agent information is clipped: ${id}`);
+            }
+            for (const id of ['parent-prompt', 'abort-parent', 'send-prompt']) {
+              const item = document.getElementById(id);
+              const rect = item.getBoundingClientRect();
+              if (
+                !item.checkVisibility() ||
+                rect.top < inspector.top ||
+                rect.bottom > inspector.bottom
+              )
+                throw new Error(`Selected agent control is clipped: ${id}`);
+            }
+            const main = document.querySelector('main');
+            if (
+              main.scrollHeight > main.clientHeight + 1 ||
+              main.scrollWidth > main.clientWidth + 1
+            )
+              throw new Error('The dashboard must fit without page scrolling');
+          });
+          if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+            await screenshot(
+              `selected-agent-context-${theme}-${width}-${zoom}`,
+            );
+        }
+      }
+    },
+  );
+
+  await run(
     'Context explains included Markdown and available resources with safe previews and parent scope',
     async () => {
       const preview =
@@ -12558,7 +12739,7 @@ async function main() {
           () =>
             !!document
               .getElementById('markdown-launcher')
-              .closest('.factory-file-actions'),
+              .closest('.inspector-heading'),
         ),
         true,
       );
@@ -13050,7 +13231,7 @@ async function main() {
             .textContent.replace(/[^\dA-Za-z%·/—]/g, ''),
           hidden: document.getElementById('context-meter').hidden,
         })),
-        {text: '25%·8000/32000tokens', hidden: false},
+        {text: 'Context25%·8000/32000tokens', hidden: false},
         'The selected worker header shows its context usage',
       );
       await evaluate(() => document.getElementById('tab-tokens').click());
@@ -13096,7 +13277,7 @@ async function main() {
         })),
         {
           recipient: 'Model usage for Fixture worker',
-          header: '25%·8000/32000tokens',
+          header: 'Context25%·8000/32000tokens',
           totals: [3000, 100, 150, 50, 3300],
           cost: '$0.0123',
           context: '8000/32000tokens',
@@ -13124,9 +13305,9 @@ async function main() {
             evaluate(() => {
               document.activeElement?.blur();
               const panel = document.getElementById('panel-tokens');
-              const section = document.getElementById('usage-context-section');
+              const item = document.getElementById('usage-context');
               const viewport = panel.getBoundingClientRect();
-              const bounds = section.getBoundingClientRect();
+              const bounds = item.getBoundingClientRect();
               panel.scrollTop += bounds.top - viewport.top - 12;
               const context = document
                 .getElementById('usage-context')
@@ -13176,7 +13357,7 @@ async function main() {
             .getAttribute('aria-valuenow'),
         })),
         {
-          header: '0%·0/32000tokens',
+          header: 'Context0%·0/32000tokens',
           panel: '0/32000tokens',
           hidden: false,
           now: '0',
@@ -13199,7 +13380,7 @@ async function main() {
           meterHidden: document.getElementById('context-budget-meter').hidden,
         })),
         {
-          header: '—·—/32000tokens',
+          header: 'Context—·—/32000tokens',
           headerHidden: false,
           panel: 'Available after the next response',
           meterHidden: true,

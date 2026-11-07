@@ -152,6 +152,24 @@
   min-height: 32px;
   align-items: center;
 }
+.inspector-heading > .inspector-context-row {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-bottom: 0;
+}
+#context-meter {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.inspector-context-row > button {
+  min-height: 32px;
+  margin-left: auto;
+}
 #inspector-activity {
   flex: 1 1 auto;
   min-width: 0;
@@ -169,7 +187,11 @@
     gap: 6px;
   }
   .inspector-heading > .inspector-title-row {
+    height: 32px;
     gap: 6px;
+  }
+  .inspector-heading > :is(.inspector-title-row, .inspector-activity-row) {
+    margin-bottom: 2px;
   }
   #application-controls {
     gap: 6px;

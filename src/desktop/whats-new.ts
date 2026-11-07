@@ -7,6 +7,12 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '1.13.1',
+    [
+      'Context usage and Markdown files are available in the selected agent header, including when the visualization is hidden.',
+    ],
+  ],
+  [
     '1.13.0',
     [
       'Agents use configuration names and primary or subagent labels.',

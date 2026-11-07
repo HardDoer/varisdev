@@ -4,7 +4,7 @@ export function initLiveView() {
   const panel = document.getElementById('factory-panel');
   const info = document.getElementById('factory-info');
   const infoButton = document.getElementById('factory-info-button');
-  const actions = panel.querySelector('.factory-file-actions');
+  const actions = document.querySelector('.inspector-context-row');
   const drawer = document.getElementById('factory-agents-drawer');
   const drawerButton = document.getElementById('factory-agents-button');
   const workers = document.querySelector('.worker-panels');

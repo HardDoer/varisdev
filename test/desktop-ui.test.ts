@@ -77,7 +77,7 @@ void test(
       process.env.DESKTOP_UI_CASE_PATTERN
         ? report.cases.length > 0
         : report.cases.length,
-      process.env.DESKTOP_UI_CASE_PATTERN ? true : 75,
+      process.env.DESKTOP_UI_CASE_PATTERN ? true : 76,
       'All renderer scenarios must execute',
     );
   },

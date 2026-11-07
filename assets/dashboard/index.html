@@ -1366,8 +1366,6 @@
                     hidden
                   ></span>
                 </div>
-                <p id="context-meter" class="context-meter" hidden></p>
-                <div class="factory-file-actions"></div>
               </div>
             </div>
             <div class="factory-metrics" aria-label="Agent counts">
@@ -1577,6 +1575,18 @@
                 </button>
                 <span id="inspector-status" class="status-badge"></span>
               </div>
+            </div>
+            <div class="inspector-context-row">
+              <p id="context-meter" hidden></p>
+              <button
+                id="markdown-launcher"
+                class="quiet-button"
+                type="button"
+                aria-controls="markdown-panel"
+                aria-expanded="false"
+              >
+                Markdown files
+              </button>
             </div>
           </div>
           <div
@@ -2341,15 +2351,6 @@
         </div>
       </form>
     </dialog>
-    <button
-      id="markdown-launcher"
-      class="quiet-button"
-      type="button"
-      aria-controls="markdown-panel"
-      aria-expanded="false"
-    >
-      Markdown files
-    </button>
     <section id="markdown-panel" aria-labelledby="markdown-title" hidden>
       <header
         id="markdown-heading"

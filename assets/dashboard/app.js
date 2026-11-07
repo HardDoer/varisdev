@@ -1047,14 +1047,6 @@ function renderFactory() {
     );
     if (item) text(item, value);
   }
-  const context = selected.context;
-  text(
-    $('context-meter'),
-    context
-      ? `${context.percent === null ? '—' : `${Math.round(context.percent)}%`} · ${context.tokens === null ? '—' : context.tokens.toLocaleString()} / ${context.window.toLocaleString()} tokens`
-      : '',
-  );
-  $('context-meter').hidden = !context;
   text(
     $('parent-activity'),
     sessionReplacement?.session.id === state.sessionId
@@ -1852,6 +1844,14 @@ function renderInspector() {
   text($('conversation-kind-label'), conversationKindLabel(kind));
   text($('inspector-title'), unit.name);
   $('inspector-title').title = unit.name;
+  const context = unit.context;
+  text(
+    $('context-meter'),
+    context
+      ? `Context: ${context.percent === null ? '—' : `${Math.round(context.percent)}%`} · ${context.tokens === null ? '—' : context.tokens.toLocaleString()} / ${context.window.toLocaleString()} tokens`
+      : '',
+  );
+  $('context-meter').hidden = !context;
   for (const id of ['inspector-title', 'item-actions-button']) {
     $(id).dataset.contextSession = data.session.id;
     $(id).dataset.contextUnit = state.unitId;
