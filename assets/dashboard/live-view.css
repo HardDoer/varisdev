@@ -69,9 +69,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#factory-effort {
-  flex: 0 0 auto;
-}
 #factory-info[popover] {
   position: fixed;
   position-anchor: --factory-info-button;

@@ -61,7 +61,7 @@ The weapons also damage scenery: the cane leaves dents, gunshots leave bullet ho
 
 Scroll up in a conversation to read its full history, including after resuming a saved session. Tool entries expand to show their inputs and results. **Follow** returns to the latest messages as they arrive.
 
-The selected agent's header shows its context usage and a **Markdown files** button for the workspace. Both remain accessible when the visualization is hidden.
+The selected agent's header shows its effort level, context usage, and a **Markdown files** button for the workspace. These remain accessible when the visualization is hidden.
 
 In conversations, click file links or filenames in inline code, such as `src/main.js`, to open them; relative paths use the selected workspace. Markdown files open in VarisDev's editor, other files use their default application, and HTTP(S) links open in your browser.
 

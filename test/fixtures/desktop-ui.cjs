@@ -4213,7 +4213,7 @@ async function main() {
               `Expected ${collapsed ? 'collapsed' : 'inline'} details at ${innerWidth}x${innerHeight}; panel ${JSON.stringify($('factory-panel').getBoundingClientRect().toJSON())}`,
             );
           if (!collapsed) {
-            for (const id of ['factory-model', 'factory-effort']) {
+            for (const id of ['factory-model']) {
               const element = $(id);
               const r = element.getBoundingClientRect();
               const panel = $('factory-panel').getBoundingClientRect();
@@ -4227,7 +4227,11 @@ async function main() {
                 throw new Error(`Inline details clipped: ${id}`);
             }
           }
-          for (const id of ['context-meter', 'markdown-launcher']) {
+          for (const id of [
+            'inspector-effort',
+            'context-meter',
+            'markdown-launcher',
+          ]) {
             const element = $(id);
             if (element.hidden) continue;
             const r = element.getBoundingClientRect();
@@ -4435,7 +4439,7 @@ async function main() {
             throw new Error(
               `Info outside ${innerWidth}x${innerHeight}: ${JSON.stringify(bounds.toJSON())}`,
             );
-          return ['factory-model', 'factory-effort'].map(id => {
+          return ['factory-model'].map(id => {
             const item = $(id);
             item.scrollIntoView({block: 'nearest'});
             const r = item.getBoundingClientRect();
@@ -4453,7 +4457,7 @@ async function main() {
             return item.textContent.replace(/(\d)[\s,](?=\d)/g, '$1');
           });
         }, collapsed);
-        assert.deepEqual(details, [data.session.model, 'Effort: medium']);
+        assert.deepEqual(details, [data.session.model]);
         if (collapsed) {
           if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
             await screenshot('live-view-info-small');
@@ -6839,17 +6843,17 @@ async function main() {
         assert.deepEqual(
           await evaluate(() => {
             const icon = document.getElementById('factory-speed-mode');
-            const effort = document.getElementById('factory-effort');
+            const model = document.getElementById('factory-model');
             const bounds = icon.getBoundingClientRect();
-            const effortBounds = effort.getBoundingClientRect();
+            const modelBounds = model.getBoundingClientRect();
             return {
               hidden: icon.hidden,
               text: icon.textContent,
               label: icon.getAttribute('aria-label'),
-              besideEffort:
-                effort.nextElementSibling === icon &&
-                Math.abs(bounds.top - effortBounds.top) < effortBounds.height &&
-                bounds.left >= effortBounds.right,
+              afterModel:
+                model.nextElementSibling === icon &&
+                (bounds.top >= modelBounds.bottom ||
+                  bounds.left >= modelBounds.right),
               visible:
                 icon.checkVisibility() &&
                 bounds.width > 0 &&
@@ -6861,7 +6865,7 @@ async function main() {
             hidden: false,
             text: glyph,
             label,
-            besideEffort: true,
+            afterModel: true,
             visible: true,
           },
         );
@@ -7442,6 +7446,12 @@ async function main() {
       );
       assert.equal(owner.agents[0].thinkingLevel, 'low');
       assert.equal(owner.session.thinkingLevel, 'medium');
+      await until(
+        () =>
+          document.getElementById('inspector-effort').textContent ===
+          'Effort: low',
+        'The conversation header did not reflect the effort command',
+      );
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
         editor.value = '/fast on';
@@ -11868,7 +11878,7 @@ async function main() {
         assert.deepEqual(
           await evaluate(() => ({
             model: document.getElementById('factory-model').textContent,
-            effortHidden: document.getElementById('factory-effort').hidden,
+            effortHidden: document.getElementById('inspector-effort').hidden,
           })),
           {model: 'fixture/small', effortHidden: true},
         );
@@ -12476,7 +12486,7 @@ async function main() {
   );
 
   await run(
-    'Selected agent context and Markdown files stay accessible with the visualization hidden',
+    'Selected agent effort context and Markdown files stay accessible with the visualization hidden',
     async () => {
       const data = hub.sessions[0];
       data.session.context = {tokens: 3200, window: 64000, percent: 5};
@@ -12484,6 +12494,8 @@ async function main() {
         {
           id: 'context-worker',
           name: 'Context worker',
+          agentMode: 'subagent',
+          thinkingLevel: 'high',
           task: 'Read project files',
           cwd: directory,
           status: 'running',
@@ -12494,6 +12506,12 @@ async function main() {
       ];
       data.totalAgents = 1;
       await publish();
+      const effort = () =>
+        evaluate(() => {
+          const item = document.getElementById('inspector-effort');
+          return {text: item.textContent, visible: item.checkVisibility()};
+        });
+      assert.deepEqual(await effort(), {text: 'Effort: medium', visible: true});
       await clickPointer('#app-menu-button');
       await evaluate(() => {
         document.getElementById('app-menu-layout').open = true;
@@ -12513,13 +12531,23 @@ async function main() {
             .textContent.replace(/(\d)[\s,](?=\d)/g, '$1'),
         );
       assert.equal(await contextText(), 'Context: 5% · 3200 / 64000 tokens');
+      assert.deepEqual(await effort(), {text: 'Effort: medium', visible: true});
       await clickPointer(
         '#active-workers [data-context-unit="context-worker"]',
       );
       assert.equal(await contextText(), 'Context: 25% · 8000 / 32000 tokens');
+      assert.deepEqual(await effort(), {text: 'Effort: high', visible: true});
       data.agents[0].context = {tokens: 9600, window: 32000, percent: 30};
+      data.agents[0].thinkingLevel = 'xhigh';
       await publish();
       assert.equal(await contextText(), 'Context: 30% · 9600 / 32000 tokens');
+      assert.deepEqual(await effort(), {text: 'Effort: xhigh', visible: true});
+      data.agents[0].thinkingLevel = 'off';
+      await publish();
+      assert.deepEqual(await effort(), {text: 'Effort: off', visible: true});
+      delete data.agents[0].thinkingLevel;
+      await publish();
+      assert.deepEqual(await effort(), {text: 'Effort: ', visible: false});
       await clickPointer('#markdown-launcher');
       await until(
         () => !document.getElementById('markdown-panel').hidden,
@@ -12533,6 +12561,10 @@ async function main() {
       );
       await clickPointer('#back-to-parent');
       assert.equal(await contextText(), 'Context: 5% · 3200 / 64000 tokens');
+      assert.deepEqual(await effort(), {text: 'Effort: medium', visible: true});
+      data.session.thinkingLevel = 'xhigh';
+      await publish();
+      assert.deepEqual(await effort(), {text: 'Effort: xhigh', visible: true});
       const themes = await evaluate(() =>
         [...document.getElementById('factory-theme').options].map(
           option => option.value,
@@ -12604,7 +12636,11 @@ async function main() {
             const tabs = document
               .querySelector('.inspector-tabs')
               .getBoundingClientRect();
-            for (const id of ['context-meter', 'markdown-launcher']) {
+            for (const id of [
+              'inspector-effort',
+              'context-meter',
+              'markdown-launcher',
+            ]) {
               const item = document.getElementById(id);
               const rect = item.getBoundingClientRect();
               const range = document.createRange();

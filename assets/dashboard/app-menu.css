@@ -158,6 +158,9 @@
   gap: 4px 10px;
   margin-bottom: 0;
 }
+#inspector-effort {
+  flex: 0 0 auto;
+}
 #context-meter {
   flex: 1 1 0;
   min-width: 0;

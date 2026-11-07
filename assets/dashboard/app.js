@@ -1030,8 +1030,6 @@ function renderFactory() {
   $('factory-title').title = selected.name;
   text($('factory-model'), selected.model);
   $('factory-model').title = selected.model || '';
-  text($('factory-effort'), `Effort: ${selected.thinkingLevel ?? ''}`);
-  $('factory-effort').hidden = !selected.thinkingLevel;
   const speedMode = selected.speedMode;
   const speedIcon = $('factory-speed-mode');
   speedIcon.hidden = speedMode !== 'fast' && speedMode !== 'ultrafast';
@@ -1844,6 +1842,8 @@ function renderInspector() {
   text($('conversation-kind-label'), conversationKindLabel(kind));
   text($('inspector-title'), unit.name);
   $('inspector-title').title = unit.name;
+  text($('inspector-effort'), `Effort: ${unit.thinkingLevel ?? ''}`);
+  $('inspector-effort').hidden = !unit.thinkingLevel;
   const context = unit.context;
   text(
     $('context-meter'),
