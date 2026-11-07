@@ -17,7 +17,6 @@ export interface AgentSpec {
   pinnedModel?: string;
   agentMode?: 'primary' | 'subagent' | 'all';
   agentProfile?: SessionFeatures['agentProfile'];
-  timeoutMs?: number;
   autoCleanup?: boolean;
   thinkingLevel?: string;
   speedMode?: import('../speed-modes.ts').SpeedMode;
@@ -110,20 +109,6 @@ function copyRecord(record: AgentRecord): AgentRecord {
     usage: record.usage ? copyModelUsage(record.usage) : undefined,
     context: record.context ? {...record.context} : undefined,
   };
-}
-
-function formatDuration(ms: number): string {
-  for (const [size, unit] of [
-    [3600000, 'hour'],
-    [60000, 'minute'],
-    [1000, 'second'],
-  ] as const) {
-    if (ms % size === 0) {
-      const value = ms / size;
-      return `${value} ${unit}${value === 1 ? '' : 's'}`;
-    }
-  }
-  return `${ms} millisecond${ms === 1 ? '' : 's'}`;
 }
 
 /** Owns background work for one parent session. */
@@ -260,12 +245,6 @@ export class AgentOrchestrator {
     this.assertAdditionalAgentsAllowed();
     if (!spec.task.trim() || !spec.name.trim()) {
       throw new Error('Agent name and task cannot be empty.');
-    }
-    if (
-      spec.timeoutMs !== undefined &&
-      (!Number.isInteger(spec.timeoutMs) || spec.timeoutMs < 1)
-    ) {
-      throw new Error('Agent timeout must be a positive integer.');
     }
     const retained = [...this.jobs.values()].filter(
       job => !isAgentFinished(job.record.status) || job.record.resumable,
@@ -703,19 +682,7 @@ export class AgentOrchestrator {
   }
 
   private async run(job: Job): Promise<void> {
-    const controller = job.controller!;
-    const {signal} = controller;
-    const {timeoutMs} = job.record;
-    const timer =
-      timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            job.stopVersion = (job.stopVersion ?? 0) + 1;
-            controller.abort(
-              new Error(`Timed out after ${formatDuration(timeoutMs)}.`),
-            );
-            this.pump();
-          }, timeoutMs);
+    const {signal} = job.controller!;
     try {
       signal.throwIfAborted();
       job.record.startedAt ??= new Date().toISOString();
@@ -765,7 +732,6 @@ export class AgentOrchestrator {
           ? 'Cancelled'
           : job.record.error.slice(0, 2000);
     } finally {
-      clearTimeout(timer);
       this.captureUsage(job);
       this.captureContext(job);
       this.captureConversation(job);

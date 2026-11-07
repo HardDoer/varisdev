@@ -6,6 +6,7 @@ export interface DesktopWhatsNewState {
 }
 
 const releases = new Map<string, readonly string[]>([
+  ['1.13.3', ['Removed agent execution timeouts.']],
   [
     '1.13.2',
     [

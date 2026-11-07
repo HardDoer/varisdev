@@ -212,49 +212,39 @@ void test('messages sent before a worker slot opens use native steering without 
   await manager.wait([id]);
 });
 
-for (const action of ['cancel', 'timeout'] as const) {
-  void test(`${action} discards pending messages and waits for active tools to stop`, async t => {
-    t.mock.timers.enable({apis: ['setTimeout']});
-    const manager = new AgentOrchestrator(2);
-    const first = controlledWorker(false);
-    const other = controlledWorker();
-    t.after(() => {
-      first.runs[0]?.finish('cleanup');
-      return manager.close();
-    });
-    let created = 0;
-    const {id} = manager.spawn({...spec, timeoutMs: 100}, async () => {
-      created++;
-      return first.worker;
-    });
-    const queued = manager.spawn(spec, async () => other.worker);
-    await until(() => first.runs.length === 1);
-    t.mock.timers.tick(60);
-    await manager.send(id, 'Discard this message');
-    if (action === 'cancel') manager.cancel(id);
-    else t.mock.timers.tick(40);
-    assert.equal(first.runs[0].signal.aborted, true);
-    assert.equal(first.disposed, 0);
-    assert.equal(other.runs.length, 0);
-    first.runs[0].finish('late result');
-    await until(() => other.runs.length === 1);
-    const result = manager.get(id);
-    assert.equal(result.status, action === 'cancel' ? 'cancelled' : 'failed');
-    assert.match(
-      result.error!,
-      action === 'cancel'
-        ? /Agent cancelled/
-        : /Timed out after 100 milliseconds/,
-    );
-    assert.equal(result.output, undefined);
-    assert.equal(created, 1);
-    assert.equal(first.disposed, 0);
-    other.runs[0].finish('done');
-    await manager.wait([queued.id]);
+void test('cancel discards pending messages and waits for active tools to stop', async t => {
+  const manager = new AgentOrchestrator(2);
+  const first = controlledWorker(false);
+  const other = controlledWorker();
+  t.after(() => {
+    first.runs[0]?.finish('cleanup');
+    return manager.close();
   });
-}
+  let created = 0;
+  const {id} = manager.spawn(spec, async () => {
+    created++;
+    return first.worker;
+  });
+  const queued = manager.spawn(spec, async () => other.worker);
+  await until(() => first.runs.length === 1);
+  await manager.send(id, 'Discard this message');
+  manager.cancel(id);
+  assert.equal(first.runs[0].signal.aborted, true);
+  assert.equal(first.disposed, 0);
+  assert.equal(other.runs.length, 0);
+  first.runs[0].finish('late result');
+  await until(() => other.runs.length === 1);
+  const result = manager.get(id);
+  assert.equal(result.status, 'cancelled');
+  assert.match(result.error!, /Agent cancelled/);
+  assert.equal(result.output, undefined);
+  assert.equal(created, 1);
+  assert.equal(first.disposed, 0);
+  other.runs[0].finish('done');
+  await manager.wait([queued.id]);
+});
 
-void test('timeouts exclude queue time and reset when completed agents resume', async t => {
+void test('legacy deadlines do not stop agent setup, running work, or resumed work', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   const manager = new AgentOrchestrator(2);
   const busy = controlledWorker();
@@ -266,7 +256,8 @@ void test('timeouts exclude queue time and reset when completed agents resume', 
   });
   manager.spawn(spec, async () => busy.worker);
   let created = 0;
-  const {id} = manager.spawn({...spec, timeoutMs: 100}, async () => {
+  const legacySpec = {...spec, timeoutMs: 100};
+  const {id} = manager.spawn(legacySpec, async () => {
     created++;
     return initializing.promise;
   });
@@ -275,24 +266,56 @@ void test('timeouts exclude queue time and reset when completed agents resume', 
   assert.equal(manager.get(id).status, 'queued');
   busy.runs[0].finish('done');
   await until(() => created === 1);
-  t.mock.timers.tick(60);
+  t.mock.timers.tick(3600001);
   initializing.resolve(controlled.worker);
   await until(() => controlled.runs.length === 1);
-  t.mock.timers.tick(39);
+  t.mock.timers.tick(3600001);
+  assert.equal(manager.get(id).status, 'running');
   assert.equal(controlled.runs[0].signal.aborted, false);
   controlled.runs[0].finish('initial result');
   await manager.wait([id]);
   t.mock.timers.tick(1000);
   await manager.send(id, 'Resume the conversation');
   await until(() => controlled.runs.length === 2);
-  t.mock.timers.tick(99);
+  t.mock.timers.tick(3600001);
+  assert.equal(manager.get(id).status, 'running');
   assert.equal(controlled.runs[1].signal.aborted, false);
-  t.mock.timers.tick(1);
+  controlled.runs[1].finish('resumed result');
   const [result] = await manager.wait([id]);
-  assert.equal(result.status, 'failed');
-  assert.match(result.error!, /Timed out after 100 milliseconds/);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output, 'resumed result');
+  assert.equal(result.error, undefined);
   assert.equal(created, 1);
   assert.equal(controlled.disposed, 0);
+});
+
+void test('restored agents ignore saved execution deadlines and remain cancellable', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const manager = new AgentOrchestrator(2);
+  t.after(() => manager.close());
+  const controlled = controlledWorker();
+  const saved = {
+    ...spec,
+    id: 'saved-worker',
+    status: 'completed' as const,
+    activity: 'Completed',
+    createdAt: new Date().toISOString(),
+    sessionFile: '/saved/transcript.jsonl',
+    resumable: true,
+    timeoutMs: 100,
+    conversation: [],
+    conversationTruncated: false,
+  };
+  manager.restore([saved], async () => controlled.worker);
+  await manager.send(saved.id, 'Continue saved work');
+  await until(() => controlled.runs.length === 1);
+  t.mock.timers.tick(3600001);
+  assert.equal(manager.get(saved.id).status, 'running');
+  assert.equal(controlled.runs[0].signal.aborted, false);
+  manager.cancel(saved.id);
+  const [result] = await manager.wait([saved.id]);
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.error, 'Agent cancelled.');
 });
 
 void test('cancellation retains the worker slot until active work has stopped', async t => {
@@ -317,25 +340,17 @@ void test('cancellation retains the worker slot until active work has stopped', 
   await manager.wait([b.id]);
 });
 
-void test('startup failures and timeouts release slots and preserve errors', async t => {
+void test('startup and worker failures release slots and preserve errors', async t => {
   const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   const broken = manager.spawn(spec, async () => {
     throw new Error('Missing credentials');
   });
-  const slow = controlledWorker();
-  const timed = manager.spawn({...spec, timeoutMs: 20}, async () => ({
-    ...slow.worker,
-    async run(message, signal, onActivity) {
-      try {
-        return await slow.worker.run(message, signal, onActivity);
-      } catch {
-        // Providers may return a generic abort error when a deadline expires.
-        throw new Error('Request was aborted');
-      }
-    },
-  }));
-  const results = await manager.wait([broken.id, timed.id], {timeoutMs: 1000});
+  const controlled = controlledWorker();
+  const failed = manager.spawn(spec, async () => controlled.worker);
+  await until(() => controlled.runs.length === 1);
+  controlled.runs[0].fail(new Error('Provider request failed'));
+  const results = await manager.wait([broken.id, failed.id], {timeoutMs: 1000});
   assert.deepEqual(
     results.map(result => result.status),
     ['failed', 'failed'],
@@ -350,14 +365,14 @@ void test('startup failures and timeouts release slots and preserve errors', asy
       ['assistant', '', 'Missing credentials'],
     ],
   );
-  assert.match(results[1].error ?? '', /Timed out after 20 milliseconds/);
-  assert.match(results[1].activity, /Timed out after 20 milliseconds/);
-  assert.equal(slow.disposed, 0);
-  assert.equal(manager.get(timed.id).resumable, true);
-  await manager.send(timed.id, 'retry');
-  await until(() => slow.runs.length === 2);
-  slow.runs[1].finish('Recovered');
-  assert.equal((await manager.wait([timed.id]))[0].output, 'Recovered');
+  assert.equal(results[1].error, 'Provider request failed');
+  assert.equal(results[1].activity, 'Provider request failed');
+  assert.equal(controlled.disposed, 0);
+  assert.equal(manager.get(failed.id).resumable, true);
+  await manager.send(failed.id, 'retry');
+  await until(() => controlled.runs.length === 2);
+  controlled.runs[1].finish('Recovered');
+  assert.equal((await manager.wait([failed.id]))[0].output, 'Recovered');
 });
 
 void test('wait supports any, all, polling, and interruption without cancelling agents', async t => {
@@ -805,14 +820,20 @@ void test('agent tools select registered models and effort without adding parent
     commands.get('agents')!.handler(args, ctx as ExtensionCommandContext);
   await events.get('before_agent_start')!({}, ctx);
   try {
+    const spawnParameters = tools.get('agent_spawn')!.parameters as {
+      properties: Record<string, unknown>;
+    };
+    assert.equal(Object.hasOwn(spawnParameters.properties, 'timeoutMs'), false);
     const spawned = await execute('agent_spawn', {
       name: 'Review',
       task: 'Review code',
+      timeoutMs: 1000,
     });
     const spawnedRecord = (spawned.details as {agents: AgentRecord[]})
       .agents[0];
     const id = spawnedRecord.id;
     assert.equal(spawnedRecord.agentMode, 'all');
+    assert.equal(Object.hasOwn(spawnedRecord, 'timeoutMs'), false);
     await until(() => controlled.runs.length === 1);
     t.mock.timers.tick(3600001);
     await nextTick();

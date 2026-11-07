@@ -115,14 +115,6 @@ const spawnSchema = Type.Object({
       },
     ),
   ),
-  timeoutMs: Type.Optional(
-    Type.Integer({
-      minimum: 1000,
-      maximum: 3600000,
-      description:
-        'Execution deadline, excluding queue time. Resets on resume; no deadline by default.',
-    }),
-  ),
   autoCleanup: Type.Optional(
     Type.Boolean({
       description:
@@ -753,7 +745,6 @@ export function registerAgentTools(
         agentMode: agentProfile.mode,
         agentProfile: agentProfileSummary(agentProfile),
         thinkingLevel,
-        timeoutMs: params.timeoutMs,
         autoCleanup: params.autoCleanup,
       },
       id => buildWorker(current.get(id), ctx, team, configuration),
