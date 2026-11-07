@@ -1,14 +1,15 @@
 ---
-name: Code review
-description: Reviews the requested changes for concrete defects
+name: "Code review"
+description: "Reviews the requested changes for concrete defects"
 mode: subagent
-model: openai/gpt-6-astra
+model: "openai/gpt-6-astra"
+thinkingLevel: xhigh
 permissions:
-  - action: edit
-    resource: '*'
+  - action: "edit"
+    resource: "*"
     effect: deny
-  - action: subagent
-    resource: '*'
+  - action: "subagent"
+    resource: "*"
     effect: deny
 ---
 
