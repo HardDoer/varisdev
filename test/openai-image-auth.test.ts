@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {join, resolve} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {
   ModelRegistry,
@@ -45,7 +44,9 @@ type ImageTool = {
 };
 
 async function fixture(t: TestContext, credential?: object) {
-  const cwd = await mkdtemp(join(tmpdir(), 'varisdev-image-auth-'));
+  const root = resolve('.varisdev/tool-output');
+  await mkdir(root, {recursive: true});
+  const cwd = await mkdtemp(join(root, 'image-auth-'));
   t.after(() => rm(cwd, {recursive: true, force: true}));
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL']) {
     const previous = process.env[name];

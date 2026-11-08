@@ -6,6 +6,14 @@ export interface DesktopWhatsNewState {
 }
 
 const releases = new Map<string, readonly string[]>([
+  [
+    '1.14.0',
+    [
+      'The selected agent’s model appears in the conversation header.',
+      'Agent status uses Running instead of Working, with one status indicator in the selected agent header.',
+      'Added GPT Image 2.6 Sunburst and Flare, image complexity, edits with markup, SVG output, and animated GIF output.',
+    ],
+  ],
   ['1.13.4', ['Removed the 64-agent limit per workspace.']],
   ['1.13.3', ['Removed agent execution timeouts.']],
   [

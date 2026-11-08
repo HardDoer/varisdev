@@ -642,6 +642,36 @@ async function main() {
     'environment fallback is muted and labeled; only explicit image changes save and removal restores it',
   );
 
+  for (const model of ['gpt-image-1', 'gpt-image-2.5-flare']) {
+    writeFileSync(imageModelPath, JSON.stringify({model}));
+    const beforeUnchangedSave = imageWrites.length;
+    await open();
+    assert.deepEqual(
+      await evaluate(() => {
+        const select = document.getElementById('image-model');
+        return {
+          value: select.value,
+          label: select.selectedOptions[0].textContent,
+          disabled: select.selectedOptions[0].disabled,
+        };
+      }),
+      {
+        value: model,
+        label:
+          model === 'gpt-image-1'
+            ? 'gpt-image-1 (saved)'
+            : 'GPT Image 2.5 Flare — Fast everyday images',
+        disabled: model === 'gpt-image-1',
+      },
+    );
+    await save();
+    assert.equal((await getToolModels())[0].model, model);
+    assert.equal(imageWrites.length, beforeUnchangedSave);
+  }
+  await open();
+  await change('image-model', '');
+  await save();
+
   await open();
   await selectModel('alpha/small');
   await selectModel('beta/large');
@@ -840,7 +870,7 @@ async function main() {
     await evaluate(
       () => document.getElementById('agent-max-concurrent-help').textContent,
     ),
-    /Includes the primary conversation/,
+    /Includes the main conversation/,
   );
   const beforeInvalidConcurrency = writes.length;
   for (const invalid of ['0', '1.5', '']) {

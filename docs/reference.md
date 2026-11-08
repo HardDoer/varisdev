@@ -61,7 +61,7 @@ The weapons also damage scenery: the cane leaves dents, gunshots leave bullet ho
 
 Scroll up in a conversation to read its full history, including after resuming a saved session. Tool entries expand to show their inputs and results. **Follow** returns to the latest messages as they arrive.
 
-The selected agent's header shows its effort level, context usage, and a **Markdown files** button for the workspace. These remain accessible when the visualization is hidden.
+The selected agent's header shows its model, status, effort level, context usage, and a **Markdown files** button for the workspace. These remain accessible when the visualization is hidden.
 
 In conversations, click file links or filenames in inline code, such as `src/main.js`, to open them; relative paths use the selected workspace. Markdown files open in VarisDev's editor, other files use their default application, and HTTP(S) links open in your browser.
 
@@ -94,13 +94,19 @@ When query output is truncated, the full result is saved in the project's `.vari
 
 `openai_image` generates or edits images through the OpenAI Images API using `OPENAI_API_KEY`. Configure it in your shell or in **Menu → Environment**. Image authentication is independent of **Accounts** and ChatGPT/ChatPass sign-in. See [Environment settings](configuration.md#environment).
 
-Choose from six image presets on first GUI use or in **Menu → Tool models → OpenAI images**. The `model` parameter takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Remove the saved choice to use the environment value again. Headless use defaults to `gpt-image-2.5-flare` when no model is configured.
+Choose an image preset, including GPT Image 2.6 Sunburst and Flare, on first GUI use or in **Menu → Tool models → OpenAI images**. The `model` parameter takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Remove the saved choice to use the environment value again. Headless use defaults to `gpt-image-2.6-flare` when no model is configured.
 
 - `prompt`: generation or editing instructions.
 - `inputImagePaths`: local reference images for editing.
-- `size`, `quality`, `background`, `outputFormat`: image options supported by the selected model.
+- `markupImagePath`: a transparent PNG annotation layer that guides changes to the first input image. Its dimensions must match that image after orientation.
+- `maskImagePath`: a PNG mask with an alpha channel for editing the first input image. Use either a mask or markup.
+- `size`, `quality`, `background`, `outputFormat`: image options supported by the selected model. Output formats include PNG, JPEG, WebP, SVG, and GIF.
+- `complexity`: `low`, `medium`, or `high` planning effort, separate from rendering quality.
+- `svg`: optional SVG author model and reasoning settings. SVG output requires `n: 1` and cannot use output compression.
+- `frameCount`, `frameDurationMs`: GIF animation settings. Choose 2–16 frames and a delay of at least 20 milliseconds; the API rounds delays to 10 milliseconds. GIF output cannot use a mask or output compression. Use `size: "auto"` to let the API choose a frame size within the model's limits.
+- `safetyIdentifier`: an optional hashed end-user identifier, up to 128 characters. A nonempty value takes precedence over the deprecated `user` parameter.
 - `outputDir`, `filenamePrefix`: destination controls.
 
-Images are saved under `generated-images/` unless configured otherwise. Results appear in the conversation.
+SVG and GIF output require access to the selected model's preview features. Images are saved under `generated-images/` unless configured otherwise. Results appear in the conversation; GIF previews show a still frame, while the saved file retains the animation.
 
 See [OpenAI's image generation guide](https://developers.openai.com/api/docs/guides/image-generation).

@@ -117,6 +117,18 @@ body[data-panel-resizing='y'] * {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+@container (max-width: 480px) {
+  .inspector-tabs {
+    padding-inline: 4px;
+    gap: 0;
+  }
+  .inspector-tabs button {
+    padding: 6px 2px;
+  }
+  .inspector-tabs span {
+    margin-left: 2px;
+  }
+}
 @container (max-width: 420px) {
   .agent-work-marker {
     font-size: 0;
@@ -133,17 +145,13 @@ body[data-panel-resizing='y'] * {
     justify-content: space-between;
   }
   .inspector-heading {
-    padding: 8px 10px;
+    padding: 6px 10px;
   }
-  .inspector-tabs {
-    padding-inline: 4px;
-    gap: 0;
+  .inspector-heading > .inspector-model-row {
+    margin-bottom: 2px;
   }
-  .inspector-tabs button {
-    padding: 6px 2px;
-  }
-  .inspector-tabs span {
-    margin-left: 2px;
+  #inspector-effort {
+    padding: 1px 6px;
   }
   .conversation-kind {
     flex-basis: 108px;
@@ -163,9 +171,6 @@ body[data-panel-resizing='y'] * {
   }
   #application-controls > button {
     padding-inline: 6px;
-  }
-  #processing-state-text {
-    display: none;
   }
 }
 @container (max-width: 260px) {

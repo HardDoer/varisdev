@@ -405,7 +405,7 @@ async function main() {
     document.getElementById('open-model-settings').click();
   });
   await waitFor(
-    () => document.getElementById('image-model').options.length === 7,
+    () => document.getElementById('image-model').options.length === 9,
   );
   assert.equal(
     await evaluate(() => document.getElementById('image-model').tagName),
@@ -424,24 +424,26 @@ async function main() {
         .map(option => option.value),
     ),
     [
+      'gpt-image-2.6-sunburst',
+      'gpt-image-2.6-flare',
       'gpt-image-2.5-sunburst',
       'gpt-image-2.5-flare',
       'gpt-image-2',
       'gpt-image-1.5',
-      'gpt-image-1',
       'gpt-image-1-mini',
+      'chatgpt-image-latest',
     ],
   );
   await evaluate(() => {
     const field = document.getElementById('image-model');
-    field.value = 'gpt-image-2.5-flare';
+    field.value = 'gpt-image-2.6-flare';
     field.dispatchEvent(new Event('change', {bubbles: true}));
     document.getElementById('tool-settings-form').requestSubmit();
   });
   await waitFor(() => !document.getElementById('tool-settings-dialog').open);
   assert.equal(
     (await getToolModels()).find(item => item.id === 'openai-image').model,
-    'gpt-image-2.5-flare',
+    'gpt-image-2.6-flare',
   );
   await evaluate(() => {
     document.getElementById('app-menu-button').click();
@@ -451,8 +453,9 @@ async function main() {
     () =>
       !document.getElementById('tool-settings-content').hidden &&
       !document.getElementById('tool-settings-close').disabled &&
-      document.getElementById('image-model').value === 'gpt-image-2.5-flare',
+      document.getElementById('image-model').value === 'gpt-image-2.6-flare',
   );
+  browser.show();
   for (const [width, height, zoom] of [
     [1100, 760, 1],
     [680, 540, 1.25],
@@ -462,22 +465,28 @@ async function main() {
       `window.pidev.setZoom(${zoom})`,
     );
     await new Promise(resolve => setTimeout(resolve, 100));
-    const imageControl = await evaluate(() => {
+    await waitFor(async () => {
       document.getElementById('image-model').scrollIntoView({block: 'center'});
+      await new Promise(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
       const rect = document
         .getElementById('image-model')
         .getBoundingClientRect();
-      return {left: rect.left, right: rect.right, width: innerWidth};
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.left >= 0 &&
+        rect.right <= innerWidth &&
+        rect.top >= 0 &&
+        rect.bottom <= innerHeight &&
+        document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        ) === document.getElementById('image-model')
+      );
     });
-    assert.ok(
-      imageControl.left >= 0 && imageControl.right <= imageControl.width,
-    );
-    await evaluate(
-      () =>
-        new Promise(resolve =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
-        ),
-    );
+    await new Promise(resolve => setTimeout(resolve, 100));
     const screenshot = await browser.webContents.capturePage();
     writeFileSync(
       join(directory, `tool-models-${width}.png`),

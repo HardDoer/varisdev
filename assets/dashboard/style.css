@@ -2650,27 +2650,6 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.processing-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  white-space: nowrap;
-  color: var(--status-running);
-  font-size: 0.75rem;
-}
-.processing-state > i {
-  width: 11px;
-  height: 11px;
-  border: 2px solid var(--line);
-  border-top-color: currentColor;
-  border-right-color: currentColor;
-  border-radius: 50%;
-  animation: processing-turn 0.9s linear infinite;
-}
-.processing-state.paused {
-  color: var(--status-queued);
-}
-.processing-state.paused > i,
 .conversation-activity.paused .activity-dot {
   animation: none;
 }

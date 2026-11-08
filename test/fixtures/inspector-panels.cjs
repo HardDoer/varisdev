@@ -40,6 +40,7 @@ function snapshot() {
         {
           id: 'review',
           name: 'Review agent',
+          agentMode: 'subagent',
           task: 'Review the project',
           cwd: directory,
           model: 'fixture/local',
@@ -59,6 +60,7 @@ function snapshot() {
         {
           id: 'finished',
           name: 'Finished agent',
+          agentMode: 'subagent',
           task: 'Check changes',
           cwd: directory,
           model: 'fixture/local',
@@ -360,6 +362,15 @@ async function main() {
   handle('pidev:session-features', features);
   handle('pidev:agent-session', (sessionId, request) => {
     if (request.action === 'features') return features();
+    if (request.action === 'close' && request.agentId === 'parent') {
+      if (!request.confirmWorkspaceClose)
+        return {requiresWorkspaceCloseConfirmation: true};
+      calls.push(['close', sessionId]);
+      hub.sessions = hub.sessions.filter(item => item.session.id !== sessionId);
+      hub.selectedSessionId = hub.sessions[0]?.session.id;
+      browser.webContents.send('pidev:snapshot', hub);
+      return {workspaceClosed: true};
+    }
     if (['abort', 'cancel'].includes(request.action))
       stops.push([sessionId, request.agentId]);
     return {};
@@ -371,12 +382,6 @@ async function main() {
   handle('pidev:prompt-session', (id, input) => {
     calls.push([id, input]);
     return {steering: [], followUp: []};
-  });
-  handle('pidev:close-session', id => {
-    calls.push(['close', id]);
-    hub.sessions = hub.sessions.filter(item => item.session.id !== id);
-    hub.selectedSessionId = hub.sessions[0]?.session.id;
-    browser.webContents.send('pidev:snapshot', hub);
   });
   hub = snapshot();
   await reload();
@@ -765,6 +770,10 @@ async function main() {
       await settle();
       await click('#item-actions-button');
       await click('#close-session');
+      await waitFor(() =>
+        document.getElementById('close-primary-dialog').matches(':modal'),
+      );
+      await click('#confirm-close-primary');
       await waitFor(
         () =>
           !document.getElementById('welcome').hidden &&

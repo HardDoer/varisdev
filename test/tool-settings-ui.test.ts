@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
@@ -20,7 +19,11 @@ void test(
         : false,
   },
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-tool-settings-'));
+    const output = fileURLToPath(
+      new URL('../.varisdev/tool-output/', import.meta.url),
+    );
+    await mkdir(output, {recursive: true});
+    const directory = await mkdtemp(join(output, 'varisdev-tool-settings-'));
     t.after(() => rm(directory, {recursive: true, force: true}));
     const reportPath = join(directory, 'report.json');
     const env = {...process.env};

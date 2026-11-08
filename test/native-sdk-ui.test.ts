@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {mkdir, mkdtemp, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
@@ -19,7 +18,11 @@ void test(
         : false,
   },
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-native-sdk-ui-'));
+    const output = fileURLToPath(
+      new URL('../.varisdev/tool-output/', import.meta.url),
+    );
+    await mkdir(output, {recursive: true});
+    const directory = await mkdtemp(join(output, 'varisdev-native-sdk-ui-'));
     t.after(() => rm(directory, {recursive: true, force: true}));
     const reportPath = join(directory, 'report.json');
     const env = {...process.env};
@@ -58,7 +61,7 @@ void test(
       'actual stock long Fork selector pages and cancels at compact zoom',
       'worker approval choices enforce once, conversation, agent, deny and cancellation scopes',
       'worker menu reviews and revokes real remembered approvals with light native UI',
-      'actual native image model chooser renders six presets and cleans up selection and cancellation',
+      'actual native image model chooser renders eight presets, saves selection and cleans up cancellation',
     ]);
   },
 );

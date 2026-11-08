@@ -9,25 +9,39 @@ import {dirname, join} from 'node:path';
 
 export const OPENAI_IMAGE_PRESETS = [
   {
+    id: 'gpt-image-2.6-sunburst',
+    label: 'GPT Image 2.6 Sunburst',
+    description: 'Detailed visual work',
+  },
+  {
+    id: 'gpt-image-2.6-flare',
+    label: 'GPT Image 2.6 Flare',
+    description: 'Fast generation and edits',
+  },
+  {
     id: 'gpt-image-2.5-sunburst',
     label: 'GPT Image 2.5 Sunburst',
-    description: 'Best editing precision',
+    description: 'Precise image editing',
   },
   {
     id: 'gpt-image-2.5-flare',
     label: 'GPT Image 2.5 Flare',
-    description: 'Fast, high-quality everyday images',
+    description: 'Fast everyday images',
   },
   {id: 'gpt-image-2', label: 'GPT Image 2', description: ''},
   {id: 'gpt-image-1.5', label: 'GPT Image 1.5', description: ''},
-  {id: 'gpt-image-1', label: 'GPT Image 1', description: ''},
   {
     id: 'gpt-image-1-mini',
     label: 'GPT Image 1 Mini',
     description: 'Lower cost',
   },
+  {
+    id: 'chatgpt-image-latest',
+    label: 'ChatGPT Image Latest',
+    description: 'Deprecated ChatGPT alias',
+  },
 ] as const;
-export const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-flare';
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-2.6-flare';
 const tools = {
   'openai-image': {label: 'OpenAI images', environment: 'OPENAI_IMAGE_MODEL'},
 };
@@ -132,11 +146,9 @@ export async function selectToolModel(
       preset =>
         `${preset.label}${preset.description ? ` — ${preset.description}` : ''}`,
     );
-    const choice = await ctx.ui.select(
-      'Choose an OpenAI image model. Saved in Menu → Tool models.',
-      labels,
-      {signal},
-    );
+    const choice = await ctx.ui.select('Choose an OpenAI image model', labels, {
+      signal,
+    });
     signal?.throwIfAborted();
     if (!choice)
       throw new Error(`${label} setup cancelled. No request was sent.`);

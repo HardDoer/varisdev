@@ -4228,6 +4228,8 @@ async function main() {
             }
           }
           for (const id of [
+            'inspector-model',
+            'inspector-status',
             'inspector-effort',
             'context-meter',
             'markdown-launcher',
@@ -5312,7 +5314,7 @@ async function main() {
       const original = await evaluate(feed);
       assert.deepEqual(
         original.map(row => row.label),
-        ['Queued', 'Working', 'Completed'],
+        ['Queued', 'Running', 'Completed'],
         'Historical events must expose the recorded status of the agent',
       );
       assert.ok(original.every(row => row.visible));
@@ -7731,13 +7733,7 @@ async function main() {
             .getElementById('scene')
             .classList.contains('is-stopping'),
           bubbleHidden: document.getElementById('processing-bubble').hidden,
-          status: document.getElementById('processing-state-text').textContent,
-          paused: document
-            .getElementById('processing-state')
-            .classList.contains('paused'),
-          indicator: getComputedStyle(
-            document.querySelector('#processing-state > i'),
-          ).animationName,
+          status: document.getElementById('inspector-status').textContent,
           activityIndicator: getComputedStyle(
             document.querySelector('#conversation-activity .activity-dot'),
           ).animationName,
@@ -7752,9 +7748,7 @@ async function main() {
           processing: false,
           stopping: false,
           bubbleHidden: true,
-          status: '—',
-          paused: true,
-          indicator: 'none',
+          status: 'Running',
           activityIndicator: 'none',
           yellowBurst: false,
           effect: true,
@@ -7848,9 +7842,9 @@ async function main() {
       );
       assert.equal(
         await evaluate(
-          () => document.getElementById('processing-state').hidden,
+          () => document.getElementById('inspector-status').textContent,
         ),
-        true,
+        'Ready',
       );
       Object.assign(hub.sessions[0].session, {
         status: 'running',
@@ -7866,10 +7860,8 @@ async function main() {
             .getElementById('scene')
             .classList.contains('is-stopping'),
           bubbleVisible: !document.getElementById('processing-bubble').hidden,
-          phase: document.getElementById('processing-state-text').textContent,
-          paused: document
-            .getElementById('processing-state')
-            .classList.contains('paused'),
+          phase: document.getElementById('processing-bubble-text').textContent,
+          status: document.getElementById('inspector-status').textContent,
           activityPaused: document
             .getElementById('conversation-activity')
             .classList.contains('paused'),
@@ -7879,7 +7871,7 @@ async function main() {
           stopping: false,
           bubbleVisible: true,
           phase: 'Writing',
-          paused: false,
+          status: 'Running',
           activityPaused: false,
         },
       );
@@ -10476,7 +10468,7 @@ async function main() {
             id: 'parent',
             kind: 'primary',
             name: 'Alpha factory',
-            status: 'Working',
+            status: 'Running',
           },
         ],
         history: [],
@@ -10500,7 +10492,7 @@ async function main() {
       data.totalAgents = data.agents.length;
       for (const [status, label, working, error] of [
         ['idle', 'Ready', '1'],
-        ['running', 'Working', '2'],
+        ['running', 'Running', '2'],
         ['compacting', 'Compacting', '2'],
         ['idle', 'Error', '1', 'Provider connection failed'],
         ['idle', 'Ready', '1'],
@@ -10590,7 +10582,7 @@ async function main() {
           id: 'parent',
           kind: 'primary',
           name: 'Beta factory',
-          status: 'Working',
+          status: 'Running',
         },
       ]);
     },
@@ -12486,7 +12478,7 @@ async function main() {
   );
 
   await run(
-    'Selected agent effort context and Markdown files stay accessible with the visualization hidden',
+    'Selected agent model status effort context and Markdown files stay accessible with the visualization hidden',
     async () => {
       const data = hub.sessions[0];
       data.session.context = {tokens: 3200, window: 64000, percent: 5};
@@ -12495,6 +12487,8 @@ async function main() {
           id: 'context-worker',
           name: 'Context worker',
           agentMode: 'subagent',
+          model: 'fixture/worker',
+          activity: 'Working',
           thinkingLevel: 'high',
           task: 'Read project files',
           cwd: directory,
@@ -12511,6 +12505,43 @@ async function main() {
           const item = document.getElementById('inspector-effort');
           return {text: item.textContent, visible: item.checkVisibility()};
         });
+      const model = () =>
+        evaluate(() => {
+          const item = document.getElementById('inspector-model');
+          return {
+            text: item.textContent,
+            title: item.title,
+            visible: item.checkVisibility(),
+          };
+        });
+      const status = () =>
+        evaluate(() => {
+          const heading = document.querySelector('.inspector-heading');
+          const item = document.getElementById('inspector-status');
+          return {
+            text: item.textContent,
+            visible: item.checkVisibility(),
+            indicators: heading.querySelectorAll(
+              '.status-badge, .processing-state',
+            ).length,
+            besideMenu: !!heading.querySelector(
+              '.inspector-session-actions .status-badge, #inspector-actions [role="status"]',
+            ),
+          };
+        });
+      const expectStatus = async label =>
+        assert.deepEqual(await status(), {
+          text: label,
+          visible: true,
+          indicators: 1,
+          besideMenu: false,
+        });
+      assert.deepEqual(await model(), {
+        text: 'Model: fixture/small',
+        title: 'fixture/small',
+        visible: true,
+      });
+      await expectStatus('Running');
       assert.deepEqual(await effort(), {text: 'Effort: medium', visible: true});
       await clickPointer('#app-menu-button');
       await evaluate(() => {
@@ -12536,6 +12567,45 @@ async function main() {
         '#active-workers [data-context-unit="context-worker"]',
       );
       assert.equal(await contextText(), 'Context: 25% · 8000 / 32000 tokens');
+      assert.deepEqual(await model(), {
+        text: 'Model: fixture/worker',
+        title: 'fixture/worker',
+        visible: true,
+      });
+      await expectStatus('Running');
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('inspector-activity').textContent,
+        ),
+        '',
+        'A generic Working activity must not repeat the status',
+      );
+      for (const [value, label] of [
+        ['queued', 'Queued'],
+        ['cancelling', 'Stopping'],
+        ['completed', 'Completed'],
+        ['failed', 'Failed'],
+        ['cancelled', 'Cancelled'],
+        ['running', 'Running'],
+      ]) {
+        data.agents[0].status = value;
+        await publish();
+        await expectStatus(label);
+      }
+      data.agents[0].model = 'fixture/updated-worker';
+      await publish();
+      assert.deepEqual(await model(), {
+        text: 'Model: fixture/updated-worker',
+        title: 'fixture/updated-worker',
+        visible: true,
+      });
+      delete data.agents[0].model;
+      await publish();
+      assert.deepEqual(await model(), {
+        text: 'Model: ',
+        title: '',
+        visible: false,
+      });
       assert.deepEqual(await effort(), {text: 'Effort: high', visible: true});
       data.agents[0].context = {tokens: 9600, window: 32000, percent: 30};
       data.agents[0].thinkingLevel = 'xhigh';
@@ -12562,8 +12632,30 @@ async function main() {
       await clickPointer('#back-to-parent');
       assert.equal(await contextText(), 'Context: 5% · 3200 / 64000 tokens');
       assert.deepEqual(await effort(), {text: 'Effort: medium', visible: true});
+      assert.deepEqual(await model(), {
+        text: 'Model: fixture/small',
+        title: 'fixture/small',
+        visible: true,
+      });
+      for (const [value, label, error] of [
+        ['idle', 'Ready'],
+        ['compacting', 'Compacting'],
+        ['idle', 'Error', 'Provider connection failed'],
+        ['running', 'Running'],
+      ]) {
+        data.session.status = value;
+        data.session.error = error;
+        await publish();
+        await expectStatus(label);
+      }
+      data.session.model = 'fixture/updated-primary';
       data.session.thinkingLevel = 'xhigh';
       await publish();
+      assert.deepEqual(await model(), {
+        text: 'Model: fixture/updated-primary',
+        title: 'fixture/updated-primary',
+        visible: true,
+      });
       assert.deepEqual(await effort(), {text: 'Effort: xhigh', visible: true});
       const themes = await evaluate(() =>
         [...document.getElementById('factory-theme').options].map(
@@ -12637,6 +12729,8 @@ async function main() {
               .querySelector('.inspector-tabs')
               .getBoundingClientRect();
             for (const id of [
+              'inspector-model',
+              'inspector-status',
               'inspector-effort',
               'context-meter',
               'markdown-launcher',
@@ -12652,9 +12746,11 @@ async function main() {
                 rect.right > inspector.right ||
                 rect.top < inspector.top ||
                 rect.bottom > tabs.top ||
-                [...range.getClientRects()].some(
-                  line => line.left < rect.left || line.right > rect.right + 1,
-                ) ||
+                (id !== 'inspector-model' &&
+                  [...range.getClientRects()].some(
+                    line =>
+                      line.left < rect.left || line.right > rect.right + 1,
+                  )) ||
                 parseFloat(getComputedStyle(item).fontSize) < 12
               )
                 throw new Error(`Selected agent information is clipped: ${id}`);
@@ -15712,7 +15808,7 @@ async function main() {
             activity: card.querySelector('.parent-card-activity').textContent,
           };
         }),
-        {status: 'Working', activity: 'Working on Middle primary'},
+        {status: 'Running', activity: 'Working on Middle primary'},
         'The open workspace reports its remaining primary activity',
       );
       await selectRobot('Middle primary');

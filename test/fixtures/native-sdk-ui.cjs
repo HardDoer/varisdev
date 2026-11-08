@@ -35,6 +35,7 @@ let checkAgentPermissions;
 let showAgentApprovals;
 let selectToolModel;
 let saveToolModel;
+let getToolModels;
 let imagePresets;
 let approvalStore;
 let approvalController;
@@ -564,6 +565,7 @@ async function main() {
   approvalStore = new AgentApprovalStore(join(directory, 'approvals.json'));
   selectToolModel = modelSelection.selectToolModel;
   saveToolModel = modelSelection.saveToolModel;
+  getToolModels = modelSelection.getToolModels;
   imagePresets = modelSelection.OPENAI_IMAGE_PRESETS;
   settings = sdk.SettingsManager.inMemory();
   settings.setTheme('dark');
@@ -1177,10 +1179,10 @@ async function main() {
     {hasUI: true, ui: ui.context},
     imageController.signal,
   );
-  await waitForTerminal('GPT Image 2.5 Sunburst');
+  await waitForTerminal('GPT Image 2.6 Sunburst');
   assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'light');
   assert.deepEqual(ui.snapshot().dialogs[0].options, imageLabels);
-  assert.equal(imageLabels.length, 6);
+  assert.equal(imageLabels.length, 8);
   await screenshot('native-image-model-light');
   imageController.abort(new Error('fixture image setup cancelled'));
   await assert.rejects(imageTask, /fixture image setup cancelled/);
@@ -1189,6 +1191,7 @@ async function main() {
     () => ui.snapshot().dialogs.length === 0,
     'Cancelled image model selector remained open',
   );
+  assert.equal((await getToolModels())[0].model, '');
 
   imageController = new AbortController();
   imageTask = selectToolModel(
@@ -1197,23 +1200,32 @@ async function main() {
     {hasUI: true, ui: ui.context},
     imageController.signal,
   );
-  await waitForTerminal('GPT Image 2.5 Sunburst');
+  await waitForTerminal('GPT Image 2.6 Sunburst');
   await assertCompact(
     'native-image-model-light',
-    'GPT Image 2.5 Sunburst',
+    'GPT Image 2.6 Sunburst',
     [2],
   );
   await press('Down');
   await press('Return');
-  assert.equal(await imageTask, 'gpt-image-2.5-flare');
+  assert.equal(await imageTask, 'gpt-image-2.6-flare');
   imageTask = undefined;
   await waitFor(
     () => ui.snapshot().dialogs.length === 0,
     'Selected image model selector remained open',
   );
+  assert.equal((await getToolModels())[0].model, 'gpt-image-2.6-flare');
+  assert.equal(
+    await selectToolModel('openai-image', undefined, {
+      hasUI: true,
+      ui: ui.context,
+    }),
+    'gpt-image-2.6-flare',
+  );
+  assert.equal(ui.snapshot().dialogs.length, 0);
   await saveToolModel('openai-image', '');
   report.cases.push(
-    'actual native image model chooser renders six presets and cleans up selection and cancellation',
+    'actual native image model chooser renders eight presets, saves selection and cleans up cancellation',
   );
 
   assert.deepEqual(errors, []);

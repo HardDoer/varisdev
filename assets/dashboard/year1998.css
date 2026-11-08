@@ -499,8 +499,7 @@
   animation: none;
 }
 
-:root[data-appearance='year1998']
-  :is(.processing-dots i, .processing-state > i) {
+:root[data-appearance='year1998'] .processing-dots i {
   box-shadow: none;
   animation-timing-function: steps(4, end);
 }

@@ -139,9 +139,8 @@
   visibility: hidden;
   pointer-events: none;
 }
-.inspector-session-actions .status-badge {
-  flex: 0 0 112px;
-  width: 112px;
+#inspector-status {
+  flex: 0 0 auto;
   justify-content: center;
   white-space: nowrap;
   overflow: hidden;
@@ -157,6 +156,23 @@
   align-items: center;
   gap: 4px 10px;
   margin-bottom: 0;
+}
+.inspector-heading > .inspector-model-row {
+  align-items: center;
+}
+.inspector-model-row:has(#inspector-model[hidden]):has(
+    #inspector-effort[hidden]
+  ) {
+  display: none;
+}
+#inspector-model {
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #inspector-effort {
   flex: 0 0 auto;
@@ -201,8 +217,5 @@
   }
   #application-controls > button {
     padding-inline: 6px;
-  }
-  #processing-state-text {
-    display: none;
   }
 }

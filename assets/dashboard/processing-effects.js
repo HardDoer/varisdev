@@ -247,11 +247,10 @@ export function createProcessingEffects(
         marker = document.createElement('span');
         marker.className = 'agent-work-marker';
         marker.dataset.agentId = id;
-        marker.textContent = 'Working';
         markers.append(marker);
         markerNodes.set(id, marker);
       }
-      const text = agent.status === 'cancelling' ? 'Cancelling' : 'Working';
+      const text = agent.status === 'cancelling' ? 'Cancelling' : 'Running';
       if (marker.textContent !== text) marker.textContent = text;
       if (marker.dataset.status !== agent.status)
         marker.dataset.status = agent.status;

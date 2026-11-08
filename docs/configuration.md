@@ -120,9 +120,9 @@ For virtual models, the router's extension must also be loaded from the worker's
 
 ### Image model
 
-Choose an OpenAI image preset on first GUI use or in **Menu → Tool models → OpenAI images**. The choice is saved for future requests. Presets include GPT Image 2.5 Sunburst, GPT Image 2.5 Flare, GPT Image 2, GPT Image 1.5, GPT Image 1, and GPT Image 1 Mini. Sunburst prioritizes editing precision; Flare is suited to fast, high-quality everyday images.
+Choose an OpenAI image preset on first GUI use or in **Menu → Tool models → OpenAI images**. The choice is saved for future requests. Presets include GPT Image 2.6 Sunburst and Flare, 2.5 Sunburst and Flare, 2, 1.5, 1 Mini, and the deprecated `chatgpt-image-latest` alias. Sunburst suits detailed compositions and precise edits; Flare suits fast generation and editing.
 
-The `model` request parameter takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Selecting the environment option removes the saved choice. Environment values appear muted with their source. Existing model IDs remain supported. Without an interactive UI or a configured choice, the tool uses `gpt-image-2.5-flare`.
+The `model` request parameter accepts arbitrary model IDs and takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Selecting the environment option removes the saved choice. Environment values appear muted with their source and are never saved automatically. Existing saved and environment model IDs are preserved, including `gpt-image-1`, which is no longer offered as a preset. Without an interactive UI or a configured choice, the tool uses `gpt-image-2.6-flare`.
 
 ## Environment
 

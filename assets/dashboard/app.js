@@ -70,7 +70,7 @@ const TABS = [
 ];
 const STATUS = {
   idle: 'Ready',
-  running: 'Working',
+  running: 'Running',
   compacting: 'Compacting',
   closed: 'Closed',
   queued: 'Queued',
@@ -978,7 +978,7 @@ function activityPhase(data) {
   )
     return 'Running tools';
   if (/responding|writing/i.test(data.session.activity)) return 'Writing';
-  return 'Working';
+  return 'Running';
 }
 function renderProcessing(data) {
   if (!parentHasWork(data)) pausedActivity.delete(data.session.id);
@@ -989,9 +989,6 @@ function renderProcessing(data) {
   $('processing-bubble').hidden = !processing;
   $('processing-bubble').dataset.phase = phase;
   text($('processing-bubble-text'), phase);
-  $('processing-state').hidden = !phase;
-  $('processing-state').classList.toggle('paused', !processing);
-  text($('processing-state-text'), phase);
   setSceneMotion(state.motion && !motionPreference.matches);
 }
 function clearStopEffect() {
@@ -1786,7 +1783,11 @@ function renderConversation(snapshot) {
   );
   text(
     activityText,
-    phase === 'Stopping' ? 'Stopping…' : data.session.activity || 'Working',
+    phase === 'Stopping'
+      ? 'Stopping…'
+      : data.session.activity && data.session.activity !== 'Working'
+        ? data.session.activity
+        : statusName(data.session.status),
   );
   $('conversation-empty').hidden = messages.length > 0 || active;
   text(
@@ -1842,6 +1843,9 @@ function renderInspector() {
   text($('conversation-kind-label'), conversationKindLabel(kind));
   text($('inspector-title'), unit.name);
   $('inspector-title').title = unit.name;
+  text($('inspector-model'), `Model: ${unit.model ?? ''}`);
+  $('inspector-model').hidden = !unit.model;
+  $('inspector-model').title = unit.model || '';
   text($('inspector-effort'), `Effort: ${unit.thinkingLevel ?? ''}`);
   $('inspector-effort').hidden = !unit.thinkingLevel;
   const context = unit.context;
@@ -1856,15 +1860,19 @@ function renderInspector() {
     $(id).dataset.contextSession = data.session.id;
     $(id).dataset.contextUnit = state.unitId;
   }
-  if (parent) parentBadge($('inspector-status'), unit);
+  if (parent && stopping.has(unit.id))
+    badge($('inspector-status'), 'cancelling');
+  else if (parent) parentBadge($('inspector-status'), unit);
   else badge($('inspector-status'), unit.status);
-  text(
-    $('inspector-activity'),
+  const activity =
     parent && sessionReplacement?.session.id === state.sessionId
       ? 'Resetting conversation…'
-      : unit.activity ||
-          (parent ? 'No current activity' : statusName(unit.status)),
-  );
+      : unit.activity === 'Working' || unit.activity === statusName(unit.status)
+        ? ''
+        : unit.activity || '';
+  if ($('inspector-activity').textContent !== activity)
+    $('inspector-activity').textContent = activity;
+  $('inspector-activity').title = activity;
   const largeId = primaryUnit(data)?.id;
   $('back-to-parent').hidden = !largeId || state.unitId === largeId;
   $('back-to-parent').setAttribute(
@@ -1876,18 +1884,6 @@ function renderInspector() {
   $('back-to-parent').title = $('back-to-parent').getAttribute('aria-label');
   $('tab-context').hidden =
     !api?.sessionFeatures || !conversationControllable(data, unit);
-  if (!parent) {
-    const active = WORKING.has(unit.status);
-    $('processing-state').hidden = !active;
-    $('processing-state').classList.toggle(
-      'paused',
-      unit.status === 'cancelling',
-    );
-    text(
-      $('processing-state-text'),
-      unit.status === 'cancelling' ? 'Stopping' : 'Agent working',
-    );
-  }
   text(
     $('changes-count'),
     data.changes.filter(change => change.unitId === state.unitId).length,

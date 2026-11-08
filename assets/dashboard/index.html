@@ -1393,7 +1393,7 @@
               </div>
             </div>
             <div class="scene-legend" aria-label="Agent status colors">
-              <span><i class="mint" aria-hidden="true"></i>Working</span>
+              <span><i class="mint" aria-hidden="true"></i>Running</span>
               <span><i class="amber" aria-hidden="true"></i>Queued</span>
               <span><i class="cyan" aria-hidden="true"></i>Completed</span>
             </div>
@@ -1553,14 +1553,12 @@
                 </svg>
                 <span id="conversation-kind-label">Primary agent</span>
               </span>
-              <p id="inspector-activity"></p>
               <span
-                id="processing-state"
-                class="processing-state"
+                id="inspector-status"
+                class="status-badge"
                 role="status"
-                hidden
-                ><i></i><span id="processing-state-text"></span
               ></span>
+              <p id="inspector-activity"></p>
               <div class="inspector-session-actions">
                 <button
                   id="back-to-parent"
@@ -1572,11 +1570,13 @@
                 >
                   Back
                 </button>
-                <span id="inspector-status" class="status-badge"></span>
               </div>
             </div>
-            <div class="inspector-context-row">
+            <div class="inspector-model-row">
+              <span id="inspector-model" hidden></span>
               <span id="inspector-effort" class="effort-badge" hidden></span>
+            </div>
+            <div class="inspector-context-row">
               <p id="context-meter" hidden></p>
               <button
                 id="markdown-launcher"

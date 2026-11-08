@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
@@ -14,7 +14,11 @@ import {
 } from '../src/tools/model-selection.ts';
 
 async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'tool-models-'));
+  const output = fileURLToPath(
+    new URL('../.varisdev/tool-output/', import.meta.url),
+  );
+  await mkdir(output, {recursive: true});
+  const directory = await mkdtemp(join(output, 'tool-models-'));
   const previous = process.env.PI_CODING_AGENT_DIR;
   const previousImage = process.env.OPENAI_IMAGE_MODEL;
   process.env.PI_CODING_AGENT_DIR = directory;
@@ -51,14 +55,11 @@ void test('first GUI use hosts native Pi presets and shares its saved choice wit
   const pending = await dialog();
   assert.equal(pending.kind, 'select');
   assert.ok(pending.terminal);
-  assert.match(
-    pending.title,
-    /Choose an OpenAI image model.*Menu → Tool models/,
-  );
-  assert.match(pending.terminal!.output, /GPT Image 2.5 Sunburst/);
+  assert.equal(pending.title, 'Choose an OpenAI image model');
+  assert.match(pending.terminal!.output, /GPT Image 2.6 Sunburst/);
   assert.ok(pending.options?.every(option => !option.includes('(gpt-image-')));
   ui.respond(pending.id, {input: '\x1b[B\r'});
-  assert.equal(await choice, 'gpt-image-2.5-flare');
+  assert.equal(await choice, 'gpt-image-2.6-flare');
   assert.equal(
     await selectToolModel('openai-image', undefined, ctx),
     DEFAULT_IMAGE_MODEL,
@@ -70,19 +71,26 @@ void test('first GUI use hosts native Pi presets and shares its saved choice wit
   assert.deepEqual(
     settings.presets.map(preset => preset.id),
     [
+      'gpt-image-2.6-sunburst',
+      'gpt-image-2.6-flare',
       'gpt-image-2.5-sunburst',
       'gpt-image-2.5-flare',
       'gpt-image-2',
       'gpt-image-1.5',
-      'gpt-image-1',
       'gpt-image-1-mini',
+      'chatgpt-image-latest',
     ],
   );
-  await saveToolModel('openai-image', 'gpt-image-1-mini');
-  assert.equal(
-    await selectToolModel('openai-image', undefined, ctx),
+  for (const model of [
+    'gpt-image-2.5-flare',
     'gpt-image-1-mini',
-  );
+    'chatgpt-image-latest',
+  ]) {
+    await saveToolModel('openai-image', model);
+    assert.equal(await selectToolModel('openai-image', undefined, ctx), model);
+  }
+  await assert.rejects(saveToolModel('openai-image', 'gpt-image-1'), /presets/);
+  assert.equal((await getToolModels())[0].model, 'chatgpt-image-latest');
   await assert.rejects(
     saveToolModel('openai-image', 'manual-model'),
     /presets/,
@@ -91,29 +99,32 @@ void test('first GUI use hosts native Pi presets and shares its saved choice wit
     saveToolModel('../outside', DEFAULT_IMAGE_MODEL),
     /valid tool/,
   );
-  assert.equal(OPENAI_IMAGE_PRESETS.length, 6);
+  assert.equal(OPENAI_IMAGE_PRESETS.length, 8);
 });
 
 void test('request and saved models precede the environment, and removal restores it', async t => {
   const {ctx, path, ui} = await fixture(t);
   await mkdir(dirname(path), {recursive: true});
-  await writeFile(path, JSON.stringify({model: 'legacy-model'}));
+  await writeFile(path, JSON.stringify({model: 'gpt-image-1'}));
   process.env.OPENAI_IMAGE_MODEL = ' environment-model ';
   for (const hasUI of [true, false]) {
     assert.equal(
       await selectToolModel('openai-image', undefined, {...ctx, hasUI}),
-      'legacy-model',
+      'gpt-image-1',
     );
     assert.equal(
-      await selectToolModel('openai-image', 'request-model', {...ctx, hasUI}),
-      'request-model',
+      await selectToolModel('openai-image', ' gpt-image-2-2026-04-21 ', {
+        ...ctx,
+        hasUI,
+      }),
+      'gpt-image-2-2026-04-21',
     );
   }
   const [settings] = await getToolModels();
-  assert.equal(settings.model, 'legacy-model');
+  assert.equal(settings.model, 'gpt-image-1');
   assert.equal(settings.environment, 'OPENAI_IMAGE_MODEL');
   assert.equal(settings.environmentModel, 'environment-model');
-  assert.equal(JSON.parse(await readFile(path, 'utf8')).model, 'legacy-model');
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).model, 'gpt-image-1');
 
   await saveToolModel('openai-image', 'gpt-image-2');
   assert.equal(
@@ -134,14 +145,16 @@ void test('request and saved models precede the environment, and removal restore
 
 void test('reading and using an environment model never saves it', async t => {
   const {ctx, path, ui} = await fixture(t);
-  process.env.OPENAI_IMAGE_MODEL = ' environment-model ';
+  process.env.OPENAI_IMAGE_MODEL = ' gpt-image-1 ';
   const [settings] = await getToolModels();
   assert.equal(settings.model, '');
-  assert.equal(settings.environmentModel, 'environment-model');
-  assert.equal(
-    await selectToolModel('openai-image', undefined, ctx),
-    'environment-model',
-  );
+  assert.equal(settings.environmentModel, 'gpt-image-1');
+  for (const hasUI of [true, false]) {
+    assert.equal(
+      await selectToolModel('openai-image', undefined, {...ctx, hasUI}),
+      'gpt-image-1',
+    );
+  }
   assert.equal(ui.snapshot().dialogs.length, 0);
   await assert.rejects(readFile(path), {code: 'ENOENT'});
   delete process.env.OPENAI_IMAGE_MODEL;
@@ -155,7 +168,7 @@ void test('headless fallback leaves first GUI setup available and cancellation s
   const {ctx, ui, dialog, path} = await fixture(t);
   assert.equal(
     await selectToolModel('openai-image', undefined, {...ctx, hasUI: false}),
-    DEFAULT_IMAGE_MODEL,
+    'gpt-image-2.6-flare',
   );
   await assert.rejects(readFile(path), {code: 'ENOENT'});
   const cancelled = selectToolModel('openai-image', undefined, ctx);
@@ -177,8 +190,8 @@ void test('concurrent first uses share a single chooser and choice', async t => 
   const second = selectToolModel('openai-image', undefined, ctx);
   ui.respond((await dialog()).id, {input: '\r'});
   assert.deepEqual(await Promise.all([first, second]), [
-    'gpt-image-2.5-sunburst',
-    'gpt-image-2.5-sunburst',
+    'gpt-image-2.6-sunburst',
+    'gpt-image-2.6-sunburst',
   ]);
   assert.equal(ui.snapshot().dialogs.length, 0);
 });
