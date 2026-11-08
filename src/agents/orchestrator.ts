@@ -246,12 +246,6 @@ export class AgentOrchestrator {
     if (!spec.task.trim() || !spec.name.trim()) {
       throw new Error('Agent name and task cannot be empty.');
     }
-    const retained = [...this.jobs.values()].filter(
-      job => !isAgentFinished(job.record.status) || job.record.resumable,
-    );
-    if (retained.length >= 64) {
-      throw new Error('This session has reached its limit of 64 agents.');
-    }
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     const conversation = new ConversationState();

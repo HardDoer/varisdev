@@ -1516,7 +1516,7 @@ void test('automatic cleanup waits for cancellation to settle and handles failur
   }
 });
 
-void test('cleaned agents release the session capacity for later commands', async t => {
+void test('automatic cleanup preserves results beyond 64 launches', async t => {
   const manager = new AgentOrchestrator(2);
   t.after(() => manager.close());
   let disposed = 0;
@@ -1539,34 +1539,79 @@ void test('cleaned agents release the session capacity for later commands', asyn
   assert.equal(manager.list().length, 65);
 });
 
-void test('64 closed default agents release capacity while retained conversations consume it', async t => {
+void test('more than 64 completed agents retain their results and resumable conversations', async t => {
   const manager = new AgentOrchestrator();
   t.after(() => manager.close());
+  let created = 0;
   let disposed = 0;
-  const createWorker = async (): Promise<AgentWorker> => ({
-    async steer() {
-      return true;
-    },
-    async run() {
-      return 'Retained result';
-    },
-    dispose() {
-      disposed++;
-    },
-  });
-  for (let index = 0; index < 64; index++) {
-    const {id} = manager.spawn(spec, createWorker);
-    await manager.wait([id]);
+  const createWorker = async (): Promise<AgentWorker> => {
+    created++;
+    return {
+      async steer() {
+        return true;
+      },
+      async run(message) {
+        return message;
+      },
+      dispose() {
+        disposed++;
+      },
+    };
+  };
+  const ids: string[] = [];
+  for (let index = 0; index < 70; index++) {
+    const task = `Task ${index}`;
+    const {id} = manager.spawn({...spec, task}, createWorker);
+    ids.push(id);
+    assert.equal((await manager.wait([id]))[0].output, task);
   }
-  assert.throws(() => manager.spawn(spec, createWorker), /limit of 64/);
-  await Promise.all(
-    manager.list().map(record => manager.closeAgent(record.id)),
+  assert.equal(manager.list().length, 70);
+  assert.ok(manager.list().every(record => record.resumable));
+  assert.equal(disposed, 0);
+  for (const id of [ids[0], ids.at(-1)!]) {
+    await manager.send(id, 'Resume retained work');
+    assert.equal((await manager.wait([id]))[0].output, 'Resume retained work');
+  }
+  assert.equal(created, 70);
+  await manager.close();
+  assert.equal(disposed, 70);
+});
+
+void test('agent tools queue and wait for more than 64 agents using the configured concurrency', async t => {
+  await isolateToolSettings(t, ['openai-codex/gpt-5.6-sol']);
+  const workers = teamWorkers();
+  const parent = agentParent('large-agent-queue', workers.create);
+  t.after(() => parent.shutdown());
+  const ids: string[] = [];
+  for (let index = 0; index < 70; index++)
+    ids.push(await parent.spawn(`Worker ${index}`));
+  await until(() => workers.created[4]?.controlled.runs.length === 1);
+  assert.equal(workers.created.length, 5);
+  const listed = await parent.execute('agent_list');
+  assert.equal(listed.details.agents.length, 70);
+  assert.equal(
+    listed.details.agents.filter(record => record.status === 'queued').length,
+    65,
   );
-  assert.equal(disposed, 64);
-  const {id} = manager.spawn(spec, createWorker);
-  assert.equal((await manager.wait([id]))[0].output, 'Retained result');
-  assert.equal(manager.list().length, 65);
-  assert.equal(manager.list().filter(record => record.resumable).length, 1);
+  assert.ok(Check(parent.tools.get('agent_wait')!.parameters, {ids}));
+  const waiting = parent.execute('agent_wait', {ids});
+  for (const [index, id] of ids.entries()) {
+    await until(() => workers.byId.get(id)?.controlled.runs.length === 1);
+    workers.byId.get(id)!.controlled.runs[0].finish(`Result ${index}`);
+  }
+  const result = await waiting;
+  assert.deepEqual(
+    result.details.agents.map(record => ({
+      id: record.id,
+      status: record.status,
+      output: record.output,
+    })),
+    ids.map((id, index) => ({
+      id,
+      status: 'completed',
+      output: `Result ${index}`,
+    })),
+  );
 });
 
 void test('controller observes activity and inbox with copied state and resets without stale workers', async t => {

@@ -29,7 +29,7 @@ Agent configurations are optional. `agent_templates` is available through Pi's `
 
 Configuration permissions apply to the conversation created from that profile. The calling agent's `subagent` permission also controls which configured agents it may launch. See [agent configurations](agents.md) for scope merging, modes, defaults, and Markdown fields.
 
-The default concurrency limit is six agents per workspace, including the conversation starter while it is open; additional agents queue. Closing the starter releases its slot. Change **Menu → Tool models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions while the starter is open. Each workspace can hold 64 additional agents. `autoCleanup: true` disposes finished agents and releases their slots while preserving results.
+The default concurrency limit is six agents per workspace, including the conversation starter while it is open; additional agents queue. Closing the starter releases its slot. Change **Menu → Tool models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions while the starter is open. There is no fixed limit on queued or retained agents. `autoCleanup: true` disposes finished agents while preserving results.
 
 Agents have no execution deadline. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
 

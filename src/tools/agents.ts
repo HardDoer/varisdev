@@ -126,7 +126,6 @@ const waitSchema = Type.Object({
   ids: Type.Optional(
     Type.Array(idSchema, {
       minItems: 1,
-      maxItems: 64,
       description:
         'Defaults to all agents, including history. Pass specific IDs to avoid repeated results.',
     }),
