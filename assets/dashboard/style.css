@@ -2641,15 +2641,6 @@ select:focus-visible {
   align-items: center !important;
   gap: 12px;
 }
-#inspector-activity {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.75rem;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .conversation-activity.paused .activity-dot {
   animation: none;
 }

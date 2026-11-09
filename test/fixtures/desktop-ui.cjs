@@ -4229,7 +4229,6 @@ async function main() {
           }
           for (const id of [
             'inspector-model',
-            'inspector-status',
             'inspector-effort',
             'context-meter',
             'markdown-launcher',
@@ -4251,6 +4250,18 @@ async function main() {
             )
               throw new Error(`Selected agent header clipped: ${id}`);
           }
+          const model = $('inspector-model');
+          const effort = $('inspector-effort');
+          const gap =
+            effort.getBoundingClientRect().left -
+            model.getBoundingClientRect().right;
+          if (
+            gap < 0 ||
+            gap > 11 ||
+            model.scrollWidth <= model.clientWidth ||
+            getComputedStyle(model).textOverflow !== 'ellipsis'
+          )
+            throw new Error('Long models must truncate beside effort');
           const actions = $('item-actions-button');
           if (
             !actions.checkVisibility() ||
@@ -4939,12 +4950,11 @@ async function main() {
       });
       await publish();
       assert.equal((await evaluate(activity)).visible, false);
-      assert.deepEqual(
-        await evaluate(() => ({
-          parent: document.getElementById('parent-status').textContent,
-          inspector: document.getElementById('inspector-status').textContent,
-        })),
-        {parent: 'Error', inspector: 'Error'},
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('parent-status').textContent,
+        ),
+        'Error',
       );
       const failed = await evaluate(
         () =>
@@ -5044,14 +5054,12 @@ async function main() {
           .checkVisibility(),
         result: document.getElementById('unit-result').textContent,
         error: document.getElementById('unit-error').textContent,
-        status: document.getElementById('inspector-status').textContent,
       });
       assert.deepEqual(await evaluate(details), {
         resultVisible: false,
         errorVisible: true,
         result: 'Incomplete response',
         error: 'Provider unavailable',
-        status: 'Error',
       });
       for (const status of ['running', 'compacting']) {
         Object.assign(data.session, {status, activity: 'Continuing the task'});
@@ -5059,7 +5067,6 @@ async function main() {
         const current = await evaluate(details);
         assert.equal(current.resultVisible, false);
         assert.equal(current.errorVisible, false);
-        assert.notEqual(current.status, 'Error');
         assert.deepEqual(
           await evaluate(() => {
             const card = document.querySelector(
@@ -5115,7 +5122,6 @@ async function main() {
         errorVisible: false,
         result: 'Task completed successfully.',
         error: '—',
-        status: 'Ready',
       });
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
         await screenshot('result-recovery-completed');
@@ -5164,7 +5170,6 @@ async function main() {
         errorVisible: false,
         result: 'New result',
         error: '—',
-        status: 'Completed',
       });
     },
   );
@@ -7733,7 +7738,6 @@ async function main() {
             .getElementById('scene')
             .classList.contains('is-stopping'),
           bubbleHidden: document.getElementById('processing-bubble').hidden,
-          status: document.getElementById('inspector-status').textContent,
           activityIndicator: getComputedStyle(
             document.querySelector('#conversation-activity .activity-dot'),
           ).animationName,
@@ -7748,7 +7752,6 @@ async function main() {
           processing: false,
           stopping: false,
           bubbleHidden: true,
-          status: 'Running',
           activityIndicator: 'none',
           yellowBurst: false,
           effect: true,
@@ -7842,9 +7845,9 @@ async function main() {
       );
       assert.equal(
         await evaluate(
-          () => document.getElementById('inspector-status').textContent,
+          () => document.getElementById('conversation-activity').hidden,
         ),
-        'Ready',
+        true,
       );
       Object.assign(hub.sessions[0].session, {
         status: 'running',
@@ -7861,7 +7864,6 @@ async function main() {
             .classList.contains('is-stopping'),
           bubbleVisible: !document.getElementById('processing-bubble').hidden,
           phase: document.getElementById('processing-bubble-text').textContent,
-          status: document.getElementById('inspector-status').textContent,
           activityPaused: document
             .getElementById('conversation-activity')
             .classList.contains('paused'),
@@ -7871,7 +7873,6 @@ async function main() {
           stopping: false,
           bubbleVisible: true,
           phase: 'Writing',
-          status: 'Running',
           activityPaused: false,
         },
       );
@@ -12478,7 +12479,7 @@ async function main() {
   );
 
   await run(
-    'Selected agent model status effort context and Markdown files stay accessible with the visualization hidden',
+    'Selected agent model effort context and Markdown files stay accessible without duplicate header activity',
     async () => {
       const data = hub.sessions[0];
       data.session.context = {tokens: 3200, window: 64000, percent: 5};
@@ -12488,7 +12489,7 @@ async function main() {
           name: 'Context worker',
           agentMode: 'subagent',
           model: 'fixture/worker',
-          activity: 'Working',
+          activity: 'Thinking',
           thinkingLevel: 'high',
           task: 'Read project files',
           cwd: directory,
@@ -12514,34 +12515,48 @@ async function main() {
             visible: item.checkVisibility(),
           };
         });
-      const status = () =>
+      const expectActivity = async label => {
+        assert.deepEqual(
+          await evaluate(() => {
+            const heading = document.querySelector('.inspector-heading');
+            const activity = document.getElementById('conversation-activity');
+            return {
+              text: document.getElementById('conversation-activity-text')
+                .textContent,
+              visible: activity.checkVisibility(),
+              headerIndicators: heading.querySelectorAll(
+                '.status-badge, .processing-state, [role="status"], #inspector-activity',
+              ).length,
+            };
+          }),
+          {text: label, visible: true, headerIndicators: 0},
+        );
+      };
+      const expectEffortBesideModel = () =>
         evaluate(() => {
-          const heading = document.querySelector('.inspector-heading');
-          const item = document.getElementById('inspector-status');
-          return {
-            text: item.textContent,
-            visible: item.checkVisibility(),
-            indicators: heading.querySelectorAll(
-              '.status-badge, .processing-state',
-            ).length,
-            besideMenu: !!heading.querySelector(
-              '.inspector-session-actions .status-badge, #inspector-actions [role="status"]',
-            ),
-          };
-        });
-      const expectStatus = async label =>
-        assert.deepEqual(await status(), {
-          text: label,
-          visible: true,
-          indicators: 1,
-          besideMenu: false,
+          const model = document.getElementById('inspector-model');
+          const effort = document.getElementById('inspector-effort');
+          const modelBounds = model.getBoundingClientRect();
+          const effortBounds = effort.getBoundingClientRect();
+          const gap = effortBounds.left - modelBounds.right;
+          if (
+            model.nextElementSibling !== effort ||
+            gap < 0 ||
+            gap > 11 ||
+            Math.abs(
+              (modelBounds.top + modelBounds.bottom) / 2 -
+                (effortBounds.top + effortBounds.bottom) / 2,
+            ) > 1
+          )
+            throw new Error('Effort must sit immediately beside the model');
         });
       assert.deepEqual(await model(), {
         text: 'Model: fixture/small',
         title: 'fixture/small',
         visible: true,
       });
-      await expectStatus('Running');
+      await expectActivity(data.session.activity);
+      await expectEffortBesideModel();
       assert.deepEqual(await effort(), {text: 'Effort: medium', visible: true});
       await clickPointer('#app-menu-button');
       await evaluate(() => {
@@ -12572,25 +12587,12 @@ async function main() {
         title: 'fixture/worker',
         visible: true,
       });
-      await expectStatus('Running');
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('inspector-activity').textContent,
-        ),
-        '',
-        'A generic Working activity must not repeat the status',
-      );
-      for (const [value, label] of [
-        ['queued', 'Queued'],
-        ['cancelling', 'Stopping'],
-        ['completed', 'Completed'],
-        ['failed', 'Failed'],
-        ['cancelled', 'Cancelled'],
-        ['running', 'Running'],
-      ]) {
-        data.agents[0].status = value;
+      await expectActivity('Thinking');
+      await expectEffortBesideModel();
+      for (const activity of ['Responding', 'Using read', 'Working']) {
+        data.agents[0].activity = activity;
         await publish();
-        await expectStatus(label);
+        await expectActivity(activity);
       }
       data.agents[0].model = 'fixture/updated-worker';
       await publish();
@@ -12637,16 +12639,10 @@ async function main() {
         title: 'fixture/small',
         visible: true,
       });
-      for (const [value, label, error] of [
-        ['idle', 'Ready'],
-        ['compacting', 'Compacting'],
-        ['idle', 'Error', 'Provider connection failed'],
-        ['running', 'Running'],
-      ]) {
-        data.session.status = value;
-        data.session.error = error;
+      for (const activity of ['Thinking', 'Responding', 'Using bash']) {
+        data.session.activity = activity;
         await publish();
-        await expectStatus(label);
+        await expectActivity(activity);
       }
       data.session.model = 'fixture/updated-primary';
       data.session.thinkingLevel = 'xhigh';
@@ -12730,7 +12726,6 @@ async function main() {
               .getBoundingClientRect();
             for (const id of [
               'inspector-model',
-              'inspector-status',
               'inspector-effort',
               'context-meter',
               'markdown-launcher',
@@ -12772,6 +12767,8 @@ async function main() {
             )
               throw new Error('The dashboard must fit without page scrolling');
           });
+          await expectActivity('Using bash');
+          await expectEffortBesideModel();
           if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
             await screenshot(
               `selected-agent-context-${theme}-${width}-${zoom}`,

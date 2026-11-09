@@ -139,13 +139,6 @@
   visibility: hidden;
   pointer-events: none;
 }
-#inspector-status {
-  flex: 0 0 auto;
-  justify-content: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .inspector-heading > .inspector-activity-row {
   height: 32px;
   min-height: 32px;
@@ -159,6 +152,7 @@
 }
 .inspector-heading > .inspector-model-row {
   align-items: center;
+  justify-content: flex-start;
 }
 .inspector-model-row:has(#inspector-model[hidden]):has(
     #inspector-effort[hidden]
@@ -166,7 +160,7 @@
   display: none;
 }
 #inspector-model {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   color: var(--muted);
   font-size: 0.75rem;
@@ -188,14 +182,6 @@
 .inspector-context-row > button {
   min-height: 32px;
   margin-left: auto;
-}
-#inspector-activity {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 @media (max-width: 950px) {
   .conversation-kind {

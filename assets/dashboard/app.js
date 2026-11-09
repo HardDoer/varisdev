@@ -1783,11 +1783,7 @@ function renderConversation(snapshot) {
   );
   text(
     activityText,
-    phase === 'Stopping'
-      ? 'Stopping…'
-      : data.session.activity && data.session.activity !== 'Working'
-        ? data.session.activity
-        : statusName(data.session.status),
+    phase === 'Stopping' ? 'Stopping…' : data.session.activity || '',
   );
   $('conversation-empty').hidden = messages.length > 0 || active;
   text(
@@ -1860,19 +1856,6 @@ function renderInspector() {
     $(id).dataset.contextSession = data.session.id;
     $(id).dataset.contextUnit = state.unitId;
   }
-  if (parent && stopping.has(unit.id))
-    badge($('inspector-status'), 'cancelling');
-  else if (parent) parentBadge($('inspector-status'), unit);
-  else badge($('inspector-status'), unit.status);
-  const activity =
-    parent && sessionReplacement?.session.id === state.sessionId
-      ? 'Resetting conversation…'
-      : unit.activity === 'Working' || unit.activity === statusName(unit.status)
-        ? ''
-        : unit.activity || '';
-  if ($('inspector-activity').textContent !== activity)
-    $('inspector-activity').textContent = activity;
-  $('inspector-activity').title = activity;
   const largeId = primaryUnit(data)?.id;
   $('back-to-parent').hidden = !largeId || state.unitId === largeId;
   $('back-to-parent').setAttribute(

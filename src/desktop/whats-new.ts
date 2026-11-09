@@ -7,6 +7,13 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '1.14.1',
+    [
+      'Effort appears beside the model in the conversation header.',
+      'Removed the duplicate status and activity from the conversation header. Activity remains at the bottom of the conversation.',
+    ],
+  ],
+  [
     '1.14.0',
     [
       'The selected agent’s model appears in the conversation header.',
