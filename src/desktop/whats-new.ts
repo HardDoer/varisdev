@@ -7,6 +7,12 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '1.14.2',
+    [
+      'Agent cards show their existing activity beneath the name, without a redundant Ready or Running badge.',
+    ],
+  ],
+  [
     '1.14.1',
     [
       'Effort appears beside the model in the conversation header.',

@@ -10450,7 +10450,8 @@ async function main() {
             kind: card.dataset.agentKind,
             name: card.querySelector('.worker-card-name, .history-row-name')
               .textContent,
-            status: card.querySelector('.status-badge').textContent,
+            label: card.querySelector('.worker-card-activity, .status-badge')
+              .textContent,
           }));
         return {
           active: cards('active-workers'),
@@ -10469,7 +10470,7 @@ async function main() {
             id: 'parent',
             kind: 'primary',
             name: 'Alpha factory',
-            status: 'Running',
+            label: data.session.activity,
           },
         ],
         history: [],
@@ -10491,12 +10492,12 @@ async function main() {
         }),
       );
       data.totalAgents = data.agents.length;
-      for (const [status, label, working, error] of [
-        ['idle', 'Ready', '1'],
-        ['running', 'Running', '2'],
-        ['compacting', 'Compacting', '2'],
-        ['idle', 'Error', '1', 'Provider connection failed'],
-        ['idle', 'Ready', '1'],
+      for (const [status, working, error] of [
+        ['idle', '1'],
+        ['running', '2'],
+        ['compacting', '2'],
+        ['idle', '1', 'Provider connection failed'],
+        ['idle', '1'],
       ]) {
         data.session.status = status;
         data.session.error = error;
@@ -10514,7 +10515,7 @@ async function main() {
           id: 'parent',
           kind: 'primary',
           name: 'Alpha factory',
-          status: label,
+          label: data.session.activity,
         });
         assert.equal(
           [...result.active, ...result.history].filter(
@@ -10547,6 +10548,65 @@ async function main() {
           },
         );
       }
+      for (const activity of [
+        'Running bash',
+        'Thinking',
+        'Responding',
+        'Retrying (attempt 2)',
+        'Compacting conversation',
+        'Using read',
+      ]) {
+        data.session.status =
+          activity === 'Compacting conversation' ? 'compacting' : 'running';
+        data.session.activity = activity;
+        data.agents[0].activity = activity;
+        await publish();
+        assert.deepEqual(
+          await evaluate(() => {
+            const card = document.querySelector(
+              '#active-workers [data-context-unit="parent"]',
+            );
+            const label = card.querySelector('.worker-card-activity');
+            const heading = card.querySelector('.worker-card-heading');
+            return {
+              activity: label.textContent,
+              conversation: document.getElementById(
+                'conversation-activity-text',
+              ).textContent,
+              oneActivity:
+                card.querySelectorAll('.worker-card-activity').length === 1,
+              statusBadges: card.querySelectorAll('.status-badge').length,
+              inHeading: heading.contains(label),
+              title: label.title,
+              worker: document.querySelector(
+                '#active-workers [data-context-unit="starter-list-running"] .worker-card-activity',
+              ).textContent,
+            };
+          }),
+          {
+            activity,
+            conversation: activity,
+            oneActivity: true,
+            statusBadges: 0,
+            inHeading: true,
+            title: activity,
+            worker: activity,
+          },
+        );
+      }
+      data.session.activity = undefined;
+      data.agents[0].activity = undefined;
+      await publish();
+      assert.equal(
+        await evaluate(() =>
+          [
+            ...document.querySelectorAll(
+              '#active-workers [data-context-unit="parent"] .worker-card-activity, #active-workers [data-context-unit="starter-list-running"] .worker-card-activity',
+            ),
+          ].every(label => label.hidden && label.textContent === ''),
+        ),
+        true,
+      );
       data.session.status = 'closed';
       await publish();
       const closed = await evaluate(listed);
@@ -10556,7 +10616,7 @@ async function main() {
         id: 'parent',
         kind: 'primary',
         name: 'Alpha factory',
-        status: 'Closed',
+        label: 'Closed',
       });
       assert.equal(
         closed.active.some(card => card.id === 'parent'),
@@ -10583,7 +10643,7 @@ async function main() {
           id: 'parent',
           kind: 'primary',
           name: 'Beta factory',
-          status: 'Running',
+          label: hub.sessions[1].session.activity,
         },
       ]);
     },
@@ -10721,6 +10781,28 @@ async function main() {
               },
             },
             'The conversation starter stays the only large robot when another primary is first in the agent data or selected',
+          );
+          assert.deepEqual(
+            await evaluate(() => {
+              const card = document.querySelector(
+                '#active-workers [data-context-unit="parent"]',
+              );
+              const activity = card.querySelector('.worker-card-activity');
+              return {
+                badges: card.querySelectorAll('.status-badge').length,
+                visible: activity.checkVisibility(),
+                fits:
+                  activity.scrollWidth > 0 &&
+                  activity.getBoundingClientRect().right <=
+                    card.getBoundingClientRect().right,
+                aboveTask:
+                  activity.getBoundingClientRect().bottom <=
+                  card
+                    .querySelector('.worker-card-task')
+                    .getBoundingClientRect().top,
+              };
+            }),
+            {badges: 0, visible: true, fits: true, aboveTask: true},
           );
           if (compact) await press('Escape');
         };

@@ -1067,19 +1067,20 @@ function createWorkerCard(agent) {
     conversationKind(agent, agent.id === 'parent'),
     agent.id === primaryUnit(snapshot())?.id,
   );
+  const heading = node('span', 'worker-card-heading');
   const name = node('span', 'worker-card-name');
-  const status = node('span');
-  header.append(mark, name, status);
-  const task = node('span', 'worker-card-task');
   const activity = node('span', 'worker-card-activity');
+  heading.append(name, activity);
+  header.append(mark, heading);
+  const task = node('span', 'worker-card-task');
   const meta = node('span', 'worker-card-meta');
   const model = node('span');
   const time = node('span');
   meta.append(model, time);
-  element.append(header, task, activity, meta);
+  element.append(header, task, meta);
   element.dataset.contextUnit = agent.id;
   element.addEventListener('click', () => selectUnit(agent.id));
-  return {element, mark, name, status, task, activity, model, time};
+  return {element, mark, name, task, activity, model, time};
 }
 function createHistoryRow(agent) {
   const element = node('button', 'history-row');
@@ -1135,15 +1136,12 @@ function renderWorkers() {
       entry.element.dataset.agentKind = kind;
       updateRobot(entry.mark, kind, agent.id === largeId);
       text(entry.name, agent.name);
-      if (parent) parentBadge(entry.status, agent);
-      else badge(entry.status, agent.status);
-      const activity = parent
-        ? (parentHasError(agent) && agent.error) ||
-          agent.activity ||
-          statusName(agent.status)
-        : agent.activity || 'Waiting for activity';
+      const activity = agent.activity || '';
       text(entry.task, agent.task);
-      text(entry.activity, activity);
+      entry.activity.hidden = !activity;
+      if (entry.activity.textContent !== activity)
+        entry.activity.textContent = activity;
+      entry.activity.title = activity;
       text(entry.model, agent.model);
       text(entry.time, duration(agent));
       entry.element.title = `${conversationKindLabel(kind)} · ${agent.name}\n${agent.task}\n${activity}\n${agent.model || ''}`;

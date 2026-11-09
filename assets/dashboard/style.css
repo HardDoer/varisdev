@@ -818,8 +818,12 @@ main > .welcome {
   gap: 8px;
   margin-bottom: 5px;
 }
-.worker-card-name {
+.worker-card-heading {
   flex: 1;
+  min-width: 0;
+}
+.worker-card-name {
+  display: block;
   min-width: 0;
   font-size: 0.8125rem;
   font-weight: 650;
@@ -845,9 +849,6 @@ main > .welcome {
 }
 .worker-card-activity {
   display: block;
-  padding-top: 4px;
-  margin-top: 4px;
-  border-top: 1px solid #36505b88;
   color: var(--agent-color, var(--status-running));
   font-size: 0.75rem;
 }

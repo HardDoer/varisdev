@@ -52,6 +52,7 @@
 
 # UI text
 
+- Agent cards use the same existing activity text as the conversation view. Display supplied Pi activity verbatim; do not invent, infer, or substitute activity labels from generic states such as Ready or Running. If no activity is supplied, omit the activity label. Reorganize existing information and remove redundant status labels instead of adding another activity display.
 - Make UI elements and scene objects understandable through their appearance, placement, and behavior. Avoid decorative labels and unexplained abbreviations such as “LEAD” and “IN”.
 - Avoid redundant UI notes that explain obvious behavior or internal implementation details, such as “Choices follow Pi’s Scoped models.” Include notes only when they help the user make a decision or understand a non-obvious constraint.
 
