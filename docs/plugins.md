@@ -58,7 +58,7 @@ The same blocks appear in parent and agent conversations, including restored his
 
 Version 1 accepts up to eight blocks, 16,000 characters per Markdown block, and 200 characters per label. Unsupported versions, malformed fields, and excess blocks produce visible diagnostics alongside any usable content. Images use local files. PNG, JPEG, GIF, WebP, AVIF, SVG, and TIFF are supported; animated and multipage files show their first frame or page. Input limits are 50 MiB and 40 million pixels. SVG is rasterized before display. Thumbnails are at most 640 pixels per edge; larger views at most 2560. Missing files can be retried. Keep files available when reopening saved conversations.
 
-Normal image attachments and tool results with `details.images: [{path}]` are also displayed. An explicit image block and the same path in `details.images` produce one preview. `image_preview` uses the contract above; `openai_image` output is displayed automatically.
+Normal image attachments and tool results with `details.images: [{path}]` are also displayed. An explicit image block and the same path in `details.images` produce one preview. `image_preview` uses the contract above.
 
 ### Optional helpers and types
 

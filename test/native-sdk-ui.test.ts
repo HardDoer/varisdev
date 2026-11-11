@@ -61,7 +61,6 @@ void test(
       'actual stock long Fork selector pages and cancels at compact zoom',
       'worker approval choices enforce once, conversation, agent, deny and cancellation scopes',
       'worker menu reviews and revokes real remembered approvals with light native UI',
-      'actual native image model chooser renders eight presets, saves selection and cleans up cancellation',
     ]);
   },
 );

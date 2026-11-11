@@ -18,6 +18,7 @@ import {
   type ResourceLoader,
 } from '@earendil-works/pi-coding-agent';
 import {createAppResourceFilter} from './resources.ts';
+import {includeBuiltinSkills, loadBuiltinSkills} from '../builtin-skills.ts';
 
 // Pi exposes the MCP loader hook, while its file parser is shipped internally.
 const {loadMcpConfig} = (await import(
@@ -357,8 +358,31 @@ export function createWorkspaceConfiguration(
       ? inheritedTextLoader
       : rootTextLoader;
   };
+  let builtinSkills: Awaited<ReturnType<typeof loadBuiltinSkills>> = {
+    skills: [],
+    diagnostics: [],
+  };
   const reloadResources = async () => {
     await reload();
+    builtinSkills = await loadBuiltinSkills([
+      {baseDir: agentDir, entries: repository.getGlobalSettings().skills ?? []},
+      {
+        baseDir: paths.repositoryConfigDir,
+        entries: rootRepository.getProjectSettings().skills ?? [],
+      },
+      ...(rootRepository === repository
+        ? []
+        : [
+            {
+              baseDir: join(cwd, CONFIG_DIR_NAME),
+              entries: repository.getProjectSettings().skills ?? [],
+            },
+          ]),
+      {
+        baseDir: paths.workspaceDir,
+        entries: workspace.getGlobalSettings().skills ?? [],
+      },
+    ]);
     const resolved = await packages.resolve();
     if (rootRepository !== repository) {
       const rootResolved = await rootPackages.resolve();
@@ -534,6 +558,14 @@ export function createWorkspaceConfiguration(
       currentContextScope = contextScope;
       return {
         ...options,
+        ...(!taskOnly && !options.noSkills
+          ? {
+              skillsOverride: base => {
+                const selected = includeBuiltinSkills(base, builtinSkills);
+                return options.skillsOverride?.(selected) ?? selected;
+              },
+            }
+          : {}),
         ...(taskOnly
           ? {
               skillsOverride: () => {

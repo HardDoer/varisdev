@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import {execFile as execFileCallback} from 'node:child_process';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
@@ -7,10 +6,10 @@ import {join} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
-import {promisify} from 'node:util';
 import {ModelRuntime, SettingsManager} from '@earendil-works/pi-coding-agent';
 import {DesktopAccounts, type AccountState} from '../src/desktop/accounts.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
+import {runRuntimeCommand} from '../src/runtime/manager.ts';
 
 async function waitFor(check: () => boolean) {
   for (let count = 0; count < 300; count++) {
@@ -785,7 +784,7 @@ void test(
     const require = createRequire(import.meta.url);
     let failure;
     try {
-      await promisify(execFileCallback)(
+      await runRuntimeCommand(
         require('electron') as string,
         [
           fileURLToPath(
@@ -794,7 +793,11 @@ void test(
           directory,
           reportPath,
         ],
-        {env, timeout: 50000},
+        {
+          cwd: fileURLToPath(new URL('../', import.meta.url)),
+          env,
+          timeoutMs: 50000,
+        },
       );
     } catch (error) {
       failure = error;

@@ -1,26 +1,16 @@
 /* global process, __dirname, document, window, Event, setTimeout, getComputedStyle, requestAnimationFrame */
 const assert = require('node:assert/strict');
-const {existsSync, mkdirSync, writeFileSync} = require('node:fs');
+const {mkdirSync, writeFileSync} = require('node:fs');
 const {join, resolve} = require('node:path');
-const {pathToFileURL} = require('node:url');
 const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
-const screenshotDirectory = process.env.VARISDEV_TOOL_MODELS_SCREENSHOTS;
+const screenshotDirectory = process.env.VARISDEV_AGENT_MODELS_SCREENSHOTS;
 const report = {cases: [], rendererErrors: []};
 process.env.VARISDEV_CODING_AGENT_DIR = join(directory, 'agent');
 process.env.PI_CODING_AGENT_DIR = join(directory, 'agent');
-process.env.OPENAI_IMAGE_MODEL = 'gpt-image-1-mini';
-const imageModelPath = join(
-  directory,
-  'agent',
-  'varisdev',
-  'tool-models',
-  'openai-image.json',
-);
 let browser;
 const reads = [];
 const writes = [];
-const imageWrites = [];
 let settings = {
   agents: {allowedModels: [], maxConcurrentAgents: 6},
 };
@@ -121,16 +111,6 @@ async function waitFor(fn) {
 async function click(id) {
   await evaluate(id => document.getElementById(id).click(), id);
 }
-async function change(id, value) {
-  await evaluate(
-    ({id, value}) => {
-      const element = document.getElementById(id);
-      element.value = value;
-      element.dispatchEvent(new Event('change', {bubbles: true}));
-    },
-    {id, value},
-  );
-}
 async function setConcurrency(value) {
   await evaluate(value => {
     const input = document.getElementById('agent-max-concurrent');
@@ -163,10 +143,10 @@ async function open() {
       !document.getElementById('tool-settings-content').hidden,
   );
 }
-async function assertCombinedVisible() {
+async function assertAgentModelsVisible() {
   const structure = await evaluate(() => ({
     title: document.getElementById('tool-settings-title').textContent.trim(),
-    sections: ['agent-model-settings', 'image-model-settings'].map(id => {
+    sections: ['agent-model-settings'].map(id => {
       const element = document.getElementById(id);
       return {
         heading: document
@@ -177,11 +157,8 @@ async function assertCombinedVisible() {
     }),
   }));
   assert.deepEqual(structure, {
-    title: 'Tool models',
-    sections: [
-      {heading: 'Agent models', visible: true},
-      {heading: 'OpenAI images', visible: true},
-    ],
+    title: 'Agent-models',
+    sections: [{heading: 'Agent-models', visible: true}],
   });
 }
 async function auditThemeContrast() {
@@ -225,14 +202,11 @@ async function auditThemeContrast() {
       root.dataset.theme = theme;
       const card = id => {
         const element = document.getElementById(id);
-        const heading = element.querySelector('h3');
+        const label = element.querySelector('label');
         const style = getComputedStyle(element);
         return {
           background: style.backgroundColor,
-          heading: contrast(
-            getComputedStyle(heading).color,
-            style.backgroundColor,
-          ),
+          label: contrast(getComputedStyle(label).color, style.backgroundColor),
           border: contrast(style.borderTopColor, style.backgroundColor),
         };
       };
@@ -247,16 +221,8 @@ async function auditThemeContrast() {
       return {
         theme,
         agents: card('agent-model-settings'),
-        image: card('image-model-settings'),
         search: control('tool-settings-search', 'agent-model-settings'),
         concurrency: control('agent-max-concurrent', 'agent-model-settings'),
-        imageModel: control('image-model', 'image-model-settings'),
-        environmentLabel: contrast(
-          getComputedStyle(document.getElementById('image-model-environment'))
-            .color,
-          getComputedStyle(document.getElementById('image-model-settings'))
-            .backgroundColor,
-        ),
       };
     });
     root.dataset.theme = original;
@@ -324,11 +290,6 @@ async function reload() {
   await waitFor(() => !document.getElementById('factory-workspace').hidden);
 }
 async function main() {
-  const {getToolModels, saveToolModel} = await import(
-    pathToFileURL(
-      resolve(__dirname, '../../desktop/build/src/tools/model-selection.js'),
-    ).href
-  );
   await app.whenReady();
   browser = new BrowserWindow({
     show: true,
@@ -369,11 +330,6 @@ async function main() {
   handle('pidev:agent-session', (_id, request) => {
     assert.equal(request.action, 'features');
     return features();
-  });
-  handle('varisdev:get-tool-models', getToolModels);
-  handle('varisdev:save-tool-model', async (...args) => {
-    imageWrites.push(args);
-    await saveToolModel(...args);
   });
   handle('varisdev:get-tool-settings', id => {
     reads.push(id);
@@ -419,8 +375,8 @@ async function main() {
         ),
       ].map(button => ({id: button.id, text: button.textContent.trim()})),
     ),
-    [{id: 'open-model-settings', text: 'Tool models'}],
-    'the menu has one entry for the combined settings',
+    [{id: 'open-model-settings', text: 'Agent-models'}],
+    'the menu opens Agent-models',
   );
   await click('open-model-settings');
   await waitFor(() => !document.getElementById('tool-settings-error').hidden);
@@ -440,74 +396,39 @@ async function main() {
   await click('tool-settings-retry');
   await waitFor(() => !document.getElementById('tool-settings-content').hidden);
   assert.equal(reads.at(-1), 'project');
-  await assertCombinedVisible();
+  await assertAgentModelsVisible();
   const desktopLayout = await evaluate(() => {
-    const ids = [
-      'agent-model-settings',
-      'image-model-settings',
-      'image-model',
-      'tool-settings-save',
-    ];
+    const ids = ['agent-model-settings', 'tool-settings-save'];
     const rects = ids.map(id =>
       document.getElementById(id).getBoundingClientRect(),
     );
     return {
-      beside: rects[0].right < rects[1].left,
       visibleTogether: rects.every(
         rect => rect.top >= 0 && rect.bottom <= window.innerHeight,
       ),
     };
   });
-  assert.deepEqual(desktopLayout, {beside: true, visibleTogether: true});
-  const environmentControl = await evaluate(() => {
-    const select = document.getElementById('image-model');
-    const source = document.getElementById('image-model-environment');
-    return {
-      value: select.value,
-      option: select.selectedOptions[0].textContent,
-      fallbackSource: select.selectedOptions[0].parentElement.label,
-      disabled: select.disabled,
-      source: source.textContent,
-      sourceVisible: source.checkVisibility(),
-      muted: select.classList.contains('environment-fallback'),
-      matchesMutedLabel:
-        getComputedStyle(select).color === getComputedStyle(source).color,
-    };
-  });
-  assert.deepEqual(environmentControl, {
-    value: '',
-    option: 'gpt-image-1-mini',
-    fallbackSource: 'OPENAI_IMAGE_MODEL',
-    disabled: false,
-    source: 'From OPENAI_IMAGE_MODEL',
-    sourceVisible: true,
-    muted: true,
-    matchesMutedLabel: true,
-  });
-  assert.equal(
-    existsSync(imageModelPath),
-    false,
-    'viewing does not save fallback',
+  assert.deepEqual(desktopLayout, {visibleTogether: true});
+  assert.deepEqual(
+    await evaluate(() => ({
+      imageSection: document.getElementById('image-model-settings'),
+      imageModel: document.getElementById('image-model'),
+      getToolModels: typeof window.pidev.getToolModels,
+      saveToolModel: typeof window.pidev.saveToolModel,
+    })),
+    {
+      imageSection: null,
+      imageModel: null,
+      getToolModels: 'undefined',
+      saveToolModel: 'undefined',
+    },
   );
-  assert.deepEqual(imageWrites, []);
   const themeContrast = await auditThemeContrast();
   for (const result of themeContrast) {
-    assert.ok(
-      result.environmentLabel >= 4.5,
-      `${result.theme} environment source contrast is ${result.environmentLabel}`,
-    );
-    assert.notEqual(
-      result.agents.background,
-      result.image.background,
-      `${result.theme} gives the cards distinct backgrounds`,
-    );
-    for (const [section, values] of [
-      ['Agent models', result.agents],
-      ['OpenAI images', result.image],
-    ]) {
+    for (const [section, values] of [['Agent models', result.agents]]) {
       assert.ok(
-        values.heading >= 4.5,
-        `${result.theme} ${section} heading contrast is ${values.heading}`,
+        values.label >= 4.5,
+        `${result.theme} ${section} label contrast is ${values.label}`,
       );
       assert.ok(
         values.border >= 3,
@@ -517,7 +438,6 @@ async function main() {
     for (const [control, values] of [
       ['Agent search', result.search],
       ['Maximum concurrent agents', result.concurrency],
-      ['Image model', result.imageModel],
     ]) {
       assert.ok(
         values.text >= 4.5,
@@ -529,7 +449,6 @@ async function main() {
       );
     }
   }
-  await captureScreenshots(themeContrast);
   assert.deepEqual(
     await evaluate(() => ({
       choices: [
@@ -565,7 +484,7 @@ async function main() {
     false,
   );
   await search('');
-  await change('image-model', 'gpt-image-2');
+  await captureScreenshots(themeContrast);
   const initialSettings = {
     agents: {allowedModels: ['alpha/small'], maxConcurrentAgents: 6},
   };
@@ -576,101 +495,9 @@ async function main() {
     value: initialSettings,
     id: 'project',
   });
-  assert.equal(
-    (await getToolModels()).find(model => model.id === 'openai-image').model,
-    'gpt-image-2',
-  );
   report.cases.push(
-    'agent search and image choices save through the production preload',
+    'Agent-models loads and saves agent choices without image settings or IPC',
   );
-
-  await open();
-  assert.deepEqual(
-    await evaluate(() => ({
-      value: document.getElementById('image-model').value,
-      muted: document
-        .getElementById('image-model')
-        .classList.contains('environment-fallback'),
-      sourceHidden: document.getElementById('image-model-environment').hidden,
-    })),
-    {value: 'gpt-image-2', muted: false, sourceHidden: true},
-  );
-  await change('image-model', '');
-  await click('tool-settings-close');
-  assert.equal((await getToolModels())[0].model, 'gpt-image-2');
-  assert.deepEqual(imageWrites, [['openai-image', 'gpt-image-2']]);
-
-  await open();
-  await change('image-model', '');
-  await save();
-  assert.equal(
-    existsSync(imageModelPath),
-    false,
-    'removal deletes saved model',
-  );
-  assert.equal((await getToolModels())[0].model, '');
-  const removedWrites = imageWrites.length;
-  await open();
-  await save();
-  assert.equal(
-    imageWrites.length,
-    removedWrites,
-    'saving unchanged environment fallback does not persist it',
-  );
-  assert.equal(existsSync(imageModelPath), false);
-
-  await open();
-  await change('image-model', 'gpt-image-1-mini');
-  await save();
-  assert.equal(
-    (await getToolModels())[0].model,
-    'gpt-image-1-mini',
-    'explicitly selecting the environment model saves a user choice',
-  );
-  await open();
-  assert.equal(
-    await evaluate(() =>
-      document
-        .getElementById('image-model')
-        .classList.contains('environment-fallback'),
-    ),
-    false,
-  );
-  await change('image-model', '');
-  await save();
-  report.cases.push(
-    'environment fallback is muted and labeled; only explicit image changes save and removal restores it',
-  );
-
-  for (const model of ['gpt-image-1', 'gpt-image-2.5-flare']) {
-    writeFileSync(imageModelPath, JSON.stringify({model}));
-    const beforeUnchangedSave = imageWrites.length;
-    await open();
-    assert.deepEqual(
-      await evaluate(() => {
-        const select = document.getElementById('image-model');
-        return {
-          value: select.value,
-          label: select.selectedOptions[0].textContent,
-          disabled: select.selectedOptions[0].disabled,
-        };
-      }),
-      {
-        value: model,
-        label:
-          model === 'gpt-image-1'
-            ? 'gpt-image-1 (saved)'
-            : 'GPT Image 2.5 Flare — Fast everyday images',
-        disabled: model === 'gpt-image-1',
-      },
-    );
-    await save();
-    assert.equal((await getToolModels())[0].model, model);
-    assert.equal(imageWrites.length, beforeUnchangedSave);
-  }
-  await open();
-  await change('image-model', '');
-  await save();
 
   await open();
   await selectModel('alpha/small');
@@ -736,7 +563,7 @@ async function main() {
   );
   assert.equal(acknowledged, true);
   assert.equal(acknowledgments, 1);
-  await assertCombinedVisible();
+  await assertAgentModelsVisible();
   assert.equal(
     await evaluate(() => document.activeElement.id),
     'tool-settings-search',
@@ -904,7 +731,7 @@ async function main() {
     browser.setContentSize(440, 600);
     browser.webContents.setZoomFactor(zoom);
     await open();
-    await assertCombinedVisible();
+    await assertAgentModelsVisible();
     const geometry = await evaluate(() => {
       const dialog = document.getElementById('tool-settings-dialog');
       const rect = dialog.getBoundingClientRect();
@@ -948,32 +775,44 @@ async function main() {
     });
     assert.equal(concurrencyVisible, true);
     if (screenshotDirectory) {
+      await evaluate(
+        () =>
+          new Promise(resolve =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+      await delay(80);
       writeFileSync(
         join(screenshotDirectory, `concurrency-compact-${zoom}.png`),
         (await browser.webContents.capturePage()).toPNG(),
       );
     }
-    const imageVisible = await evaluate(() => {
-      document
-        .getElementById('image-model-settings')
-        .scrollIntoView({block: 'nearest'});
+    await selectModel('alpha/small');
+    const modelChoiceVisible = await evaluate(() => {
+      const choice = document.querySelector('#tool-settings-models input');
+      choice.closest('label').scrollIntoView({block: 'center'});
+      const rect = choice.getBoundingClientRect();
       const body = document
         .querySelector('.tool-settings-body')
         .getBoundingClientRect();
-      return ['image-model', 'image-model-environment'].every(id => {
-        const element = document.getElementById(id);
-        const rect = element.getBoundingClientRect();
-        return (
-          element.checkVisibility() &&
-          rect.top >= body.top &&
-          rect.bottom <= body.bottom
-        );
-      });
+      const hit = document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2,
+      );
+      return {
+        inside: rect.top >= body.top && rect.bottom <= body.bottom,
+        hit: hit === choice,
+        checked: choice.checked,
+        rect: {top: rect.top, bottom: rect.bottom},
+        body: {top: body.top, bottom: body.bottom},
+        target: hit?.outerHTML,
+      };
     });
-    assert.equal(
-      imageVisible,
-      true,
-      'environment model and source are accessible',
+    assert.ok(
+      modelChoiceVisible.inside &&
+        modelChoiceVisible.hit &&
+        modelChoiceVisible.checked,
+      `agent choices remain clickable when the body scrolls: ${JSON.stringify(modelChoiceVisible)}`,
     );
     if (screenshotDirectory) {
       for (const {theme} of themeContrast) {

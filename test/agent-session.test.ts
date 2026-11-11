@@ -336,14 +336,15 @@ void test(
       'download',
       'gamemaker_query',
       'image_query',
+      'image_preview',
       'json_query',
-      'openai_image',
     ]) {
       assert.ok(
         toolNames.includes(name),
         `${name} must be available to workers`,
       );
     }
+    assert.equal(toolNames.includes('openai_image'), false);
     assert.equal(
       toolNames.some(name => name.startsWith('agent_')),
       false,

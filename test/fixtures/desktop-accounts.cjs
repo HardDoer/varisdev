@@ -47,9 +47,6 @@ async function main() {
   const {DesktopAccounts} = await import(
     pathToFileURL(join(root, 'desktop/build/src/desktop/accounts.js')).href
   );
-  const {getToolModels, saveToolModel} = await import(
-    pathToFileURL(join(root, 'desktop/build/src/tools/model-selection.js')).href
-  );
   const {DesktopToolSettings} = await import(
     pathToFileURL(join(root, 'desktop/build/src/desktop/tool-settings.js')).href
   );
@@ -135,14 +132,14 @@ async function main() {
   handle('varisdev:get-update-status', () => ({phase: 'idle'}));
   const toolSettings = new DesktopToolSettings({
     createRuntime: async () => runtime,
-    sessionFeatures: async () => ({models: []}),
+    sessionFeatures: async () => ({
+      models: [{provider: 'fixture', id: 'agent', name: 'Fixture agent model'}],
+    }),
   });
   handle('varisdev:get-tool-settings', id => toolSettings.getToolSettings(id));
   handle('varisdev:save-tool-settings', (section, value, id) =>
     toolSettings.saveToolSettings(section, value, id),
   );
-  handle('varisdev:get-tool-models', getToolModels);
-  handle('varisdev:save-tool-model', saveToolModel);
   handle('varisdev:get-accounts', () => accounts.get());
   handle('varisdev:account-start', (provider, method) =>
     accounts.start(provider, method),
@@ -405,45 +402,33 @@ async function main() {
     document.getElementById('open-model-settings').click();
   });
   await waitFor(
-    () => document.getElementById('image-model').options.length === 9,
-  );
-  assert.equal(
-    await evaluate(() => document.getElementById('image-model').tagName),
-    'SELECT',
+    () =>
+      !document.getElementById('tool-settings-content').hidden &&
+      document.querySelector('#tool-settings-models input'),
   );
   assert.equal(
     await evaluate(
-      () => document.getElementById('image-model').options[0].textContent,
+      () => document.getElementById('tool-settings-title').textContent,
     ),
-    'Ask on first use',
-  );
-  assert.deepEqual(
-    await evaluate(() =>
-      [...document.getElementById('image-model').options]
-        .slice(1)
-        .map(option => option.value),
-    ),
-    [
-      'gpt-image-2.6-sunburst',
-      'gpt-image-2.6-flare',
-      'gpt-image-2.5-sunburst',
-      'gpt-image-2.5-flare',
-      'gpt-image-2',
-      'gpt-image-1.5',
-      'gpt-image-1-mini',
-      'chatgpt-image-latest',
-    ],
+    'Agent-models',
   );
   await evaluate(() => {
-    const field = document.getElementById('image-model');
-    field.value = 'gpt-image-2.6-flare';
-    field.dispatchEvent(new Event('change', {bubbles: true}));
+    document.querySelector('#tool-settings-models input').click();
+    const field = document.getElementById('agent-max-concurrent');
+    field.value = '3';
+    field.dispatchEvent(new Event('input', {bubbles: true}));
     document.getElementById('tool-settings-form').requestSubmit();
   });
   await waitFor(() => !document.getElementById('tool-settings-dialog').open);
-  assert.equal(
-    (await getToolModels()).find(item => item.id === 'openai-image').model,
-    'gpt-image-2.6-flare',
+  assert.deepEqual(
+    (await toolSettings.getToolSettings(hub.selectedSessionId)).settings.agents,
+    {allowedModels: ['fixture/agent'], maxConcurrentAgents: 3},
+  );
+  assert.deepEqual(
+    JSON.parse(
+      readFileSync(join(agentDir, 'varisdev', 'tool-settings.json'), 'utf8'),
+    ).agents,
+    {allowedModels: ['fixture/agent'], maxConcurrentAgents: 3},
   );
   await evaluate(() => {
     document.getElementById('app-menu-button').click();
@@ -453,7 +438,8 @@ async function main() {
     () =>
       !document.getElementById('tool-settings-content').hidden &&
       !document.getElementById('tool-settings-close').disabled &&
-      document.getElementById('image-model').value === 'gpt-image-2.6-flare',
+      document.getElementById('agent-max-concurrent').value === '3' &&
+      document.querySelector('#tool-settings-models input').checked,
   );
   browser.show();
   for (const [width, height, zoom] of [
@@ -466,30 +452,39 @@ async function main() {
     );
     await new Promise(resolve => setTimeout(resolve, 100));
     await waitFor(async () => {
-      document.getElementById('image-model').scrollIntoView({block: 'center'});
+      document
+        .getElementById('tool-settings-models')
+        .scrollIntoView({block: 'nearest'});
       await new Promise(resolve =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
-      const rect = document
-        .getElementById('image-model')
-        .getBoundingClientRect();
-      return (
-        rect.width > 0 &&
-        rect.height > 0 &&
-        rect.left >= 0 &&
-        rect.right <= innerWidth &&
-        rect.top >= 0 &&
-        rect.bottom <= innerHeight &&
-        document.elementFromPoint(
-          rect.left + rect.width / 2,
-          rect.top + rect.height / 2,
-        ) === document.getElementById('image-model')
-      );
+      return [
+        'tool-settings-models',
+        'tool-settings-save',
+        'tool-settings-close',
+      ].every(id => {
+        const element = document.getElementById(id);
+        const rect = element.getBoundingClientRect();
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.left >= 0 &&
+          rect.right <= innerWidth &&
+          rect.top >= 0 &&
+          rect.bottom <= innerHeight &&
+          element.contains(
+            document.elementFromPoint(
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+            ),
+          )
+        );
+      });
     });
     await new Promise(resolve => setTimeout(resolve, 100));
     const screenshot = await browser.webContents.capturePage();
     writeFileSync(
-      join(directory, `tool-models-${width}.png`),
+      join(directory, `agent-models-${width}.png`),
       screenshot.toPNG(),
     );
   }
@@ -502,7 +497,7 @@ async function main() {
   browser.setSize(1100, 760);
   await waitFor(() => document.getElementById('accounts-dialog').open);
   report.cases.push(
-    'OpenAI preset choices live in Tool models, persist, and remain reachable in compact layouts',
+    'Agent-models persists agent choices and concurrency and remains reachable in compact layouts',
   );
   runtime.registerNativeProvider({
     ...runtime.getProvider('openai'),

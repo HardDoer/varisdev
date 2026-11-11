@@ -1884,7 +1884,7 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   // Execute also enforces policy even when callers bypass schema validation.
   await assert.rejects(
     parent.spawn('Inherited denied'),
-    /Menu → Tool models.*other\/model/,
+    /Menu → Agent-models.*other\/model/,
   );
   await assert.rejects(parent.execute('agent_spawn', params), /not allowed/);
   assert.equal(workers.created.length, 0);
@@ -1984,7 +1984,7 @@ void test('model policy is checked when queued workers start, including initiali
     result.details.agents.every(
       agent =>
         agent.status === 'failed' &&
-        agent.error?.includes('Menu → Tool models'),
+        agent.error?.includes('Menu → Agent-models'),
     ),
   );
   assert.equal(workers.byId.has(uninitialized), false);
@@ -2213,22 +2213,22 @@ void test('fresh and cleared agent policies deny explicit and inherited models w
   const params = {name: 'Explicit', task: 'Must not start', model};
   const assertEmptyPolicy = async () => {
     const tool = parent.tools.get('agent_spawn')!;
-    assert.match(tool.description, /No models enabled.*Menu → Tool models/);
+    assert.match(tool.description, /No models enabled.*Menu → Agent-models/);
     const schema = tool.parameters as {
       properties: {model: {enum?: string[]; description: string}};
     };
     assert.equal(Object.hasOwn(schema.properties.model, 'enum'), false);
     assert.doesNotMatch(
       schema.properties.model.description,
-      /Menu → Tool models/,
+      /Menu → Agent-models/,
     );
     await assert.rejects(
       parent.spawn('Inherited denied'),
-      /No agent models selected.*Choose a model in Menu → Tool models/,
+      /No agent models selected.*Choose a model in Menu → Agent-models/,
     );
     await assert.rejects(
       parent.execute('agent_spawn', params),
-      /No agent models selected.*Choose a model in Menu → Tool models/,
+      /No agent models selected.*Choose a model in Menu → Agent-models/,
     );
     assert.equal(workers.created.length, 0);
   };

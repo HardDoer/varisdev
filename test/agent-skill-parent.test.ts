@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createServer, type ServerResponse} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
@@ -16,6 +16,11 @@ import {
   type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
 import {registerFactory} from '../src/dashboard/index.ts';
+import {builtinSkillsDirectory} from '../src/builtin-assets.ts';
+import {
+  includeBuiltinSkills,
+  loadBuiltinSkills,
+} from '../src/builtin-skills.ts';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
 import {
   registerAgentTools,
@@ -171,16 +176,21 @@ void test(
       instructions: 'Apply the root skill policy.',
       permissions: [
         {action: 'skill', resource: 'denied-skill', effect: 'deny'},
+        {action: 'skill', resource: 'doctor', effect: 'deny'},
         {action: 'skill', resource: 'approved-skill', effect: 'ask'},
       ],
     });
     const profile = (await resolveAgentTemplate(cwd, 'skill-policy'))!;
+    const builtin = await loadBuiltinSkills([]);
     const parent = await createDashboardParent(
       {cwd, agentProfile: profile},
       inherited,
     );
     parents.push(parent);
     const features = await parent.features();
+    assert.ok(
+      !features.commands.some(command => command.name === 'skill:doctor'),
+    );
     assert.ok(
       !features.commands.some(command => command.name === 'skill:denied-skill'),
     );
@@ -306,6 +316,23 @@ void test(
       /DENIED SKILL BODY MARKER/,
     );
     assert.equal(neutral.ui.snapshot().dialogs.length, 0);
+    assert.ok(
+      (await neutral.features()).commands.some(
+        command => command.name === 'skill:doctor',
+      ),
+    );
+    await neutral.prompt('/skill:doctor Check this installation.');
+    const doctorPrompt = JSON.stringify(requests.at(-1)!.messages);
+    const doctorBody = (
+      await readFile(join(builtinSkillsDirectory, 'doctor', 'SKILL.md'), 'utf8')
+    )
+      .split('---')
+      .slice(2)
+      .join('---')
+      .trim();
+    assert.ok(doctorBody.length > 0);
+    assert.ok(doctorPrompt.includes(JSON.stringify(doctorBody).slice(1, -1)));
+    assert.match(doctorPrompt, /Check this installation\./);
 
     await writeFile(
       join(agentDir, 'settings.json'),
@@ -356,6 +383,7 @@ void test(
       systemPrompt: 'NATIVE BASE PROMPT MARKER',
       appendSystemPrompt: ['NATIVE APPEND PROMPT MARKER'],
       extensionFactories: [nativeFactory],
+      skillsOverride: base => includeBuiltinSkills(base, builtin),
     });
     await nativeLoader.reload();
     const {session: native} = await createAgentSession({
@@ -426,7 +454,7 @@ void test(
     assert.match(nativePayload, /NATIVE APPEND PROMPT MARKER/);
     assert.doesNotMatch(
       nativePayload,
-      /Apply the root skill policy|DENIED SKILL BODY MARKER|builtin:default/,
+      /Apply the root skill policy|DENIED SKILL BODY MARKER|builtin:default|Diagnose VarisDev installation/,
     );
     assert.match(JSON.stringify(requests.at(-1)!.tools), /native-open-helper/);
     assert.doesNotMatch(
@@ -486,6 +514,7 @@ void test(
       appendSystemPrompt: ['NATIVE APPEND PROMPT MARKER'],
       additionalSkillPaths: [explicitSkill],
       extensionFactories: [nativeFactory],
+      skillsOverride: base => includeBuiltinSkills(base, builtin),
     });
     await taskLoader.reload();
     const {session: taskNative} = await createAgentSession({
@@ -518,7 +547,7 @@ void test(
     assert.match(taskPayload, /EXPLICIT NATIVE SKILL DESCRIPTION/);
     assert.doesNotMatch(
       taskPayload,
-      /OPEN SKILL DESCRIPTION|APPROVED SKILL DESCRIPTION|DENIED SKILL DESCRIPTION/,
+      /OPEN SKILL DESCRIPTION|APPROVED SKILL DESCRIPTION|DENIED SKILL DESCRIPTION|Diagnose VarisDev installation/,
     );
     assert.match(
       taskPayload,
@@ -527,6 +556,74 @@ void test(
     );
     assert.equal(taskNative.model?.id, inherited.model.id);
     assert.equal(taskNative.thinkingLevel, 'off');
+    await taskNative.reload();
+    await taskNative.prompt('Retain task context after reload.');
+    assert.doesNotMatch(
+      JSON.stringify(requests.at(-1)!.messages),
+      /Diagnose VarisDev installation/,
+    );
+
+    const explicitDoctorLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      additionalSkillPaths: [
+        join(builtinSkillsDirectory, 'doctor', 'SKILL.md'),
+      ],
+      extensionFactories: [nativeFactory],
+      skillsOverride: base => includeBuiltinSkills(base, builtin),
+    });
+    await explicitDoctorLoader.reload();
+    const explicitManager = SessionManager.create(
+      cwd,
+      join(directory, 'explicit-task-sessions'),
+    );
+    explicitManager.appendCustomEntry('varisdev.agent-profile', {
+      ...nativeProfile!,
+      context: 'task',
+      permissions: nativeProfile!.permissions.filter(
+        rule => rule.resource !== 'doctor',
+      ),
+    });
+    const {session: explicitNative} = await createAgentSession({
+      cwd,
+      agentDir,
+      model: inherited.model,
+      modelRuntime: runtime,
+      thinkingLevel: 'off',
+      resourceLoader: explicitDoctorLoader,
+      sessionManager: explicitManager,
+    });
+    const explicitUi = new DesktopExtensionUI(() => {});
+    nativeCleanup.push(() => {
+      explicitNative.dispose();
+      explicitUi.dispose();
+    });
+    await explicitNative.bindExtensions({
+      mode: 'rpc',
+      uiContext: explicitUi.context,
+      onError: error => errors.push(error),
+    });
+    await explicitNative.prompt(
+      'Use the explicitly selected doctor in task context.',
+    );
+    assert.match(
+      JSON.stringify(requests.at(-1)!.messages),
+      /Diagnose VarisDev installation/,
+    );
+
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({retry: {enabled: false}, enableSkillCommands: false}),
+    );
+    await neutral.reload();
+    assert.ok(
+      !(await neutral.features()).commands.some(
+        command => command.name === 'skill:doctor',
+      ),
+    );
+    const beforeDisabled = requests.length;
+    await assert.rejects(neutral.prompt('/skill:doctor'), /disabled/i);
+    assert.equal(requests.length, beforeDisabled);
     assert.deepEqual(errors, []);
   },
 );

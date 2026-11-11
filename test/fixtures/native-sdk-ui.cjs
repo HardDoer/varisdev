@@ -9,7 +9,6 @@ const {app, BrowserWindow, ipcMain} = require('electron');
 const [directory, reportPath] = process.argv.slice(2);
 process.env.PI_CODING_AGENT_DIR = join(directory, 'pi-agent');
 process.env.VARISDEV_CODING_AGENT_DIR = join(directory, 'pi-agent');
-delete process.env.OPENAI_IMAGE_MODEL;
 const report = {cases: []};
 const responses = [];
 const errors = [];
@@ -33,15 +32,9 @@ let AgentApprovalStore;
 let canonicalApprovalWorkspace;
 let checkAgentPermissions;
 let showAgentApprovals;
-let selectToolModel;
-let saveToolModel;
-let getToolModels;
-let imagePresets;
 let approvalStore;
 let approvalController;
 let approvalTask;
-let imageController;
-let imageTask;
 const approvalRoutes = [];
 
 app.setPath('userData', join(directory, 'profile'));
@@ -546,7 +539,6 @@ async function main() {
     approvalUI,
     approvalPolicy,
     approvalStorage,
-    modelSelection,
   ] = await Promise.all([
     import(pathToFileURL(resolve('src/dashboard/extension-ui.ts')).href),
     import(pathToFileURL(resolve('src/dashboard/settings-commands.ts')).href),
@@ -554,7 +546,6 @@ async function main() {
     import(pathToFileURL(resolve('src/agents/approval-ui.ts')).href),
     import(pathToFileURL(resolve('src/agents/policy.ts')).href),
     import(pathToFileURL(resolve('src/agents/approvals.ts')).href),
-    import(pathToFileURL(resolve('src/tools/model-selection.ts')).href),
   ]);
   runSettingsCommand = settingsCommands.runSettingsCommand;
   UserMessageSelectorComponent = sdk.UserMessageSelectorComponent;
@@ -563,10 +554,6 @@ async function main() {
   AgentApprovalStore = approvalStorage.AgentApprovalStore;
   canonicalApprovalWorkspace = approvalStorage.canonicalApprovalWorkspace;
   approvalStore = new AgentApprovalStore(join(directory, 'approvals.json'));
-  selectToolModel = modelSelection.selectToolModel;
-  saveToolModel = modelSelection.saveToolModel;
-  getToolModels = modelSelection.getToolModels;
-  imagePresets = modelSelection.OPENAI_IMAGE_PRESETS;
   settings = sdk.SettingsManager.inMemory();
   settings.setTheme('dark');
   const modelsPath = join(directory, 'models.json');
@@ -1168,66 +1155,6 @@ async function main() {
     'worker menu reviews and revokes real remembered approvals with light native UI',
   );
 
-  const imageLabels = imagePresets.map(
-    preset =>
-      `${preset.label}${preset.description ? ` — ${preset.description}` : ''}`,
-  );
-  imageController = new AbortController();
-  imageTask = selectToolModel(
-    'openai-image',
-    undefined,
-    {hasUI: true, ui: ui.context},
-    imageController.signal,
-  );
-  await waitForTerminal('GPT Image 2.6 Sunburst');
-  assert.equal(ui.snapshot().dialogs[0].terminal.appearance, 'light');
-  assert.deepEqual(ui.snapshot().dialogs[0].options, imageLabels);
-  assert.equal(imageLabels.length, 8);
-  await screenshot('native-image-model-light');
-  imageController.abort(new Error('fixture image setup cancelled'));
-  await assert.rejects(imageTask, /fixture image setup cancelled/);
-  imageTask = undefined;
-  await waitFor(
-    () => ui.snapshot().dialogs.length === 0,
-    'Cancelled image model selector remained open',
-  );
-  assert.equal((await getToolModels())[0].model, '');
-
-  imageController = new AbortController();
-  imageTask = selectToolModel(
-    'openai-image',
-    undefined,
-    {hasUI: true, ui: ui.context},
-    imageController.signal,
-  );
-  await waitForTerminal('GPT Image 2.6 Sunburst');
-  await assertCompact(
-    'native-image-model-light',
-    'GPT Image 2.6 Sunburst',
-    [2],
-  );
-  await press('Down');
-  await press('Return');
-  assert.equal(await imageTask, 'gpt-image-2.6-flare');
-  imageTask = undefined;
-  await waitFor(
-    () => ui.snapshot().dialogs.length === 0,
-    'Selected image model selector remained open',
-  );
-  assert.equal((await getToolModels())[0].model, 'gpt-image-2.6-flare');
-  assert.equal(
-    await selectToolModel('openai-image', undefined, {
-      hasUI: true,
-      ui: ui.context,
-    }),
-    'gpt-image-2.6-flare',
-  );
-  assert.equal(ui.snapshot().dialogs.length, 0);
-  await saveToolModel('openai-image', '');
-  report.cases.push(
-    'actual native image model chooser renders eight presets, saves selection and cleans up cancellation',
-  );
-
   assert.deepEqual(errors, []);
 }
 
@@ -1238,11 +1165,8 @@ main()
     modelController?.abort();
     forkController?.abort();
     approvalController?.abort();
-    imageController?.abort();
     await Promise.allSettled(
-      [settingsTask, modelTask, forkTask, approvalTask, imageTask].filter(
-        Boolean,
-      ),
+      [settingsTask, modelTask, forkTask, approvalTask].filter(Boolean),
     );
     ui?.dispose();
     runtime?.dispose?.();
@@ -1256,11 +1180,8 @@ main()
     modelController?.abort();
     forkController?.abort();
     approvalController?.abort();
-    imageController?.abort();
     await Promise.allSettled(
-      [settingsTask, modelTask, forkTask, approvalTask, imageTask].filter(
-        Boolean,
-      ),
+      [settingsTask, modelTask, forkTask, approvalTask].filter(Boolean),
     );
     ui?.dispose();
     runtime?.dispose?.();

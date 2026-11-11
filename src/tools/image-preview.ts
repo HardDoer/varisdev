@@ -19,7 +19,6 @@ export function registerImagePreviewTool(pi: ExtensionAPI): void {
     promptSnippet: 'Display an existing image in the VarisDev conversation.',
     promptGuidelines: [
       'Use image_preview when showing an existing image, screenshot, chart, or visual result to the user. Pass its real local path.',
-      'openai_image output is previewed automatically; an additional image_preview call is unnecessary after generation.',
       'For Markdown image links, use actual local paths. Do not invent sandbox URLs or embed base64 in messages.',
     ],
     parameters: schema,

@@ -526,7 +526,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     const inherit = document.createElement('option');
     inherit.value = '';
     inherit.textContent = settings?.settings.agents.allowedModels?.length
-      ? 'Use tool model settings'
+      ? 'Use agent model settings'
       : 'Inherit';
     $('agent-template-model').replaceChildren(
       inherit,

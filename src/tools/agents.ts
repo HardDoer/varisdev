@@ -435,7 +435,7 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
         Type.String({
           maxLength: 512,
           description:
-            'Pinned delegated model as provider/model, overriding launch arguments and Tool models. Omit to inherit.',
+            'Pinned delegated model as provider/model, overriding launch arguments and Agent-models. Omit to inherit.',
         }),
       ),
       thinkingLevel: Type.Optional(
@@ -834,12 +834,12 @@ export function registerAgentTools(
         (maxConcurrentAgents === 1
           ? 'Additional agents are disabled: the single slot is reserved for the main conversation. '
           : `Maximum ${maxConcurrentAgents} concurrent agents including the main conversation (${maxConcurrentAgents - 1} background agent${maxConcurrentAgents === 2 ? '' : 's'}); others queue. `) +
-        'An explicit configuration model is pinned and overrides the model argument and Tool models. ' +
+        'An explicit configuration model is pinned and overrides the model argument and Agent-models. ' +
         (allowedModels === null
           ? 'Inheriting configurations accept any model from the current model registry. '
           : allowedModels.length === 0
-            ? 'No models enabled for inheriting configurations; configure Menu → Tool models first. '
-            : 'Inheriting configurations use models allowed by Menu → Tool models. ') +
+            ? 'No models enabled for inheriting configurations; configure Menu → Agent-models first. '
+            : 'Inheriting configurations use models allowed by Menu → Agent-models. ') +
         'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not start another turn.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',

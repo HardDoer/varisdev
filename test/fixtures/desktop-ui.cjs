@@ -50,7 +50,6 @@ let defaultAgent;
 let templateError;
 let toolSettings;
 let toolSettingsError;
-let imageModel = '';
 let resizeMouseIsolated = false;
 let expectedResizeMouse = [];
 let resizeNativeTrace = [];
@@ -483,7 +482,6 @@ function reset() {
   startupInteraction?.ui.dispose();
   startupInteraction = undefined;
   startupOnCreate = undefined;
-  imageModel = '';
   hub = {
     launchCwd: directory,
     selectedSessionId: 'alpha',
@@ -873,24 +871,6 @@ ipcMain.handle('fixture:list-agent-templates', async (_event, cwd) => {
     );
   if (error) throw new Error(error);
   return result;
-});
-ipcMain.handle('fixture:tool-models', async () => {
-  const {OPENAI_IMAGE_PRESETS, DEFAULT_IMAGE_MODEL} = await import(
-    pathToFileURL(resolve('src/tools/model-selection.ts')).href
-  );
-  return [
-    {
-      id: 'openai-image',
-      label: 'OpenAI images',
-      model: imageModel,
-      presets: OPENAI_IMAGE_PRESETS,
-      defaultModel: DEFAULT_IMAGE_MODEL,
-    },
-  ];
-});
-ipcMain.handle('fixture:save-tool-model', (_event, tool, model) => {
-  calls.push({method: 'saveToolModel', tool, model});
-  imageModel = model;
 });
 ipcMain.handle('fixture:tool-settings', (_event, sessionId) => {
   calls.push({method: 'getToolSettings', sessionId});
@@ -14060,7 +14040,7 @@ async function main() {
     'menu theme selector is visible and applies and remembers every palette',
     async () => {
       hub.sessions[0].conversation.push(
-        ...['read', 'edit', 'browse', 'agent_spawn', 'openai_image'].map(
+        ...['read', 'edit', 'browse', 'agent_spawn', 'image_preview'].map(
           toolName => ({
             id: `theme-${toolName}`,
             role: 'tool',
@@ -16870,7 +16850,7 @@ async function main() {
   );
 
   await run(
-    'agent template model dropdown loads tool settings and preserves pins',
+    'agent template model dropdown loads agent model settings and preserves pins',
     async () => {
       const click = id =>
         evaluate(id => document.getElementById(id).click(), id);
@@ -16935,7 +16915,7 @@ async function main() {
       assert.deepEqual(await modelControls(), {
         value: '',
         disabled: false,
-        options: availableOptions('Use tool model settings'),
+        options: availableOptions('Use agent model settings'),
       });
       await fill({
         'agent-template-id': 'model-agent',
@@ -17025,7 +17005,7 @@ async function main() {
       );
       assert.equal(
         controls.options.find(option => option.value === '').text,
-        'Use tool model settings',
+        'Use agent model settings',
       );
       await fill({'agent-template-description': 'Keep this unrelated edit.'});
       await click('agent-template-save');

@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import {createServer, type Server} from 'node:http';
-import type {AddressInfo} from 'node:net';
 import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -13,7 +11,7 @@ import {registerDownloadTool} from '../src/tools/download.ts';
 import {registerGameMakerQueryTool} from '../src/tools/gamemaker-query.ts';
 import {registerImageQueryTool} from '../src/tools/image-query.ts';
 import {registerJsonQueryTool} from '../src/tools/json-query.ts';
-import {registerOpenAIImageTool} from '../src/tools/openai-image.ts';
+import {registerProjectTools} from '../src/tools/index.ts';
 
 type ToolResult = {
   content: Array<{type: string; text?: string}>;
@@ -79,34 +77,7 @@ async function makeTempDirectory(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
-async function listen(server: Server): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
-    const handleError = (error: Error) => reject(error);
-    server.once('error', handleError);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', handleError);
-      resolve();
-    });
-  });
-  return (server.address() as AddressInfo).port;
-}
-
-async function close(server: Server): Promise<void> {
-  if (!server.listening) return;
-  await new Promise<void>((resolve, reject) => {
-    server.close(error => (error ? reject(error) : resolve()));
-  });
-}
-
-function restoreEnvironmentVariable(
-  name: string,
-  originalValue: string | undefined,
-): void {
-  if (originalValue === undefined) delete process.env[name];
-  else process.env[name] = originalValue;
-}
-
-void test('VarisDev registers every current tool and no memory tools', () => {
+void test('VarisDev registers its tools without built-in image generation or memory tools', () => {
   const toolNames: string[] = [];
   const pi = {
     registerTool(definition: CapturedTool) {
@@ -128,7 +99,6 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'image_query',
     'image_preview',
     'json_query',
-    'openai_image',
     'agent_templates',
     'agent_spawn',
     'agent_list',
@@ -138,6 +108,7 @@ void test('VarisDev registers every current tool and no memory tools', () => {
     'agent_wait',
     'agent_cancel',
   ]);
+  assert.equal(toolNames.includes('openai_image'), false);
   assert.equal(
     toolNames.some(name => name.startsWith('memory_')),
     false,
@@ -506,88 +477,42 @@ void test('image_query reports alpha bounds and row-major grid occupancy', async
   }
 });
 
-void test('openai_image saves base64 output from the configured API', async () => {
-  const tool = captureTool(registerOpenAIImageTool);
-  const cwd = await makeTempDirectory('varisdev-openai-image-');
-  const imageBytes = Buffer.from([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-  ]);
-  const originalApiKey = process.env.OPENAI_API_KEY;
-  const originalBaseUrl = process.env.OPENAI_BASE_URL;
-  let requestPath: string | undefined;
-  let authorization: string | undefined;
-  let requestBody: Record<string, unknown> | undefined;
-  const server = createServer(async (request, response) => {
-    let body = '';
-    for await (const chunk of request) body += chunk.toString();
-    requestPath = request.url;
-    authorization = request.headers.authorization;
-    requestBody = JSON.parse(body) as Record<string, unknown>;
-    response.writeHead(200, {'content-type': 'application/json'});
-    response.end(
-      JSON.stringify({
-        created: Math.floor(Date.now() / 1000),
-        data: [
-          {
-            b64_json: imageBytes.toString('base64'),
-            revised_prompt: 'A revised test prompt',
-          },
-        ],
-      }),
-    );
+void test('project tools retain local image previews without built-in image generation', async t => {
+  const tools = new Map<string, CapturedTool>();
+  registerProjectTools({
+    registerTool(tool: CapturedTool) {
+      tools.set(tool.name, tool);
+    },
+  } as unknown as ExtensionAPI);
+  assert.equal(tools.has('openai_image'), false);
+  assert.ok(tools.has('image_query'));
+  const preview = tools.get('image_preview');
+  assert.ok(preview);
+
+  const cwd = await makeTempDirectory('varisdev-project-preview-');
+  t.after(() => rm(cwd, {recursive: true, force: true}));
+  const path = join(cwd, 'existing image.png');
+  const bytes = await sharp({
+    create: {width: 4, height: 2, channels: 4, background: '#16a085'},
+  })
+    .png()
+    .toBuffer();
+  await writeFile(path, bytes);
+
+  const result = await preview.execute(
+    'project-preview',
+    {path: '@existing image.png'},
+    undefined,
+    undefined,
+    {cwd},
+  );
+  assert.match(
+    resultText(result),
+    /Image preview: .*existing image\.png \(4×2, png\)/,
+  );
+  assert.deepEqual(result.details, {
+    varisdev: {version: 1, blocks: [{type: 'image', path}]},
+    images: [{path, width: 4, height: 2}],
   });
-
-  try {
-    const port = await listen(server);
-    process.env.OPENAI_API_KEY = 'test-api-key';
-    process.env.OPENAI_BASE_URL = `http://127.0.0.1:${port}/v1`;
-
-    const updates: ToolResult[] = [];
-    const result = await tool.execute(
-      'openai-image-test',
-      {
-        prompt: 'Create a test image',
-        model: 'user-chosen-image-model',
-        outputDir: 'images',
-        outputFormat: 'png',
-        filenamePrefix: 'test-image',
-        timeoutMs: 5_000,
-      },
-      undefined,
-      update => updates.push(update),
-      {cwd},
-    );
-    const details = result.details as {
-      request: {operation: string; outputDir: string};
-      images: Array<{
-        path: string;
-        bytes: number;
-        mimeType: string;
-        source: string;
-        revisedPrompt?: string;
-      }>;
-    };
-    const image = details.images[0];
-
-    assert.ok(image);
-    assert.equal(requestPath, '/v1/images/generations');
-    assert.equal(authorization, 'Bearer test-api-key');
-    assert.equal(requestBody?.prompt, 'Create a test image');
-    assert.equal(requestBody?.model, 'user-chosen-image-model');
-    assert.equal(requestBody?.output_format, 'png');
-    assert.equal(details.request.operation, 'generate');
-    assert.equal(details.request.outputDir, join(cwd, 'images'));
-    assert.deepEqual(await readFile(image.path), imageBytes);
-    assert.equal(image.bytes, imageBytes.byteLength);
-    assert.equal(image.mimeType, 'image/png');
-    assert.equal(image.source, 'base64');
-    assert.equal(image.revisedPrompt, 'A revised test prompt');
-    assert.ok(updates.length >= 2);
-    assert.match(resultText(result), /Saved 1 OpenAI image/);
-  } finally {
-    await close(server);
-    restoreEnvironmentVariable('OPENAI_API_KEY', originalApiKey);
-    restoreEnvironmentVariable('OPENAI_BASE_URL', originalBaseUrl);
-    await rm(cwd, {recursive: true, force: true});
-  }
+  assert.deepEqual(await readFile(path), bytes);
 });

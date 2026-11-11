@@ -108,21 +108,15 @@ Provider details: [Anthropic Fast mode](https://platform.claude.com/docs/en/buil
 
 ### Agent models
 
-**Menu → Tool models → Maximum concurrent agents** sets the workspace's agent limit. The default is **6**, including the conversation starter while it is open and leaving five slots for additional agents. Closing the starter releases its slot. A limit of **1** prevents additional launches and resumptions while the starter is open. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
+**Menu → Agent-models → Maximum concurrent agents** sets the workspace's agent limit. The default is **6**, including the conversation starter while it is open and leaving five slots for additional agents. Closing the starter releases its slot. A limit of **1** prevents additional launches and resumptions while the starter is open. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
 
-The **Agent models** section in **Menu → Tool models** controls which models background agents may use when their configuration has no explicit model. Fresh settings start with none selected.
+**Menu → Agent-models** controls which models background agents may use when their configuration has no explicit model. Fresh settings start with none selected.
 
-**Agent models** uses the selected workspace's Pi scoped models, or the saved global scope when no workspace is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
+**Agent-models** uses the selected workspace's Pi scoped models, or the saved global scope when no workspace is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
 
 Agents inherit the current agent's model and reasoning level unless explicitly configured. The inherited or launch-selected model must be allowed. An explicit model in an agent configuration pins that agent type to the model, overriding this list and launch arguments. Both restrictions and pins apply across projects, including queued and resumed agents. Changes apply to subsequent agent launches and resumptions. Running agents keep their current model.
 
 For virtual models, the router's extension must also be loaded from the worker's project or global configuration.
-
-### Image model
-
-Choose an OpenAI image preset on first GUI use or in **Menu → Tool models → OpenAI images**. The choice is saved for future requests. Presets include GPT Image 2.6 Sunburst and Flare, 2.5 Sunburst and Flare, 2, 1.5, 1 Mini, and the deprecated `chatgpt-image-latest` alias. Sunburst suits detailed compositions and precise edits; Flare suits fast generation and editing.
-
-The `model` request parameter accepts arbitrary model IDs and takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Selecting the environment option removes the saved choice. Environment values appear muted with their source and are never saved automatically. Existing saved and environment model IDs are preserved, including `gpt-image-1`, which is no longer offered as a preset. Without an interactive UI or a configured choice, the tool uses `gpt-image-2.6-flare`.
 
 ## Environment
 

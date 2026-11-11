@@ -10,10 +10,6 @@ import {workspaceConfigPaths} from '../dashboard/workspace-config.ts';
 import {prepareFileQuery} from '../tools/file-matches.ts';
 import {resolveImagePath} from '../image-preview/files.ts';
 import {
-  resolveInputImagePath,
-  resolveOutputDir as resolveImageOutputDir,
-} from '../tools/openai-image.ts';
-import {
   canonicalApprovalWorkspace,
   defaultAgentApprovalStore,
   snapshotApprovalOperation,
@@ -374,26 +370,6 @@ export function agentToolPermissions(
         ),
       ];
       break;
-    case 'openai_image': {
-      const paths = Array.isArray(input.inputImagePaths)
-        ? input.inputImagePaths
-        : [];
-      requests = [
-        ...paths
-          .filter((path): path is string => typeof path === 'string')
-          .map(path =>
-            request('read', resolveInputImagePath(cwd ?? process.cwd(), path)),
-          ),
-        request(
-          'edit',
-          `${resolveImageOutputDir(
-            cwd ?? process.cwd(),
-            typeof input.outputDir === 'string' ? input.outputDir : undefined,
-          )}/**`,
-        ),
-      ];
-      break;
-    }
     default:
       requests = [
         request(
@@ -423,9 +399,7 @@ export function agentToolPermissions(
       path = resolveToCwd(path, cwd);
     else if (toolName === 'image_preview')
       path = resolveImagePath(path, cwd) ?? path;
-    else if (
-      !['agent_templates', 'apply_patch', 'openai_image'].includes(toolName)
-    )
+    else if (!['agent_templates', 'apply_patch'].includes(toolName))
       path = path.trim().replace(/^@/, '');
     entry.resource = canonicalPath(path, cwd);
   }
@@ -450,7 +424,6 @@ function mandatoryActions(toolName: string): string[] {
   // These tools have both read and write operations, so no single denied action
   // makes their entire declaration unavailable.
   if (toolName === 'agent_templates') return [];
-  if (toolName === 'openai_image') return ['edit'];
   return agentToolPermissions(toolName, {}).map(request => request.action);
 }
 

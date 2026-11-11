@@ -1,12 +1,5 @@
 import assert from 'node:assert/strict';
-import {
-  mkdtemp,
-  mkdir,
-  realpath,
-  rm,
-  symlink,
-  writeFile,
-} from 'node:fs/promises';
+import {mkdtemp, mkdir, realpath, rm, writeFile} from 'node:fs/promises';
 import {createServer, type ServerResponse} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {pathToFileURL} from 'node:url';
@@ -14,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {test} from 'node:test';
 import {Type} from 'typebox';
+import {createDirectoryLink} from './filesystem.ts';
 import {
   createAgentSession,
   createReadToolDefinition,
@@ -310,20 +304,6 @@ void test('tool mappings include VarisDev mutators, patch destinations, and actu
       .action,
     'read',
   );
-  assert.deepEqual(
-    agentToolPermissions(
-      'openai_image',
-      {
-        inputImagePaths: ['a.png'],
-        outputDir: 'images',
-      },
-      cwd,
-    ),
-    [
-      {action: 'read', resource: permissionPath(join(cwd, 'a.png'))},
-      {action: 'edit', resource: permissionPath(join(cwd, 'images', '**'))},
-    ],
-  );
   assert.deepEqual(agentToolPermissions('custom_tool', {path: 'a.txt'}), [
     {action: 'custom_tool', resource: 'a.txt'},
   ]);
@@ -339,68 +319,50 @@ void test('tool mappings include VarisDev mutators, patch destinations, and actu
   ]);
 });
 
-void test('media permissions use actual trimmed and environment-resolved paths without normalizing them twice', async t => {
+void test('image preview permissions resolve local references and block outside images', async t => {
   const root = await realpath(
-    await mkdtemp(join(tmpdir(), 'varisdev-policy-media-')),
+    await mkdtemp(join(tmpdir(), 'varisdev-policy-preview-')),
   );
+  t.after(() => rm(root, {recursive: true, force: true}));
   const cwd = join(root, 'project');
   const outside = join(root, 'outside');
-  const previous = process.env.OPENAI_IMAGE_OUTPUT_DIR;
-  t.after(async () => {
-    if (previous === undefined) delete process.env.OPENAI_IMAGE_OUTPUT_DIR;
-    else process.env.OPENAI_IMAGE_OUTPUT_DIR = previous;
-    await rm(root, {recursive: true, force: true});
-  });
   await mkdir(join(cwd, '.git'), {recursive: true});
   await mkdir(outside);
-  process.env.OPENAI_IMAGE_OUTPUT_DIR = outside;
-  const outsideGuard = harness(
+  const path = join(cwd, '@source image.png');
+  const outsideImage = join(outside, 'source image.png');
+  await writeFile(path, 'Internal image fixture.');
+  await writeFile(outsideImage, 'Outside image fixture.');
+
+  const guard = harness(
     createAgentPolicyExtension({
       permissions: [
         {action: 'external_directory', resource: '*', effect: 'deny'},
       ],
     }),
   );
-  outsideGuard.ctx.cwd = cwd;
-  for (const outputDir of [undefined, '', '   ']) {
-    const denied = await outsideGuard.call('openai_image', {
-      prompt: 'Fixture',
-      outputDir,
-    });
+  guard.ctx.cwd = cwd;
+  for (const reference of [
+    '  @@source image.png  ',
+    '"@source image.png"',
+    pathToFileURL(path).href,
+  ]) {
+    assert.deepEqual(
+      agentToolPermissions('image_preview', {path: reference}, cwd),
+      [{action: 'read', resource: permissionPath(path)}],
+    );
+    assert.equal(
+      await guard.call('image_preview', {path: reference}),
+      undefined,
+    );
+  }
+  for (const reference of [
+    ' @../outside/source image.png ',
+    pathToFileURL(outsideImage).href,
+  ]) {
+    const denied = await guard.call('image_preview', {path: reference});
     assert.match(denied.reason!, /permission denied: external_directory/);
-    assert.ok(denied.reason!.includes(permissionPath(outside)));
+    assert.ok(denied.reason!.includes(permissionPath(outsideImage)));
   }
-  const protectedGuard = harness(
-    createAgentPolicyExtension({
-      permissions: [
-        {action: 'edit', resource: 'protected/**', effect: 'deny'},
-        {action: 'edit', resource: 'literal /**', effect: 'deny'},
-      ],
-    }),
-  );
-  protectedGuard.ctx.cwd = cwd;
-  for (const outputDir of ['protected \t', 'literal /.']) {
-    const denied = await protectedGuard.call('openai_image', {
-      prompt: 'Fixture',
-      outputDir,
-    });
-    assert.match(denied.reason!, /permission denied: edit/);
-  }
-  const outsideImage = join(outside, 'source.png');
-  await writeFile(outsideImage, 'Fixture bytes.');
-  await writeFile(join(cwd, '@source.png'), 'Internal shadow.');
-  await symlink(outsideImage, join(cwd, '@source.png '));
-  const input = {
-    inputImagePaths: ['@@source.png /.'],
-    outputDir: 'safe',
-    prompt: 'Fixture',
-  };
-  const denied = await outsideGuard.call('openai_image', input);
-  assert.match(denied.reason!, /permission denied: external_directory/);
-  assert.ok(
-    denied.reason!.includes(permissionPath(outsideImage)),
-    'the resolved literal @ and trailing space identify the actual image',
-  );
 });
 
 void test('template mutations check physical scoped paths and outside-directory permissions', async t => {
@@ -812,7 +774,7 @@ void test('shell outside-directory checks infer static directories, arguments, r
   await mkdir(join(cwd, 'nested'), {recursive: true});
   await mkdir(join(cwd, '.git'));
   await mkdir(outside);
-  await symlink(outside, join(cwd, 'escape'), 'dir');
+  await createDirectoryLink(outside, join(cwd, 'escape'));
   const h = harness(
     createAgentPolicyExtension({
       permissions: [
@@ -876,7 +838,6 @@ void test('catalog and declarations preserve exceptions and reject untemplated n
     isAgentToolWhollyDenied({permissions}, 'agent_templates'),
     false,
   );
-  assert.equal(isAgentToolWhollyDenied({permissions}, 'openai_image'), true);
   const h = harness(createAgentPolicyExtension({permissions}));
   permissions.push({action: 'edit', resource: '*', effect: 'allow'});
   h.emit('before_agent_start', {messageType: 'user'});
@@ -1154,7 +1115,7 @@ void test('canonical paths catch symlink escapes and nonexistent write targets w
     mkdir(outside),
   ]);
   await writeFile(join(outside, 'secret.json'), '{}');
-  await symlink(outside, join(cwd, 'linked'), 'junction');
+  await createDirectoryLink(outside, join(cwd, 'linked'));
   const read = agentToolPermissions('read', {path: 'linked/secret.json'}, cwd);
   assert.deepEqual(read, [
     {action: 'read', resource: permissionPath(join(outside, 'secret.json'))},
@@ -1225,7 +1186,7 @@ void test('agent spawn checks canonical external cwd while preserving worktree p
     mkdir(join(project, 'shared')),
     mkdir(outside),
   ]);
-  await symlink(outside, join(cwd, 'escape'), 'junction');
+  await createDirectoryLink(outside, join(cwd, 'escape'));
   const guard = harness(
     createAgentPolicyExtension({
       permissions: [
@@ -1458,12 +1419,13 @@ void test('prepared query matches retain literal Unicode and dollar paths instea
   t.after(() => rm(root, {recursive: true, force: true}));
   const cwd = join(root, 'project');
   await mkdir(join(cwd, '.git'), {recursive: true});
-  const outside = join(root, 'outside.json');
-  await writeFile(outside, '{}');
-  await writeFile(join(cwd, 'space file.json'), '{}');
-  await symlink(outside, join(cwd, 'space\u00a0file.json'));
-  await mkdir(join(cwd, '$HOME'));
-  await symlink(outside, join(cwd, '$HOME', 'blocked.json'));
+  const outside = join(root, 'outside');
+  await mkdir(outside);
+  await writeFile(join(outside, 'blocked.json'), '{}');
+  await mkdir(join(cwd, 'space dir'));
+  await writeFile(join(cwd, 'space dir', 'blocked.json'), '{}');
+  await createDirectoryLink(outside, join(cwd, 'space\u00a0dir'));
+  await createDirectoryLink(outside, join(cwd, '$HOME'));
   const h = harness(
     createAgentPolicyExtension({
       permissions: [
@@ -1473,11 +1435,11 @@ void test('prepared query matches retain literal Unicode and dollar paths instea
   );
   h.ctx.cwd = cwd;
   assert.equal(
-    await h.call('read', {path: 'space\u00a0file.json'}),
+    await h.call('read', {path: 'space\u00a0dir/blocked.json'}),
     undefined,
     'native read normalizes spaces to its actual internal target',
   );
-  for (const path of ['space\u00a0file.json', '$HOME/blocked.json'])
+  for (const path of ['space\u00a0dir/blocked.json', '$HOME/blocked.json'])
     assert.match(
       (await h.call('json_query', {path})).reason!,
       /permission denied: external_directory/,
@@ -1532,14 +1494,16 @@ void test(
       mkdir(agentDir, {recursive: true}),
       mkdir(join(cwd, '.git'), {recursive: true}),
     ]);
-    const outsideFile = join(root, 'outside.txt');
+    const outside = join(root, 'outside');
+    const outsideFile = join(outside, 'blocked.txt');
     const literalHomeFile = join(cwd, '$HOME', 'allowed.txt');
+    await mkdir(outside);
     await writeFile(outsideFile, 'Outside fixture.');
     await mkdir(join(cwd, '$HOME'));
     await writeFile(literalHomeFile, 'Literal HOME fixture.');
-    await symlink(outsideFile, join(cwd, '$HOME', 'blocked.txt'));
-    await symlink(outsideFile, join(cwd, 'space name.txt'));
-    await symlink(outsideFile, join(cwd, 'cafe\u0301.txt'));
+    await createDirectoryLink(outside, join(cwd, '$HOME', 'escape'));
+    await createDirectoryLink(outside, join(cwd, 'space name'));
+    await createDirectoryLink(outside, join(cwd, 'cafe\u0301'));
     const nativeReads: string[] = [];
     const nativeWrites: string[] = [];
     const approvedQueries: string[] = [];
@@ -1740,9 +1704,9 @@ void test(
             );
             for (const path of [
               pathToFileURL(outsideFile).href,
-              'space\u00a0name.txt',
-              'café.txt',
-              '$HOME/blocked.txt',
+              'space\u00a0name/blocked.txt',
+              'café/blocked.txt',
+              '$HOME/escape/blocked.txt',
             ]) {
               const read = await ctx.executeTool('read', {path});
               assert.match(

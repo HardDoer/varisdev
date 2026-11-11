@@ -66,7 +66,6 @@ import {DesktopTerminalProfiles} from './terminal-profiles.ts';
 import {openConversationFile, openConversationURL} from './files.ts';
 import {DesktopAccounts} from './accounts.ts';
 import {DesktopToolSettings} from './tool-settings.ts';
-import {getToolModels, saveToolModel} from '../tools/model-selection.ts';
 import {
   hasConversationImage,
   readConversationImage,
@@ -365,8 +364,6 @@ function installHandlers(): void {
   handle('varisdev:save-environment', (name, value) =>
     environmentSettings().save(name, value),
   );
-  handle('varisdev:get-tool-models', getToolModels);
-  handle('varisdev:save-tool-model', saveToolModel);
   handle('varisdev:get-accounts', () => accounts.get());
   handle('varisdev:account-start', (provider, method) =>
     accounts.start(provider, method),

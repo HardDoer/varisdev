@@ -8,7 +8,7 @@ import {runRuntimeCommand} from '../src/runtime/manager.ts';
 const require = createRequire(import.meta.url);
 
 void test(
-  'Tool models and first agent notice through the production Electron preload',
+  'Agent-models and first agent notice through the production Electron preload',
   {
     timeout: 45_000,
     skip:
@@ -54,6 +54,6 @@ void test(
     };
     assert.ifError(report.error);
     assert.ifError(launchError);
-    assert.equal(report.cases.length, 9);
+    assert.equal(report.cases.length, 8);
   },
 );

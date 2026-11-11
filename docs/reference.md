@@ -8,7 +8,7 @@ This page covers VarisDev's additions. See [Pi's documentation](https://github.c
 
 Each agent has its own conversation and shares its workspace directory. It inherits the current agent's model and thinking level unless explicitly configured. Without a current model, `agent_spawn` requires a model choice.
 
-The **Agent models** section in **Menu → Tool models** controls model choices for configurations without a model pin, including inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-models) and [agent configurations](agents.md).
+**Menu → Agent-models** controls model choices for configurations without a model pin, including inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-models) and [agent configurations](agents.md).
 
 | Tool              | Purpose                                                                          |
 | ----------------- | -------------------------------------------------------------------------------- |
@@ -29,7 +29,7 @@ Agent configurations are optional. `agent_templates` is available through Pi's `
 
 Configuration permissions apply to the conversation created from that profile. The calling agent's `subagent` permission also controls which configured agents it may launch. See [agent configurations](agents.md) for scope merging, modes, defaults, and Markdown fields.
 
-The default concurrency limit is six agents per workspace, including the conversation starter while it is open; additional agents queue. Closing the starter releases its slot. Change **Menu → Tool models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions while the starter is open. There is no fixed limit on queued or retained agents. `autoCleanup: true` disposes finished agents while preserving results.
+The default concurrency limit is six agents per workspace, including the conversation starter while it is open; additional agents queue. Closing the starter releases its slot. Change **Menu → Agent-models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions while the starter is open. There is no fixed limit on queued or retained agents. `autoCleanup: true` disposes finished agents while preserving results.
 
 Agents have no execution deadline. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
 
@@ -90,23 +90,8 @@ When query output is truncated, the full result is saved in the project's `.vari
 }
 ```
 
-## Images
+## Doctor
 
-`openai_image` generates or edits images through the OpenAI Images API using `OPENAI_API_KEY`. Configure it in your shell or in **Menu → Environment**. Image authentication is independent of **Accounts** and ChatGPT/ChatPass sign-in. See [Environment settings](configuration.md#environment).
+Run `/skill:doctor` for an installation and configuration check. The built-in skill checks the runtime, PATH, update state, settings, plugins, MCP configuration, instructions, permissions, and available context and usage information, then proposes fixes. Run `/skill:doctor prompt-audit` to focus on outdated, conflicting, or duplicate instructions. Changes require your approval unless you already requested repairs.
 
-Choose an image preset, including GPT Image 2.6 Sunburst and Flare, on first GUI use or in **Menu → Tool models → OpenAI images**. The `model` parameter takes precedence over the saved choice, which takes precedence over `OPENAI_IMAGE_MODEL`. Remove the saved choice to use the environment value again. Headless use defaults to `gpt-image-2.6-flare` when no model is configured.
-
-- `prompt`: generation or editing instructions.
-- `inputImagePaths`: local reference images for editing.
-- `markupImagePath`: a transparent PNG annotation layer that guides changes to the first input image. Its dimensions must match that image after orientation.
-- `maskImagePath`: a PNG mask with an alpha channel for editing the first input image. Use either a mask or markup.
-- `size`, `quality`, `background`, `outputFormat`: image options supported by the selected model. Output formats include PNG, JPEG, WebP, SVG, and GIF.
-- `complexity`: `low`, `medium`, or `high` planning effort, separate from rendering quality.
-- `svg`: optional SVG author model and reasoning settings. SVG output requires `n: 1` and cannot use output compression.
-- `frameCount`, `frameDurationMs`: GIF animation settings. Choose 2–16 frames and a delay of at least 20 milliseconds; the API rounds delays to 10 milliseconds. GIF output cannot use a mask or output compression. Use `size: "auto"` to let the API choose a frame size within the model's limits.
-- `safetyIdentifier`: an optional hashed end-user identifier, up to 128 characters. A nonempty value takes precedence over the deprecated `user` parameter.
-- `outputDir`, `filenamePrefix`: destination controls.
-
-SVG and GIF output require access to the selected model's preview features. Images are saved under `generated-images/` unless configured otherwise. Results appear in the conversation; GIF previews show a still frame, while the saved file retains the animation.
-
-See [OpenAI's image generation guide](https://developers.openai.com/api/docs/guides/image-generation).
+The diagnostic report omits credential values and does not modify settings. Live account access, MCP connections, and context usage are reported only when they can be checked from the current session.

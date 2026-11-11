@@ -68,7 +68,7 @@ function agents(value: unknown): NonNullable<ToolSettingsUpdate['agents']> {
     allowedModels !== null &&
     (!Array.isArray(allowedModels) || allowedModels.length > 512)
   )
-    throw new Error('Choose up to 512 allowed models in Menu → Tool models.');
+    throw new Error('Choose up to 512 allowed models in Menu → Agent-models.');
   return {
     allowedModels:
       allowedModels === null
@@ -188,10 +188,10 @@ export async function assertAgentModelAllowed(
   const {allowedModels} = (settings ?? (await readToolSettings())).agents;
   if (allowedModels?.length === 0)
     throw new Error(
-      'No agent models selected. Choose a model in Menu → Tool models.',
+      'No agent models selected. Choose a model in Menu → Agent-models.',
     );
   if (allowedModels !== null && !allowedModels.includes(model))
     throw new Error(
-      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Tool models. Allowed models: ${allowedModels.join(', ')}.`,
+      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Agent-models. Allowed models: ${allowedModels.join(', ')}.`,
     );
 }

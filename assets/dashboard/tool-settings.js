@@ -9,8 +9,6 @@ export function initToolSettings({api, selectedSessionId}) {
   let sessionId;
   let state;
   let draft;
-  let imageState;
-  let imageModel;
   let busy = false;
   let failure = '';
   let request = 0;
@@ -91,45 +89,6 @@ export function initToolSettings({api, selectedSessionId}) {
       ? 'No models match your search.'
       : 'No models available. Check your provider in Menu → Accounts, then reopen these settings.';
   }
-  function renderImageModels() {
-    const select = $('image-model');
-    const firstUse = document.createElement('option');
-    firstUse.value = '';
-    firstUse.textContent = imageState.environmentModel || 'Ask on first use';
-    let fallbackOption = firstUse;
-    if (imageState.environmentModel) {
-      const group = document.createElement('optgroup');
-      group.label = imageState.environment;
-      group.append(firstUse);
-      fallbackOption = group;
-    }
-    const options = imageState.presets.map(preset => {
-      const option = document.createElement('option');
-      option.value = preset.id;
-      option.textContent = `${preset.label}${preset.description ? ` — ${preset.description}` : ''}`;
-      return option;
-    });
-    if (
-      imageModel &&
-      !imageState.presets.some(preset => preset.id === imageModel)
-    ) {
-      const legacy = document.createElement('option');
-      legacy.value = imageModel;
-      legacy.textContent = `${imageModel} (saved)`;
-      legacy.disabled = true;
-      options.push(legacy);
-    }
-    select.replaceChildren(fallbackOption, ...options);
-    select.value = imageModel;
-    select.disabled = busy;
-    const fromEnvironment = !imageModel && Boolean(imageState.environmentModel);
-    select.classList.toggle('environment-fallback', fromEnvironment);
-    select.setAttribute('aria-describedby', 'image-model-environment');
-    $('image-model-environment').textContent = fromEnvironment
-      ? `From ${imageState.environment}`
-      : '';
-    $('image-model-environment').hidden = !fromEnvironment;
-  }
   function renderControls() {
     const loaded = Boolean(state && draft);
     $('tool-settings-content').hidden = !loaded;
@@ -150,7 +109,6 @@ export function initToolSettings({api, selectedSessionId}) {
     if (!loaded) return;
     $('agent-max-concurrent').disabled = busy;
     $('tool-settings-search').disabled = busy;
-    renderImageModels();
     const count = draft.agents.allowedModels.length;
     $('tool-settings-selection').textContent =
       `${count} model${count === 1 ? '' : 's'} selected.`;
@@ -171,16 +129,8 @@ export function initToolSettings({api, selectedSessionId}) {
     failure = '';
     render();
     try {
-      const [next, media] = await Promise.all([
-        api.getToolSettings(sessionId),
-        api.getToolModels(),
-      ]);
-      const image = media.find(model => model.id === 'openai-image');
-      if (!image)
-        throw new Error('OpenAI image model settings are unavailable.');
+      const next = await api.getToolSettings(sessionId);
       if (disposed || version !== request) return;
-      imageState = image;
-      imageModel = image.model;
       state = next;
       draft = structuredClone(next.settings);
       draft.agents.allowedModels ??= [];
@@ -213,10 +163,6 @@ export function initToolSettings({api, selectedSessionId}) {
     render();
     try {
       await api.saveToolSettings('all', structuredClone(draft), sessionId);
-      if (imageModel !== imageState.model) {
-        await api.saveToolModel('openai-image', imageModel);
-        imageState.model = imageModel;
-      }
       if (!disposed) dialog.close();
     } catch (error) {
       failure = errorText(error);
@@ -292,10 +238,7 @@ export function initToolSettings({api, selectedSessionId}) {
   }
 
   $('open-model-settings').disabled =
-    !api?.getToolSettings ||
-    !api?.saveToolSettings ||
-    !api?.getToolModels ||
-    !api?.saveToolModel;
+    !api?.getToolSettings || !api?.saveToolSettings;
   listen($('open-model-settings'), 'click', () => void open());
   listen($('tool-settings-form'), 'submit', save);
   listen($('tool-settings-close'), 'click', () => {
@@ -308,11 +251,6 @@ export function initToolSettings({api, selectedSessionId}) {
   listen($('tool-settings-search'), 'input', renderModels);
   listen($('agent-max-concurrent'), 'input', event => {
     draft.agents.maxConcurrentAgents = event.target.valueAsNumber;
-    failure = '';
-    renderControls();
-  });
-  listen($('image-model'), 'change', event => {
-    imageModel = event.target.value;
     failure = '';
     renderControls();
   });

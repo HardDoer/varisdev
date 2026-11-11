@@ -842,12 +842,12 @@
     >
       <form id="tool-settings-form">
         <div class="dialog-heading">
-          <h2 id="tool-settings-title">Tool models</h2>
+          <h2 id="tool-settings-title">Agent-models</h2>
           <button
             id="tool-settings-close"
             class="quiet-button"
             type="button"
-            aria-label="Close Tool models"
+            aria-label="Close Agent-models"
           >
             Close
           </button>
@@ -864,9 +864,8 @@
               id="agent-model-settings"
               class="tool-settings-card"
               role="region"
-              aria-labelledby="agent-model-settings-title"
+              aria-labelledby="tool-settings-title"
             >
-              <h3 id="agent-model-settings-title">Agent models</h3>
               <label for="agent-max-concurrent"
                 >Maximum concurrent agents</label
               >
@@ -900,17 +899,6 @@
                 aria-label="Allowed agent models"
               ></div>
               <p id="tool-settings-empty" class="muted" hidden></p>
-            </section>
-            <section
-              id="image-model-settings"
-              class="tool-settings-card"
-              role="region"
-              aria-labelledby="image-model-settings-title"
-            >
-              <h3 id="image-model-settings-title">OpenAI images</h3>
-              <label for="image-model">Image model</label>
-              <select id="image-model"></select>
-              <p id="image-model-environment" class="muted" hidden></p>
             </section>
           </div>
           <p
@@ -947,7 +935,7 @@
         reasoning level.
       </p>
       <p>
-        Choose allowed models in Menu → Tool models. This also limits which
+        Choose allowed models in Menu → Agent-models. This also limits which
         models agents can inherit.
       </p>
       <p class="muted">Escape also acknowledges this notice.</p>
@@ -1186,7 +1174,7 @@
                       aria-haspopup="dialog"
                       aria-controls="tool-settings-dialog"
                     >
-                      Tool models
+                      Agent-models
                     </button>
                     <button
                       id="open-environment"

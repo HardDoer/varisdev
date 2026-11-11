@@ -743,8 +743,6 @@ async function applicationBridge(
       'pidev:agent-session',
     ]),
     updateMessage: (message: string) => message,
-    getToolModels: () => {},
-    saveToolModel: () => {},
     restartForUpdate: () => {},
     hub: {
       agentSession,

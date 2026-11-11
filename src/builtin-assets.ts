@@ -25,6 +25,7 @@ export function findVarisDevPackageRoot(
 
 export const builtinAssetsDirectory = join(findVarisDevPackageRoot(), 'assets');
 export const builtinAgentsDirectory = join(builtinAssetsDirectory, 'agents');
+export const builtinSkillsDirectory = join(builtinAssetsDirectory, 'skills');
 export const builtinDefaultAgentPath = join(
   builtinAgentsDirectory,
   'default.md',

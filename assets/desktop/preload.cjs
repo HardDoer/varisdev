@@ -30,9 +30,6 @@ contextBridge.exposeInMainWorld('pidev', {
   markWhatsNewSeen: version => invoke('varisdev:mark-whats-new-seen', version),
   getAgentNotice: () => invoke('varisdev:get-agent-notice'),
   acknowledgeAgentNotice: () => invoke('varisdev:acknowledge-agent-notice'),
-  getToolModels: () => invoke('varisdev:get-tool-models'),
-  saveToolModel: (tool, model) =>
-    invoke('varisdev:save-tool-model', tool, model),
   getEnvironment: () => invoke('varisdev:get-environment'),
   saveEnvironment: (name, value) =>
     invoke('varisdev:save-environment', name, value),

@@ -236,7 +236,7 @@ export default function(api) {
   api.registerCommand('standalone-fixture', {
     description: 'Verify an installed standalone plugin',
     handler: async (args, ctx) => {
-      writeFileSync(${JSON.stringify(commandReport)}, JSON.stringify({args, cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI}));
+      writeFileSync(${JSON.stringify(commandReport)}, JSON.stringify({args, cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, doctorAvailable: api.getCommands().some(command => command.name === 'skill:doctor')}));
     },
   });
   api.registerTool({
@@ -387,6 +387,10 @@ async function assertFeatures(features: SessionFeatures) {
         command.source === 'skill',
     ),
   );
+  assert.ok(
+    features.commands.some(command => command.name === 'skill:doctor'),
+    'Bundled doctor skill is missing from the installed application',
+  );
   assert.ok(!features.commands.some(command => command.name === 'commit'));
   for (const name of [
     'browse',
@@ -453,6 +457,7 @@ void test(
       cwd: fixture.project,
       mode: 'rpc',
       hasUI: true,
+      doctorAvailable: true,
     });
     const offline = join(fixture.directory, 'offline.mjs');
     await writeFile(
@@ -473,6 +478,40 @@ void test(
     assert.equal(headless.args, 'headless-plugin');
     assert.equal(headless.cwd, fixture.project);
     assert.equal(headless.hasUI, false);
+    assert.equal(headless.doctorAvailable, true);
+    for (const flag of ['--no-skills', '-ns']) {
+      await runCLI(fixture, [
+        'run',
+        flag,
+        '/standalone-fixture without-skills',
+      ]);
+      assert.equal(
+        (await readJSON(fixture.commandReport)).doctorAvailable,
+        false,
+        flag,
+      );
+    }
+    const bundledDoctor = join(packageRoot, 'assets/skills/doctor/SKILL.md');
+    await writeFile(
+      join(fixture.agentDir, 'settings.json'),
+      JSON.stringify({...settings, skills: [`-${bundledDoctor}`]}),
+    );
+    await runCLI(fixture, ['run', '/standalone-fixture excluded-doctor']);
+    assert.equal(
+      (await readJSON(fixture.commandReport)).doctorAvailable,
+      false,
+    );
+    await runCLI(fixture, [
+      'run',
+      '--skill',
+      bundledDoctor,
+      '/standalone-fixture explicitly-selected-doctor',
+    ]);
+    assert.equal((await readJSON(fixture.commandReport)).doctorAvailable, true);
+    await writeFile(
+      join(fixture.agentDir, 'settings.json'),
+      JSON.stringify(settings),
+    );
     assert.deepEqual(
       await readJSON(join(fixture.agentDir, 'settings.json')),
       settings,

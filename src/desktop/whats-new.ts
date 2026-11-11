@@ -7,6 +7,14 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '2.0.0',
+    [
+      'Removed the built-in image generation tool and its image model settings.',
+      'Renamed Tool models to Agent-models.',
+      'Added the doctor skill to check installation, configuration, plugins, and context usage and propose fixes.',
+    ],
+  ],
+  [
     '1.14.2',
     [
       'Agent cards show their existing activity beneath the name, without a redundant Ready or Running badge.',

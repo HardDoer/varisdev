@@ -150,7 +150,7 @@ export class AgentOrchestrator {
   assertAdditionalAgentsAllowed(): void {
     if (!this.workerSlots)
       throw new Error(
-        'Additional agents are disabled: maximum concurrent agents is 1, reserved for the main conversation. Change Menu → Tool models to allow more agents.',
+        'Additional agents are disabled: maximum concurrent agents is 1, reserved for the main conversation. Change Menu → Agent-models to allow more agents.',
       );
   }
 

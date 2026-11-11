@@ -72,7 +72,7 @@ All fields are optional:
 - `description` explains when the agent is useful.
 - `mode` is `primary` for new workspace conversations, `subagent` for delegated launches, or `all` for both. New custom profiles default to `primary`. Only primary and all-mode agents accept direct user prompts; a subagent's parent can continue or steer its retained session.
 - `context` is `workspace` or `task`, defaulting to `workspace`.
-- `model` pins a delegated agent to `provider/model`, overriding launch arguments and Tool models selections. Omit it to inherit the caller's model or accept an allowed launch choice. In the editor, this default appears as **Use tool model settings** when agent models are selected, otherwise **Inherit**. A recognized suffix such as `#high` supplies `thinkingLevel`; arbitrary provider variants are not supported by this shorthand. Primary conversations select their model separately.
+- `model` pins a delegated agent to `provider/model`, overriding launch arguments and Agent-models selections. Omit it to inherit the caller's model or accept an allowed launch choice. In the editor, this default appears as **Use agent model settings** when agent models are selected, otherwise **Inherit**. A recognized suffix such as `#high` supplies `thinkingLevel`; arbitrary provider variants are not supported by this shorthand. Primary conversations select their model separately.
 - `thinkingLevel` is `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 - `hidden: true` omits the profile from ordinary choosers and catalogs. Explicit references can still use it.
 - `disabled: true` prevents new launches from that profile.
@@ -86,7 +86,7 @@ Common actions include `shell`, `edit`, `subagent`, `read`, `glob`, `list`, `gre
 
 Permissions are checked when tools run, including nested and deferred calls. Shell rules apply to commands in pipelines and substitutions and to explicit file paths. A trailing ` *` also matches the command without arguments. Restricted shell calls are limited to 16 KiB of source. `ask` requests approval in the owning workspace. Tools and skills that are fully denied are unavailable to the agent, though tool metadata may still appear in search results. Skill permissions also apply to explicit skill commands and reads.
 
-Primary conversations use Pi's selected model and reasoning independently of the agent profile. Delegated agents inherit omitted values from their caller, subject to Tool models selections. Delegated model pins remain fixed; other model and reasoning controls remain editable.
+Primary conversations use Pi's selected model and reasoning independently of the agent profile. Delegated agents inherit omitted values from their caller, subject to Agent-models selections. Delegated model pins remain fixed; other model and reasoning controls remain editable.
 
 ### Remembered approvals
 

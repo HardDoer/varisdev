@@ -1568,8 +1568,7 @@ function toolAction(name = '') {
   if (name === 'read') return ['read', 'Read file'];
   if (name.startsWith('agent_')) return ['agent', 'Agent'];
   if (['browse', 'download'].includes(name)) return ['web', 'Web'];
-  if (['openai_image', 'image_preview'].includes(name))
-    return ['media', 'Media'];
+  if (name === 'image_preview') return ['media', 'Media'];
   if (name.endsWith('_query')) return ['read', 'Inspect data'];
   return ['tool', 'Tool'];
 }

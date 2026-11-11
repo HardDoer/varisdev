@@ -21,6 +21,7 @@ import {
   workspaceConfigPaths,
 } from '../src/dashboard/workspace-config.ts';
 import {agentToolPermissions} from '../src/agents/policy.ts';
+import {createDirectoryLink, createFileSymlinkOrSkip} from './filesystem.ts';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'varisdev-workspace-config-'));
@@ -54,7 +55,7 @@ void test('workspace identity shares the canonical repository root and separates
   const nested = join(f.cwd, 'src', 'nested');
   await mkdir(nested, {recursive: true});
   const alias = join(f.root, 'alias');
-  await symlink(f.cwd, alias, 'dir');
+  await createDirectoryLink(f.cwd, alias);
   assert.deepEqual(workspaceConfigPaths(nested, f.agentDir), f.paths);
   assert.deepEqual(workspaceConfigPaths(alias, f.agentDir), f.paths);
   assert.equal(f.paths.projectDir, await realpath(f.cwd));
@@ -656,7 +657,10 @@ void test('workspace context includes each canonical instruction file and repeat
   const f = await fixture(t);
   const instructions = join(f.agentDir, 'AGENTS.md');
   await f.put(instructions, 'Shared instructions sentinel');
-  await symlink(instructions, join(f.cwd, 'AGENTS.md'));
+  if (
+    !(await createFileSymlinkOrSkip(t, instructions, join(f.cwd, 'AGENTS.md')))
+  )
+    return;
   const append = join(f.paths.workspaceDir, 'APPEND_SYSTEM.md');
   await f.put(append, 'Shared append sentinel');
   const loader = f.configuration.resourceLoader(
