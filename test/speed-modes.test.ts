@@ -505,6 +505,56 @@ void test(
   },
 );
 
+for (const oauth of [false, true])
+  void test(
+    `prompting and steering avoid redundant speed credential resolution with ${oauth ? 'saved OAuth' : 'an API key'}`,
+    options,
+    async t => {
+      const f = await fixture(t, oauth);
+      const resolve = ModelRegistry.prototype.getProviderAuth;
+      let resolutions = 0;
+      t.mock.method(
+        ModelRegistry.prototype,
+        'getProviderAuth',
+        function (this: ModelRegistry, provider: string) {
+          resolutions++;
+          return resolve.call(this, provider);
+        },
+      );
+      const parent = await f.create();
+      assert.equal(process.env.OPENAI_API_KEY, undefined);
+      assert.deepEqual((await parent.features()).speedModes, ultrafast);
+      await parent.prompt('/fast on');
+      const held = f.hold();
+      const running = parent.prompt('Start the task');
+      try {
+        const deadline = Date.now() + 3000;
+        while (!f.requests.length && Date.now() < deadline) await delay(5);
+        assert.equal(f.requests.length, 1);
+        await parent.prompt('Steer the next turn');
+        assert.deepEqual(parent.state.snapshot().queue?.steering, [
+          'Steer the next turn',
+        ]);
+      } finally {
+        held.resolve();
+        await running;
+      }
+      assert.equal(f.requests.length, 2);
+      for (const request of f.requests) {
+        assert.equal(request.body.service_tier, 'priority');
+        assert.equal(
+          request.headers.get('authorization'),
+          oauth ? 'Bearer saved-chatgpt-access' : 'Bearer sk-speed-fixture',
+        );
+      }
+      assert.equal(
+        resolutions,
+        0,
+        'Speed controls must not resolve credentials when both sign-in methods support the same modes',
+      );
+    },
+  );
+
 void test(
   'conversation agent speed capabilities accept official OpenAI endpoints with a trailing slash',
   options,

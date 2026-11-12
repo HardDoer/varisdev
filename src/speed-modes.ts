@@ -59,6 +59,15 @@ export async function refreshSpeedModeAuth(ctx: SpeedContext): Promise<void> {
     !['openai', 'openai-codex', 'anthropic'].includes(ctx.model.provider)
   )
     return;
+  const apiKeyModes = supportedSpeedModes(ctx.model);
+  const oauthModes = supportedSpeedModes(ctx.model, true);
+  // Most models offer the same modes with either credential type. Resolving
+  // credentials here can refresh OAuth or run a key command before every turn.
+  if (
+    apiKeyModes.length === oauthModes.length &&
+    apiKeyModes.every((mode, index) => mode === oauthModes[index])
+  )
+    return;
   const auth = await ctx.modelRegistry.getProviderAuth(ctx.model.provider);
   let providers = liveOAuth.get(ctx.modelRegistry);
   if (!providers) {

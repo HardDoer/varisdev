@@ -1950,7 +1950,12 @@ function renderInspectorPanel(data, unit, parent) {
       : []),
   ]);
 }
-function renderComposer(data, unit, parent) {
+function renderComposer(
+  data = snapshot(),
+  unit = selectedUnit(),
+  parent = state.unitId === 'parent',
+) {
+  if (!data || !unit) return;
   const id = conversationId();
   const controllable = conversationControllable(data, unit);
   const promptable = conversationPromptable(data, unit);
@@ -2446,7 +2451,7 @@ async function sendPrompt(event) {
   promptErrors.delete(id);
   $('prompt-error').hidden = true;
   $('app-error').hidden = true;
-  renderInspector();
+  renderComposer();
   try {
     if (agentId && command && ['model', 'thinking'].includes(command.name)) {
       if (!command.args) await openAgentSettings(ownerId, agentId);
@@ -2527,7 +2532,7 @@ async function sendPrompt(event) {
     if (id === conversationId()) showError(error, $('prompt-error'));
   } finally {
     sending.delete(id);
-    renderInspector();
+    renderComposer();
   }
 }
 async function abortParent() {

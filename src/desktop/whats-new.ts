@@ -7,6 +7,12 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '2.0.1',
+    [
+      'Reduced work when submitting prompts and steering, including redundant credential checks before model turns.',
+    ],
+  ],
+  [
     '2.0.0',
     [
       'Removed the built-in image generation tool and its image model settings.',
