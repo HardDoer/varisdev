@@ -19,6 +19,8 @@ import {
 import {DashboardHub, type DashboardParent} from '../src/dashboard/hub.ts';
 import {createDashboardParent} from '../src/dashboard/parent.ts';
 
+const projectSkillNames = ['continue-the-plan', 'review-fix'];
+
 async function waitFor(check: () => boolean, description: string) {
   const deadline = Date.now() + 5000;
   while (!check() && Date.now() < deadline) await delay(5);
@@ -69,7 +71,7 @@ async function fixture(t: TestContext, settings: object = {}) {
     export default () => { writeFileSync(${JSON.stringify(loadedPath)}, 'loaded'); };
   `,
   );
-  for (const name of ['continue-the-plan', 'review-fix']) {
+  for (const name of projectSkillNames) {
     const path = join(config, 'skills', name);
     await mkdir(path, {recursive: true});
     await writeFile(
@@ -191,7 +193,7 @@ void test(
     assert.equal(await readFile(f.loadedPath, 'utf8'), 'loaded');
     const features = await f.hub.sessionFeatures(id);
     assert.equal(features.model?.id, 'project-model');
-    for (const name of ['continue-the-plan', 'review-fix']) {
+    for (const name of projectSkillNames) {
       assert.equal(
         features.commands.filter(command => command.name === `skill:${name}`)
           .length,
@@ -231,7 +233,10 @@ void test(
     assert.equal(f.trust.get(f.cwd), null);
     const features = await f.hub.sessionFeatures(id);
     assert.equal(features.model?.id, 'global-model');
-    assert.ok(!features.commands.some(command => command.source === 'skill'));
+    for (const name of projectSkillNames)
+      assert.ok(
+        !features.commands.some(command => command.name === `skill:${name}`),
+      );
     await assert.rejects(readFile(f.loadedPath), {code: 'ENOENT'});
     await f.hub.closeSession(id);
     const reopened = f.open();
@@ -577,10 +582,10 @@ void test(
         .snapshot()
         .sessions[0].ui?.notifications.some(item => item.id === notice.id),
     );
-    assert.ok(
-      !(await f.hub.sessionFeatures(id)).commands.some(
-        command => command.source === 'skill',
-      ),
-    );
+    const features = await f.hub.sessionFeatures(id);
+    for (const name of projectSkillNames)
+      assert.ok(
+        !features.commands.some(command => command.name === `skill:${name}`),
+      );
   },
 );

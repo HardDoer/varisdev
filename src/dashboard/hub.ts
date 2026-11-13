@@ -1,26 +1,17 @@
 import type {ImageContent} from '@earendil-works/pi-ai';
-import {SessionManager} from '@earendil-works/pi-coding-agent';
 import type {DesktopStartup} from '../desktop/startup.ts';
-import {
-  listAgentTemplates,
-  saveAgentTemplate,
-  deleteAgentTemplate,
-  resolveAgentTemplate,
-  resolveDefaultAgentTemplate,
-  type AgentTemplate,
-} from '../agents/templates.ts';
+import type {AgentTemplate} from '../agents/templates.ts';
 import {randomUUID} from 'node:crypto';
 import {realpath, stat} from 'node:fs/promises';
 import {basename, isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
 import {DashboardState} from './state.ts';
-import {isAvailablePrimary} from './primary-session.ts';
+import {isAvailablePrimary} from './primary-availability.ts';
 import {DashboardInputError} from './errors.ts';
-import {workspaceConfigurationDirectory} from './workspace-config.ts';
 import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
 import type {SessionFeatures, SessionConfiguration} from './features.ts';
-import {DesktopExtensionUI, type DesktopUIState} from './extension-ui.ts';
+import type {DesktopExtensionUI, DesktopUIState} from './extension-ui.ts';
 import {
   readMarkdownFile,
   saveMarkdownFile,
@@ -285,7 +276,7 @@ export class DashboardHub {
     string,
     {
       name: string;
-      ui: DesktopExtensionUI;
+      ui?: DesktopExtensionUI;
       controller: AbortController;
       operation: Promise<DashboardParent>;
     }
@@ -454,7 +445,7 @@ export class DashboardHub {
       awaitingInput: entry.parent?.ui?.hasPendingDialogs() ?? false,
     }));
     for (const pending of this.starting.values())
-      if (pending.ui.hasPendingDialogs())
+      if (pending.ui?.hasPendingDialogs())
         states.push({
           name: pending.name,
           status: 'idle',
@@ -509,7 +500,7 @@ export class DashboardHub {
       }),
     ];
     const waiting = [...this.starting].filter(
-      ([, pending]) => pending.ui.snapshot().dialogs.length > 0,
+      ([, pending]) => (pending.ui?.snapshot().dialogs.length ?? 0) > 0,
     );
     const dialog =
       waiting.find(([id]) => id === this.startupDialogOwner) ?? waiting[0];
@@ -517,15 +508,16 @@ export class DashboardHub {
     const startup =
       dialog ??
       [...this.starting].find(
-        ([, pending]) => pending.ui.snapshot().notifications.length > 0,
+        ([, pending]) => (pending.ui?.snapshot().notifications.length ?? 0) > 0,
       );
+    const startupState = startup?.[1].ui?.snapshot();
     return (this.cachedSnapshot = {
-      ...(startup
+      ...(startup && startupState
         ? {
             startup: {
               id: startup[0],
               name: startup[1].name,
-              ui: structuredClone(startup[1].ui.snapshot()),
+              ui: structuredClone(startupState),
             },
           }
         : {}),
@@ -613,6 +605,8 @@ export class DashboardHub {
   async listSessions(input: unknown): Promise<SavedSession[]> {
     this.ensureOpen();
     const cwd = await sessionFolder(input);
+    const {SessionManager} = await import('@earendil-works/pi-coding-agent');
+    this.ensureOpen();
     const sessions = await SessionManager.list(cwd);
     return sessions.map(session => ({
       id: session.id,
@@ -625,12 +619,18 @@ export class DashboardHub {
 
   async workspaceConfigurationFolder(input: unknown): Promise<string> {
     this.ensureOpen();
-    return workspaceConfigurationDirectory(await sessionFolder(input));
+    const cwd = await sessionFolder(input);
+    const {workspaceConfigurationDirectory} =
+      await import('./workspace-config.ts');
+    this.ensureOpen();
+    return workspaceConfigurationDirectory(cwd);
   }
 
   async listAgentTemplates(input: unknown) {
     this.ensureOpen();
     const cwd = await sessionFolder(input);
+    const {listAgentTemplates} = await import('../agents/templates.ts');
+    this.ensureOpen();
     return listAgentTemplates(cwd);
   }
 
@@ -638,6 +638,8 @@ export class DashboardHub {
     this.ensureOpen();
     const cwd = await sessionFolder(folder);
     const values = fields(input);
+    const {saveAgentTemplate} = await import('../agents/templates.ts');
+    this.ensureOpen();
     return saveAgentTemplate(cwd, values);
   }
 
@@ -651,6 +653,8 @@ export class DashboardHub {
       )
     )
       throw new DashboardInputError('Unknown agent template field.');
+    const {deleteAgentTemplate} = await import('../agents/templates.ts');
+    this.ensureOpen();
     await deleteAgentTemplate(cwd, values);
   }
 
@@ -698,10 +702,13 @@ export class DashboardHub {
     replaceId?: string,
   ): Promise<StartedSession> {
     const cwd = await folder;
+    this.ensureOpen();
     if (values.sessionId !== undefined && values.templateId !== undefined)
       throw new DashboardInputError('Templates apply to new conversations.');
     if (values.sessionId !== undefined) {
       const id = text(values.sessionId, 'Session ID', 128);
+      const {SessionManager} = await import('@earendil-works/pi-coding-agent');
+      this.ensureOpen();
       const saved = (await SessionManager.list(cwd)).find(
         item => item.id === id,
       );
@@ -754,6 +761,9 @@ export class DashboardHub {
         ? undefined
         : text(values.name, 'Name', 120);
     const explicit = values.templateId !== undefined;
+    const {resolveAgentTemplate, resolveDefaultAgentTemplate} =
+      await import('../agents/templates.ts');
+    this.ensureOpen();
     const template = explicit
       ? await resolveAgentTemplate(cwd, values.templateId)
       : await resolveDefaultAgentTemplate(cwd, 'primary');
@@ -873,13 +883,19 @@ export class DashboardHub {
     const controller = new AbortController();
     let completed: DashboardParent | undefined;
     let transferred = false;
-    const ui = new DesktopExtensionUI(() => {
-      completed?.state.touch();
-      this.changed();
-    });
-    const startupUI = ui.forCommand(controller.signal);
+    let ui: DesktopExtensionUI | undefined;
+    let startupUI: DesktopExtensionUI | undefined;
     const operation = Promise.resolve().then(async () => {
       controller.signal.throwIfAborted();
+      const {DesktopExtensionUI} = await import('./extension-ui.ts');
+      this.ensureOpen();
+      controller.signal.throwIfAborted();
+      ui = new DesktopExtensionUI(() => {
+        completed?.state.touch();
+        this.changed();
+      });
+      startupUI = ui.forCommand(controller.signal);
+      this.starting.get(id)!.ui = ui;
       const parent = await factory(request, {
         ui: startupUI,
         signal: controller.signal,
@@ -895,7 +911,6 @@ export class DashboardHub {
     });
     this.starting.set(id, {
       name: request.name || basename(request.cwd),
-      ui,
       controller,
       operation,
     });
@@ -905,7 +920,7 @@ export class DashboardHub {
       return parent;
     } finally {
       this.starting.delete(id);
-      if (!transferred) ui.dispose();
+      if (!transferred) ui?.dispose();
       this.changed();
     }
   }

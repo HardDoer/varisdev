@@ -79,7 +79,7 @@ void test(
       OPENAI_API_KEY: 'user-key',
     });
     const child = createEnvironmentSettings({
-      env: f.settings.forChild(),
+      env: f.settings.forChild(undefined, {reuseShell: true}),
       file: f.file,
       platform: 'win32',
     });
@@ -93,6 +93,325 @@ void test(
     assert.deepEqual(removed.savedNames, []);
     await assert.rejects(access(f.file), {code: 'ENOENT'});
     assert.equal((await f.settings.get()).values.OPENAI_API_KEY, 'shell-key');
+  },
+);
+
+for (const platform of ['linux', 'win32'] as const) {
+  void test(
+    `${platform} app continuations reuse shell fallback and reread changed, removed, and empty saved values`,
+    {timeout: 5000},
+    async t => {
+      const base = join(root, '.varisdev/test-environment');
+      await mkdir(base, {recursive: true});
+      const home = await mkdtemp(join(base, 'continuation-'));
+      t.after(() => rm(home, {recursive: true, force: true}));
+      const file = join(home, 'environment.json');
+      const marker = '__VARISDEV_ENVIRONMENT_CONTINUATION';
+      const env: NodeJS.ProcessEnv = {
+        HOME: home,
+        PATH: 'launch-tools',
+        STALE_PLUGIN_TOKEN: 'removed-by-shell',
+      };
+      let reads = 0;
+      const readEnvironment = async () => {
+        reads++;
+        return {
+          PATH: 'shell-tools',
+          OPENAI_API_KEY: 'shell-key',
+          EMPTY_FALLBACK: '',
+          SHELL_ONLY_SETTING: 'from-shell',
+        };
+      };
+      await writeFile(
+        file,
+        JSON.stringify({
+          OPENAI_API_KEY: 'parent-saved',
+          SAVED_ONLY_SETTING: 'parent-only',
+          REMOVED_SETTING: 'parent-removed',
+          EMPTY_SETTING: 'parent-empty',
+          EMPTY_FALLBACK: 'parent-override',
+        }),
+      );
+      const settings = createEnvironmentSettings({
+        env,
+        file,
+        platform,
+        readEnvironment,
+      });
+      await settings.initialize();
+      env.PATH = 'app-tools' + (platform === 'win32' ? ';' : ':') + env.PATH;
+      await settings.get();
+      const child = settings.forChild(undefined, {reuseShell: true});
+      assert.equal(child[marker], '1');
+      assert.equal(env[marker], undefined);
+      assert.equal(child.PATH, env.PATH);
+      assert.equal(child.OPENAI_API_KEY, 'shell-key');
+      assert.equal(child.EMPTY_FALLBACK, '');
+      assert.ok(!Object.hasOwn(child, 'SAVED_ONLY_SETTING'));
+      assert.ok(!Object.hasOwn(child, 'REMOVED_SETTING'));
+      assert.ok(!Object.hasOwn(child, 'EMPTY_SETTING'));
+      assert.ok(!Object.hasOwn(child, 'STALE_PLUGIN_TOKEN'));
+      assert.deepEqual(
+        Object.keys(child).sort(),
+        [
+          'HOME',
+          'PATH',
+          'OPENAI_API_KEY',
+          'EMPTY_FALLBACK',
+          'SHELL_ONLY_SETTING',
+          marker,
+        ].sort(),
+        'Continuation metadata contains only a version marker',
+      );
+      const text =
+        JSON.stringify({
+          OPENAI_API_KEY: 'changed-saved',
+          SAVED_ONLY_SETTING: '',
+          EMPTY_SETTING: '',
+          NEW_SAVED_SETTING: 'new-value',
+        }) + '\n';
+      await writeFile(file, text);
+      const continued = createEnvironmentSettings({
+        env: child,
+        file,
+        platform,
+        readEnvironment,
+      });
+      const state = await continued.initialize();
+      assert.equal(reads, 1, 'The continuation does not read the shell again');
+      assert.equal(state.error, undefined);
+      assert.equal(
+        child[marker],
+        undefined,
+        'Ordinary tools inherit no marker',
+      );
+      assert.equal(state.values.OPENAI_API_KEY, 'changed-saved');
+      assert.equal(state.values.SAVED_ONLY_SETTING, '');
+      assert.equal(state.values.EMPTY_SETTING, '');
+      assert.equal(state.values.EMPTY_FALLBACK, '');
+      assert.equal(state.values.NEW_SAVED_SETTING, 'new-value');
+      assert.ok(!Object.hasOwn(state.values, 'REMOVED_SETTING'));
+      assert.ok(!Object.hasOwn(child, 'REMOVED_SETTING'));
+      assert.equal(child.SHELL_ONLY_SETTING, 'from-shell');
+      assert.equal(child.PATH, env.PATH);
+      assert.deepEqual(state.savedNames, [
+        'OPENAI_API_KEY',
+        'SAVED_ONLY_SETTING',
+        'EMPTY_SETTING',
+        'NEW_SAVED_SETTING',
+      ]);
+      assert.ok(!state.names.includes(marker));
+      assert.ok(!Object.hasOwn(state.values, marker));
+      assert.equal(await readFile(file, 'utf8'), text);
+      await continued.save('OPENAI_API_KEY', null);
+      assert.equal(child.OPENAI_API_KEY, 'shell-key');
+      await continued.save('SAVED_ONLY_SETTING', null);
+      assert.ok(!Object.hasOwn(child, 'SAVED_ONLY_SETTING'));
+      await continued.save('EMPTY_SETTING', null);
+      assert.ok(!Object.hasOwn(child, 'EMPTY_SETTING'));
+      await continued.save('NEW_SAVED_SETTING', null);
+      await assert.rejects(access(file), {code: 'ENOENT'});
+      const nextEnv = continued.forChild(undefined, {reuseShell: true});
+      const next = createEnvironmentSettings({
+        env: nextEnv,
+        file,
+        platform,
+        readEnvironment,
+      });
+      const fallback = await next.get();
+      assert.deepEqual(fallback.savedNames, []);
+      assert.equal(nextEnv.OPENAI_API_KEY, 'shell-key');
+      assert.equal(nextEnv.EMPTY_FALLBACK, '');
+      assert.ok(!Object.hasOwn(nextEnv, 'SAVED_ONLY_SETTING'));
+      assert.equal(nextEnv.PATH, env.PATH);
+      assert.equal(nextEnv[marker], undefined);
+      assert.equal(reads, 1);
+    },
+  );
+}
+
+void test(
+  'a launched app consumes continuation across source and build helpers without starting its missing shell',
+  {timeout: 15000},
+  async t => {
+    const base = join(root, '.varisdev/test-environment');
+    await mkdir(base, {recursive: true});
+    const home = await mkdtemp(join(base, 'launched-continuation-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const env: NodeJS.ProcessEnv = {
+      HOME: home,
+      USERPROFILE: home,
+      LOCALAPPDATA: join(home, 'local'),
+      XDG_CONFIG_HOME: join(home, 'config'),
+      SystemRoot: process.env.SystemRoot,
+      SHELL: join(home, 'missing/bash'),
+      PATH: home,
+    };
+    await writeFile(join(home, 'pwsh.exe'), 'invalid isolated shell');
+    const file = environmentPath(env);
+    await mkdir(dirname(file), {recursive: true});
+    await writeFile(
+      file,
+      JSON.stringify({
+        OPENAI_API_KEY: 'parent-saved',
+        REMOVED_SETTING: 'saved',
+      }),
+    );
+    const settings = createEnvironmentSettings({
+      env,
+      file,
+      readEnvironment: async () => ({...env, OPENAI_API_KEY: 'shell-key'}),
+    });
+    await settings.initialize();
+    const child = settings.forChild(undefined, {reuseShell: true});
+    const text =
+      '{ "OPENAI_API_KEY": "child-saved", "SAVED_ONLY_SETTING": "" }\n';
+    await writeFile(file, text);
+    const copy = join(home, 'environment.mjs');
+    await writeFile(
+      copy,
+      await readFile(join(root, 'src/runtime/environment.mjs'), 'utf8'),
+    );
+    const script = `
+      import assert from 'node:assert/strict';
+      import {readFile} from 'node:fs/promises';
+      const source = await import(${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)});
+      const built = await import(${JSON.stringify(pathToFileURL(copy).href)});
+      assert.equal(process.env.__VARISDEV_ENVIRONMENT_CONTINUATION, '1');
+      await source.initializeEnvironment();
+      await built.initializeEnvironment();
+      assert.equal(source.environmentSettings(), built.environmentSettings());
+      const state = await built.environmentSettings().get();
+      assert.equal(state.error, undefined);
+      assert.equal(process.env.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
+      assert.equal(source.copyEnvironment().__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
+      assert.equal(process.env.OPENAI_API_KEY, 'child-saved');
+      assert.equal(process.env.SAVED_ONLY_SETTING, '');
+      assert.equal(process.env.REMOVED_SETTING, undefined);
+      assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', 'SAVED_ONLY_SETTING']);
+      assert.equal(await readFile(${JSON.stringify(file)}, 'utf8'), ${JSON.stringify(text)});
+      const restart = source.environmentForChild();
+      assert.equal(restart.OPENAI_API_KEY, 'shell-key');
+      assert.equal(restart.SAVED_ONLY_SETTING, undefined);
+      assert.equal(restart.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
+      assert.equal(source.environmentForChild({...process.env, __VARISDEV_ENVIRONMENT_CONTINUATION: '1'}, {reuseShell: false}).__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
+      const continuation = source.environmentForChild(undefined, {reuseShell: true});
+      assert.equal(continuation.OPENAI_API_KEY, 'shell-key');
+      assert.equal(continuation.SAVED_ONLY_SETTING, undefined);
+      assert.equal(continuation.__VARISDEV_ENVIRONMENT_CONTINUATION, '1');
+      console.log('app-continuation-ready');
+    `;
+    const output = await runRuntimeCommand(
+      process.execPath,
+      ['--input-type=module', '-e', script],
+      {cwd: home, env: child, timeoutMs: 8000},
+    );
+    assert.match(output, /app-continuation-ready/);
+  },
+);
+
+void test(
+  'unmarked and unknown continuations read the shell once and only explicit same-launch handoffs reuse it',
+  {timeout: 5000},
+  async t => {
+    const base = join(root, '.varisdev/test-environment');
+    await mkdir(base, {recursive: true});
+    const home = await mkdtemp(join(base, 'initial-read-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const marker = '__VARISDEV_ENVIRONMENT_CONTINUATION';
+    for (const version of [undefined, 'unknown-version']) {
+      const env: NodeJS.ProcessEnv = {PATH: 'launch-tools'};
+      if (version) env[marker] = version;
+      let reads = 0;
+      const shell = Promise.withResolvers<Record<string, string>>();
+      const settings = createEnvironmentSettings({
+        env,
+        file: join(home, 'environment.json'),
+        readEnvironment: async ({env: source = {}} = {}) => {
+          reads++;
+          assert.equal(source[marker], undefined);
+          assert.equal(env[marker], undefined);
+          return shell.promise;
+        },
+      });
+      assert.equal(settings.forChild({[marker]: '1'})[marker], undefined);
+      assert.equal(
+        settings.forChild(undefined, {reuseShell: true})[marker],
+        undefined,
+      );
+      const initialized = settings.initialize();
+      const again = settings.initialize();
+      assert.equal(reads, 1);
+      assert.equal(
+        settings.forChild(undefined, {reuseShell: true})[marker],
+        undefined,
+      );
+      shell.resolve({PATH: 'shell-tools'});
+      await Promise.all([initialized, again]);
+      assert.equal(settings.forChild()[marker], undefined);
+      assert.equal(settings.forChild({[marker]: '1'})[marker], undefined);
+      assert.equal(
+        settings.forChild({[marker]: '1'}, {reuseShell: false})[marker],
+        undefined,
+      );
+      assert.equal(
+        settings.forChild(undefined, {reuseShell: true})[marker],
+        '1',
+      );
+      assert.equal(env[marker], undefined);
+      await settings.get();
+      assert.equal(reads, 1);
+    }
+  },
+);
+
+void test(
+  'failed shell reads preserve fallback without marking a continuation and children retry the read',
+  {timeout: 5000},
+  async t => {
+    const base = join(root, '.varisdev/test-environment');
+    await mkdir(base, {recursive: true});
+    const home = await mkdtemp(join(base, 'failed-read-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const file = join(home, 'environment.json');
+    const marker = '__VARISDEV_ENVIRONMENT_CONTINUATION';
+    const env: NodeJS.ProcessEnv = {OPENAI_API_KEY: 'launch-key'};
+    await writeFile(file, JSON.stringify({OPENAI_API_KEY: 'saved-key'}));
+    let reads = 0;
+    const settings = createEnvironmentSettings({
+      env,
+      file,
+      readEnvironment: async () => {
+        reads++;
+        throw new Error('Shell read failed.');
+      },
+    });
+    const state = await settings.initialize();
+    assert.match(state.error || '', /Shell read failed/);
+    assert.equal(env.OPENAI_API_KEY, 'saved-key');
+    const child = settings.forChild(undefined, {reuseShell: true});
+    assert.equal(child[marker], undefined);
+    assert.equal(child.OPENAI_API_KEY, 'launch-key');
+    const continued = createEnvironmentSettings({
+      env: child,
+      file,
+      readEnvironment: async ({env: source = {}} = {}) => {
+        reads++;
+        assert.equal(source[marker], undefined);
+        assert.equal(source.OPENAI_API_KEY, 'launch-key');
+        return {OPENAI_API_KEY: 'shell-key'};
+      },
+    });
+    assert.equal((await continued.initialize()).error, undefined);
+    assert.equal(reads, 2);
+    assert.equal(child.OPENAI_API_KEY, 'saved-key');
+    await continued.save('OPENAI_API_KEY', null);
+    assert.equal(child.OPENAI_API_KEY, 'shell-key');
+    assert.equal(continued.forChild()[marker], undefined);
+    assert.equal(
+      continued.forChild(undefined, {reuseShell: true})[marker],
+      '1',
+    );
   },
 );
 
@@ -478,7 +797,7 @@ for (const recoverShell of [false, true]) {
           forChild(base) {
             assert.equal(base, process.env);
             legacyReads++;
-            const child = {...base, OPENAI_API_KEY: 'inherited-key'};
+            const child = {...base, OPENAI_API_KEY: 'inherited-key', __VARISDEV_ENVIRONMENT_CONTINUATION: '1'};
             delete child.SAVED_ONLY_SETTING;
             return child;
           },
@@ -723,45 +1042,48 @@ void test(
   },
 );
 
-void test(
-  'source and standalone build helpers replace a cached v2 loader while preserving its saved setting fallbacks',
-  {timeout: 15000},
-  async t => {
-    const base = join(root, '.varisdev/test-environment');
-    await mkdir(base, {recursive: true});
-    const home = await mkdtemp(join(base, 'v2-'));
-    t.after(() => rm(home, {recursive: true, force: true}));
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      HOME: home,
-      USERPROFILE: home,
-      LOCALAPPDATA: join(home, 'local'),
-      XDG_CONFIG_HOME: join(home, 'config'),
-      SHELL: join(home, 'missing/bash'),
-    };
-    // A broken executable produces an isolated startup failure on Windows.
-    await writeFile(
-      join(home, 'pwsh.exe'),
-      'invalid executable for isolated startup failure',
-    );
-    for (const name of Object.keys(env))
-      if (name.toLowerCase() === 'path') delete env[name];
-    Object.assign(env, {PATH: home});
-    const file = environmentPath(env);
-    await mkdir(dirname(file), {recursive: true});
-    const text = '{ "OPENAI_API_KEY": "saved-key" }\n';
-    await writeFile(file, text);
-    const copy = join(home, 'environment.mjs');
-    await writeFile(
-      copy,
-      await readFile(join(root, 'src/runtime/environment.mjs'), 'utf8'),
-    );
-    const script = `
+for (const previousVersion of [2, 3]) {
+  void test(
+    `source and standalone build helpers replace a cached v${previousVersion} loader while preserving its saved setting fallbacks`,
+    {timeout: 15000},
+    async t => {
+      const base = join(root, '.varisdev/test-environment');
+      await mkdir(base, {recursive: true});
+      const home = await mkdtemp(join(base, `v${previousVersion}-`));
+      t.after(() => rm(home, {recursive: true, force: true}));
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        LOCALAPPDATA: join(home, 'local'),
+        XDG_CONFIG_HOME: join(home, 'config'),
+        SHELL: join(home, 'missing/bash'),
+      };
+      // A broken executable produces an isolated startup failure on Windows.
+      await writeFile(
+        join(home, 'pwsh.exe'),
+        'invalid executable for isolated startup failure',
+      );
+      for (const name of Object.keys(env))
+        if (name.toLowerCase() === 'path') delete env[name];
+      Object.assign(env, {PATH: home});
+      const file = environmentPath(env);
+      await mkdir(dirname(file), {recursive: true});
+      const text = '{ "OPENAI_API_KEY": "saved-key" }\n';
+      await writeFile(file, text);
+      const copy = join(home, 'environment.mjs');
+      await writeFile(
+        copy,
+        await readFile(join(root, 'src/runtime/environment.mjs'), 'utf8'),
+      );
+      const script = `
       import assert from 'node:assert/strict';
       import {access, readFile} from 'node:fs/promises';
       process.env.OPENAI_API_KEY = 'saved-key';
+      const previous = Symbol.for('varisdev.environment-settings.v${previousVersion}');
+      const current = Symbol.for('varisdev.environment-settings.v4');
       const v2 = Symbol.for('varisdev.environment-settings.v2');
-      const current = Symbol.for('varisdev.environment-settings.v3');
+      const v3 = Symbol.for('varisdev.environment-settings.v3');
       const legacy = Symbol.for('varisdev.environment-settings');
       let reads = 0;
       const stale = {
@@ -769,11 +1091,13 @@ void test(
         forChild(base) {
           assert.equal(base, process.env);
           reads++;
-          return {...base, OPENAI_API_KEY: 'launch-fallback'};
+          return {...base, OPENAI_API_KEY: 'launch-fallback', __VARISDEV_ENVIRONMENT_CONTINUATION: '1'};
         },
       };
-      globalThis[v2] = stale;
-      globalThis[legacy] = {forChild() { throw new Error('v2 takes precedence'); }};
+      if (${previousVersion} === 3)
+        globalThis[v2] = {forChild() { throw new Error('v3 takes precedence'); }};
+      globalThis[previous] = stale;
+      globalThis[legacy] = {forChild() { throw new Error('Versioned state takes precedence'); }};
       const source = await import(${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)});
       const built = await import(${JSON.stringify(pathToFileURL(copy).href)});
       const settings = source.environmentSettings();
@@ -781,28 +1105,31 @@ void test(
       assert.equal(settings, built.environmentSettings());
       assert.equal(settings, globalThis[current]);
       assert.equal(settings, globalThis[v2]);
+      assert.equal(settings, globalThis[v3]);
       assert.equal(settings, globalThis[legacy]);
       const state = await settings.initialize();
       assert.match(state.error, /Could not start/);
       assert.equal(state.values.OPENAI_API_KEY, 'saved-key');
       assert.equal(process.env.OPENAI_API_KEY, 'saved-key');
       assert.equal(settings.forChild().OPENAI_API_KEY, 'launch-fallback');
+      assert.equal(settings.forChild().__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       assert.equal(await readFile(${JSON.stringify(file)}, 'utf8'), ${JSON.stringify(text)});
       await settings.save('OPENAI_API_KEY', null);
       assert.equal(process.env.OPENAI_API_KEY, 'launch-fallback');
       await assert.rejects(access(${JSON.stringify(file)}), {code: 'ENOENT'});
       assert.equal(reads, 1);
-      console.log('v2-migration-ready');
+      console.log('v${previousVersion}-migration-ready');
     `;
-    const output = await runRuntimeCommand(
-      process.execPath,
-      ['--input-type=module', '-e', script],
-      {
-        cwd: home,
-        env,
-        timeoutMs: 8000,
-      },
-    );
-    assert.match(output, /v2-migration-ready/);
-  },
-);
+      const output = await runRuntimeCommand(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        {
+          cwd: home,
+          env,
+          timeoutMs: 8000,
+        },
+      );
+      assert.match(output, new RegExp(`v${previousVersion}-migration-ready`));
+    },
+  );
+}

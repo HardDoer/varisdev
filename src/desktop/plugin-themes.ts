@@ -2,13 +2,19 @@ import {createHash} from 'node:crypto';
 import {open, realpath} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import {dirname, isAbsolute, relative, resolve, sep} from 'node:path';
-import {
-  DefaultPackageManager,
-  getAgentDir,
-  SettingsManager,
-} from '@earendil-works/pi-coding-agent';
-import {workspaceConfigPaths} from '../dashboard/workspace-config.ts';
+import {CONFIG_DIR_NAME, getAgentDir} from '../runtime/pi-config.ts';
+import {pinnedPiModuleURL} from '../runtime/pi-shipped-modules.ts';
+import {workspaceConfigPaths} from '../dashboard/workspace-paths.ts';
 import type {ThemeAppearance, ThemeSceneReference} from '../theme-renderers.ts';
+
+type PiSDK = typeof import('@earendil-works/pi-coding-agent');
+
+const {DefaultPackageManager} = (await import(
+  pinnedPiModuleURL('core/package-manager.js').href
+)) as Pick<PiSDK, 'DefaultPackageManager'>;
+const {SettingsManager} = (await import(
+  pinnedPiModuleURL('core/settings-manager.js').href
+)) as Pick<PiSDK, 'SettingsManager'>;
 
 export interface PluginTheme {
   id: string;
@@ -215,7 +221,7 @@ export async function loadPluginThemes(options: {
       );
   };
   const agentDir = options.agentDir ?? getAgentDir();
-  const paths = workspaceConfigPaths(options.cwd, agentDir);
+  const paths = workspaceConfigPaths(options.cwd, agentDir, CONFIG_DIR_NAME);
   const settingsErrors = new Set<string>();
   const packageRegistrations = (
     cwd: string,
@@ -238,7 +244,9 @@ export async function loadPluginThemes(options: {
     }
     return packages;
   };
-  let packages: ReturnType<DefaultPackageManager['listConfiguredPackages']>;
+  let packages: ReturnType<
+    InstanceType<typeof DefaultPackageManager>['listConfiguredPackages']
+  >;
   try {
     const current = packageRegistrations(options.cwd, agentDir);
     const repository =

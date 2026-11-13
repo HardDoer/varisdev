@@ -1,7 +1,5 @@
-import {createHash} from 'node:crypto';
-import {existsSync, realpathSync} from 'node:fs';
+import {realpathSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
-import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {
@@ -19,6 +17,28 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import {createAppResourceFilter} from './resources.ts';
 import {includeBuiltinSkills, loadBuiltinSkills} from '../builtin-skills.ts';
+import {
+  workspaceConfigPaths as configPaths,
+  type WorkspaceConfigPaths,
+} from './workspace-paths.ts';
+
+export type {WorkspaceConfigPaths} from './workspace-paths.ts';
+
+export function workspaceConfigPaths(
+  cwd: string,
+  agentDir = getAgentDir(),
+): WorkspaceConfigPaths {
+  return configPaths(cwd, agentDir, CONFIG_DIR_NAME);
+}
+
+/** Create the personal configuration folder for the desktop's folder action. */
+export async function workspaceConfigurationDirectory(
+  cwd: string,
+): Promise<string> {
+  const directory = workspaceConfigPaths(cwd).workspaceDir;
+  await mkdir(directory, {recursive: true});
+  return directory;
+}
 
 // Pi exposes the MCP loader hook, while its file parser is shipped internally.
 const {loadMcpConfig} = (await import(
@@ -44,73 +64,6 @@ const {loadPromptTemplates} = (await import(
     diagnostics: ReturnType<ResourceLoader['getPrompts']>['diagnostics'];
   };
 };
-
-export interface WorkspaceConfigPaths {
-  projectDir: string;
-  repositoryConfigDir: string;
-  workspaceDir: string;
-}
-
-function canonicalDirectory(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
-
-/** A worktree has its own configuration; symlink aliases share that configuration. */
-export function workspaceConfigPaths(
-  cwd: string,
-  agentDir = getAgentDir(),
-): WorkspaceConfigPaths {
-  const canonical = canonicalDirectory(cwd);
-  const settings = canonicalDirectory(agentDir);
-  const globalMarkers = new Set([
-    canonicalDirectory(join(homedir(), CONFIG_DIR_NAME)),
-    settings,
-    dirname(settings),
-    canonicalDirectory(dirname(resolve(agentDir))),
-  ]);
-  let projectDir = canonical;
-  let configRoot: string | undefined;
-  for (let current = canonical; ; current = dirname(current)) {
-    if (existsSync(join(current, '.git'))) {
-      projectDir = current;
-      break;
-    }
-    const marker = join(current, CONFIG_DIR_NAME);
-    // Global settings belong to every project, so they cannot identify one.
-    if (
-      !configRoot &&
-      existsSync(marker) &&
-      !globalMarkers.has(canonicalDirectory(marker))
-    )
-      configRoot = current;
-    if (dirname(current) === current) {
-      projectDir = configRoot ?? canonical;
-      break;
-    }
-  }
-  return {
-    projectDir,
-    repositoryConfigDir: join(projectDir, CONFIG_DIR_NAME),
-    workspaceDir: join(
-      agentDir,
-      'workspaces',
-      createHash('sha256').update(projectDir).digest('hex'),
-    ),
-  };
-}
-
-/** Create the personal configuration folder for the desktop's folder action. */
-export async function workspaceConfigurationDirectory(
-  cwd: string,
-): Promise<string> {
-  const directory = workspaceConfigPaths(cwd).workspaceDir;
-  await mkdir(directory, {recursive: true});
-  return directory;
-}
 
 function uniqueInstructionSources<T extends {path: string}>(files: T[]): T[] {
   const unique = new Map<string, T>();

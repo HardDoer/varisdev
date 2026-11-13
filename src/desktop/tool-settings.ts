@@ -1,16 +1,5 @@
-import {
-  getAgentDir,
-  resolveModelScopeWithDiagnostics,
-  SettingsManager,
-  type ModelRuntime,
-} from '@earendil-works/pi-coding-agent';
-import {createGlobalModelRuntime} from './model-runtime.ts';
-import {
-  parseToolSettingsUpdate,
-  readToolSettings,
-  saveToolSettings,
-  type ToolSettings,
-} from '../tools/settings.ts';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
+import type {ToolSettings} from '../tools/settings.ts';
 
 export interface ToolSettingsModel {
   provider: string;
@@ -63,7 +52,11 @@ export class DesktopToolSettings {
         this.runtime = (
           this.dependencies.createRuntime
             ? this.dependencies.createRuntime()
-            : createGlobalModelRuntime(message => this.diagnostics.add(message))
+            : import('./model-runtime.ts').then(({createGlobalModelRuntime}) =>
+                createGlobalModelRuntime(message =>
+                  this.diagnostics.add(message),
+                ),
+              )
         ).catch(error => {
           this.runtime = undefined;
           throw error;
@@ -71,6 +64,8 @@ export class DesktopToolSettings {
       }
       const runtime = await this.runtime;
       await runtime.refresh({allowNetwork: false});
+      const {getAgentDir, resolveModelScopeWithDiagnostics, SettingsManager} =
+        await import('@earendil-works/pi-coding-agent');
       const agentDir = getAgentDir();
       const settings = SettingsManager.create(agentDir, agentDir, {
         projectTrusted: false,
@@ -96,6 +91,7 @@ export class DesktopToolSettings {
 
   async getToolSettings(sessionId?: string): Promise<ToolSettingsState> {
     const catalog = await this.catalog(sessionId);
+    const {readToolSettings} = await import('../tools/settings.ts');
     return {settings: await readToolSettings(), ...catalog};
   }
 
@@ -104,8 +100,11 @@ export class DesktopToolSettings {
     value: unknown,
     sessionId?: string,
   ): Promise<ToolSettingsState> {
-    const update = parseToolSettingsUpdate(section, value);
+    const input = structuredClone(value);
     const operation = this.saving.then(async () => {
+      const {parseToolSettingsUpdate, readToolSettings, saveToolSettings} =
+        await import('../tools/settings.ts');
+      const update = parseToolSettingsUpdate(section, input);
       const {settings, models, diagnostics} =
         await this.getToolSettings(sessionId);
       const known = new Set(

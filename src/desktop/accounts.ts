@@ -1,13 +1,7 @@
 import {randomUUID} from 'node:crypto';
-import {
-  CredentialSynchronizationError,
-  type ModelRuntime,
-} from '@earendil-works/pi-coding-agent';
-import {LLAMA_PROVIDER} from '../llama.ts';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import type {AuthEvent, AuthPrompt, AuthType} from '@earendil-works/pi-ai';
 import {updateMessage} from './updates.ts';
-import {createInstallationLoginContext} from './installation-id.ts';
-import {createGlobalModelRuntime} from './model-runtime.ts';
 
 export interface AccountState {
   revision: number;
@@ -68,10 +62,12 @@ export class DesktopAccounts {
     this.runtime ??= (
       this.dependencies.createRuntime
         ? this.dependencies.createRuntime()
-        : createGlobalModelRuntime(message => {
-            this.state.diagnostics ??= [];
-            this.state.diagnostics.push(this.clean(message));
-          })
+        : import('./model-runtime.ts').then(({createGlobalModelRuntime}) =>
+            createGlobalModelRuntime(message => {
+              this.state.diagnostics ??= [];
+              this.state.diagnostics.push(this.clean(message));
+            }),
+          )
     ).catch(error => {
       this.runtime = undefined;
       throw error;
@@ -95,6 +91,7 @@ export class DesktopAccounts {
   }
 
   private async providers(): Promise<void> {
+    const {LLAMA_PROVIDER} = await import('../llama.ts');
     const runtime = await this.getRuntime();
     await runtime.refresh({allowNetwork: false});
     const stored = new Map(
@@ -215,6 +212,9 @@ export class DesktopAccounts {
           throw new Error(
             'This provider does not support that sign-in method.',
           );
+        const {createInstallationLoginContext} =
+          await import('./installation-id.ts');
+        signal.throwIfAborted();
         const installation = createInstallationLoginContext();
         try {
           await runtime.login(
@@ -237,6 +237,7 @@ export class DesktopAccounts {
           throw error;
         }
         await installation.flush();
+        const {LLAMA_PROVIDER} = await import('../llama.ts');
         this.state.error = undefined;
         this.state.message =
           providerId === LLAMA_PROVIDER
@@ -247,6 +248,8 @@ export class DesktopAccounts {
         this.refreshModels(runtime, providerId);
       }
     } catch (error) {
+      const {CredentialSynchronizationError} =
+        await import('@earendil-works/pi-coding-agent');
       this.state.message = signal.aborted
         ? 'Cancelled.'
         : error instanceof CredentialSynchronizationError

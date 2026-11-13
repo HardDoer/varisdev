@@ -90,7 +90,9 @@ function launchEnvironment(
   const nodeExecutable =
     process.env.VARISDEV_NODE_EXECUTABLE ||
     (!process.versions.electron ? process.execPath : undefined);
-  const inherited = continuation ? environmentForChild() : copyEnvironment();
+  const inherited = continuation
+    ? environmentForChild(undefined, {reuseShell: true})
+    : copyEnvironment();
   return {
     ...configureSettings(inherited),
     VARISDEV_INSTALL_ROOT: installRoot,
@@ -301,7 +303,6 @@ export async function runCli(
   const manager = new RuntimeManager({installRoot});
   await manager.refreshEnvironment();
   const runtimeRoot = await manager.currentRoot();
-  await manager.cleanupRuntimes();
   if (command === '--help' || command === '-h' || command === 'help') {
     console.log(help);
     return 0;

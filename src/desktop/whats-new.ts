@@ -7,6 +7,12 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '2.0.2',
+    [
+      'Faster startup, with less repeated environment setup and deferred workspace loading.',
+    ],
+  ],
+  [
     '2.0.1',
     [
       'Reduced work when submitting prompts and steering, including redundant credential checks before model turns.',

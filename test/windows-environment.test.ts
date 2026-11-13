@@ -22,6 +22,7 @@ import {
   withNodePath,
 } from '../src/runtime/environment.mjs';
 import {runTerminalProcess} from './fixtures/terminal-process.mjs';
+import {runCommand} from '../scripts/test-installer.mjs';
 
 const inheritedPath = 'C:\\Runtime;C:\\Windows\\System32';
 const registeredPaths = [
@@ -130,7 +131,7 @@ void test(
         1,
         'Registry recovery runs once per settings instance',
       );
-      const child = settings.forChild();
+      const child = settings.forChild(undefined, {reuseShell: true});
       assert.equal(
         child.PATH,
         fallbackPath,
@@ -144,6 +145,8 @@ void test(
         readEnvironment,
       });
       await continued.initialize();
+      assert.equal(reads, 1, 'App continuation reuses the recovered fallback');
+      assert.equal(child.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       assert.equal(child.PATH, 'D:\\Chosen tools');
       const removed = await continued.save('pAtH', null);
       assert.equal(removed.values.PATH, fallbackPath);
@@ -237,7 +240,7 @@ void test(
     const saved = JSON.stringify({Path: chosen});
     await writeFile(settingsFile, saved);
     await writeFile(join(directory, 'package.json'), '{"type":"module"}');
-    const childSource = `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(report)}, JSON.stringify({path: process.env.PATH, names: Object.keys(process.env).filter(name => name.toLowerCase() === 'path')}));`;
+    const childSource = `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(report)}, JSON.stringify({path: process.env.PATH, names: Object.keys(process.env).filter(name => name.toLowerCase() === 'path'), continuation: process.env.__VARISDEV_ENVIRONMENT_CONTINUATION}));`;
     for (const relative of [
       'scripts',
       'desktop/node_modules/@earendil-works/pi-coding-agent/dist/bundle',
@@ -269,8 +272,10 @@ void test(
       const child = JSON.parse(await readFile(report, 'utf8')) as {
         path: string;
         names: string[];
+        continuation?: string;
       };
       assert.deepEqual(child.names, ['PATH']);
+      assert.equal(child.continuation, continuation ? '1' : undefined);
       assert.equal(child.path.split(';').includes(tools), continuation);
       assert.equal(child.path.split(';').includes(chosen), !continuation);
       assert.equal(await readFile(settingsFile, 'utf8'), saved);
@@ -454,6 +459,7 @@ for (const shell of nativeShells) {
         PSExecutionPolicyPreference: 'Bypass',
       };
       const profilePaths: string[] = [];
+      const profileReads = join(directory, 'profile-reads');
       for (let index = 0; index < 4; index++) {
         const profile = join(directory, `profile-${index}.ps1`);
         profilePaths.push(profile);
@@ -464,6 +470,7 @@ for (const shell of nativeShells) {
           Write-Output 'private startup noise'
           [Console]::WriteLine('console-private-noise')
           $env:PROFILE_ORDER += '${index}'
+          [IO.File]::AppendAllText('${profileReads.replace(/'/g, "''")}', '${index}')
           $env:OPENAI_API_KEY = $env:REGISTERED_PLUGIN_TOKEN + '-profile'
           $env:PROFILE_MULTILINE = "first=ä\`nsecond=値"
           $env:PATH = 'D:\\Profile tools;' + $env:PATH
@@ -513,7 +520,7 @@ for (const shell of nativeShells) {
       assert.equal(env.PATH, 'E:\\Saved tools');
       assert.equal(await readFile(file, 'utf8'), text);
       assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', 'PATH']);
-      const fallback = settings.forChild();
+      const fallback = settings.forChild(undefined, {reuseShell: true});
       assert.equal(fallback.OPENAI_API_KEY, 'user-private-profile');
       const fallbackPaths: string[] | undefined = fallback.PATH?.split(';');
       assert.equal(fallbackPaths?.[0], 'D:\\Profile tools');
@@ -526,15 +533,149 @@ for (const shell of nativeShells) {
           'C:\\User tools',
         ],
       );
-      await settings.save('OPENAI_API_KEY', null);
+      const recoveredPath = fallback.PATH;
+      const continued = createEnvironmentSettings({
+        env: fallback,
+        file,
+        platform: 'win32',
+        shell,
+        timeoutMs: 5000,
+        windows: {profilePaths},
+      });
+      const continuedState = await continued.initialize();
+      assert.equal(continuedState.error, undefined);
+      assert.equal(fallback.OPENAI_API_KEY, 'saved-private');
+      assert.equal(fallback.PATH, 'E:\\Saved tools');
+      assert.equal(fallback.PROFILE_ORDER, '0123');
+      assert.equal(fallback.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
+      assert.equal(await readFile(profileReads, 'utf8'), '0123');
+      await continued.save('OPENAI_API_KEY', null);
+      assert.equal(fallback.OPENAI_API_KEY, 'user-private-profile');
+      await settings.get();
       assert.equal(env.OPENAI_API_KEY, 'user-private-profile');
       assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {
         Path: 'E:\\Saved tools',
       });
       await settings.save('Path', null);
-      assert.equal(env.PATH, fallback.PATH);
+      assert.equal(env.PATH, recoveredPath);
       await settings.get();
       await assert.rejects(access(file), {code: 'ENOENT'});
+    },
+  );
+}
+
+for (const shell of nativeShells) {
+  void test(
+    `Windows update restart rereads edited ${win32.basename(shell)} profiles and restores refreshed fallbacks after removing saved overrides`,
+    {timeout: 35000},
+    async t => {
+      const base = new URL('../.varisdev/test-environment/', import.meta.url);
+      await mkdir(base, {recursive: true});
+      const directory = await mkdtemp(
+        fileURLToPath(new URL('windows-restart-', base)),
+      );
+      t.after(() => rm(directory, {recursive: true, force: true}));
+      const profile = join(directory, 'profile.ps1');
+      const profileReads = join(directory, 'profile-reads');
+      const file = join(directory, 'environment.json');
+      const beforeTools = join(directory, 'before tools');
+      const afterTools = join(directory, 'after tools');
+      const quote = (text: string) => "'" + text.replace(/'/g, "''") + "'";
+      const profileText = (version: string, tools: string) =>
+        '\ufeff' +
+        `
+        [IO.File]::AppendAllText(${quote(profileReads)}, '${version};')
+        $env:RESTART_FALLBACK = '${version}-fallback'
+        $env:OPENAI_API_KEY = '${version}-openai-key'
+        $env:ANTHROPIC_API_KEY = '${version}-anthropic-key'
+        $env:PATH = ${quote(tools)}
+      `;
+      await writeFile(profile, profileText('before', beforeTools));
+      await writeFile(
+        file,
+        JSON.stringify({
+          OPENAI_API_KEY: 'saved-before',
+          SAVED_ONLY_SETTING: 'keep',
+        }),
+      );
+      // Each app runs in its own process because updateRestartCommand uses the
+      // process singleton. Keep shell and registry inputs isolated from the user.
+      const startup = `
+        import assert from 'node:assert/strict';
+        import {readFile, writeFile} from 'node:fs/promises';
+        import {createEnvironmentSettings, initializeEnvironment} from ${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)};
+        const inheritedMarker = process.env.__VARISDEV_ENVIRONMENT_CONTINUATION;
+        const settings = createEnvironmentSettings(${JSON.stringify({
+          file,
+          platform: 'win32',
+          shell,
+          timeoutMs: 5000,
+          windows: {
+            machineEnvironment: {},
+            userEnvironment: {},
+            profilePaths: [profile],
+          },
+        })});
+        globalThis[Symbol.for('varisdev.environment-settings.v4')] = settings;
+        await initializeEnvironment();
+        const state = await settings.get();
+        assert.equal(state.error, undefined);
+      `;
+      const cli = join(directory, 'bin/varisdev.mjs');
+      await mkdir(join(directory, 'bin'), {recursive: true});
+      await writeFile(
+        cli,
+        startup +
+          `
+          assert.equal(process.env.RESTART_FALLBACK, 'after-fallback');
+          assert.equal(process.env.ANTHROPIC_API_KEY, 'after-anthropic-key');
+          assert.equal(process.env.PATH, ${JSON.stringify(afterTools)});
+          assert.equal(process.env.OPENAI_API_KEY, 'saved-after');
+          assert.equal(inheritedMarker, undefined);
+          assert.equal(process.env.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
+          assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', 'SAVED_ONLY_SETTING']);
+          assert.equal(await readFile(${JSON.stringify(profileReads)}, 'utf8'), 'before;after;');
+          assert.equal(settings.forChild().OPENAI_API_KEY, 'after-openai-key');
+          await settings.save('OPENAI_API_KEY', null);
+          assert.equal(process.env.OPENAI_API_KEY, 'after-openai-key');
+          assert.deepEqual((await settings.get()).savedNames, ['SAVED_ONLY_SETTING']);
+          assert.deepEqual(JSON.parse(await readFile(${JSON.stringify(file)}, 'utf8')), {SAVED_ONLY_SETTING: 'keep'});
+        `,
+      );
+      const source =
+        startup +
+        `
+        import {updateRestartCommand} from ${JSON.stringify(new URL('../src/desktop/updates.ts', import.meta.url).href)};
+        import {runCommand} from ${JSON.stringify(new URL('../scripts/test-installer.mjs', import.meta.url).href)};
+        assert.equal(process.env.RESTART_FALLBACK, 'before-fallback');
+        assert.equal(process.env.OPENAI_API_KEY, 'saved-before');
+        assert.equal(process.env.ANTHROPIC_API_KEY, 'before-anthropic-key');
+        assert.equal(process.env.PATH, ${JSON.stringify(beforeTools)});
+        assert.equal(await readFile(${JSON.stringify(profileReads)}, 'utf8'), 'before;');
+        await writeFile(${JSON.stringify(profile)}, ${JSON.stringify(profileText('after', afterTools))});
+        await writeFile(${JSON.stringify(file)}, JSON.stringify({OPENAI_API_KEY: 'saved-after', SAVED_ONLY_SETTING: 'keep'}));
+        const command = updateRestartCommand(${JSON.stringify(directory)}, process.execPath, process.execPath);
+        assert.equal(command.env.OPENAI_API_KEY, 'before-openai-key');
+        assert.equal(process.env.OPENAI_API_KEY, 'saved-before');
+        await runCommand(command.executable, command.args, {cwd: ${JSON.stringify(directory)}, env: command.env, timeoutMs: 15000});
+        assert.equal(await readFile(${JSON.stringify(profileReads)}, 'utf8'), 'before;after;');
+      `;
+      await runCommand(
+        process.execPath,
+        ['--input-type=module', '-e', source],
+        {
+          cwd: directory,
+          env: {
+            SystemRoot: process.env.SystemRoot,
+            HOME: directory,
+            USERPROFILE: directory,
+            LOCALAPPDATA: join(directory, 'local'),
+            PATH: 'C:\\Launch tools',
+            PSExecutionPolicyPreference: 'Bypass',
+          },
+          timeoutMs: 28000,
+        },
+      );
     },
   );
 }

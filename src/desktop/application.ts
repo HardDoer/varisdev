@@ -38,9 +38,7 @@ import {
   updateMessage,
   updateRestartCommand,
 } from './updates.ts';
-import {createWorkspaceConfiguration} from '../dashboard/workspace-config.ts';
 import type {DesktopStartup} from './startup.ts';
-import {desktopInitialPrompts} from '../dashboard/startup.ts';
 import {fileURLToPath} from 'node:url';
 import {DashboardInputError} from '../dashboard/errors.ts';
 import {
@@ -49,7 +47,6 @@ import {
   type AgentSessionRequest,
   type AgentSessionResult,
 } from '../dashboard/hub.ts';
-import {createDashboardParent} from '../dashboard/parent.ts';
 import type {DashboardSnapshot} from '../dashboard/state.ts';
 import {ExternalSessionRequests} from './ipc.ts';
 import {DesktopCommands} from './commands.ts';
@@ -71,11 +68,16 @@ import {
   readConversationImage,
 } from '../conversation-images.ts';
 import type {ConversationImageResponse} from '../visualizations.ts';
-import {loadPluginThemes} from './plugin-themes.ts';
 import type {
   SessionFeatures,
   SessionConfiguration,
 } from '../dashboard/features.ts';
+
+const createDashboardParent: typeof import('../dashboard/parent.ts').createDashboardParent =
+  async (...args) => {
+    const {createDashboardParent} = await import('../dashboard/parent.ts');
+    return createDashboardParent(...args);
+  };
 
 app.setName('VarisDev');
 if (process.platform === 'win32') app.setAppUserModelId(windowsAppId);
@@ -400,7 +402,7 @@ function installHandlers(): void {
       );
     return readConversationImage(imageId, variant);
   });
-  handle('varisdev:app-themes', sessionId => {
+  handle('varisdev:app-themes', async sessionId => {
     const selected =
       sessionId === undefined
         ? undefined
@@ -409,6 +411,7 @@ function installHandlers(): void {
             .sessions.find(item => item.session.id === id(sessionId));
     if (sessionId !== undefined && !selected)
       throw new DashboardInputError('Choose a valid workspace.');
+    const {loadPluginThemes} = await import('./plugin-themes.ts');
     return loadPluginThemes({cwd: selected?.session.cwd ?? launchCwd});
   });
   handle('pidev:get-state', () => hub.deliverySnapshot());
@@ -1029,6 +1032,10 @@ if (!primaryInstance) {
             createDashboardParent(request, undefined, startup, ui),
         );
         try {
+          const {createWorkspaceConfiguration} =
+            await import('../dashboard/workspace-config.ts');
+          const {desktopInitialPrompts} =
+            await import('../dashboard/startup.ts');
           const settings = createWorkspaceConfiguration(
             startup.cwd,
           ).settingsManager;

@@ -37,6 +37,8 @@ const publicAppFields = new Set([
   'PIDEV_DESKTOP_DATA_DIR',
   'PI_OFFLINE',
 ]);
+const continuationField = '__VARISDEV_ENVIRONMENT_CONTINUATION';
+const continuationVersion = '1';
 const suggestedFields = [
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
@@ -574,6 +576,7 @@ export function createEnvironmentSettings({
 } = {}) {
   const inherited = fields(initialEnv, platform);
   let machine;
+  let shellInitialized = false;
   let machineValues = inherited;
   let error;
   let applied = new Set(Object.keys(fields(env, platform)));
@@ -606,19 +609,34 @@ export function createEnvironmentSettings({
     return saved;
   }
   async function initialize() {
-    machine ??= readEnvironment({
-      env: {...initialEnv},
-      platform,
-      shell,
-      timeoutMs,
-      signal,
-      windows,
-    })
-      .then(shellValues => (machineValues = fields(shellValues, platform)))
-      .catch(cause => {
-        error = `${cause.message} Using the inherited environment and saved settings.`;
-        return inherited;
-      });
+    if (!machine) {
+      const source = copyEnvironment(initialEnv, platform);
+      const continued = source[continuationField] === continuationVersion;
+      delete source[continuationField];
+      setField(env, continuationField, undefined, platform);
+      if (continued) {
+        shellInitialized = true;
+        machine = Promise.resolve(inherited);
+      } else {
+        machine = readEnvironment({
+          env: source,
+          platform,
+          shell,
+          timeoutMs,
+          signal,
+          windows,
+        })
+          .then(shellValues => {
+            machineValues = fields(shellValues, platform);
+            shellInitialized = true;
+            return machineValues;
+          })
+          .catch(cause => {
+            error = `${cause.message} Using the inherited environment and saved settings.`;
+            return inherited;
+          });
+      }
+    }
     return get();
   }
   async function get() {
@@ -674,12 +692,16 @@ export function createEnvironmentSettings({
     saving = operation.catch(() => {});
     return operation;
   }
-  // App continuations load the JSON themselves. Preserve their real fallback
+  // App children load the JSON themselves. Preserve their real fallback
   // rather than passing a saved value off as an inherited environment value.
-  function forChild(base = env) {
+  // Only handoffs within the same launch may skip reading the shell again.
+  function forChild(base = env, {reuseShell = false} = {}) {
     const child = copyEnvironment(base, platform);
+    delete child[continuationField];
     for (const name of savedNames)
       setField(child, name, machineValues[name], platform);
+    if (reuseShell && shellInitialized)
+      child[continuationField] = continuationVersion;
     return child;
   }
   return {initialize, get, save, forChild};
@@ -687,21 +709,32 @@ export function createEnvironmentSettings({
 
 const stateKey = Symbol.for('varisdev.environment-settings');
 const previousStateKey = Symbol.for('varisdev.environment-settings.v2');
-const versionedStateKey = Symbol.for('varisdev.environment-settings.v3');
+const previousVersionedStateKey = Symbol.for(
+  'varisdev.environment-settings.v3',
+);
+const versionedStateKey = Symbol.for('varisdev.environment-settings.v4');
 export function environmentSettings() {
   if (!globalThis[versionedStateKey]) {
     // Older helpers may cache a failed or PATH-only shell read. Recover their
     // fallback so saved overrides do not become inherited values.
-    const previous = globalThis[previousStateKey] || globalThis[stateKey];
-    const initialEnv = previous?.forChild(process.env);
+    const previous =
+      globalThis[previousVersionedStateKey] ||
+      globalThis[previousStateKey] ||
+      globalThis[stateKey];
+    const initialEnv = previous
+      ? copyEnvironment(previous.forChild(process.env))
+      : undefined;
+    if (initialEnv) delete initialEnv[continuationField];
     globalThis[versionedStateKey] = createEnvironmentSettings({initialEnv});
     globalThis[stateKey] = globalThis[versionedStateKey];
     globalThis[previousStateKey] = globalThis[versionedStateKey];
+    globalThis[previousVersionedStateKey] = globalThis[versionedStateKey];
   }
   return globalThis[versionedStateKey];
 }
-export function environmentForChild(env = process.env) {
-  return environmentSettings().forChild(env);
+/** @param {NodeJS.ProcessEnv} [env] @param {{reuseShell?: boolean}} [options] */
+export function environmentForChild(env = process.env, options = {}) {
+  return environmentSettings().forChild(env, options);
 }
 export async function initializeEnvironment() {
   const state = await environmentSettings().initialize();

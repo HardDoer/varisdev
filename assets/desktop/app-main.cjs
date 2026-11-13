@@ -96,7 +96,7 @@ async function start() {
         detached: true,
         stdio: 'ignore',
         env: {
-          ...environmentForChild(),
+          ...environmentForChild(undefined, {reuseShell: true}),
           VARISDEV_RESTART_PID: String(process.pid),
         },
       },
