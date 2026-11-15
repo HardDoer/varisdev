@@ -350,7 +350,9 @@ void test(
         command => command.name === 'skill:doctor',
       ),
     );
-    await neutral.prompt('/skill:doctor Check this installation.');
+    await neutral.prompt(
+      '/skill:doctor Audit this repository’s AGENTS.md and working conventions.',
+    );
     const doctorPrompt = JSON.stringify(requests.at(-1)!.messages);
     const doctorBody = (
       await readFile(join(builtinSkillsDirectory, 'doctor', 'SKILL.md'), 'utf8')
@@ -361,7 +363,10 @@ void test(
       .trim();
     assert.ok(doctorBody.length > 0);
     assert.ok(doctorPrompt.includes(JSON.stringify(doctorBody).slice(1, -1)));
-    assert.match(doctorPrompt, /Check this installation\./);
+    assert.match(
+      doctorPrompt,
+      /Audit this repository’s AGENTS\.md and working conventions\./,
+    );
 
     await writeFile(
       join(agentDir, 'settings.json'),

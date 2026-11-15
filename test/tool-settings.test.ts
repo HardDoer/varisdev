@@ -10,7 +10,6 @@ import {
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test, type TestContext} from 'node:test';
-import {collectDoctorReport} from '../assets/skills/doctor/scripts/diagnose.mjs';
 import {
   assertAgentModelAllowed,
   parseToolSettingsUpdate,
@@ -381,53 +380,6 @@ void test('invalid saved history retention fails closed without overwriting sett
       /whole number from 1 to 365 days/,
     );
     assert.equal(await readFile(path, 'utf8'), content);
-  }
-});
-
-void test('doctor accepts current and older retention settings and flags invalid saved days', async t => {
-  const path = await isolate(t);
-  const directory = dirname(dirname(path));
-  await mkdir(dirname(path), {recursive: true});
-  for (const historyRetentionDays of [
-    undefined,
-    1,
-    7,
-    365,
-    0,
-    366,
-    1.5,
-    '7',
-    null,
-  ]) {
-    for (const allowedModels of [undefined, []]) {
-      const content = JSON.stringify({
-        agents: {allowedModels, historyRetentionDays},
-      });
-      await writeFile(path, content);
-      const report = await collectDoctorReport({
-        project: directory,
-        root: directory,
-        platform: 'linux',
-        env: {
-          HOME: directory,
-          VARISDEV_SETTINGS_DIR: directory,
-          VARISDEV_DATA_DIR: join(directory, 'data'),
-          XDG_CONFIG_HOME: join(directory, 'config'),
-          PATH: '',
-        },
-      });
-      assert.equal(
-        report.checks.find(
-          (entry: {id: string}) => entry.id === 'settings.tools',
-        )?.status,
-        [undefined, 1, 7, 365].includes(
-          historyRetentionDays as number | undefined,
-        )
-          ? 'ok'
-          : 'error',
-      );
-      assert.equal(await readFile(path, 'utf8'), content);
-    }
   }
 });
 

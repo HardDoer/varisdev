@@ -7,6 +7,13 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '3.0.1',
+    [
+      'Fixed conversation header text alignment in the Year1998 theme.',
+      'Doctor now audits repository instructions and working conventions by default.',
+    ],
+  ],
+  [
     '3.0.0',
     [
       'Every workspace has one permanent Main agent. Agent configurations apply to additional agents.',

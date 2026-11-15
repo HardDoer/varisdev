@@ -98,6 +98,6 @@ When query output is truncated, the full result is saved in the project's `.vari
 
 ## Doctor
 
-Run `/skill:doctor` for an installation and configuration check. The built-in skill checks the runtime, PATH, update state, settings, plugins, MCP configuration, instructions, permissions, and available context and usage information, then proposes fixes. Run `/skill:doctor prompt-audit` to focus on outdated, conflicting, or duplicate instructions. Changes require your approval unless you already requested repairs.
+Run `/skill:doctor` to audit the current repository's `AGENTS.md` files, agent instructions, skills, and working conventions. It checks for conflicting rules, stale paths and commands, duplicated guidance, and workflow gaps against the project's files and automation, then proposes exact edits. Ask it to apply fixes when you want the files updated.
 
-The diagnostic report omits credential values and does not modify settings. Live account access, MCP connections, and context usage are reported only when they can be checked from the current session.
+Add a directory, file, or workflow to focus the audit. `/skill:doctor prompt-audit` runs the same repository audit.

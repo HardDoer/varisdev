@@ -138,7 +138,6 @@ void test(
       'assets/dashboard/accounts.css',
       'desktop/build/src/desktop/accounts.js',
       'assets/skills/doctor/SKILL.md',
-      'assets/skills/doctor/scripts/diagnose.mjs',
       'assets/dashboard/visualizations.js',
       'assets/dashboard/robot-whip.js',
       'examples/project-board/index.mjs',

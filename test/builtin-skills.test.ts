@@ -44,7 +44,7 @@ void test('bundled doctor is discovered without saving configuration, survives r
   await mkdir(dirname(replacement), {recursive: true});
   await writeFile(
     replacement,
-    '---\nname: doctor\ndescription: Custom installation checks\n---\nCustom doctor.\n',
+    '---\nname: doctor\ndescription: Custom repository conventions audit\n---\nCustom doctor.\n',
   );
   await loader.reload();
   const doctors = loader

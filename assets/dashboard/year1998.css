@@ -107,8 +107,9 @@
   min-height: 36px;
 }
 
-:root[data-appearance='year1998'] .inspector-activity-row {
-  padding-inline: 5px;
+:root[data-appearance='year1998']
+  :is(.inspector-activity-row, .inspector-model-row, .inspector-context-row) {
+  padding-inline: 6px;
 }
 
 :root[data-appearance='year1998'] .conversation-kind {
@@ -596,6 +597,10 @@
     :is(.factory-heading, .inspector-title-row) {
     padding: 3px;
     gap: 4px;
+  }
+  :root[data-appearance='year1998']
+    :is(.inspector-activity-row, .inspector-model-row, .inspector-context-row) {
+    padding-inline: 3px;
   }
 }
 
