@@ -9,7 +9,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {dirname, join, relative} from 'node:path';
 import {test, type TestContext} from 'node:test';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -22,6 +22,7 @@ import {runRuntimeCommand} from '../src/runtime/manager.ts';
 import {configurePath} from '../src/runtime/distribution.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const environmentFileField = 'VARISDEV_ENVIRONMENT_FILE';
 const shellAvailable = await access('/bin/zsh').then(
   () => true,
   () => false,
@@ -98,6 +99,117 @@ void test(
 
 for (const platform of ['linux', 'win32'] as const) {
   void test(
+    `${platform} binds the environment file before saved location overrides and hands it to child diagnostics`,
+    {timeout: 15000},
+    async t => {
+      const home = await mkdtemp(join(tmpdir(), 'varisdev-file-binding-'));
+      t.after(() => rm(home, {recursive: true, force: true}));
+      const location =
+        platform === 'win32' ? 'LOCALAPPDATA' : 'XDG_CONFIG_HOME';
+      const inheritedRoot = join(home, 'inherited');
+      const shellRoot = join(home, 'shell');
+      const savedRoot = join(home, 'saved');
+      const file = environmentPath(
+        {HOME: home, [location]: shellRoot},
+        platform,
+      );
+      const impostor = environmentPath(
+        {HOME: home, [location]: savedRoot},
+        platform,
+      );
+      const env: NodeJS.ProcessEnv = {
+        HOME: home,
+        [location]: inheritedRoot,
+        OPENAI_API_KEY: 'inherited-key',
+        [environmentFileField]: impostor,
+      };
+      await mkdir(dirname(file), {recursive: true});
+      await writeFile(file, '{ "OPENAI_API_KEY": "saved-key" }\n');
+      await mkdir(dirname(impostor), {recursive: true});
+      const impostorText = '{ "OPENAI_API_KEY": "impostor-key" }\n';
+      await writeFile(impostor, impostorText);
+      const settings = createEnvironmentSettings({
+        env,
+        platform,
+        readEnvironment: async ({env: source = {}} = {}) => {
+          assert.equal(source[environmentFileField], undefined);
+          return {[location]: shellRoot, OPENAI_API_KEY: 'shell-key'};
+        },
+      });
+      await settings.initialize();
+      assert.equal(env[environmentFileField], file);
+      const state = await settings.save(location, savedRoot);
+      await settings.save('OPENAI_API_KEY', 'saved-key');
+      assert.equal(env[location], savedRoot);
+      assert.equal(environmentPath(env, platform), impostor);
+      assert.equal(env[environmentFileField], file);
+      assert.equal(state.values.OPENAI_API_KEY, 'saved-key');
+      assert.equal(state.values[location], savedRoot);
+      assert.ok(!Object.hasOwn(state.values, environmentFileField));
+      assert.ok(!state.names.includes(environmentFileField));
+      assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', location]);
+      assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), {
+        OPENAI_API_KEY: 'saved-key',
+        [location]: savedRoot,
+      });
+      await assert.rejects(
+        settings.save(environmentFileField, impostor),
+        /configurable environment variable/,
+      );
+      await settings.get();
+      const child = settings.forChild({
+        ...env,
+        [environmentFileField]: impostor,
+      });
+      assert.equal(child[environmentFileField], file);
+      assert.equal(child[location], shellRoot);
+      assert.equal(child.OPENAI_API_KEY, 'shell-key');
+      const output = await runRuntimeCommand(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import {readFile} from 'node:fs/promises';
+          const file = process.env.VARISDEV_ENVIRONMENT_FILE;
+          console.log(JSON.stringify({file, saved: JSON.parse(await readFile(file, 'utf8'))}));`,
+        ],
+        {cwd: home, env: child, timeoutMs: 5000},
+      );
+      assert.deepEqual(JSON.parse(output), {
+        file,
+        saved: {OPENAI_API_KEY: 'saved-key', [location]: savedRoot},
+      });
+      assert.equal(await readFile(impostor, 'utf8'), impostorText);
+
+      const freshRoot = join(home, 'fresh-shell');
+      const freshFile = environmentPath(
+        {HOME: home, [location]: freshRoot},
+        platform,
+      );
+      await mkdir(dirname(freshFile), {recursive: true});
+      const freshText = '{ "FRESH_SETTING": "fresh" }\n';
+      await writeFile(freshFile, freshText);
+      const freshEnv = {...env};
+      const fresh = createEnvironmentSettings({
+        env: freshEnv,
+        platform,
+        readEnvironment: async ({env: source = {}} = {}) => {
+          assert.equal(source[environmentFileField], undefined);
+          assert.equal(source[location], savedRoot);
+          return {[location]: freshRoot};
+        },
+      });
+      assert.equal(fresh.forChild()[environmentFileField], undefined);
+      const freshState = await fresh.initialize();
+      assert.equal(freshEnv[environmentFileField], freshFile);
+      assert.equal(freshState.values.FRESH_SETTING, 'fresh');
+      assert.equal(freshState.values.OPENAI_API_KEY, undefined);
+      assert.deepEqual(freshState.savedNames, ['FRESH_SETTING']);
+      assert.equal(await readFile(freshFile, 'utf8'), freshText);
+    },
+  );
+
+  void test(
     `${platform} app continuations reuse shell fallback and reread changed, removed, and empty saved values`,
     {timeout: 5000},
     async t => {
@@ -143,6 +255,7 @@ for (const platform of ['linux', 'win32'] as const) {
       await settings.get();
       const child = settings.forChild(undefined, {reuseShell: true});
       assert.equal(child[marker], '1');
+      assert.equal(child[environmentFileField], file);
       assert.equal(env[marker], undefined);
       assert.equal(child.PATH, env.PATH);
       assert.equal(child.OPENAI_API_KEY, 'shell-key');
@@ -160,8 +273,8 @@ for (const platform of ['linux', 'win32'] as const) {
           'EMPTY_FALLBACK',
           'SHELL_ONLY_SETTING',
           marker,
+          environmentFileField,
         ].sort(),
-        'Continuation metadata contains only a version marker',
       );
       const text =
         JSON.stringify({
@@ -173,7 +286,6 @@ for (const platform of ['linux', 'win32'] as const) {
       await writeFile(file, text);
       const continued = createEnvironmentSettings({
         env: child,
-        file,
         platform,
         readEnvironment,
       });
@@ -202,6 +314,9 @@ for (const platform of ['linux', 'win32'] as const) {
       ]);
       assert.ok(!state.names.includes(marker));
       assert.ok(!Object.hasOwn(state.values, marker));
+      assert.ok(!state.names.includes(environmentFileField));
+      assert.ok(!Object.hasOwn(state.values, environmentFileField));
+      assert.equal(child[environmentFileField], file);
       assert.equal(await readFile(file, 'utf8'), text);
       await continued.save('OPENAI_API_KEY', null);
       assert.equal(child.OPENAI_API_KEY, 'shell-key');
@@ -214,7 +329,6 @@ for (const platform of ['linux', 'win32'] as const) {
       const nextEnv = continued.forChild(undefined, {reuseShell: true});
       const next = createEnvironmentSettings({
         env: nextEnv,
-        file,
         platform,
         readEnvironment,
       });
@@ -225,10 +339,136 @@ for (const platform of ['linux', 'win32'] as const) {
       assert.ok(!Object.hasOwn(nextEnv, 'SAVED_ONLY_SETTING'));
       assert.equal(nextEnv.PATH, env.PATH);
       assert.equal(nextEnv[marker], undefined);
+      assert.equal(nextEnv[environmentFileField], file);
       assert.equal(reads, 1);
     },
   );
 }
+
+void test(
+  'malformed saved JSON still publishes its bound file to diagnostics and continuations',
+  {timeout: 5000},
+  async t => {
+    const home = await mkdtemp(join(tmpdir(), 'varisdev-malformed-binding-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const config = join(home, 'config');
+    const env: NodeJS.ProcessEnv = {
+      HOME: home,
+      XDG_CONFIG_HOME: config,
+      [environmentFileField]: join(home, 'stale.json'),
+    };
+    const file = environmentPath(env, 'linux');
+    await mkdir(dirname(file), {recursive: true});
+    const malformed = '{"OPENAI_API_KEY":"private-saved-value",';
+    await writeFile(file, malformed);
+    let reads = 0;
+    const settings = createEnvironmentSettings({
+      env,
+      platform: 'linux',
+      readEnvironment: async () => {
+        reads++;
+        return {XDG_CONFIG_HOME: config};
+      },
+    });
+    await assert.rejects(settings.get(), error => {
+      assert.match(String(error), /Could not read environment.json/);
+      assert.doesNotMatch(String(error), /private-saved-value/);
+      return true;
+    });
+    assert.equal(env[environmentFileField], file);
+    assert.equal(settings.forChild()[environmentFileField], file);
+    const child = settings.forChild(undefined, {reuseShell: true});
+    const continued = createEnvironmentSettings({
+      env: child,
+      platform: 'linux',
+      readEnvironment: async () => {
+        assert.fail('A same-launch continuation must reuse its shell');
+      },
+    });
+    await assert.rejects(
+      continued.initialize(),
+      /Could not read environment.json/,
+    );
+    assert.equal(child[environmentFileField], file);
+    assert.equal(await readFile(file, 'utf8'), malformed);
+    const repaired = '{ "CUSTOM_SETTING": "saved" }\n';
+    await writeFile(file, repaired);
+    const state = await settings.get();
+    assert.equal(reads, 1);
+    assert.equal(state.values.CUSTOM_SETTING, 'saved');
+    assert.ok(!Object.hasOwn(state.values, environmentFileField));
+    assert.ok(!state.names.includes(environmentFileField));
+    assert.deepEqual(state.savedNames, ['CUSTOM_SETTING']);
+    assert.equal(await readFile(file, 'utf8'), repaired);
+  },
+);
+
+void test(
+  'relative file and config paths bind before cwd changes and remain authoritative in continuations',
+  {timeout: 15000},
+  async t => {
+    const home = await mkdtemp(join(tmpdir(), 'varisdev-relative-binding-'));
+    t.after(() => rm(home, {recursive: true, force: true}));
+    const other = join(home, 'other-cwd');
+    await mkdir(other);
+    const cases = [
+      {
+        platform: 'linux',
+        file: join(home, 'explicit/environment.json'),
+        relativeFile: relative(home, join(home, 'explicit/environment.json')),
+      },
+      {
+        platform: 'linux',
+        file: join(home, 'relative-linux/varisdev/environment.json'),
+        location: 'XDG_CONFIG_HOME',
+        configRoot: 'relative-linux',
+      },
+      {
+        platform: 'win32',
+        file: join(home, 'relative-windows/VarisDev/environment.json'),
+        location: 'LOCALAPPDATA',
+        configRoot: 'relative-windows',
+      },
+    ];
+    const script = `
+      import assert from 'node:assert/strict';
+      import {readFile} from 'node:fs/promises';
+      import {createEnvironmentSettings} from ${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)};
+      for (const entry of ${JSON.stringify(cases)}) {
+        process.chdir(${JSON.stringify(home)});
+        const env = {HOME: ${JSON.stringify(home)}};
+        if (entry.location) env[entry.location] = entry.configRoot;
+        const settings = createEnvironmentSettings({
+          env, platform: entry.platform, file: entry.relativeFile,
+          readEnvironment: async () => ({...env}),
+        });
+        await settings.initialize();
+        assert.equal(env.VARISDEV_ENVIRONMENT_FILE, entry.file);
+        process.chdir(${JSON.stringify(other)});
+        const child = settings.forChild(undefined, {reuseShell: true});
+        assert.equal(child.VARISDEV_ENVIRONMENT_FILE, entry.file);
+        const continuation = createEnvironmentSettings({
+          env: child, platform: entry.platform,
+          readEnvironment: async () => { assert.fail('Unexpected shell read'); },
+        });
+        await continuation.save('CUSTOM_SETTING', 'saved');
+        await settings.save('SECOND_SETTING', 'second');
+        assert.equal(child.VARISDEV_ENVIRONMENT_FILE, entry.file);
+        assert.equal(env.VARISDEV_ENVIRONMENT_FILE, entry.file);
+        assert.deepEqual(JSON.parse(await readFile(entry.file, 'utf8')), {
+          CUSTOM_SETTING: 'saved', SECOND_SETTING: 'second',
+        });
+      }
+      console.log('relative-bindings-ready');
+    `;
+    const output = await runRuntimeCommand(
+      process.execPath,
+      ['--input-type=module', '-e', script],
+      {cwd: home, env: process.env, timeoutMs: 8000},
+    );
+    assert.match(output, /relative-bindings-ready/);
+  },
+);
 
 void test(
   'a launched app consumes continuation across source and build helpers without starting its missing shell',
@@ -278,11 +518,13 @@ void test(
       const source = await import(${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)});
       const built = await import(${JSON.stringify(pathToFileURL(copy).href)});
       assert.equal(process.env.__VARISDEV_ENVIRONMENT_CONTINUATION, '1');
+      assert.equal(process.env.VARISDEV_ENVIRONMENT_FILE, ${JSON.stringify(file)});
       await source.initializeEnvironment();
       await built.initializeEnvironment();
       assert.equal(source.environmentSettings(), built.environmentSettings());
       const state = await built.environmentSettings().get();
       assert.equal(state.error, undefined);
+      assert.equal(process.env.VARISDEV_ENVIRONMENT_FILE, ${JSON.stringify(file)});
       assert.equal(process.env.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       assert.equal(source.copyEnvironment().__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       assert.equal(process.env.OPENAI_API_KEY, 'child-saved');
@@ -291,11 +533,13 @@ void test(
       assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', 'SAVED_ONLY_SETTING']);
       assert.equal(await readFile(${JSON.stringify(file)}, 'utf8'), ${JSON.stringify(text)});
       const restart = source.environmentForChild();
+      assert.equal(restart.VARISDEV_ENVIRONMENT_FILE, ${JSON.stringify(file)});
       assert.equal(restart.OPENAI_API_KEY, 'shell-key');
       assert.equal(restart.SAVED_ONLY_SETTING, undefined);
       assert.equal(restart.__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       assert.equal(source.environmentForChild({...process.env, __VARISDEV_ENVIRONMENT_CONTINUATION: '1'}, {reuseShell: false}).__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       const continuation = source.environmentForChild(undefined, {reuseShell: true});
+      assert.equal(continuation.VARISDEV_ENVIRONMENT_FILE, ${JSON.stringify(file)});
       assert.equal(continuation.OPENAI_API_KEY, 'shell-key');
       assert.equal(continuation.SAVED_ONLY_SETTING, undefined);
       assert.equal(continuation.__VARISDEV_ENVIRONMENT_CONTINUATION, '1');
@@ -320,23 +564,38 @@ void test(
     t.after(() => rm(home, {recursive: true, force: true}));
     const marker = '__VARISDEV_ENVIRONMENT_CONTINUATION';
     for (const version of [undefined, 'unknown-version']) {
-      const env: NodeJS.ProcessEnv = {PATH: 'launch-tools'};
+      const staleFile = join(home, 'stale-environment.json');
+      const file = join(home, 'environment.json');
+      const env: NodeJS.ProcessEnv = {
+        PATH: 'launch-tools',
+        [environmentFileField]: staleFile,
+      };
       if (version) env[marker] = version;
       let reads = 0;
       const shell = Promise.withResolvers<Record<string, string>>();
       const settings = createEnvironmentSettings({
         env,
-        file: join(home, 'environment.json'),
+        file,
         readEnvironment: async ({env: source = {}} = {}) => {
           reads++;
           assert.equal(source[marker], undefined);
+          assert.equal(source[environmentFileField], undefined);
           assert.equal(env[marker], undefined);
+          assert.equal(env[environmentFileField], undefined);
           return shell.promise;
         },
       });
       assert.equal(settings.forChild({[marker]: '1'})[marker], undefined);
       assert.equal(
         settings.forChild(undefined, {reuseShell: true})[marker],
+        undefined,
+      );
+      assert.equal(settings.forChild()[environmentFileField], undefined);
+      assert.equal(
+        settings.forChild(
+          {[environmentFileField]: staleFile},
+          {reuseShell: true},
+        )[environmentFileField],
         undefined,
       );
       const initialized = settings.initialize();
@@ -346,8 +605,11 @@ void test(
         settings.forChild(undefined, {reuseShell: true})[marker],
         undefined,
       );
+      assert.equal(settings.forChild()[environmentFileField], undefined);
       shell.resolve({PATH: 'shell-tools'});
       await Promise.all([initialized, again]);
+      assert.equal(env[environmentFileField], file);
+      assert.equal(settings.forChild()[environmentFileField], file);
       assert.equal(settings.forChild()[marker], undefined);
       assert.equal(settings.forChild({[marker]: '1'})[marker], undefined);
       assert.equal(
@@ -1042,9 +1304,14 @@ void test(
   },
 );
 
-for (const previousVersion of [2, 3]) {
+for (const {previousVersion, reuseShell} of [
+  {previousVersion: 2, reuseShell: false},
+  {previousVersion: 3, reuseShell: false},
+  {previousVersion: 4, reuseShell: false},
+  {previousVersion: 4, reuseShell: true},
+]) {
   void test(
-    `source and standalone build helpers replace a cached v${previousVersion} loader while preserving its saved setting fallbacks`,
+    `source and standalone build helpers replace a cached v${previousVersion} loader and ${reuseShell ? 'reuse its successful shell read' : 'retry its shell read'}`,
     {timeout: 15000},
     async t => {
       const base = join(root, '.varisdev/test-environment');
@@ -1068,8 +1335,17 @@ for (const previousVersion of [2, 3]) {
         if (name.toLowerCase() === 'path') delete env[name];
       Object.assign(env, {PATH: home});
       const file = environmentPath(env);
+      const location =
+        process.platform === 'win32' ? 'LOCALAPPDATA' : 'XDG_CONFIG_HOME';
+      const inheritedLocation = env[location];
+      const savedLocation = join(home, 'saved-config');
+      const impostor = environmentPath({...env, [location]: savedLocation});
       await mkdir(dirname(file), {recursive: true});
-      const text = '{ "OPENAI_API_KEY": "saved-key" }\n';
+      const text =
+        JSON.stringify({
+          OPENAI_API_KEY: 'saved-key',
+          [location]: savedLocation,
+        }) + '\n';
       await writeFile(file, text);
       const copy = join(home, 'environment.mjs');
       await writeFile(
@@ -1080,22 +1356,33 @@ for (const previousVersion of [2, 3]) {
       import assert from 'node:assert/strict';
       import {access, readFile} from 'node:fs/promises';
       process.env.OPENAI_API_KEY = 'saved-key';
+      const location = ${JSON.stringify(location)};
+      process.env[location] = ${JSON.stringify(savedLocation)};
+      process.env.VARISDEV_ENVIRONMENT_FILE = ${JSON.stringify(impostor)};
       const previous = Symbol.for('varisdev.environment-settings.v${previousVersion}');
-      const current = Symbol.for('varisdev.environment-settings.v4');
+      const current = Symbol.for('varisdev.environment-settings.v5');
       const v2 = Symbol.for('varisdev.environment-settings.v2');
       const v3 = Symbol.for('varisdev.environment-settings.v3');
+      const v4 = Symbol.for('varisdev.environment-settings.v4');
       const legacy = Symbol.for('varisdev.environment-settings');
       let reads = 0;
       const stale = {
         initialize() { throw new Error('The cached PATH-only loader must not run'); },
-        forChild(base) {
+        forChild(base, options) {
           assert.equal(base, process.env);
+          assert.deepEqual(options, {reuseShell: ${previousVersion === 4}});
+          assert.equal(base[location], ${JSON.stringify(savedLocation)});
           reads++;
-          return {...base, OPENAI_API_KEY: 'launch-fallback', __VARISDEV_ENVIRONMENT_CONTINUATION: '1'};
+          const child = {...base, [location]: ${JSON.stringify(inheritedLocation)}, OPENAI_API_KEY: 'launch-fallback'};
+          if (${previousVersion !== 4} || (${reuseShell} && options.reuseShell))
+            child.__VARISDEV_ENVIRONMENT_CONTINUATION = '1';
+          return child;
         },
       };
-      if (${previousVersion} === 3)
-        globalThis[v2] = {forChild() { throw new Error('v3 takes precedence'); }};
+      if (${previousVersion} >= 3)
+        globalThis[v2] = {forChild() { throw new Error('Newer state takes precedence'); }};
+      if (${previousVersion} === 4)
+        globalThis[v3] = {forChild() { throw new Error('v4 takes precedence'); }};
       globalThis[previous] = stale;
       globalThis[legacy] = {forChild() { throw new Error('Versioned state takes precedence'); }};
       const source = await import(${JSON.stringify(new URL('../src/runtime/environment.mjs', import.meta.url).href)});
@@ -1106,16 +1393,30 @@ for (const previousVersion of [2, 3]) {
       assert.equal(settings, globalThis[current]);
       assert.equal(settings, globalThis[v2]);
       assert.equal(settings, globalThis[v3]);
+      assert.equal(settings, globalThis[v4]);
       assert.equal(settings, globalThis[legacy]);
       const state = await settings.initialize();
-      assert.match(state.error, /Could not start/);
+      if (${reuseShell}) assert.equal(state.error, undefined);
+      else assert.match(state.error, /Could not start/);
       assert.equal(state.values.OPENAI_API_KEY, 'saved-key');
+      assert.equal(state.values[location], ${JSON.stringify(savedLocation)});
+      assert.ok(!Object.hasOwn(state.values, 'VARISDEV_ENVIRONMENT_FILE'));
+      assert.ok(!state.names.includes('VARISDEV_ENVIRONMENT_FILE'));
+      assert.deepEqual(state.savedNames, ['OPENAI_API_KEY', location]);
       assert.equal(process.env.OPENAI_API_KEY, 'saved-key');
       assert.equal(settings.forChild().OPENAI_API_KEY, 'launch-fallback');
+      assert.equal(process.env.VARISDEV_ENVIRONMENT_FILE, ${JSON.stringify(file)});
+      assert.equal(settings.forChild().VARISDEV_ENVIRONMENT_FILE, ${JSON.stringify(file)});
+      assert.equal(settings.forChild()[location], ${JSON.stringify(inheritedLocation)});
       assert.equal(settings.forChild().__VARISDEV_ENVIRONMENT_CONTINUATION, undefined);
       assert.equal(await readFile(${JSON.stringify(file)}, 'utf8'), ${JSON.stringify(text)});
       await settings.save('OPENAI_API_KEY', null);
       assert.equal(process.env.OPENAI_API_KEY, 'launch-fallback');
+      assert.deepEqual(JSON.parse(await readFile(${JSON.stringify(file)}, 'utf8')), {
+        [location]: ${JSON.stringify(savedLocation)},
+      });
+      await settings.save(location, null);
+      assert.equal(process.env[location], ${JSON.stringify(inheritedLocation)});
       await assert.rejects(access(${JSON.stringify(file)}), {code: 'ENOENT'});
       assert.equal(reads, 1);
       console.log('v${previousVersion}-migration-ready');

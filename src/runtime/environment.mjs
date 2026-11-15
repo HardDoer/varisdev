@@ -6,7 +6,7 @@ import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {homedir, userInfo} from 'node:os';
 import {statSync} from 'node:fs';
-import {basename, dirname, join, win32} from 'node:path';
+import {basename, dirname, isAbsolute, join, resolve, win32} from 'node:path';
 import process from 'node:process';
 
 const hiddenFields = new Set([
@@ -37,6 +37,7 @@ const publicAppFields = new Set([
   'PIDEV_DESKTOP_DATA_DIR',
   'PI_OFFLINE',
 ]);
+const environmentFileField = 'VARISDEV_ENVIRONMENT_FILE';
 const continuationField = '__VARISDEV_ENVIRONMENT_CONTINUATION';
 const continuationVersion = '1';
 const suggestedFields = [
@@ -583,10 +584,11 @@ export function createEnvironmentSettings({
   let lastValues = {};
   let savedNames = [];
   let saving = Promise.resolve();
+  let boundFile;
   async function readSaved() {
     let saved;
     try {
-      saved = JSON.parse(await readFile(file, 'utf8'));
+      saved = JSON.parse(await readFile(boundFile, 'utf8'));
     } catch (cause) {
       if (cause.code === 'ENOENT') return {};
       throw new Error(
@@ -612,9 +614,14 @@ export function createEnvironmentSettings({
     if (!machine) {
       const source = copyEnvironment(initialEnv, platform);
       const continued = source[continuationField] === continuationVersion;
+      const inheritedFile = source[environmentFileField];
       delete source[continuationField];
+      delete source[environmentFileField];
       setField(env, continuationField, undefined, platform);
+      setField(env, environmentFileField, undefined, platform);
       if (continued) {
+        if (typeof inheritedFile === 'string' && isAbsolute(inheritedFile))
+          file ??= inheritedFile;
         shellInitialized = true;
         machine = Promise.resolve(inherited);
       } else {
@@ -642,10 +649,15 @@ export function createEnvironmentSettings({
   async function get() {
     if (!machine) return initialize();
     await machine;
-    file ??= environmentPath(
-      {HOME: env.HOME, USERPROFILE: env.USERPROFILE, ...machineValues},
-      platform,
+    // Bind before reading saved overrides, which may change the config root.
+    boundFile ??= resolve(
+      file ??
+        environmentPath(
+          {HOME: env.HOME, USERPROFILE: env.USERPROFILE, ...machineValues},
+          platform,
+        ),
     );
+    setField(env, environmentFileField, boundFile, platform);
     const saved = fields(await readSaved(), platform);
     const values = {...machineValues, ...saved};
     for (const name of applied)
@@ -675,18 +687,18 @@ export function createEnvironmentSettings({
       const saved = await readSaved();
       setField(saved, name, value === null ? undefined : value, platform);
       if (value !== null || Object.keys(saved).length) {
-        await mkdir(dirname(file), {recursive: true});
-        const temporary = `${file}.${randomUUID()}.tmp`;
+        await mkdir(dirname(boundFile), {recursive: true});
+        const temporary = `${boundFile}.${randomUUID()}.tmp`;
         try {
           await writeFile(temporary, JSON.stringify(saved, null, 2) + '\n', {
             mode: 0o600,
             flag: 'wx',
           });
-          await rename(temporary, file);
+          await rename(temporary, boundFile);
         } finally {
           await rm(temporary, {force: true});
         }
-      } else await rm(file, {force: true});
+      } else await rm(boundFile, {force: true});
       return get();
     });
     saving = operation.catch(() => {});
@@ -698,8 +710,10 @@ export function createEnvironmentSettings({
   function forChild(base = env, {reuseShell = false} = {}) {
     const child = copyEnvironment(base, platform);
     delete child[continuationField];
+    delete child[environmentFileField];
     for (const name of savedNames)
       setField(child, name, machineValues[name], platform);
+    if (boundFile) child[environmentFileField] = boundFile;
     if (reuseShell && shellInitialized)
       child[continuationField] = continuationVersion;
     return child;
@@ -712,23 +726,34 @@ const previousStateKey = Symbol.for('varisdev.environment-settings.v2');
 const previousVersionedStateKey = Symbol.for(
   'varisdev.environment-settings.v3',
 );
-const versionedStateKey = Symbol.for('varisdev.environment-settings.v4');
+const previousCurrentStateKey = Symbol.for('varisdev.environment-settings.v4');
+const versionedStateKey = Symbol.for('varisdev.environment-settings.v5');
 export function environmentSettings() {
   if (!globalThis[versionedStateKey]) {
-    // Older helpers may cache a failed or PATH-only shell read. Recover their
-    // fallback so saved overrides do not become inherited values.
+    // Recover saved overrides' fallbacks. v4 can also hand off a successful
+    // shell read; older helpers need to retry their failed or PATH-only read.
+    const previousCurrent = globalThis[previousCurrentStateKey];
     const previous =
+      previousCurrent ||
       globalThis[previousVersionedStateKey] ||
       globalThis[previousStateKey] ||
       globalThis[stateKey];
     const initialEnv = previous
-      ? copyEnvironment(previous.forChild(process.env))
+      ? copyEnvironment(
+          previous.forChild(process.env, {
+            reuseShell: Boolean(previousCurrent),
+          }),
+        )
       : undefined;
-    if (initialEnv) delete initialEnv[continuationField];
+    if (initialEnv) {
+      delete initialEnv[environmentFileField];
+      if (!previousCurrent) delete initialEnv[continuationField];
+    }
     globalThis[versionedStateKey] = createEnvironmentSettings({initialEnv});
     globalThis[stateKey] = globalThis[versionedStateKey];
     globalThis[previousStateKey] = globalThis[versionedStateKey];
     globalThis[previousVersionedStateKey] = globalThis[versionedStateKey];
+    globalThis[previousCurrentStateKey] = globalThis[versionedStateKey];
   }
   return globalThis[versionedStateKey];
 }

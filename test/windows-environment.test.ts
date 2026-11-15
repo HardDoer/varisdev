@@ -616,7 +616,7 @@ for (const shell of nativeShells) {
             profilePaths: [profile],
           },
         })});
-        globalThis[Symbol.for('varisdev.environment-settings.v4')] = settings;
+        globalThis[Symbol.for('varisdev.environment-settings.v5')] = settings;
         await initializeEnvironment();
         const state = await settings.get();
         assert.equal(state.error, undefined);

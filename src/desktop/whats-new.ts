@@ -7,6 +7,13 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '3.0.2',
+    [
+      'Doctor checks setup, extensions, instructions, permissions, and session usage, with approval before repairs.',
+      'Doctor’s prompt-audit mode focuses on repository instructions, skills, and working conventions.',
+    ],
+  ],
+  [
     '3.0.1',
     [
       'Fixed conversation header text alignment in the Year1998 theme.',

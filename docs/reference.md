@@ -98,6 +98,6 @@ When query output is truncated, the full result is saved in the project's `.vari
 
 ## Doctor
 
-Run `/skill:doctor` to audit the current repository's `AGENTS.md` files, agent instructions, skills, and working conventions. It checks for conflicting rules, stale paths and commands, duplicated guidance, and workflow gaps against the project's files and automation, then proposes exact edits. Ask it to apply fixes when you want the files updated.
+Run `/skill:doctor` for a setup checkup covering installation health, settings, extensions and their context cost, instruction quality, permissions, and session usage. It presents findings and concrete proposed fixes, then asks which changes to apply. Usage checks use VarisDev's session tokens and context information across providers; subscription-plan checks are excluded.
 
-Add a directory, file, or workflow to focus the audit. `/skill:doctor prompt-audit` runs the same repository audit.
+Run `/skill:doctor prompt-audit` for a focused audit of repository instructions, skills, and related configuration. It checks for conflicting rules, stale paths and commands, duplication, and unclear working conventions against the project's files and automation. Add a directory, file, or workflow to focus either mode.
