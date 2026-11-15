@@ -11,8 +11,11 @@ process.env.PI_CODING_AGENT_DIR = join(directory, 'agent');
 let browser;
 const reads = [];
 const writes = [];
+const templateReads = [];
+const viewCalls = [];
+let viewError = false;
 let settings = {
-  agents: {allowedModels: [], maxConcurrentAgents: 6},
+  agents: {allowedModels: [], maxConcurrentAgents: 6, historyRetentionDays: 7},
 };
 const models = [
   {provider: 'alpha', id: 'small', name: 'Swift model'},
@@ -111,12 +114,34 @@ async function waitFor(fn) {
 async function click(id) {
   await evaluate(id => document.getElementById(id).click(), id);
 }
+async function waitForViews(count) {
+  for (let attempt = 0; attempt < 150; attempt++) {
+    if (viewCalls.length >= count) return;
+    await delay(20);
+  }
+  assert.equal(viewCalls.length, count, 'agent view IPC did not arrive');
+}
 async function setConcurrency(value) {
   await evaluate(value => {
     const input = document.getElementById('agent-max-concurrent');
     input.value = value;
     input.dispatchEvent(new Event('input', {bubbles: true}));
   }, value);
+}
+async function setRetention(value) {
+  await evaluate(value => {
+    const input = document.getElementById('agent-history-retention');
+    input.value = value;
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  }, value);
+}
+async function openConfigurations() {
+  await click('open-agent-templates');
+  await waitFor(
+    () =>
+      document.getElementById('agent-templates-dialog').open &&
+      !document.getElementById('agent-template-new').disabled,
+  );
 }
 async function search(value) {
   await evaluate(value => {
@@ -157,8 +182,8 @@ async function assertAgentModelsVisible() {
     }),
   }));
   assert.deepEqual(structure, {
-    title: 'Agent-models',
-    sections: [{heading: 'Agent-models', visible: true}],
+    title: 'Agent settings',
+    sections: [{heading: 'Models and history', visible: true}],
   });
 }
 async function auditThemeContrast() {
@@ -223,6 +248,7 @@ async function auditThemeContrast() {
         agents: card('agent-model-settings'),
         search: control('tool-settings-search', 'agent-model-settings'),
         concurrency: control('agent-max-concurrent', 'agent-model-settings'),
+        retention: control('agent-history-retention', 'agent-model-settings'),
       };
     });
     root.dataset.theme = original;
@@ -252,6 +278,8 @@ async function captureScreenshots(themes) {
 async function readDraft() {
   return evaluate(() => ({
     agents: {
+      historyRetentionDays: document.getElementById('agent-history-retention')
+        .valueAsNumber,
       maxConcurrentAgents: document.getElementById('agent-max-concurrent')
         .valueAsNumber,
       allowedModels: [
@@ -328,6 +356,11 @@ async function main() {
   });
   handle('pidev:session-features', features);
   handle('pidev:agent-session', (_id, request) => {
+    if (request.action === 'view') {
+      viewCalls.push({id: _id, request});
+      if (viewError) throw new Error('Agent expired before view');
+      return;
+    }
     assert.equal(request.action, 'features');
     return features();
   });
@@ -343,6 +376,10 @@ async function main() {
     if (saveError) throw new Error(saveError);
     settings = JSON.parse(JSON.stringify(value));
     return {settings, models: scopedModels ?? models};
+  });
+  handle('pidev:list-agent-templates', cwd => {
+    templateReads.push(cwd);
+    return {templates: [], allTemplates: [], sources: [], diagnostics: []};
   });
   handle('varisdev:get-agent-notice', async () => {
     noticeReads++;
@@ -375,8 +412,15 @@ async function main() {
         ),
       ].map(button => ({id: button.id, text: button.textContent.trim()})),
     ),
-    [{id: 'open-model-settings', text: 'Agent-models'}],
-    'the menu opens Agent-models',
+    [{id: 'open-model-settings', text: 'Agent settings'}],
+    'the menu opens Agent settings',
+  );
+  assert.equal(
+    await evaluate(() =>
+      document.querySelector('#app-menu-panel #open-agent-templates'),
+    ),
+    null,
+    'configurations are reached through Agent settings',
   );
   await click('open-model-settings');
   await waitFor(() => !document.getElementById('tool-settings-error').hidden);
@@ -398,7 +442,11 @@ async function main() {
   assert.equal(reads.at(-1), 'project');
   await assertAgentModelsVisible();
   const desktopLayout = await evaluate(() => {
-    const ids = ['agent-model-settings', 'tool-settings-save'];
+    const ids = [
+      'tool-settings-title',
+      'open-agent-templates',
+      'tool-settings-save',
+    ];
     const rects = ids.map(id =>
       document.getElementById(id).getBoundingClientRect(),
     );
@@ -438,6 +486,7 @@ async function main() {
     for (const [control, values] of [
       ['Agent search', result.search],
       ['Maximum concurrent agents', result.concurrency],
+      ['Keep finished agents (days)', result.retention],
     ]) {
       assert.ok(
         values.text >= 4.5,
@@ -486,7 +535,11 @@ async function main() {
   await search('');
   await captureScreenshots(themeContrast);
   const initialSettings = {
-    agents: {allowedModels: ['alpha/small'], maxConcurrentAgents: 6},
+    agents: {
+      allowedModels: ['alpha/small'],
+      maxConcurrentAgents: 6,
+      historyRetentionDays: 7,
+    },
   };
   assert.deepEqual(await readDraft(), initialSettings);
   await save();
@@ -496,14 +549,18 @@ async function main() {
     id: 'project',
   });
   report.cases.push(
-    'Agent-models loads and saves agent choices without image settings or IPC',
+    'Agent settings loads and saves agent choices without image settings or IPC',
   );
 
   await open();
   await selectModel('alpha/small');
   await selectModel('beta/large');
   const changedSettings = {
-    agents: {allowedModels: ['beta/large'], maxConcurrentAgents: 6},
+    agents: {
+      allowedModels: ['beta/large'],
+      maxConcurrentAgents: 6,
+      historyRetentionDays: 7,
+    },
   };
   saveError = 'Disk is read only';
   await click('tool-settings-save');
@@ -604,6 +661,95 @@ async function main() {
       document.getElementById('inspector').dataset.conversationKind ===
         'subagent',
   );
+  await waitForViews(1);
+  assert.deepEqual(viewCalls, [
+    {id: 'project', request: {agentId: 'worker', action: 'view'}},
+  ]);
+  snapshot();
+  snapshot();
+  await delay(80);
+  assert.equal(viewCalls.length, 1, 'snapshots do not refresh retention age');
+  await click('back-to-parent');
+  hub.sessions[0].agents[0].status = 'completed';
+  hub.sessions[0].agents[0].resumable = false;
+  snapshot();
+  await waitFor(() => document.querySelector('.history-row'));
+  viewError = true;
+  await evaluate(() => document.querySelector('.history-row').click());
+  await waitFor(
+    () =>
+      document.getElementById('inspector-title').dataset.contextUnit ===
+      'worker',
+  );
+  await waitForViews(2);
+  assert.deepEqual(viewCalls.at(-1), {
+    id: 'project',
+    request: {agentId: 'worker', action: 'view'},
+  });
+  assert.equal(
+    viewCalls.length,
+    2,
+    'opening a closed finished agent records one view',
+  );
+  await delay(80);
+  assert.equal(
+    await evaluate(() => document.getElementById('app-error').hidden),
+    true,
+    'a stale view failure leaves the selected conversation usable',
+  );
+  viewError = false;
+  hub.sessions[1].session.primaryClosed = true;
+  hub.sessions[1].agents = [
+    {...agent(), agentMode: 'primary', status: 'completed'},
+  ];
+  snapshot();
+  await evaluate(() =>
+    document.querySelector('[data-context-session="other"]').click(),
+  );
+  await waitFor(
+    () =>
+      document.getElementById('inspector-title').dataset.contextUnit ===
+      'parent',
+  );
+  await delay(80);
+  assert.equal(
+    viewCalls.length,
+    2,
+    'opening Main does not refresh another agent',
+  );
+  await evaluate(() => document.querySelector('.history-row').click());
+  await waitFor(
+    () =>
+      document.getElementById('inspector-title').dataset.contextUnit ===
+      'worker',
+  );
+  await waitForViews(3);
+  assert.deepEqual(viewCalls.at(-1), {
+    id: 'other',
+    request: {agentId: 'worker', action: 'view'},
+  });
+  assert.equal(
+    viewCalls.length,
+    3,
+    'explicitly selecting a retained primary records its use',
+  );
+  snapshot();
+  await delay(80);
+  assert.equal(viewCalls.length, 3);
+  await evaluate(() =>
+    document.querySelector('[data-context-session="project"]').click(),
+  );
+  await evaluate(() => document.querySelector('.history-row').click());
+  await waitFor(
+    () =>
+      document.getElementById('inspector-title').dataset.contextUnit ===
+      'worker',
+  );
+  await waitForViews(4);
+  assert.equal(viewCalls.length, 4);
+  report.cases.push(
+    'explicit agent and workspace selection records use for active and closed finished agents; snapshots and stale failures do not interrupt the view',
+  );
   settings.agents.allowedModels = ['alpha/small', 'lost/old'];
   await open();
   assert.equal(reads.at(-1), 'project');
@@ -626,7 +772,11 @@ async function main() {
   settings.agents.allowedModels = null;
   await open();
   assert.deepEqual(await readDraft(), {
-    agents: {allowedModels: [], maxConcurrentAgents: 6},
+    agents: {
+      allowedModels: [],
+      maxConcurrentAgents: 6,
+      historyRetentionDays: 7,
+    },
   });
   await save();
   assert.deepEqual(settings.agents.allowedModels, []);
@@ -727,8 +877,104 @@ async function main() {
     'concurrency includes the primary agent, validates whole numbers, saves across reload, and cancels draft changes',
   );
 
-  for (const zoom of [1, 1.25]) {
-    browser.setContentSize(440, 600);
+  await open();
+  assert.equal((await readDraft()).agents.historyRetentionDays, 7);
+  assert.match(
+    await evaluate(
+      () => document.getElementById('agent-history-retention-help').textContent,
+    ),
+    /days without use, finished agents’\s+transcripts, results and history are permanently deleted\.\s+Active agents, the main conversation and the last primary\s+agent are kept\./,
+  );
+  const beforeInvalidRetention = writes.length;
+  for (const invalid of ['0', '366', '1.5', '']) {
+    await setRetention(invalid);
+    assert.equal(
+      await evaluate(
+        () => document.getElementById('tool-settings-save').disabled,
+      ),
+      true,
+    );
+    await click('tool-settings-save');
+    assert.equal(writes.length, beforeInvalidRetention);
+  }
+  await setRetention('1');
+  await save();
+  assert.equal(settings.agents.historyRetentionDays, 1);
+  await open();
+  await setRetention('365');
+  saveError = 'Retention could not be saved';
+  await click('tool-settings-save');
+  await waitFor(() => !document.getElementById('tool-settings-error').hidden);
+  assert.equal(settings.agents.historyRetentionDays, 1);
+  assert.equal((await readDraft()).agents.historyRetentionDays, 365);
+  saveError = '';
+  await save();
+  await reload();
+  await open();
+  assert.equal((await readDraft()).agents.historyRetentionDays, 365);
+  for (const close of [() => click('tool-settings-close'), escape]) {
+    await setRetention('14');
+    await setConcurrency('3');
+    await close();
+    await waitFor(() => !document.getElementById('tool-settings-dialog').open);
+    await open();
+    assert.equal((await readDraft()).agents.historyRetentionDays, 365);
+    assert.equal((await readDraft()).agents.maxConcurrentAgents, 6);
+  }
+  await click('tool-settings-close');
+  report.cases.push(
+    'finished-agent retention defaults to seven days, validates 1�365 whole days, retries saves, persists and cancels',
+  );
+
+  await open();
+  await setRetention('21');
+  await setConcurrency('3');
+  await selectModel('beta/large');
+  await search('swift');
+  const configurationDraft = await readDraft();
+  const beforeConfigurations = writes.length;
+  for (const close of [() => click('agent-templates-close'), escape]) {
+    await openConfigurations();
+    assert.equal(templateReads.at(-1), directory);
+    await click('agent-template-new');
+    await close();
+    await waitFor(
+      () => !document.getElementById('agent-templates-dialog').open,
+    );
+    assert.equal(
+      await evaluate(
+        () => document.getElementById('tool-settings-dialog').open,
+      ),
+      true,
+      `Agent settings stays open after configurations ${close === escape ? 'Escape' : 'Close'}`,
+    );
+    assert.deepEqual(await readDraft(), configurationDraft);
+    assert.equal(
+      await evaluate(
+        () => document.getElementById('tool-settings-search').value,
+      ),
+      'swift',
+    );
+    assert.equal(writes.length, beforeConfigurations);
+  }
+  await search('');
+  await save();
+  assert.equal(settings.agents.historyRetentionDays, 21);
+  assert.equal(settings.agents.maxConcurrentAgents, 3);
+  assert.deepEqual(settings.agents.allowedModels, ['beta/large']);
+  await open();
+  assert.deepEqual(await readDraft(), {agents: settings.agents});
+  await click('tool-settings-close');
+  report.cases.push(
+    'Agent configurations uses the active folder and returns to unsaved models, limits, retention and search on Close or Escape',
+  );
+
+  for (const [width, height, zoom] of [
+    [680, 540, 1.25],
+    [440, 600, 1],
+    [440, 600, 1.25],
+  ]) {
+    browser.setContentSize(width, height);
     browser.webContents.setZoomFactor(zoom);
     await open();
     await assertAgentModelsVisible();
@@ -741,6 +987,9 @@ async function main() {
       const close = document
         .getElementById('tool-settings-close')
         .getBoundingClientRect();
+      const configurations = document
+        .getElementById('open-agent-templates')
+        .getBoundingClientRect();
       const body = document.querySelector('.tool-settings-body');
       return {
         fits:
@@ -751,7 +1000,7 @@ async function main() {
         noHorizontalScroll:
           dialog.scrollWidth <= dialog.clientWidth &&
           body.scrollWidth <= body.clientWidth,
-        actionsVisible: [save, close].every(
+        actionsVisible: [save, close, configurations].every(
           rect => rect.top >= 0 && rect.bottom <= window.innerHeight,
         ),
       };
@@ -763,10 +1012,10 @@ async function main() {
     });
     const concurrencyVisible = await evaluate(() => {
       document
-        .getElementById('agent-max-concurrent')
-        .scrollIntoView({block: 'nearest'});
+        .querySelector('label[for="agent-history-retention"]')
+        .scrollIntoView({block: 'start'});
       const rect = document
-        .getElementById('agent-max-concurrent')
+        .getElementById('agent-history-retention')
         .getBoundingClientRect();
       const body = document
         .querySelector('.tool-settings-body')
@@ -783,7 +1032,10 @@ async function main() {
       );
       await delay(80);
       writeFileSync(
-        join(screenshotDirectory, `concurrency-compact-${zoom}.png`),
+        join(
+          screenshotDirectory,
+          `retention-compact-${width}-${height}-${zoom}.png`,
+        ),
         (await browser.webContents.capturePage()).toPNG(),
       );
     }
@@ -821,7 +1073,10 @@ async function main() {
         }, theme);
         await delay(80);
         writeFileSync(
-          join(screenshotDirectory, `${theme}-compact-${zoom}.png`),
+          join(
+            screenshotDirectory,
+            `${theme}-compact-${width}-${height}-${zoom}.png`,
+          ),
           (await browser.webContents.capturePage()).toPNG(),
         );
       }
@@ -830,6 +1085,28 @@ async function main() {
   }
   report.cases.push(
     'settings and actions remain accessible in compact windows and zoom',
+  );
+
+  browser.setContentSize(1100, 760);
+  browser.webContents.setZoomFactor(1);
+  hub.sessions = [];
+  delete hub.selectedSessionId;
+  hub.launchCwd = join(directory, 'welcome-folder');
+  snapshot();
+  await waitFor(() => !document.getElementById('welcome').hidden);
+  await open();
+  assert.equal(reads.at(-1), undefined);
+  assert.equal((await readDraft()).agents.historyRetentionDays, 21);
+  await setRetention('30');
+  await openConfigurations();
+  assert.equal(templateReads.at(-1), hub.launchCwd);
+  await click('agent-templates-close');
+  await waitFor(() => !document.getElementById('agent-templates-dialog').open);
+  assert.equal((await readDraft()).agents.historyRetentionDays, 30);
+  await click('tool-settings-close');
+  assert.equal(settings.agents.historyRetentionDays, 21);
+  report.cases.push(
+    'Agent settings and configurations remain accessible from welcome using the current folder without saving cancelled edits',
   );
 }
 main()

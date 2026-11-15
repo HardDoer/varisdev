@@ -1,3 +1,4 @@
+import {mainAgentId} from '../src/agents/main.ts';
 import assert from 'node:assert/strict';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -21,6 +22,7 @@ import {
   createDefaultAgentProfile,
   saveAgentTemplate,
 } from '../src/agents/templates.ts';
+import {createMainAgentProfile} from '../src/agents/main.ts';
 import type {createSessionWorker} from '../src/agents/session.ts';
 import {
   registerAgentTools,
@@ -62,7 +64,7 @@ void test('mentions require a leading configuration ID and a text task', () => {
     assert.equal(parseAgentMention(text), undefined, text);
 });
 
-void test('mention candidates include eligible subagent/all configurations and ask rules', () => {
+void test('mention candidates include eligible primary, subagent and all configurations with ask rules', () => {
   const base = createDefaultAgentProfile();
   const templates = [
     {...base, id: 'review', mode: 'subagent' as const},
@@ -80,7 +82,7 @@ void test('mention candidates include eligible subagent/all configurations and a
         {action: 'subagent', resource: 'blocked', effect: 'deny'},
       ],
     }).map(candidate => candidate.id),
-    ['review', 'general', 'path/agent'],
+    ['review', 'general', 'primary', 'path/agent'],
   );
 });
 
@@ -152,7 +154,12 @@ async function fixture(t: TestContext, options: AgentToolsOptions = {}) {
     string,
     Array<(event: never, ctx: ExtensionContext) => unknown>
   >();
-  const messages: Array<{content: string; details: unknown}> = [];
+  const messages: Array<{
+    customType?: string;
+    content: unknown;
+    details?: unknown;
+    display?: boolean;
+  }> = [];
   const notices: string[] = [];
   const tools = new Map<string, ToolDefinition>();
   const workers: Array<Parameters<typeof createSessionWorker>[0]> = [];
@@ -189,6 +196,10 @@ async function fixture(t: TestContext, options: AgentToolsOptions = {}) {
     ui: {notify: (message: string) => notices.push(message), setStatus() {}},
     sessionManager: {getSessionId: () => 'main-conversation'},
   } as unknown as ExtensionContext;
+  const shared: AgentToolsOptions = {
+    agentProfile: createMainAgentProfile(),
+    ...options,
+  };
   const control = registerAgentTools(
     pi,
     async workerOptions => {
@@ -211,7 +222,7 @@ async function fixture(t: TestContext, options: AgentToolsOptions = {}) {
         dispose() {},
       };
     },
-    {agentProfile: createDefaultAgentProfile(), ...options},
+    shared,
   );
   t.after(async () => {
     await control.getTeam(ctx).getManager().close();
@@ -252,6 +263,7 @@ async function fixture(t: TestContext, options: AgentToolsOptions = {}) {
     input,
     manager: control.getTeam(ctx).getManager(),
     pinnedModel,
+    shared,
   };
 }
 
@@ -283,8 +295,12 @@ void test('main mentions launch through the agent runtime with pinned model, cwd
     {action: 'edit', resource: '*', effect: 'deny'},
   ]);
   assert.equal(f.childEvents.includes('input'), false);
-  assert.equal(f.messages.length, 1);
-  assert.match(f.messages[0].content, /@review Inspect src\//);
+  assert.equal(f.messages.length, 2);
+  assert.equal(f.messages[0].customType, 'varisdev.agent-mention');
+  assert.match(String(f.messages[0].content), /@review Inspect src\//);
+  assert.equal(f.messages[1].customType, 'varisdev.agent-results');
+  assert.equal(f.messages[1].display, false);
+  assert.match(JSON.stringify(f.messages[1].content), /Reviewed/);
   assert.equal(f.notices.length, 0);
 });
 
@@ -359,7 +375,7 @@ void test('explicit invocation asks using the parent policy resource and handles
   assert.match(f.notices.at(-1)!, /cancelled/i);
 });
 
-void test('manual invocation preserves mode, disabled configuration, and inherited model restrictions', async t => {
+void test('user mentions can launch an additional primary without promoting it to Main while agent_spawn stays restricted', async t => {
   const f = await fixture(t);
   for (const configuration of [
     {id: 'primary', mode: 'primary' as const, model: 'test/pinned'},
@@ -371,13 +387,38 @@ void test('manual invocation preserves mode, disabled configuration, and inherit
       ...configuration,
       instructions: '',
     });
-  await f.input('@primary task');
-  assert.match(f.notices.at(-1)!, /only supports primary/);
+  assert.ok(
+    (await discoverAgentMentions(f.root)).some(
+      candidate => candidate.id === 'primary',
+    ),
+  );
+  assert.deepEqual(await f.input('@primary Handle primary work'), {
+    action: 'handled',
+  });
+  const [record] = f.manager.list();
+  await f.manager.wait([record.id]);
+  assert.equal(record.agentMode, 'primary');
+  assert.equal(record.agentProfile?.id, 'primary');
+  assert.equal(f.workers[0].agentProfile?.mode, 'primary');
+  assert.equal(f.shared.agentProfile?.id, mainAgentId);
+  assert.equal(f.shared.agentProfile?.mode, 'primary');
+
+  const spawn = f.tools.get('agent_spawn')!;
+  await assert.rejects(
+    spawn.execute(
+      'model-primary',
+      {template: 'primary', task: 'Model requested primary work'},
+      undefined,
+      undefined,
+      f.ctx as never,
+    ),
+    /only supports primary/,
+  );
   await f.input('@disabled task');
   assert.match(f.notices.at(-1)!, /disabled/);
   await f.input('@inherit task');
   assert.match(f.notices.at(-1)!, /not allowed|No agent models/i);
-  assert.equal(f.manager.list().length, 0);
+  assert.equal(f.manager.list().length, 1);
 });
 
 void test('nested configuration mentions use explicit syntax and resolve workspace overrides into new all-mode agents', async t => {

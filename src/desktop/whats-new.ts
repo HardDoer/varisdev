@@ -7,6 +7,15 @@ export interface DesktopWhatsNewState {
 
 const releases = new Map<string, readonly string[]>([
   [
+    '3.0.0',
+    [
+      'Every workspace has one permanent Main agent. Agent configurations apply to additional agents.',
+      'Agent-models is now Agent settings, combining concurrency, model choices, history retention, and Agent configurations.',
+      'Agent results and errors return automatically while callers and workers continue in parallel, without manual polling.',
+      'Finished agent history is permanently deleted after seven inactive days by default (1–365); active work, the Main transcript, and the last Primary agent’s history are retained.',
+    ],
+  ],
+  [
     '2.0.2',
     [
       'Faster startup, with less repeated environment setup and deferred workspace loading.',

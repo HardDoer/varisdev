@@ -32,7 +32,6 @@ let publishCreation;
 let creationError;
 let closeDelay;
 let closeError;
-let closeResponseGates;
 let resumeError;
 let recentProjects;
 let recentProjectsDelay;
@@ -120,7 +119,9 @@ function terminalMenuOutput(title, options, selection = 0) {
 
 function fixtureToolSettings(allowedModels = null) {
   return {
-    settings: {agents: {allowedModels, maxConcurrentAgents: 6}},
+    settings: {
+      agents: {allowedModels, maxConcurrentAgents: 6, historyRetentionDays: 7},
+    },
     models: [
       {provider: 'fixture', id: 'small', name: 'Fixture small'},
       {provider: 'fixture-other', id: 'large', name: 'Fixture large'},
@@ -505,7 +506,6 @@ function reset() {
   stateRequests = 0;
   closeDelay = 0;
   closeError = undefined;
-  closeResponseGates = new Map();
   resumeError = undefined;
   agentPromptError = undefined;
   agentPromptDelay = 0;
@@ -705,45 +705,20 @@ ipcMain.handle('fixture:agent-session', async (_event, sessionId, request) => {
   assert.ok(owner, `Unknown workspace ${sessionId}`);
   const agent = owner.agents.find(item => item.id === request.agentId);
   if (request.action === 'close') {
-    const primary =
-      request.agentId === 'parent' || agent?.agentMode !== 'subagent';
-    const remainingPrimaries =
-      Number(!owner.session.primaryClosed) +
-      owner.agents.filter(
-        item => item.agentMode !== 'subagent' && item.resumable !== false,
-      ).length;
-    if (primary && remainingPrimaries <= 1) {
-      if (!request.confirmWorkspaceClose) {
-        const gate = closeResponseGates.get(sessionId);
-        if (gate) await gate;
-        return {requiresWorkspaceCloseConfirmation: true};
-      }
-      if (closeDelay)
-        await new Promise(resolve => setTimeout(resolve, closeDelay));
-      if (closeError) throw new Error(closeError);
-      archiveSession(sessionId);
-      window.webContents.send('fixture:snapshot', hub);
-      return {workspaceClosed: true};
-    }
+    assert.notEqual(request.agentId, 'parent', 'Main agent cannot be closed');
+    assert.ok(agent, `Unknown agent ${sessionId}/${request.agentId}`);
     if (closeDelay)
       await new Promise(resolve => setTimeout(resolve, closeDelay));
     if (closeError) throw new Error(closeError);
-    if (request.agentId === 'parent') {
-      owner.session.primaryClosed = true;
-      owner.session.status = 'idle';
-      owner.session.activity = 'Closed';
-      owner.queue = {steering: [], followUp: []};
-    } else {
-      assert.ok(agent, `Unknown agent ${sessionId}/${request.agentId}`);
-      agent.resumable = false;
-      if (['running', 'queued', 'cancelling'].includes(agent.status))
-        agent.status = 'cancelled';
-    }
+    agent.resumable = false;
+    if (['running', 'queued', 'cancelling'].includes(agent.status))
+      agent.status = 'cancelled';
     window.webContents.send('fixture:snapshot', hub);
     return;
   }
   assert.ok(agent, `Unknown agent ${sessionId}/${request.agentId}`);
   const key = `${sessionId}:${agent.id}`;
+  if (request.action === 'view') return;
   if (request.action === 'features') {
     featureRequests.push(key);
     if (featureDelays.get(key))
@@ -4038,7 +4013,7 @@ async function main() {
           call =>
             !(
               call.method === 'agentSession' &&
-              call.request.action === 'features'
+              ['features', 'view'].includes(call.request.action)
             ),
         );
       const data = hub.sessions[0];
@@ -4535,7 +4510,7 @@ async function main() {
         await evaluate(
           () => document.getElementById('factory-title').textContent,
         ),
-        'Beta factory',
+        'Main agent',
       );
       await click('#factory-info-button');
       hub.sessions = hub.sessions.filter(item => item.session.id !== 'beta');
@@ -4548,29 +4523,16 @@ async function main() {
       await click('#close-session');
       await until(
         () => document.getElementById('close-primary-dialog').open,
-        'Closing the final primary did not request workspace confirmation',
+        'Close workspace did not request confirmation',
       );
       await click('#confirm-close-primary');
       await until(
         () => !document.getElementById('welcome').hidden,
-        'Confirmed final primary close did not remove the workspace',
+        'Confirmed workspace close did not remove the workspace',
       );
       await view();
       assert.deepEqual(conversationActions(), [
-        {
-          method: 'agentSession',
-          sessionId: 'alpha',
-          request: {agentId: 'parent', action: 'close'},
-        },
-        {
-          method: 'agentSession',
-          sessionId: 'alpha',
-          request: {
-            agentId: 'parent',
-            action: 'close',
-            confirmWorkspaceClose: true,
-          },
-        },
+        {method: 'closeSession', sessionId: 'alpha'},
       ]);
     },
   );
@@ -6920,10 +6882,12 @@ async function main() {
           window.webContents.setZoomFactor(zoom);
           await settle();
           assert.equal(
-            await evaluate(() => {
+            await evaluate(hasConfiguration => {
               const label = [
                 ...document.querySelectorAll('#unit-facts dt'),
               ].find(item => item.textContent === 'Configuration');
+              if (!label) return !hasConfiguration;
+              if (!hasConfiguration) return false;
               const value = label.nextElementSibling;
               const bounds = value.getBoundingClientRect();
               const panel = document
@@ -6938,9 +6902,11 @@ async function main() {
                 bounds.bottom <= innerHeight &&
                 document.documentElement.scrollHeight <= innerHeight
               );
-            }),
+            }, expected !== undefined),
             true,
-            `Configuration must be visible at ${width}x${height}, zoom ${zoom}`,
+            expected === undefined
+              ? `Main configuration must stay omitted at ${width}x${height}, zoom ${zoom}`
+              : `Configuration must be visible at ${width}x${height}, zoom ${zoom}`,
           );
           if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
             await screenshot(`configuration-details-${name}-${width}-${zoom}`);
@@ -6952,12 +6918,13 @@ async function main() {
           document.getElementById('tab-conversation').click(),
         );
       };
-      await configurationDetails('parent', 'Project coordinator (coordinator)');
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('agent-profile-label').textContent,
-        ),
-        'Project coordinator',
+      await configurationDetails('main', undefined);
+      assert.deepEqual(
+        await evaluate(() => {
+          const label = document.getElementById('agent-profile-label');
+          return {hidden: label.hidden, text: label.textContent};
+        }),
+        {hidden: true, text: ''},
       );
       await evaluate(() => {
         const editor = document.getElementById('parent-prompt');
@@ -8020,7 +7987,7 @@ async function main() {
           call =>
             call.method === 'prompt' ||
             (call.method === 'agentSession' &&
-              call.request.action !== 'features'),
+              !['features', 'view'].includes(call.request.action)),
         ),
         [
           {method: 'prompt', sessionId: 'alpha', request: {prompt: '/reload'}},
@@ -8946,7 +8913,7 @@ async function main() {
         () =>
           !document.getElementById('new-agent-dialog').open &&
           !document.getElementById('extension-dialog').open &&
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
             'Trusted conversation',
         'Trust acceptance did not finish the waiting conversation creation',
       );
@@ -8958,7 +8925,7 @@ async function main() {
         [
           {
             method: 'createSession',
-            input: {cwd, templateId: 'default', name: 'Trusted conversation'},
+            input: {cwd, name: 'Trusted conversation'},
           },
         ],
       );
@@ -10419,7 +10386,7 @@ async function main() {
   );
 
   await run(
-    'primary conversation starter stays in active agents with live state counts and closed history',
+    'Main agent stays in active agents with live state counts and closed history',
     async () => {
       const data = hub.sessions[0];
       data.session.prompt = 'Inspect the project';
@@ -10448,7 +10415,7 @@ async function main() {
         active: [
           {
             id: 'parent',
-            kind: 'primary',
+            kind: 'main',
             name: 'Alpha factory',
             label: data.session.activity,
           },
@@ -10493,7 +10460,7 @@ async function main() {
         assert.equal(result.empty, false);
         assert.deepEqual(result.active[0], {
           id: 'parent',
-          kind: 'primary',
+          kind: 'main',
           name: 'Alpha factory',
           label: data.session.activity,
         });
@@ -10594,7 +10561,7 @@ async function main() {
       assert.equal(closed.historyCount, '3');
       assert.deepEqual(closed.history[0], {
         id: 'parent',
-        kind: 'primary',
+        kind: 'main',
         name: 'Alpha factory',
         label: 'Closed',
       });
@@ -10621,7 +10588,7 @@ async function main() {
       assert.deepEqual((await evaluate(listed)).active, [
         {
           id: 'parent',
-          kind: 'primary',
+          kind: 'main',
           name: 'Beta factory',
           label: hub.sessions[1].session.activity,
         },
@@ -10634,7 +10601,7 @@ async function main() {
     [1100, 760, 1.5],
   ]) {
     await run(
-      `primary conversation starter card selects its conversation and safe actions at ${width} zoom ${zoom}`,
+      `Main agent card selects its conversation and safe actions at ${width} zoom ${zoom}`,
       async () => {
         const data = hub.sessions[0];
         data.session.status = 'idle';
@@ -10672,9 +10639,12 @@ async function main() {
         await reloadPage();
         await until(
           () =>
-            document.getElementById('agent-profile-label').textContent ===
-            'Project coordinator',
-          'The saved starter profile did not load',
+            document.getElementById('inspector').dataset.conversationKind ===
+              'main' &&
+            document.querySelector(
+              '#active-workers [data-context-unit="parent"]',
+            ),
+          'The Main agent card did not load',
         );
         window.webContents.setZoomFactor(zoom);
         await settle();
@@ -10698,7 +10668,7 @@ async function main() {
             editor.value = value;
             editor.dispatchEvent(new Event('input', {bubbles: true}));
           }, value);
-        const assertStarterRobot = async selected => {
+        const assertMainRobot = async selected => {
           await openAgents();
           assert.deepEqual(
             await evaluate(() => {
@@ -10748,7 +10718,7 @@ async function main() {
             }),
             {
               selected,
-              kind: 'primary',
+              kind: selected === 'parent' ? 'main' : 'primary',
               starters: ['parent'],
               primary: true,
               crown: false,
@@ -10757,10 +10727,10 @@ async function main() {
                 starter: selected === 'parent',
                 primary: true,
                 crown: selected !== 'parent',
-                label: 'Primary agent',
+                label: selected === 'parent' ? 'Main agent' : 'Primary agent',
               },
             },
-            'The conversation starter stays the only large robot when another primary is first in the agent data or selected',
+            'The Main agent stays the only large robot when another primary is first in the agent data or selected',
           );
           assert.deepEqual(
             await evaluate(() => {
@@ -10812,14 +10782,14 @@ async function main() {
           }, original);
           await settle();
         };
-        await assertStarterRobot('parent');
+        await assertMainRobot('parent');
         await fill('Starter conversation draft');
         await openAgents();
         await clickPointer(
           '#active-workers [data-context-unit="starter-selection-worker"]',
           {scroll: true},
         );
-        await assertStarterRobot('starter-selection-worker');
+        await assertMainRobot('starter-selection-worker');
         assert.match(
           await evaluate(
             () => document.getElementById('conversation').textContent,
@@ -10838,6 +10808,7 @@ async function main() {
               '#active-workers [aria-pressed="true"]',
             ).dataset.contextUnit,
             title: document.getElementById('inspector-title').textContent,
+            factoryTitle: document.getElementById('factory-title').textContent,
             kind: document.getElementById('conversation-kind-label')
               .textContent,
             draft: document.getElementById('parent-prompt').value,
@@ -10848,14 +10819,15 @@ async function main() {
           {
             selected: 'parent',
             title: 'Alpha factory',
-            kind: 'Primary agent',
+            factoryTitle: 'Main agent',
+            kind: 'Main agent',
             draft: 'Starter conversation draft',
             activeCount: '2',
             cancelHidden: true,
             removeHidden: true,
           },
         );
-        await assertStarterRobot('parent');
+        await assertMainRobot('parent');
         await screenshotThemes('custom-starter');
         assert.match(
           await evaluate(
@@ -11414,29 +11386,29 @@ async function main() {
         })),
         {
           selected: {
-            kind: 'primary',
+            kind: 'main',
             starter: true,
             primary: true,
             subagent: false,
             crown: false,
             crownHidden: 'true',
             role: 'img',
-            label: 'Primary agent',
+            label: 'Main agent',
           },
           parents: [
             {
-              kind: 'primary',
+              kind: 'main',
               starter: true,
               crown: false,
               role: 'img',
-              label: 'Primary agent',
+              label: 'Main agent',
             },
             {
-              kind: 'primary',
+              kind: 'main',
               starter: true,
               crown: false,
               role: 'img',
-              label: 'Primary agent',
+              label: 'Main agent',
             },
           ],
           subagentSmaller: true,
@@ -11823,6 +11795,9 @@ async function main() {
               background: getComputedStyle(
                 document.querySelector('.inspector-heading'),
               ).backgroundImage,
+              mainIcon:
+                getComputedStyle(document.querySelector('.kind-main-icon'))
+                  .display !== 'none',
               primaryIcon:
                 getComputedStyle(document.querySelector('.kind-primary-icon'))
                   .display !== 'none',
@@ -11832,16 +11807,17 @@ async function main() {
             };
           });
         const parentKind = await inspectKind();
-        assert.equal(parentKind.label, 'Primary agent');
-        assert.equal(parentKind.kind, 'primary');
-        assert.equal(parentKind.marker, 'primary');
+        assert.equal(parentKind.label, 'Main agent');
+        assert.equal(parentKind.kind, 'main');
+        assert.equal(parentKind.marker, 'main');
         assert.equal(parentKind.title, 'Alpha factory');
         assert.equal(
           parentKind.complete,
           true,
           'Parent session label should be fully visible',
         );
-        assert.equal(parentKind.primaryIcon, true);
+        assert.equal(parentKind.mainIcon, true);
+        assert.equal(parentKind.primaryIcon, false);
         assert.equal(parentKind.subagentIcon, false);
         const parentBounds = await geometry();
         await evaluate(() =>
@@ -11904,20 +11880,25 @@ async function main() {
           true,
           'Agent conversation label should be fully visible',
         );
+        assert.equal(agentKind.mainIcon, false);
         assert.equal(agentKind.primaryIcon, true);
         assert.equal(agentKind.subagentIcon, false);
-        assert.equal(
+        assert.notEqual(
           agentKind.background,
           parentKind.background,
-          'All primary conversations use the same heading accent',
+          'Main and additional primary conversations have distinct heading accents',
         );
         for (const selector of Object.keys(parentBounds).filter(
           selector =>
             !['#panel-conversation', '#composer-slot'].includes(selector),
         ))
-          for (const dimension of selector === '#scene'
-            ? ['x', 'width']
-            : ['x', 'y', 'width', 'height'])
+          for (const dimension of [
+            'x',
+            'width',
+            ...(['#inspector', '#active-workers button'].includes(selector)
+              ? ['y', 'height']
+              : []),
+          ])
             assert.ok(
               Math.abs(
                 parentBounds[selector][dimension] -
@@ -11960,10 +11941,11 @@ async function main() {
         await settle();
         const returnedBounds = await geometry();
         const returnedKind = await inspectKind();
-        assert.equal(returnedKind.label, 'Primary agent');
-        assert.equal(returnedKind.kind, 'primary');
-        assert.equal(returnedKind.marker, 'primary');
-        assert.equal(returnedKind.primaryIcon, true);
+        assert.equal(returnedKind.label, 'Main agent');
+        assert.equal(returnedKind.kind, 'main');
+        assert.equal(returnedKind.marker, 'main');
+        assert.equal(returnedKind.mainIcon, true);
+        assert.equal(returnedKind.primaryIcon, false);
         assert.equal(returnedKind.subagentIcon, false);
         assert.deepEqual(
           returnedBounds,
@@ -13656,7 +13638,7 @@ async function main() {
           call =>
             !(
               call.method === 'agentSession' &&
-              call.request.action === 'features'
+              ['features', 'view'].includes(call.request.action)
             ),
         ),
         [],
@@ -14928,7 +14910,7 @@ async function main() {
       );
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         'Fresh session was not selected',
       );
@@ -15032,7 +15014,7 @@ async function main() {
       });
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         'Create retry did not select the fresh session',
       );
@@ -15055,7 +15037,7 @@ async function main() {
       });
       await until(
         () => document.getElementById('close-primary-dialog').open,
-        'The final primary close did not request confirmation',
+        'Close workspace did not request confirmation',
       );
       await evaluate(() => {
         document.getElementById('confirm-close-primary').click();
@@ -15086,40 +15068,22 @@ async function main() {
       );
       assert.equal(
         await evaluate(
-          () => document.getElementById('factory-title').textContent,
+          () => document.getElementById('inspector-title').textContent,
         ),
         'Selected folder',
         'A failed close keeps the selected parent open',
       );
       assert.deepEqual(
-        calls.filter(
-          call =>
-            call.method === 'agentSession' && call.request.action === 'close',
-        ),
-        [
-          {
-            method: 'agentSession',
-            sessionId: 'retry-parent',
-            request: {agentId: 'parent', action: 'close'},
-          },
-          {
-            method: 'agentSession',
-            sessionId: 'retry-parent',
-            request: {
-              agentId: 'parent',
-              action: 'close',
-              confirmWorkspaceClose: true,
-            },
-          },
-        ],
-        'Repeated close and confirmation clicks share their pending requests',
+        calls.filter(call => call.method === 'closeSession'),
+        [{method: 'closeSession', sessionId: 'retry-parent'}],
+        'Repeated close and confirmation clicks share one workspace request',
       );
       assert.deepEqual(
         await evaluate(() => ({
           disabled: document.getElementById('close-session').disabled,
           label: document.getElementById('close-session').textContent,
         })),
-        {disabled: false, label: 'Close agent'},
+        {disabled: false, label: 'Close workspace'},
       );
 
       closeDelay = 0;
@@ -15130,23 +15094,20 @@ async function main() {
       });
       await until(
         () => document.getElementById('close-primary-dialog').open,
-        'Retry did not request confirmation for the final primary',
+        'Retry did not request workspace confirmation',
       );
       await evaluate(() =>
         document.getElementById('confirm-close-primary').click(),
       );
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Beta factory',
         'Close retry did not select a remaining workspace',
       );
       assert.equal(
-        calls.filter(
-          call =>
-            call.method === 'agentSession' && call.request.action === 'close',
-        ).length,
-        4,
+        calls.filter(call => call.method === 'closeSession').length,
+        2,
       );
       assert.equal(
         await evaluate(() => document.getElementById('app-error').hidden),
@@ -15182,7 +15143,7 @@ async function main() {
       await evaluate(() => document.getElementById('start-session').click());
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         'Retry did not select the replacement',
       );
@@ -15193,177 +15154,6 @@ async function main() {
       assert.deepEqual(
         hub.sessions.map(item => item.session.id),
         ['last-replacement'],
-      );
-
-      const firstWorkspace = hub.sessions[0];
-      firstWorkspace.session.name = 'Pending workspace A';
-      firstWorkspace.session.primaryClosed = true;
-      const secondWorkspace = session('pending-close-b', 'Pending workspace B');
-      secondWorkspace.session.primaryClosed = true;
-      for (const [workspace, suffix] of [
-        [firstWorkspace, 'A'],
-        [secondWorkspace, 'B'],
-      ]) {
-        workspace.agents = [
-          {
-            id: `pending-${suffix}`,
-            name: `Pending agent ${suffix}`,
-            agentMode: 'primary',
-            task: 'Keep working until this workspace closes',
-            activity: 'Working on the pending close fixture',
-            status: 'running',
-            model: 'fixture/small',
-            cwd: directory,
-            resumable: true,
-            createdAt: at,
-            startedAt: at,
-            conversation: [],
-          },
-        ];
-        workspace.totalAgents = 1;
-      }
-      hub.sessions.push(secondWorkspace);
-      resources.set('pending-close-b', features());
-      const firstResponse = Promise.withResolvers();
-      const secondResponse = Promise.withResolvers();
-      closeResponseGates.set(firstWorkspace.session.id, firstResponse.promise);
-      closeResponseGates.set(
-        secondWorkspace.session.id,
-        secondResponse.promise,
-      );
-      await publish();
-      const pendingCloseCalls = () =>
-        calls.filter(
-          call =>
-            call.method === 'agentSession' &&
-            call.request.action === 'close' &&
-            ['pending-A', 'pending-B'].includes(call.request.agentId),
-        );
-      const startPendingClose = async (workspaceId, agentName) => {
-        await clickPointer(`#parents [data-context-session="${workspaceId}"]`);
-        assert.equal(
-          await evaluate(
-            () => document.getElementById('inspector-title').textContent,
-          ),
-          agentName,
-          `The pending close did not select ${agentName}`,
-        );
-        await clickPointer('#item-actions-button');
-        await clickPointer('#close-session');
-      };
-      await startPendingClose(firstWorkspace.session.id, 'Pending agent A');
-      await startPendingClose(secondWorkspace.session.id, 'Pending agent B');
-      assert.equal(pendingCloseCalls().length, 2);
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('close-primary-dialog').open,
-        ),
-        false,
-        'Both workspace closes wait for their delayed backend responses',
-      );
-      firstResponse.resolve();
-      await until(
-        () =>
-          document.getElementById('close-primary-dialog').open &&
-          document.getElementById('close-primary-title').textContent ===
-            'Close Pending agent A in Pending workspace A?',
-        'The first close response did not show its own agent and workspace',
-      );
-      secondResponse.resolve();
-      await evaluate(async () => {
-        await window.pidev.getState();
-        await new Promise(resolve =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
-        );
-      });
-      assert.deepEqual(
-        await evaluate(() => ({
-          title: document.getElementById('close-primary-title').textContent,
-          description: document
-            .getElementById('close-primary-description')
-            .textContent.trim(),
-          open: document.getElementById('close-primary-dialog').open,
-        })),
-        {
-          title: 'Close Pending agent A in Pending workspace A?',
-          description:
-            'Closing this agent will close this workspace and stop its agents.',
-          open: true,
-        },
-        'The second close response must wait without replacing the open confirmation',
-      );
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('queued-close-primary-a');
-      await clickPointer('#confirm-close-primary');
-      await until(
-        () =>
-          document.getElementById('close-primary-dialog').open &&
-          document.getElementById('close-primary-title').textContent ===
-            'Close Pending agent B in Pending workspace B?' &&
-          !document.querySelector(
-            '#parents [data-context-session="last-replacement"]',
-          ),
-        'The next confirmation did not keep its target after the first workspace closed',
-      );
-      assert.deepEqual(
-        hub.sessions.map(item => item.session.id),
-        ['pending-close-b'],
-        'Confirming agent A closes only workspace A',
-      );
-      assert.deepEqual(
-        pendingCloseCalls()
-          .filter(call => call.request.confirmWorkspaceClose)
-          .map(call => [call.sessionId, call.request.agentId]),
-        [['last-replacement', 'pending-A']],
-      );
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('queued-close-primary-b');
-      await clickPointer('#cancel-close-primary');
-      await until(
-        () => !document.getElementById('close-primary-dialog').open,
-        'Cancelling the queued close did not release its dialog',
-      );
-      assert.equal(secondWorkspace.agents[0].resumable, true);
-      assert.equal(secondWorkspace.agents[0].status, 'running');
-      assert.equal(hub.sessions[0], secondWorkspace);
-      assert.equal(pendingCloseCalls().length, 3);
-
-      await startPendingClose(secondWorkspace.session.id, 'Pending agent B');
-      await until(
-        () =>
-          document.getElementById('close-primary-dialog').open &&
-          document.getElementById('close-primary-title').textContent ===
-            'Close Pending agent B in Pending workspace B?',
-        'The cancelled queued close could not open a new confirmation',
-      );
-      await press('Escape');
-      await until(
-        () => !document.getElementById('close-primary-dialog').open,
-        'Escape did not cancel the reopened confirmation',
-      );
-      assert.equal(hub.sessions[0], secondWorkspace);
-      await startPendingClose(secondWorkspace.session.id, 'Pending agent B');
-      await until(
-        () =>
-          document.getElementById('close-primary-dialog').open &&
-          document.getElementById('close-primary-title').textContent ===
-            'Close Pending agent B in Pending workspace B?',
-        'The confirmation queue did not recover after cancellation',
-      );
-      await clickPointer('#confirm-close-primary');
-      await until(
-        () => !document.getElementById('welcome').hidden,
-        'Confirming agent B did not close the remaining workspace',
-      );
-      assert.deepEqual(
-        pendingCloseCalls()
-          .filter(call => call.request.confirmWorkspaceClose)
-          .map(call => [call.sessionId, call.request.agentId]),
-        [
-          ['last-replacement', 'pending-A'],
-          ['pending-close-b', 'pending-B'],
-        ],
-        'Each confirmation closes its named workspace once after queued and cancelled requests',
       );
     },
   );
@@ -15471,7 +15261,7 @@ async function main() {
       }
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         '/new did not select the fresh parent',
       );
@@ -15559,7 +15349,7 @@ async function main() {
       );
       assert.equal(
         await evaluate(
-          () => document.getElementById('factory-title').textContent,
+          () => document.getElementById('inspector-title').textContent,
         ),
         'Alpha factory',
       );
@@ -15585,7 +15375,7 @@ async function main() {
       });
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         '/new retry must select the fresh parent',
       );
@@ -15665,7 +15455,7 @@ async function main() {
       await publish();
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Latest workspace',
         'New snapshot did not update the workspace while its request was pending',
       );
@@ -15677,7 +15467,7 @@ async function main() {
       );
       assert.equal(
         await evaluate(
-          () => document.getElementById('factory-title').textContent,
+          () => document.getElementById('inspector-title').textContent,
         ),
         'Latest workspace',
       );
@@ -15695,449 +15485,289 @@ async function main() {
   );
 
   await run(
-    'closing primary agents preserves the workspace selects the second newest robot and confirms the final close with draft recovery',
+    'Main cannot close as an agent; extras close independently and workspace closes explicitly',
     async () => {
       const data = hub.sessions[0];
-      const primary = (id, name, minute, agentMode) => ({
+      const additional = (id, name, agentMode) => ({
         id,
         name,
-        ...(agentMode ? {agentMode} : {}),
+        agentMode,
         task: `Continue ${name}`,
         activity: `Working on ${name}`,
         cwd: directory,
         model: 'fixture/small',
         status: 'running',
-        createdAt: `2026-01-01T12:${minute}:00.000Z`,
+        resumable: true,
+        createdAt: at,
         startedAt: at,
         conversation: [
           {id: `${id}-answer`, role: 'assistant', text: `${name} answer`, at},
         ],
       });
+      data.session.status = 'idle';
+      data.session.activity = 'Ready for a task';
+      data.session.primaryClosed = true;
       data.agents = [
-        primary('newest', 'Newest primary', '03'),
-        primary('delegated', 'Delegated subagent', '05', 'subagent'),
-        {
-          ...primary('disposed', 'Disposed primary', '06', 'primary'),
-          resumable: false,
-          status: 'cancelled',
-        },
-        primary('older', 'Older primary', '01', 'primary'),
-        primary('middle', 'Middle primary', '02', 'all'),
+        additional('primary-extra', 'Additional primary', 'primary'),
+        additional('delegated-extra', 'Delegated subagent', 'subagent'),
       ];
       data.totalAgents = data.agents.length;
       await publish();
-      const choose = async id => {
-        await evaluate(id => {
+
+      const mainPresentation = async () =>
+        evaluate(() => {
           const card = document.querySelector(
-            `#active-workers [data-context-unit="${id}"], #history-workers [data-context-unit="${id}"]`,
+            '#active-workers [data-context-unit="parent"]',
           );
-          if (!card) throw new Error(`Missing agent card ${id}`);
-          card.click();
-        }, id);
-        await settle();
-      };
-      const closeSelected = async () => {
+          const glyph = card?.querySelector('.robot-glyph');
+          const mark = document.getElementById('selected-conversation-mark');
+          return {
+            selected: document.querySelector(
+              '#active-workers [aria-pressed="true"], #history-workers [aria-pressed="true"]',
+            )?.dataset.contextUnit,
+            mainCards: document.querySelectorAll(
+              '#active-workers > [data-agent-kind="main"], #history-workers > [data-agent-kind="main"]',
+            ).length,
+            kind: card?.dataset.agentKind,
+            starter: glyph?.classList.contains('robot-starter'),
+            crown:
+              glyph &&
+              getComputedStyle(glyph.querySelector('.robot-crown')).display !==
+                'none',
+            markKind: mark.dataset.agentKind,
+            markStarter: mark.classList.contains('robot-starter'),
+            parentLabels: document.querySelectorAll(
+              '#scene-labels .parent-label',
+            ).length,
+            factoryTitle: document.getElementById('factory-title').textContent,
+            inspectorKind:
+              document.getElementById('inspector').dataset.conversationKind,
+          };
+        });
+
+      assert.deepEqual(await mainPresentation(), {
+        selected: 'parent',
+        mainCards: 1,
+        kind: 'main',
+        starter: true,
+        crown: false,
+        markKind: 'main',
+        markStarter: true,
+        parentLabels: 1,
+        factoryTitle: 'Main agent',
+        inspectorKind: 'main',
+      });
+      assert.equal(data.session.primaryClosed, true);
+
+      await clickPointer('#item-actions-button');
+      assert.deepEqual(
+        await evaluate(() => {
+          const actions = [
+            ...document.querySelectorAll(
+              '#item-context-menu [role="menuitem"]',
+            ),
+          ]
+            .filter(item => item.checkVisibility())
+            .map(item => item.textContent.trim());
+          return {
+            closeLabel: document.getElementById('close-session').textContent,
+            hasCloseAgent: actions.includes('Close agent'),
+            hasCloseWorkspace: actions.includes('Close workspace'),
+          };
+        }),
+        {
+          closeLabel: 'Close workspace',
+          hasCloseAgent: false,
+          hasCloseWorkspace: true,
+        },
+        'Main exposes only the explicit workspace close action',
+      );
+      await clickPointer('#close-session');
+      await until(
+        () => document.getElementById('close-primary-dialog').open,
+        'Close workspace did not request confirmation',
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('close-primary-title').textContent,
+          description: document.getElementById('close-primary-description')
+            .textContent,
+          confirm: document.getElementById('confirm-close-primary').textContent,
+        })),
+        {
+          title: 'Close Alpha factory?',
+          description: 'Closing this workspace will stop its agents.',
+          confirm: 'Close workspace',
+        },
+      );
+      assert.equal(
+        calls.some(
+          call =>
+            call.method === 'agentSession' && call.request.agentId === 'parent',
+        ),
+        false,
+      );
+      await clickPointer('#cancel-close-primary');
+      assert.equal(hub.sessions.length, 2);
+
+      const closeAdditional = async id => {
+        await clickPointer(
+          `#active-workers [data-context-unit="${id}"], #history-workers [data-context-unit="${id}"]`,
+          {scroll: true},
+        );
         await clickPointer('#item-actions-button');
         assert.deepEqual(
-          await evaluate(() => ({
-            label: document.getElementById('close-session').textContent,
-            workspaceClose: [
+          await evaluate(() => {
+            const actions = [
               ...document.querySelectorAll(
                 '#item-context-menu [role="menuitem"]',
               ),
-            ].some(item => /close workspace/i.test(item.textContent)),
-          })),
-          {label: 'Close agent', workspaceClose: false},
-          'The agent menu offers a single Close agent action',
-        );
-        await clickPointer('#close-session');
-      };
-      const bigRobot = async expected => {
-        await until(
-          () =>
-            document.querySelectorAll(
-              '#active-workers .robot-starter, #history-workers .robot-starter',
-            ).length === 1,
-          'The remaining primary did not acquire the big robot',
-        );
-        assert.deepEqual(
-          await evaluate(() => {
-            const cards = [
-              ...document.querySelectorAll(
-                '#active-workers .worker-card, #history-workers .history-row',
-              ),
-            ];
-            const large = cards.find(card =>
-              card.querySelector('.robot-starter'),
-            );
-            const glyph = large.querySelector('.robot-glyph');
-            const bounds = glyph.getBoundingClientRect();
+            ]
+              .filter(item => item.checkVisibility())
+              .map(item => item.textContent.trim());
             return {
-              id: large.dataset.contextUnit,
-              primary: glyph.classList.contains('robot-primary'),
-              crown:
-                getComputedStyle(glyph.querySelector('.robot-crown'))
-                  .display !== 'none',
-              larger: cards
-                .filter(card => card !== large)
-                .every(card => {
-                  const other = card
-                    .querySelector('.robot-glyph')
-                    .getBoundingClientRect();
-                  return (
-                    bounds.width > other.width && bounds.height > other.height
-                  );
-                }),
-              starterListed: cards.some(
-                card => card.dataset.contextUnit === 'parent',
-              ),
+              closeLabel: document.getElementById('close-session').textContent,
+              hasCloseAgent: actions.includes('Close agent'),
+              hasCloseWorkspace: actions.includes('Close workspace'),
             };
           }),
           {
-            id: expected,
-            primary: true,
-            crown: false,
-            larger: true,
-            starterListed: expected === 'parent',
+            closeLabel: 'Close agent',
+            hasCloseAgent: true,
+            hasCloseWorkspace: false,
           },
-          'Only the chosen remaining primary uses the big robot silhouette',
         );
-      };
-      const selectRobot = async name => {
-        await evaluate(name => {
-          const label = [
-            ...document.querySelectorAll(
-              '#scene-labels button, #fallback-units button',
-            ),
-          ].find(
-            item =>
-              item.querySelector('.scene-label-name, strong')?.textContent ===
-              name,
-          );
-          if (!label) throw new Error(`Missing scene robot ${name}`);
-          label.click();
-        }, name);
-        await settle();
+        await clickPointer('#close-session');
+        await until(
+          () =>
+            document.getElementById('inspector-title').textContent ===
+            'Alpha factory',
+          `Additional agent ${id} did not return to Main`,
+        );
         assert.equal(
           await evaluate(
-            () => document.getElementById('inspector-title').textContent,
+            id =>
+              document.querySelector(
+                `#active-workers [data-context-unit="${id}"], #history-workers [data-context-unit="${id}"]`,
+              ) === null,
+            id,
           ),
-          name,
-          'Selecting the big robot opens its primary conversation',
+          true,
         );
-        assert.match(
+        assert.equal(
           await evaluate(
-            () => document.getElementById('conversation').textContent,
+            () => document.getElementById('close-primary-dialog').open,
           ),
-          new RegExp(`${name} answer`),
+          false,
         );
+        assert.equal(hub.sessions.length, 2);
       };
-      await choose('newest');
-      await bigRobot('parent');
-      await choose('parent');
-      await closeSelected();
-      await until(
-        () =>
-          !document.querySelector(
-            '#active-workers [data-context-unit="parent"]',
-          ),
-        'The closed starter is still listed',
-      );
-      assert.equal(data.session.primaryClosed, true);
-      assert.equal(hub.sessions.length, 2);
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('close-primary-dialog').open,
-        ),
-        false,
-        'Other primaries keep the workspace open without confirmation',
-      );
-      assert.equal(
-        data.agents.filter(agent => agent.resumable !== false).length,
-        4,
-      );
-      await bigRobot('middle');
-      assert.deepEqual(
-        await evaluate(() => {
-          const card = document.querySelector(
-            '#parents [data-context-session="alpha"]',
-          );
-          return {
-            status: card.querySelector('.status-badge').textContent,
-            activity: card.querySelector('.parent-card-activity').textContent,
-          };
-        }),
-        {status: 'Running', activity: 'Working on Middle primary'},
-        'The open workspace reports its remaining primary activity',
-      );
-      await selectRobot('Middle primary');
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('promoted-primary');
-      data.agents.reverse();
-      await publish();
-      await bigRobot('middle');
-      await reloadPage();
-      assert.equal(data.session.primaryClosed, true);
-      await bigRobot('middle');
-      assert.equal(
-        await evaluate(
-          () =>
-            !!document.querySelector(
-              '#active-workers [data-context-unit="parent"], #history-workers [data-context-unit="parent"]',
-            ),
-        ),
-        false,
-        'Reload must preserve the closed starter instead of recreating it',
-      );
-      await selectRobot('Middle primary');
-      await closeSelected();
-      await until(
-        () =>
-          !document.querySelector(
-            '#active-workers [data-context-unit="middle"]',
-          ),
-        'The middle primary did not close',
-      );
-      await bigRobot('older');
-      await selectRobot('Older primary');
-      await closeSelected();
-      await until(
-        () =>
-          !document.querySelector(
-            '#active-workers [data-context-unit="older"]',
-          ),
-        'The older primary did not close',
-      );
-      await bigRobot('newest');
-      await selectRobot('Newest primary');
-      assert.equal(
-        data.agents.find(agent => agent.id === 'delegated').status,
-        'running',
-        'A newer subagent keeps working without being promoted',
-      );
-      const beforeConfirmation = structuredClone(data);
-      await closeSelected();
-      await until(
-        () => document.getElementById('close-primary-dialog').open,
-        'Closing the singleton primary did not request confirmation',
-      );
-      assert.deepEqual(data, beforeConfirmation);
-      assert.match(
-        await evaluate(() =>
-          document
-            .getElementById('close-primary-dialog')
-            .textContent.replace(/\s+/g, ' ')
-            .trim(),
-        ),
-        /Closing this agent will close this workspace and stop its agents\./,
-      );
-      window.setContentSize(1100, 760);
-      window.webContents.setZoomFactor(1.5);
-      await settle();
-      assert.deepEqual(
-        await evaluate(() => {
-          const dialog = document.getElementById('close-primary-dialog');
-          return {
-            confirm: document
-              .getElementById('confirm-close-primary')
-              .textContent.trim(),
-            cancel: document
-              .getElementById('cancel-close-primary')
-              .textContent.trim(),
-            visible: ['confirm-close-primary', 'cancel-close-primary'].every(
-              id => {
-                const button = document.getElementById(id);
-                const bounds = button.getBoundingClientRect();
-                return (
-                  button.checkVisibility() &&
-                  dialog.contains(button) &&
-                  bounds.top >= 0 &&
-                  bounds.left >= 0 &&
-                  bounds.right <= innerWidth &&
-                  bounds.bottom <= innerHeight
-                );
-              },
-            ),
-          };
-        }),
-        {confirm: 'Close agent and workspace', cancel: 'Cancel', visible: true},
-      );
-      if (process.env.DESKTOP_UI_SCREENSHOT_DIR) {
-        await screenshot('close-last-primary-compact');
-        const themes = await evaluate(() =>
-          [...document.getElementById('factory-theme').options].map(
-            option => option.value,
-          ),
-        );
-        const previousTheme = await evaluate(
-          () => document.getElementById('factory-theme').value,
-        );
-        for (const theme of themes) {
-          await evaluate(theme => {
-            const select = document.getElementById('factory-theme');
-            select.value = theme;
-            select.dispatchEvent(new Event('change'));
-          }, theme);
-          await screenshot(`close-last-primary-${theme}`);
-        }
-        await evaluate(theme => {
-          const select = document.getElementById('factory-theme');
-          select.value = theme;
-          select.dispatchEvent(new Event('change'));
-        }, previousTheme);
-      }
-      await clickPointer('#cancel-close-primary');
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('close-primary-dialog').open,
-        ),
-        false,
-      );
-      assert.deepEqual(data, beforeConfirmation);
-      assert.equal(hub.sessions.length, 2);
-      window.webContents.setZoomFactor(1);
-      window.setContentSize(1600, 1000);
-      await settle();
-      await closeSelected();
-      await until(
-        () => document.getElementById('close-primary-dialog').open,
-        'The cancelled final close could not be retried',
-      );
-      await clickPointer('#confirm-close-primary');
-      await until(
-        () =>
-          document.getElementById('factory-title').textContent ===
-          'Beta factory',
-        'Confirmed final primary close did not select the other workspace',
-      );
-      assert.equal(
-        hub.sessions.some(item => item.session.id === 'alpha'),
-        false,
-      );
-      assert.equal(archivedSessions.get('alpha').session.primaryClosed, true);
-      assert.equal(
-        calls.some(call => call.method === 'closeSession'),
-        false,
-      );
+
+      await closeAdditional('primary-extra');
+      await closeAdditional('delegated-extra');
+      assert.deepEqual(await mainPresentation(), {
+        selected: 'parent',
+        mainCards: 1,
+        kind: 'main',
+        starter: true,
+        crown: false,
+        markKind: 'main',
+        markStarter: true,
+        parentLabels: 1,
+        factoryTitle: 'Main agent',
+        inspectorKind: 'main',
+      });
       assert.deepEqual(
         calls
           .filter(
             call =>
-              call.method === 'agentSession' &&
-              call.sessionId === 'alpha' &&
-              call.request.action === 'close',
+              call.method === 'agentSession' && call.request.action === 'close',
           )
           .map(call => call.request),
         [
-          {agentId: 'parent', action: 'close'},
-          {agentId: 'middle', action: 'close'},
-          {agentId: 'older', action: 'close'},
-          {agentId: 'newest', action: 'close'},
-          {agentId: 'newest', action: 'close'},
-          {agentId: 'newest', action: 'close', confirmWorkspaceClose: true},
+          {agentId: 'primary-extra', action: 'close'},
+          {agentId: 'delegated-extra', action: 'close'},
         ],
       );
-      await evaluate(async () => {
-        const editor = document.getElementById('parent-prompt');
-        editor.value = 'Resume this draft after closing';
-        editor.dispatchEvent(new Event('input', {bubbles: true}));
-        editor.setSelectionRange(7, 18);
-        editor.dispatchEvent(new Event('select', {bubbles: true}));
-        const {flushDrafts} = await import('./draft-storage.js');
-        flushDrafts();
+      assert.equal(
+        calls.some(call => call.method === 'closeSession'),
+        false,
+        'Closing every additional agent leaves the workspace open',
+      );
+
+      await reloadPage();
+      assert.deepEqual(await mainPresentation(), {
+        selected: 'parent',
+        mainCards: 1,
+        kind: 'main',
+        starter: true,
+        crown: false,
+        markKind: 'main',
+        markStarter: true,
+        parentLabels: 1,
+        factoryTitle: 'Main agent',
+        inspectorKind: 'main',
       });
-      await closeSelected();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('main-after-all-extras-closed');
+
+      window.setContentSize(1100, 760);
+      window.webContents.setZoomFactor(1.5);
+      await settle();
+      await clickPointer('#item-actions-button');
+      await clickPointer('#close-session');
       await until(
         () => document.getElementById('close-primary-dialog').open,
-        'A starter-only workspace did not request confirmation',
+        'Compact Close workspace confirmation did not open',
       );
-      await clickPointer('#confirm-close-primary');
-      await until(
-        () => !document.getElementById('welcome').hidden,
-        'Closing the final workspace did not show welcome',
-      );
-      await evaluate(() => {
-        document.getElementById('app-menu-button').click();
-        document.getElementById('resume-session').click();
-      });
-      await until(
-        () =>
-          document
-            .getElementById('session-history-list')
-            .textContent.includes('Beta factory'),
-        'The closed workspace is missing from session history',
-      );
-      assert.match(
-        await evaluate(
-          () => document.getElementById('session-history-list').textContent,
-        ),
-        /Beta factory.*3 messages/s,
-      );
-      await evaluate(() =>
-        [...document.querySelectorAll('#session-history-list button')]
-          .find(item => item.textContent.includes('Beta factory'))
-          .click(),
-      );
-      await until(
-        () =>
-          document.getElementById('factory-title').textContent ===
-          'Beta factory',
-        'The closed workspace did not reopen from history',
-      );
-      assert.deepEqual(
+      assert.equal(
         await evaluate(() => {
-          const editor = document.getElementById('parent-prompt');
-          return {
-            history: document
-              .getElementById('conversation')
-              .textContent.includes('I will inspect the project.'),
-            draft: editor.value,
-            start: editor.selectionStart,
-            end: editor.selectionEnd,
-          };
+          const dialog = document.getElementById('close-primary-dialog');
+          return ['confirm-close-primary', 'cancel-close-primary'].every(id => {
+            const button = document.getElementById(id);
+            const bounds = button.getBoundingClientRect();
+            return (
+              button.checkVisibility() &&
+              dialog.contains(button) &&
+              bounds.top >= 0 &&
+              bounds.left >= 0 &&
+              bounds.right <= innerWidth &&
+              bounds.bottom <= innerHeight
+            );
+          });
         }),
-        {
-          history: true,
-          draft: 'Resume this draft after closing',
-          start: 7,
-          end: 18,
-        },
-        'Reopening restores conversation history and its unsent draft',
+        true,
       );
-      await closeSelected();
+      if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
+        await screenshot('close-workspace-compact');
+      await clickPointer('#cancel-close-primary');
+
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      await settle();
+      await clickPointer('#item-actions-button');
+      await clickPointer('#close-session');
       await until(
         () => document.getElementById('close-primary-dialog').open,
-        'The reopened final primary did not request confirmation',
+        'Close workspace retry did not request confirmation',
       );
       await clickPointer('#confirm-close-primary');
       await until(
-        () => !document.getElementById('welcome').hidden,
-        'The reopened workspace did not close after confirmation',
+        () =>
+          document.getElementById('inspector-title').textContent ===
+          'Beta factory',
+        'Confirmed workspace close did not select the remaining workspace',
       );
-      await evaluate(() => document.getElementById('app-menu-button').click());
       assert.deepEqual(
-        await evaluate(() => ({
-          welcome: !document.getElementById('welcome').hidden,
-          workspace: document.getElementById('factory-workspace').hidden,
-          startHidden: document.getElementById('start-session').hidden,
-          contextMenuVisible: document
-            .getElementById('item-context-menu')
-            .checkVisibility(),
-          commandsOpen: document.getElementById('commands-dialog').open,
-          settingsDisabled: document.getElementById('open-session-settings')
-            .disabled,
-          openFolder: document.getElementById('new-session').textContent.trim(),
-        })),
-        {
-          welcome: true,
-          workspace: true,
-          startHidden: true,
-          contextMenuVisible: false,
-          commandsOpen: false,
-          settingsDisabled: true,
-          openFolder: 'Open folder',
-        },
-        'Workspace actions are hidden when no workspace remains',
+        calls.filter(call => call.method === 'closeSession'),
+        [{method: 'closeSession', sessionId: 'alpha'}],
+      );
+      assert.equal(
+        calls.some(
+          call =>
+            call.method === 'agentSession' && call.request.agentId === 'parent',
+        ),
+        false,
       );
     },
   );
@@ -16237,7 +15867,7 @@ async function main() {
       });
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Saved conversation',
         'Resumed session was not selected',
       );
@@ -16319,7 +15949,7 @@ async function main() {
       });
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         'Recent project was not opened',
       );
@@ -16390,7 +16020,7 @@ async function main() {
       await evaluate(() => document.getElementById('new-session').click());
       await until(
         () =>
-          document.getElementById('factory-title').textContent ===
+          document.getElementById('inspector-title').textContent ===
           'Selected folder',
         'Opened folder was not selected',
       );
@@ -16430,15 +16060,9 @@ async function main() {
   );
 
   await run(
-    'New conversation recent workspaces reload agents and preserve creation workflow',
+    'New conversation recent workspaces preserve configuration-free creation',
     async () => {
       const other = join(directory, 'other-project');
-      workspaceTemplateResponses.set(other, {
-        templates: [
-          {id: 'writer', name: 'Workspace writer', scope: 'workspace'},
-        ],
-        defaultAgentId: 'writer',
-      });
       const click = id =>
         evaluate(id => document.getElementById(id).click(), id);
       await click('open-new-agent');
@@ -16468,8 +16092,11 @@ async function main() {
         recent.dispatchEvent(new Event('change'));
       }, other);
       await until(
-        () => document.getElementById('new-agent-template').value === 'writer',
-        'Selected workspace agent default did not load',
+        () =>
+          document
+            .getElementById('new-agent-folder')
+            .textContent.endsWith('other-project'),
+        'Selected workspace did not load',
       );
       assert.deepEqual(
         await evaluate(() => ({
@@ -16482,6 +16109,7 @@ async function main() {
             .textContent,
           name: document.getElementById('new-agent-name').value,
           task: document.getElementById('new-agent-task').value,
+          configuration: Boolean(document.getElementById('new-agent-template')),
         })),
         {
           folder: other,
@@ -16490,6 +16118,7 @@ async function main() {
           label: 'Selected workspace',
           name: 'Review the workspace',
           task: 'Inspect its files',
+          configuration: false,
         },
       );
       const themes = await evaluate(async () =>
@@ -16529,11 +16158,7 @@ async function main() {
                 document.documentElement.scrollHeight <= innerHeight,
               value: recent.value,
               panel,
-              surfaces: [
-                'new-agent-workspace',
-                'new-agent-recent',
-                'new-agent-template',
-              ].map(id => {
+              surfaces: ['new-agent-workspace', 'new-agent-recent'].map(id => {
                 const element = document.getElementById(id);
                 const style = getComputedStyle(element);
                 return {
@@ -16608,7 +16233,6 @@ async function main() {
             input: {
               cwd: other,
               name: 'Review the workspace',
-              templateId: 'writer',
             },
           },
         ],
@@ -16639,7 +16263,7 @@ async function main() {
   );
 
   await run(
-    'New conversation recent workspace failures allow folder selection and template retry',
+    'New conversation recent workspace failures allow folder selection and retry',
     async () => {
       const other = join(directory, 'other-project');
       const click = id =>
@@ -16682,18 +16306,18 @@ async function main() {
       workspaceTemplateErrors.set(other, 'Workspace agents unavailable');
       await click('new-agent-choose-folder');
       await until(
-        () =>
-          document
-            .getElementById('new-agent-error')
-            .textContent.includes('Workspace agents unavailable'),
-        'Workspace template failure was not shown',
+        () => !document.getElementById('new-agent-create').disabled,
+        'Folder selection did not finish',
       );
       assert.deepEqual(
         await evaluate(() => ({
-          count: document.getElementById('new-agent-template').options.length,
-          disabled: document.getElementById('new-agent-create').disabled,
+          folder: document.getElementById('new-agent-folder').textContent,
+          recent: document.getElementById('new-agent-recent').value,
+          error: document.getElementById('new-agent-error').hidden,
+          configuration: Boolean(document.getElementById('new-agent-template')),
         })),
-        {count: 0, disabled: true},
+        {folder: other, recent: '', error: true, configuration: false},
+        'Workspace agent configuration does not gate a new Main conversation',
       );
       await click('new-agent-cancel');
       recentProjectsError = undefined;
@@ -16710,7 +16334,7 @@ async function main() {
       }, other);
       await until(
         () => !document.getElementById('new-agent-create').disabled,
-        'Workspace retry did not reload templates',
+        'Recent workspace selection did not finish',
       );
       assert.equal(
         await evaluate(() => document.getElementById('new-agent-error').hidden),
@@ -16761,21 +16385,15 @@ async function main() {
   );
 
   await run(
-    'New conversation ignores stale workspace, history, and folder picker results',
+    'New conversation ignores stale history and folder picker results',
     async () => {
       const other = join(directory, 'other-project');
       const click = id =>
         evaluate(id => document.getElementById(id).click(), id);
-      workspaceTemplateDelays.set(directory, 250);
-      workspaceTemplateErrors.set(directory, 'Stale template error');
-      workspaceTemplateResponses.set(other, {
-        templates: [{id: 'other', name: 'Other workspace', scope: 'workspace'}],
-        defaultAgentId: 'other',
-      });
       await click('open-new-agent');
       await until(
         () => !document.getElementById('new-agent-recent').disabled,
-        'Recent choices did not load during template request',
+        'Recent choices did not load',
       );
       await evaluate(other => {
         const recent = document.getElementById('new-agent-recent');
@@ -16783,51 +16401,44 @@ async function main() {
         recent.dispatchEvent(new Event('change'));
       }, other);
       await until(
-        () => document.getElementById('new-agent-template').value === 'other',
+        () =>
+          document
+            .getElementById('new-agent-folder')
+            .textContent.endsWith('other-project'),
         'Latest workspace did not load',
       );
-      await new Promise(resolve => setTimeout(resolve, 300));
-      assert.equal(
-        await evaluate(() => document.getElementById('new-agent-error').hidden),
-        true,
-      );
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('new-agent-template').value,
-        ),
-        'other',
+      assert.deepEqual(
+        await evaluate(() => ({
+          folder: document.getElementById('new-agent-folder').textContent,
+          recent: document.getElementById('new-agent-recent').value,
+          configuration: Boolean(document.getElementById('new-agent-template')),
+        })),
+        {folder: other, recent: other, configuration: false},
       );
       await click('new-agent-cancel');
-      workspaceTemplateErrors.clear();
+
       recentProjectsDelay = 250;
       recentProjects = [directory];
-      workspaceTemplateDelays.set(directory, 250);
       await click('open-new-agent');
       await click('new-agent-cancel');
       recentProjectsDelay = 0;
       recentProjects = [other];
-      workspaceTemplateDelays.clear();
-      workspaceTemplateResponses.set(directory, {
-        templates: [{id: 'fresh', scope: 'workspace'}],
-        defaultAgentId: 'fresh',
-      });
       await click('open-new-agent');
       await until(
-        () =>
-          document.getElementById('new-agent-template').value === 'fresh' &&
-          document.getElementById('new-agent-recent').options.length === 2,
-        'Reopened dialog did not load fresh results',
+        () => document.getElementById('new-agent-recent').options.length === 2,
+        'Reopened dialog did not load fresh history',
       );
       await new Promise(resolve => setTimeout(resolve, 300));
       assert.deepEqual(
         await evaluate(() => ({
-          agent: document.getElementById('new-agent-template').value,
+          folder: document.getElementById('new-agent-folder').textContent,
           folders: [...document.getElementById('new-agent-recent').options]
             .slice(1)
             .map(option => option.value),
         })),
-        {agent: 'fresh', folders: [other]},
+        {folder: directory, folders: [other]},
       );
+
       chosenFolder = other;
       dialogDelays.set('chooseFolder', 250);
       await click('new-agent-choose-folder');
@@ -16838,14 +16449,15 @@ async function main() {
         'Reopened dialog stayed busy',
       );
       await new Promise(resolve => setTimeout(resolve, 300));
-      assert.deepEqual(
-        await evaluate(() => ({
-          folder: document.getElementById('new-agent-folder').textContent,
-          agent: document.getElementById('new-agent-template').value,
-        })),
-        {folder: directory, agent: 'fresh'},
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('new-agent-folder').textContent,
+        ),
+        directory,
+        'A stale folder picker result cannot replace the reopened workspace',
       );
       await click('new-agent-cancel');
+      dialogDelays.delete('chooseFolder');
     },
   );
 
@@ -17107,7 +16719,7 @@ async function main() {
   );
 
   await run(
-    'scoped default configurations remain selected below workspace overrides',
+    'scoped configuration defaults do not replace the fixed Main agent',
     async () => {
       const global = agentDefinition('global', 'reviewer', {
         name: 'Shared reviewer',
@@ -17127,27 +16739,14 @@ async function main() {
       creationIds = ['scoped-review-session'];
       await evaluate(() => document.getElementById('open-new-agent').click());
       await until(
-        () => !document.getElementById('new-agent-template').disabled,
-        'Scoped default configuration did not load',
+        () => !document.getElementById('new-agent-create').disabled,
+        'New conversation did not become ready',
       );
-      assert.deepEqual(
-        await evaluate(() => {
-          const select = document.getElementById('new-agent-template');
-          return {
-            selected: select.value,
-            label: select.selectedOptions[0].textContent,
-            personalAvailable: [...select.options].some(
-              option =>
-                option.value === 'reviewer' &&
-                option.textContent.includes('Personal reviewer'),
-            ),
-          };
-        }),
-        {
-          selected: 'global:reviewer',
-          label: 'Shared reviewer · Global',
-          personalAvailable: true,
-        },
+      assert.equal(
+        await evaluate(() =>
+          Boolean(document.getElementById('new-agent-template')),
+        ),
+        false,
       );
       for (const [width, height, zoom] of [
         [1600, 1000, 1],
@@ -17158,47 +16757,52 @@ async function main() {
         await settle();
         assert.equal(
           await evaluate(() => {
-            const select = document
-              .getElementById('new-agent-template')
+            const workspace = document
+              .getElementById('new-agent-workspace')
               .getBoundingClientRect();
             const create = document
               .getElementById('new-agent-create')
               .getBoundingClientRect();
             return (
-              select.width > 0 &&
-              select.top >= 0 &&
-              select.right <= innerWidth &&
+              workspace.width > 0 &&
+              workspace.top >= 0 &&
+              workspace.right <= innerWidth &&
               create.bottom <= innerHeight &&
               document.documentElement.scrollHeight <= innerHeight
             );
           }),
           true,
-          'Scoped configuration and create control must remain accessible',
+          'Workspace and create controls must remain accessible',
         );
         if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-          await screenshot(`scoped-default-${width}-${zoom}`);
+          await screenshot(`fixed-main-default-${width}-${zoom}`);
       }
       await evaluate(() => document.getElementById('new-agent-create').click());
       await until(
         () => !document.getElementById('new-agent-dialog').open,
-        'Scoped default conversation did not open',
+        'Fixed Main conversation did not open',
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'createSession').at(-1),
-        {
-          method: 'createSession',
-          input: {cwd: directory, templateId: 'global:reviewer'},
-        },
+        {method: 'createSession', input: {cwd: directory}},
       );
       assert.equal(
-        resources.get('scoped-review-session').agentProfile.name,
-        'Shared reviewer',
+        resources.get('scoped-review-session').agentProfile,
+        undefined,
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          kind: document.getElementById('inspector').dataset.conversationKind,
+          label: document.getElementById('conversation-kind-label').textContent,
+          profileHidden: document.getElementById('agent-profile-label').hidden,
+        })),
+        {kind: 'main', label: 'Main agent', profileHidden: true},
       );
     },
   );
 
   await run(
-    'agent templates support global, repository, and personal workspace scopes and create conversations',
+    'agent templates support global, repository, and personal workspace scopes',
     async () => {
       const fill = async values =>
         evaluate(values => {
@@ -17212,40 +16816,33 @@ async function main() {
         }, values);
       const click = id =>
         evaluate(id => document.getElementById(id).click(), id);
-      await until(
-        () =>
-          document.getElementById('agent-profile-label').textContent ===
-          'Default',
-        'Legacy feature responses did not fall back to Default',
-      );
+      window.webContents.setZoomFactor(1);
+      window.setContentSize(1600, 1000);
+      await settle();
       creationIds = ['plain-agent-session'];
       const plainPromptCount = calls.filter(
         call => call.method === 'prompt',
       ).length;
       await click('open-new-agent');
       await until(
-        () => !document.getElementById('new-agent-template').disabled,
-        'Plain conversation choices did not load',
+        () => !document.getElementById('new-agent-create').disabled,
+        'Plain conversation did not become ready',
       );
       assert.deepEqual(
         await evaluate(() => ({
-          values: [
-            ...document.getElementById('new-agent-template').options,
-          ].map(option => option.value),
-          selected: document.getElementById('new-agent-template').value,
+          configuration: Boolean(document.getElementById('new-agent-template')),
           name: document.getElementById('new-agent-name').value,
           namePlaceholder:
             document.getElementById('new-agent-name').placeholder,
           startDisabled: document.getElementById('new-agent-create').disabled,
         })),
         {
-          values: ['build', 'default', 'plan'],
-          selected: 'default',
+          configuration: false,
           name: '',
           namePlaceholder: basename(directory),
           startDisabled: false,
         },
-        'A workspace without custom profiles selects the Default agent',
+        'A plain conversation starts with the fixed Main agent',
       );
       await click('new-agent-create');
       await until(
@@ -17254,36 +16851,34 @@ async function main() {
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'createSession').at(-1),
-        {
-          method: 'createSession',
-          input: {cwd: directory, templateId: 'default'},
-        },
+        {method: 'createSession', input: {cwd: directory}},
       );
       assert.equal(
         calls.filter(call => call.method === 'prompt').length,
         plainPromptCount,
       );
-      await until(
-        () =>
-          document.getElementById('agent-profile-label').textContent ===
-          'Default',
-        'Selected Default agent was not shown in conversation controls',
+      assert.equal(
+        resources.get('plain-agent-session').agentProfile,
+        undefined,
+      );
+      assert.deepEqual(
+        await evaluate(() => ({
+          kind: document.getElementById('inspector').dataset.conversationKind,
+          label: document.getElementById('conversation-kind-label').textContent,
+          profileHidden: document.getElementById('agent-profile-label').hidden,
+          maintenanceHidden: document.getElementById(
+            'session-maintenance-profile',
+          ).hidden,
+        })),
+        {
+          kind: 'main',
+          label: 'Main agent',
+          profileHidden: true,
+          maintenanceHidden: true,
+        },
       );
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('default-agent-conversation');
-      await click('open-commands');
-      await until(
-        () => document.getElementById('commands-dialog').open,
-        'Session settings did not open',
-      );
-      assert.equal(
-        await evaluate(
-          () =>
-            document.getElementById('session-maintenance-agent').textContent,
-        ),
-        'Default',
-      );
-      await click('close-commands');
+        await screenshot('fixed-main-conversation');
       agentTemplates.push(...authoredAgentTemplates());
       defaultAgentId = 'writer';
       await click('open-workspace-config');
@@ -17703,47 +17298,25 @@ async function main() {
       await settle();
       await click('open-new-agent');
       await until(
-        () =>
-          document.querySelectorAll('#new-agent-template option').length === 7,
-        'Effective primary agent choices did not load',
+        () => !document.getElementById('new-agent-create').disabled,
+        'New conversation did not become ready',
       );
       assert.deepEqual(
         await evaluate(() => ({
-          values: [
-            ...document.getElementById('new-agent-template').options,
-          ].map(option => option.value),
-          selected: document.getElementById('new-agent-template').value,
-          name: document.getElementById('new-agent-name').value,
-        })),
-        {
-          values: [
-            'build',
-            'default',
-            'flex',
-            'plan',
-            'reviewer',
-            'team/reviewer',
-            'writer',
-          ],
-          selected: 'writer',
-          name: '',
-        },
-        'Only visible enabled primary-capable agents are offered and the configured writer is selected',
-      );
-      await fill({
-        'new-agent-template': 'reviewer',
-        'new-agent-task': 'Review the current change.',
-      });
-      assert.deepEqual(
-        await evaluate(() => ({
+          configuration: Boolean(document.getElementById('new-agent-template')),
           name: document.getElementById('new-agent-name').value,
           placeholder: document.getElementById('new-agent-name').placeholder,
         })),
-        {name: '', placeholder: basename(directory)},
-        'Selecting an agent keeps the optional name blank',
+        {
+          configuration: false,
+          name: '',
+          placeholder: basename(directory),
+        },
+        'Saved agent configurations do not replace the fixed Main agent',
       );
+      await fill({'new-agent-task': 'Review the current change.'});
       if (process.env.DESKTOP_UI_SCREENSHOT_DIR)
-        await screenshot('agent-create-template');
+        await screenshot('new-conversation-fixed-main');
       creationIds = ['review-session'];
       creationError = 'Agent creation failed';
       await click('new-agent-create');
@@ -17759,7 +17332,7 @@ async function main() {
       await click('new-agent-create');
       await until(
         () => !document.getElementById('new-agent-dialog').open,
-        'New agent did not open',
+        'New conversation did not open',
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'createSession').at(-1),
@@ -17768,7 +17341,6 @@ async function main() {
           input: {
             cwd: directory,
             name: 'Interactive reviewer',
-            templateId: 'reviewer',
           },
         },
       );
@@ -17776,18 +17348,19 @@ async function main() {
         hub.sessions.map(item => item.session.id),
         ['alpha', 'beta', 'plain-agent-session', 'review-session'],
       );
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('inspector-title').textContent,
-        ),
-        'Interactive reviewer',
+      assert.deepEqual(
+        await evaluate(() => ({
+          title: document.getElementById('inspector-title').textContent,
+          kind: document.getElementById('inspector').dataset.conversationKind,
+          profileHidden: document.getElementById('agent-profile-label').hidden,
+        })),
+        {
+          title: 'Interactive reviewer',
+          kind: 'main',
+          profileHidden: true,
+        },
       );
-      await until(
-        () =>
-          document.getElementById('agent-profile-label').textContent ===
-          'Personal reviewer',
-        'Selected reviewer profile was not shown',
-      );
+      assert.equal(resources.get('review-session').agentProfile, undefined);
       assert.deepEqual(calls.filter(call => call.method === 'prompt').at(-1), {
         method: 'prompt',
         sessionId: 'review-session',
@@ -17854,10 +17427,15 @@ async function main() {
       creationIds = ['empty-review'];
       await click('open-new-agent');
       await until(
-        () => !document.getElementById('new-agent-template').disabled,
-        'Agent choices did not load',
+        () => !document.getElementById('new-agent-create').disabled,
+        'New conversation did not become ready',
       );
-      await fill({'new-agent-template': 'reviewer', 'new-agent-name': ''});
+      assert.equal(
+        await evaluate(() =>
+          Boolean(document.getElementById('new-agent-template')),
+        ),
+        false,
+      );
       await click('new-agent-create');
       await until(
         () => !document.getElementById('new-agent-dialog').open,
@@ -17865,10 +17443,7 @@ async function main() {
       );
       assert.deepEqual(
         calls.filter(call => call.method === 'createSession').at(-1),
-        {
-          method: 'createSession',
-          input: {cwd: directory, templateId: 'reviewer'},
-        },
+        {method: 'createSession', input: {cwd: directory}},
       );
       assert.equal(
         calls.filter(call => call.method === 'prompt').length,
@@ -18007,42 +17582,27 @@ async function main() {
         await screenshot('ordinary-filename-editor');
       }
       await click('agent-templates-close');
-      for (const [index, id] of filenameIds.entries()) {
-        await click('open-new-agent');
-        await until(
-          () => !document.getElementById('new-agent-template').disabled,
-          'Ordinary filename options did not load',
-        );
-        const selector = id.includes(':') ? `workspace:${id}` : id;
-        await evaluate(selector => {
-          const select = document.getElementById('new-agent-template');
-          select.value = selector;
-          select.dispatchEvent(new Event('change', {bubbles: true}));
-        }, selector);
-        assert.equal(
-          await evaluate(
-            () => document.getElementById('new-agent-template').value,
+      assert.deepEqual(
+        filenameIds.map(id =>
+          listFixtureAgentTemplates(directory).templates.some(
+            template => template.id === id,
           ),
-          selector,
-        );
-        if (process.env.DESKTOP_UI_SCREENSHOT_DIR && index === 1)
-          await screenshot('ordinary-filename-selection');
-        creationIds = [`ordinary-filename-${index}`];
-        await click('new-agent-create');
-        await until(
-          () => !document.getElementById('new-agent-dialog').open,
-          'Ordinary filename selection did not create a conversation',
-        );
-        assert.equal(
-          calls.filter(call => call.method === 'createSession').at(-1).input
-            .templateId,
-          selector,
-        );
-        assert.equal(
-          resources.get(`ordinary-filename-${index}`).agentProfile.id,
-          id,
-        );
-      }
+        ),
+        [true, true, true, true],
+      );
+      await click('open-new-agent');
+      await until(
+        () => !document.getElementById('new-agent-create').disabled,
+        'New conversation did not become ready after saving configurations',
+      );
+      assert.equal(
+        await evaluate(() =>
+          Boolean(document.getElementById('new-agent-template')),
+        ),
+        false,
+        'Saved configurations remain outside the fixed Main conversation form',
+      );
+      await click('new-agent-cancel');
     },
   );
 }

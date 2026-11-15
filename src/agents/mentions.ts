@@ -65,7 +65,6 @@ export function eligibleAgentMentions(
       template =>
         !template.hidden &&
         !template.disabled &&
-        template.mode !== 'primary' &&
         agentCatalogAllows(parent, template.id),
     )
     .map(({id, name, description}) => {

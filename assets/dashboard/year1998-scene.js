@@ -1968,10 +1968,10 @@ function createScene(
       .map(visitor => visitor.name || visitor.id);
     const label = [
       factory
-        ? '2D factory with a primary agent and agent workstations'
-        : 'Isometric office with a primary agent and agent workstations',
-      detail ? `Primary agent: ${detail}` : '',
-      foreign.length ? `Visiting primary agents: ${foreign.join(', ')}` : '',
+        ? '2D factory with a Main agent and agent workstations'
+        : 'Isometric office with a Main agent and agent workstations',
+      detail ? `Main agent: ${detail}` : '',
+      foreign.length ? `Visiting Main agents: ${foreign.join(', ')}` : '',
     ]
       .filter(Boolean)
       .join('. ');

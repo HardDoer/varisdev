@@ -11,12 +11,8 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import {join} from 'node:path';
 import {registerParentModelProviders} from '../agents/model-runtime.ts';
-import {
-  createDefaultAgentProfile,
-  resolveDefaultAgentTemplate,
-  ensureAgentProfilePermissions,
-  type AgentTemplate,
-} from '../agents/templates.ts';
+import {ensureAgentProfilePermissions} from '../agents/templates.ts';
+import {createMainAgentProfile, mainAgentEntry} from '../agents/main.ts';
 import {createAgentPolicyExtension} from '../agents/policy.ts';
 import {
   createAgentApprovalRelay,
@@ -34,14 +30,17 @@ import type {
 } from './hub.ts';
 import {
   sessionFeatures,
-  agentProfileSummary,
   supportedThinkingLevels,
   type SessionConfiguration,
   type SessionFeatures,
 } from './features.ts';
 import {DesktopExtensionUI} from './extension-ui.ts';
 import {observeDashboardSession} from './observe.ts';
-import {primaryClosedEntry, persistPrimarySession} from './primary-session.ts';
+import {
+  primaryClosedEntry,
+  persistPrimarySession,
+  sessionPrimaryClosed,
+} from './primary-session.ts';
 import {agentSessionRequest} from './hub.ts';
 import type {DashboardState} from './state.ts';
 import type {DesktopStartup} from '../desktop/startup.ts';
@@ -102,63 +101,21 @@ export async function createDashboardParent(
       : SessionManager.create(request.cwd);
   if (request.resume && sessionManager.getSessionId() !== request.resume.id)
     throw new Error('This saved session is no longer available.');
-  const savedProfileEntry = sessionManager
-    .getEntries()
-    .findLast(
-      entry =>
-        entry.type === 'custom' &&
-        entry.customType === 'varisdev.agent-profile',
-    );
-  const savedProfile =
-    savedProfileEntry?.type === 'custom'
-      ? (savedProfileEntry.data as AgentTemplate | undefined)
-      : undefined;
-  const profileSnapshot =
-    savedProfile ??
-    request.agentProfile ??
-    (request.resume || startup
-      ? createDefaultAgentProfile()
-      : await resolveDefaultAgentTemplate(request.cwd, 'primary'));
-  const selectedProfile = await ensureAgentProfilePermissions(
+  const agentProfile = await ensureAgentProfilePermissions(
     request.cwd,
-    profileSnapshot,
+    createMainAgentProfile(),
   );
   if (
-    !request.resume &&
-    !startup &&
-    (selectedProfile.disabled || selectedProfile.mode === 'subagent')
+    !sessionManager
+      .getEntries()
+      .some(
+        entry => entry.type === 'custom' && entry.customType === mainAgentEntry,
+      )
   )
-    throw new Error(
-      'Choose an enabled agent profile that supports primary use.',
-    );
-  const agentProfile = structuredClone(selectedProfile);
-  if (
-    !savedProfile ||
-    JSON.stringify(savedProfile) !== JSON.stringify(agentProfile)
-  )
-    sessionManager.appendCustomEntry(
-      'varisdev.agent-profile',
-      structuredClone(agentProfile),
-    );
-  const savedContextEntry = sessionManager
-    .getEntries()
-    .findLast(
-      entry =>
-        entry.type === 'custom' &&
-        entry.customType === 'varisdev.agent-context',
-    );
-  const savedContext =
-    savedContextEntry?.type === 'custom'
-      ? (savedContextEntry.data as {scope?: unknown} | undefined)
-      : undefined;
-  const contextScope =
-    savedContext?.scope === 'task' || savedContext?.scope === 'workspace'
-      ? savedContext.scope
-      : (agentProfile?.context ?? 'workspace');
-  if (!savedContextEntry && (agentProfile || (!request.resume && !startup)))
-    sessionManager.appendCustomEntry('varisdev.agent-context', {
-      scope: contextScope,
-    });
+    sessionManager.appendCustomEntry(mainAgentEntry, {version: 1});
+  if (sessionPrimaryClosed(sessionManager))
+    sessionManager.appendCustomEntry(primaryClosedEntry, {closed: false});
+  const contextScope = 'workspace';
   const savedInstructions = request.resume
     ? sessionManager
         .getEntries()
@@ -204,7 +161,9 @@ export async function createDashboardParent(
     const signals = [...activePrompts]
       .filter(prompt => prompt.countsAsRun)
       .map(prompt => prompt.controller.signal);
-    return signals.length ? AbortSignal.any(signals) : undefined;
+    return signals.length
+      ? AbortSignal.any([parentCancellation.signal, ...signals])
+      : parentCancellation.signal;
   };
   let context: ExtensionContext | undefined;
   let control: AgentSessionController | undefined;
@@ -280,6 +239,7 @@ export async function createDashboardParent(
             pi.events.emit('varisdev:agent-profile-managed', {
               sessionId: sessionManager.getSessionId(),
               profile: agentProfile,
+              main: true,
             });
             registerProjectTools(pi);
             control = registerAgentTools(pi, undefined, {
@@ -288,24 +248,12 @@ export async function createDashboardParent(
               approval,
               signal: approvalSignal,
             });
-            pi.on('input', () => {
-              if (state?.deliverySnapshot().session.primaryClosed)
-                return {action: 'handled'};
-              return;
-            });
             showCustomMessage = observeDashboardSession(
               pi,
               control,
               (current, ctx) => {
                 state = current;
                 context = ctx;
-                if (control?.snapshot())
-                  control
-                    .getTeam(ctx)
-                    .getManager()
-                    .setPrimaryOpen(
-                      !current.deliverySnapshot().session.primaryClosed,
-                    );
               },
               state,
             );
@@ -517,8 +465,7 @@ export async function createDashboardParent(
   // Extension commands can start model turns without returning their promises.
   const sendUserMessage = session.sendUserMessage.bind(session);
   session.sendUserMessage = (...args) => {
-    if (state!.deliverySnapshot().session.primaryClosed)
-      return Promise.reject(new Error('This primary agent has closed.'));
+    if (closed) return Promise.reject(new Error('This workspace has closed.'));
     const operation = sendUserMessage(...args);
     for (const prompt of extensionPrompts)
       if (prompt.trackExtensionOperations)
@@ -527,8 +474,8 @@ export async function createDashboardParent(
   };
   const sendCustomMessage = session.sendCustomMessage.bind(session);
   session.sendCustomMessage = (message, options) => {
-    if (options?.triggerTurn && state!.deliverySnapshot().session.primaryClosed)
-      return Promise.reject(new Error('This primary agent has closed.'));
+    if (closed && options?.triggerTurn)
+      return Promise.reject(new Error('This workspace has closed.'));
     const operation = sendCustomMessage(message, options);
     if (options?.triggerTurn)
       for (const prompt of extensionPrompts)
@@ -767,7 +714,7 @@ export async function createDashboardParent(
         ...diagnostics,
         ...(failure ? [{message: `llama.cpp: ${failure.message}`}] : []),
       ]);
-      features.agentProfile = agentProfileSummary(agentProfile);
+      delete features.agentProfile;
       features.agentMentions = await discoverAgentMentions(
         sessionManager.getCwd(),
         agentProfile,
@@ -782,12 +729,6 @@ export async function createDashboardParent(
     async prompt(text, images) {
       requireOpen();
       const parsed = parseSlashCommand(text);
-      if (
-        state!.deliverySnapshot().session.primaryClosed &&
-        !parseAgentMention(text) &&
-        parsed?.name !== 'name'
-      )
-        throw new Error('This primary agent has closed.');
       const name = parsed?.name;
       const args = parsed?.args ?? '';
       const local = name ? nativeCommand(name) : undefined;
@@ -922,18 +863,6 @@ export async function createDashboardParent(
     async agentSession(input) {
       if (closed) throw new Error('This workspace has closed.');
       const request = agentSessionRequest(input);
-      if (request.agentId === 'parent' && request.action === 'close') {
-        if (!state!.deliverySnapshot().session.primaryClosed) {
-          sessionManager.appendCustomEntry(primaryClosedEntry);
-          state!.updateSession({primaryClosed: true});
-        }
-        await abort();
-        persistPrimarySession(sessionManager);
-        if (control!.snapshot())
-          control!.getTeam(context!).getManager().setPrimaryOpen(false);
-        state!.updateSession({activity: 'Primary agent closed'});
-        return;
-      }
       if (!control!.snapshot())
         throw new Error('This session has no agent conversations.');
       const result = await runAgentSessionRequest(
@@ -961,6 +890,7 @@ export async function createDashboardParent(
       closing = (async () => {
         try {
           await abort();
+          persistPrimarySession(sessionManager);
           await session.extensionRunner.emit({
             type: 'session_shutdown',
             reason: 'quit',

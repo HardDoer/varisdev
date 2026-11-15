@@ -358,7 +358,6 @@ async function main() {
       project: [
         'menu-new-agent',
         'open-workspace-config',
-        'open-agent-templates',
         'new-session',
         'start-session',
         'resume-session',

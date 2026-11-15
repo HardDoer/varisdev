@@ -3,7 +3,7 @@ import {createTerminalTabs} from './terminal.js';
 import {createRenderScheduler} from './render-scheduler.js';
 import {bindConversationLinks, renderFileLinks} from './file-links.js';
 import {createThemeScene} from './theme-scene.js';
-import {primaryUnit} from './scene-primary.js';
+import {mainUnit, primaryUnit} from './scene-primary.js';
 import {createDraftStore, flushDrafts} from './draft-storage.js';
 import {createFactoryCane} from './factory-cane.js';
 import {createFactoryGun} from './factory-gun.js';
@@ -264,25 +264,34 @@ function text(item, value) {
     value === undefined || value === null || value === '' ? '—' : String(value);
   if (item.textContent !== next) item.textContent = next;
 }
-function conversationKind(unit, starter = false) {
-  return !starter && unit?.agentMode === 'subagent' ? 'subagent' : 'primary';
+function conversationKind(unit, main = false) {
+  return main
+    ? 'main'
+    : unit?.agentMode === 'subagent'
+      ? 'subagent'
+      : 'primary';
 }
 function conversationKindLabel(kind) {
-  return kind === 'subagent' ? 'Subagent' : 'Primary agent';
+  return kind === 'main'
+    ? 'Main agent'
+    : kind === 'subagent'
+      ? 'Subagent'
+      : 'Primary agent';
 }
-function updateRobot(item, kind, starter = false) {
+function updateRobot(item, kind) {
+  const main = kind === 'main';
   item.classList.add('robot-glyph');
-  item.classList.toggle('robot-starter', starter);
-  item.classList.toggle('agent', !starter);
-  item.classList.toggle('robot-primary', kind === 'primary');
+  item.classList.toggle('robot-starter', main);
+  item.classList.toggle('agent', !main);
+  item.classList.toggle('robot-primary', kind === 'primary' || main);
   item.classList.toggle('robot-subagent', kind === 'subagent');
   item.dataset.agentKind = kind;
   item.setAttribute('role', 'img');
   item.setAttribute('aria-label', conversationKindLabel(kind));
 }
-function robot(kind = 'primary', starter = false) {
+function robot(kind = 'primary') {
   const item = node('span');
-  updateRobot(item, kind, starter);
+  updateRobot(item, kind);
   item.append(node('i'), node('span', 'robot-crown'));
   item.lastChild.setAttribute('aria-hidden', 'true');
   return item;
@@ -368,7 +377,7 @@ function conversationControllable(data = snapshot(), unit = selectedUnit()) {
     !!unit &&
     canControl(data.session) &&
     (state.unitId === 'parent'
-      ? unit.status !== 'closed' && !unit.primaryClosed
+      ? true
       : agentResumable(unit) && !!api?.agentSession)
   );
 }
@@ -441,14 +450,12 @@ function duration(item) {
 function counts(data) {
   return {
     working:
-      Number(
-        !data.session.primaryClosed &&
-          ['running', 'compacting'].includes(data.session.status),
-      ) + data.agents.filter(item => WORKING.has(item.status)).length,
+      Number(['running', 'compacting'].includes(data.session.status)) +
+      data.agents.filter(item => WORKING.has(item.status)).length,
     queued: data.agents.filter(item => item.status === 'queued').length,
     completed: data.agents.filter(item => item.status === 'completed').length,
     failed:
-      Number(!data.session.primaryClosed && parentHasError(data.session)) +
+      Number(parentHasError(data.session)) +
       data.agents.filter(item => item.status === 'failed').length,
   };
 }
@@ -715,15 +722,23 @@ function submitFromEditor(event, form) {
   form.requestSubmit();
 }
 
+function recordAgentView(ownerId, agentId) {
+  if (!ownerId || agentId === 'parent' || !api?.agentSession) return;
+  void Promise.resolve()
+    .then(() => api.agentSession(ownerId, {agentId, action: 'view'}))
+    .catch(() => {
+      // Retention may have removed the agent before the selection arrived.
+    });
+}
 function selectSession(id, unitId) {
   const data = state.hub.sessions.find(item => item.session.id === id);
-  if (!unitId || (unitId === 'parent' && data?.session.primaryClosed))
-    unitId = primaryUnit(data)?.id || data?.agents[0]?.id || 'parent';
-  if (
-    (state.sessionId === id && state.unitId === unitId) ||
-    !state.hub.sessions.some(item => item.session.id === id)
-  )
+  if (!unitId) unitId = 'parent';
+  if (!data) return;
+  if (state.sessionId === id && state.unitId === unitId) {
+    recordAgentView(id, unitId);
     return;
+  }
+  recordAgentView(id, unitId);
   saveDraft();
   saveConversationDisclosures();
   state.sessionId = id;
@@ -736,11 +751,10 @@ function selectSession(id, unitId) {
   render();
 }
 function selectUnit(id) {
-  if (id === 'parent' && snapshot()?.session.primaryClosed)
-    id = primaryUnit(snapshot())?.id || snapshot()?.agents[0]?.id;
   if (!id) return;
   if (id !== 'parent' && !snapshot()?.agents.some(item => item.id === id))
     return;
+  recordAgentView(state.sessionId, id);
   liveView.close();
   if (state.unitId !== id) {
     saveConversationDisclosures();
@@ -758,7 +772,7 @@ function createParentCard(data) {
   const header = node('span', 'parent-card-header');
   const name = node('span', 'parent-card-name');
   const status = node('span', 'status-badge');
-  header.append(robot('primary', true), name, status);
+  header.append(robot('main'), name, status);
   const path = node('span', 'project-path mono');
   const activity = node('span', 'parent-card-activity');
   element.append(header, path, activity);
@@ -784,24 +798,23 @@ function renderOverview() {
     createParentCard,
     (entry, data) => {
       const session = data.session;
-      const primary = session.primaryClosed ? primaryUnit(data)?.unit : session;
-      const activity = primary?.activity || 'Waiting for a task';
+      const activity = session.activity || 'Waiting for a task';
       const selected = session.id === state.sessionId;
       entry.element.classList.toggle('selected', selected);
       entry.element.setAttribute('aria-pressed', String(selected));
       text(entry.name, session.name);
-      parentBadge(entry.status, primary || session);
+      parentBadge(entry.status, session);
       const needsInput = !!data.ui?.dialogs?.length;
-      const hasError = primary && parentHasError(primary);
+      const hasError = parentHasError(session);
       entry.element.classList.toggle('attention', hasError || needsInput);
       text(entry.path, session.cwd);
       text(
         entry.activity,
         needsInput
           ? `Needs input: ${data.ui.dialogs[0].title}`
-          : (hasError && primary.error) || activity,
+          : (hasError && session.error) || activity,
       );
-      entry.element.title = `${session.name}\n${session.cwd}\n${activity}\n${data.agents.length + Number(!session.primaryClosed)} agents${hasError ? `\n${primary.error}` : ''}`;
+      entry.element.title = `${session.name}\n${session.cwd}\n${activity}\n${data.agents.length + 1} agents${hasError ? `\n${session.error}` : ''}`;
     },
   );
   const working = workspaces.reduce(
@@ -880,13 +893,7 @@ function sceneAgents(data) {
   ].slice(0, Math.max(6, Math.min(8, live.length)));
 }
 function renderFallback(data) {
-  const largeId = primaryUnit(data)?.id;
-  const units = [
-    ...(!data.session.primaryClosed && data.session.status !== 'closed'
-      ? [{...data.session, id: 'parent'}]
-      : []),
-    ...sceneAgents(data),
-  ];
+  const units = [{...data.session, id: 'parent'}, ...sceneAgents(data)];
   reconcile(
     $('fallback-units'),
     fallbackNodes,
@@ -895,10 +902,7 @@ function renderFallback(data) {
     unit => {
       const element = node('button');
       element.type = 'button';
-      const mark = robot(
-        conversationKind(unit, unit.id === 'parent'),
-        unit.id === largeId,
-      );
+      const mark = robot(conversationKind(unit, unit.id === 'parent'));
       const status = node('span');
       const name = node('strong');
       const task = node('p');
@@ -913,11 +917,11 @@ function renderFallback(data) {
       entry.element.dataset.contextSession = data.session.id;
       const parent = unit.id === 'parent';
       const kind = conversationKind(unit, parent);
-      const task = parent ? unit.prompt || 'Primary agent prompt' : unit.task;
+      const task = parent ? unit.prompt || 'Main agent prompt' : unit.task;
       const activity = unit.activity || statusName(unit.status);
-      entry.element.className = `fallback-station ${unit.id === largeId ? 'parent-session' : 'agent'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
+      entry.element.className = `fallback-station ${parent ? 'parent-session' : 'agent'} ${Object.hasOwn(STATUS, unit.status) ? unit.status : ''}`;
       entry.element.dataset.agentKind = kind;
-      updateRobot(entry.mark, kind, unit.id === largeId);
+      updateRobot(entry.mark, kind);
       entry.element.classList.toggle('selected', state.unitId === unit.id);
       entry.element.setAttribute(
         'aria-pressed',
@@ -1021,9 +1025,11 @@ function renderFactory() {
   updateRobot(
     $('selected-conversation-mark'),
     conversationKind(selected, state.unitId === 'parent'),
-    state.unitId === primaryUnit(data)?.id,
   );
-  text($('factory-title'), selected.name);
+  text(
+    $('factory-title'),
+    state.unitId === 'parent' ? 'Main agent' : selected.name,
+  );
   $('factory-title').title = selected.name;
   text($('factory-model'), selected.model);
   $('factory-model').title = selected.model || '';
@@ -1063,10 +1069,7 @@ function createWorkerCard(agent) {
   const element = node('button', 'worker-card');
   element.type = 'button';
   const header = node('span', 'worker-card-header');
-  const mark = robot(
-    conversationKind(agent, agent.id === 'parent'),
-    agent.id === primaryUnit(snapshot())?.id,
-  );
+  const mark = robot(conversationKind(agent, agent.id === 'parent'));
   const heading = node('span', 'worker-card-heading');
   const name = node('span', 'worker-card-name');
   const activity = node('span', 'worker-card-activity');
@@ -1085,10 +1088,7 @@ function createWorkerCard(agent) {
 function createHistoryRow(agent) {
   const element = node('button', 'history-row');
   element.type = 'button';
-  const mark = robot(
-    conversationKind(agent, agent.id === 'parent'),
-    agent.id === primaryUnit(snapshot())?.id,
-  );
+  const mark = robot(conversationKind(agent, agent.id === 'parent'));
   const info = node('span', 'history-row-info');
   const name = node('span', 'history-row-name');
   const task = node('span', 'history-row-task');
@@ -1105,16 +1105,16 @@ function renderWorkers() {
   const starter = {
     ...data.session,
     id: 'parent',
-    task: data.session.prompt || 'Primary agent conversation',
+    task: data.session.prompt || 'Main agent conversation',
   };
   const agents = orderedAgents(data.agents);
-  const largeId = primaryUnit(data)?.id;
+  const closed = starter.status === 'closed';
   const active = [
-    ...(starter.primaryClosed || starter.status === 'closed' ? [] : [starter]),
+    ...(closed ? [] : [starter]),
     ...agents.filter(item => LIVE.has(item.status)),
   ];
   const history = [
-    ...(!starter.primaryClosed && starter.status === 'closed' ? [starter] : []),
+    ...(closed ? [starter] : []),
     ...agents.filter(item => !LIVE.has(item.status)),
   ];
   reconcile(
@@ -1134,7 +1134,7 @@ function renderWorkers() {
       entry.element.dataset.status = agent.status;
       entry.element.dataset.contextSession = data.session.id;
       entry.element.dataset.agentKind = kind;
-      updateRobot(entry.mark, kind, agent.id === largeId);
+      updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
       const activity = agent.activity || '';
       text(entry.task, agent.task);
@@ -1170,7 +1170,7 @@ function renderWorkers() {
       );
       entry.element.dataset.contextSession = data.session.id;
       entry.element.dataset.agentKind = kind;
-      updateRobot(entry.mark, kind, agent.id === largeId);
+      updateRobot(entry.mark, kind);
       text(entry.name, agent.name);
       text(entry.task, agent.task);
       badge(entry.status, agent.status);
@@ -1855,12 +1855,7 @@ function renderInspector() {
   }
   const largeId = primaryUnit(data)?.id;
   $('back-to-parent').hidden = !largeId || state.unitId === largeId;
-  $('back-to-parent').setAttribute(
-    'aria-label',
-    data.session.primaryClosed
-      ? 'Back to primary agent'
-      : 'Back to starting agent',
-  );
+  $('back-to-parent').setAttribute('aria-label', 'Back to Main agent');
   $('back-to-parent').title = $('back-to-parent').getAttribute('aria-label');
   $('tab-context').hidden =
     !api?.sessionFeatures || !conversationControllable(data, unit);
@@ -1893,14 +1888,18 @@ function renderInspectorPanel(data, unit, parent) {
   if (panelVisible('tokens')) renderUsage(data);
   if (!panelVisible('details')) return;
   facts($('unit-facts'), [
-    [
-      'Configuration',
-      unit.agentProfile?.name &&
-      unit.agentProfile.id &&
-      unit.agentProfile.name !== unit.agentProfile.id
-        ? `${unit.agentProfile.name} (${unit.agentProfile.id})`
-        : unit.agentProfile?.name || unit.agentProfile?.id,
-    ],
+    ...(!parent
+      ? [
+          [
+            'Configuration',
+            unit.agentProfile?.name &&
+            unit.agentProfile.id &&
+            unit.agentProfile.name !== unit.agentProfile.id
+              ? `${unit.agentProfile.name} (${unit.agentProfile.id})`
+              : unit.agentProfile?.name || unit.agentProfile?.id,
+          ],
+        ]
+      : []),
     [
       'Status',
       parent && parentHasError(unit) ? 'Error' : statusName(unit.status),
@@ -2130,9 +2129,19 @@ function render() {
   workspaceRename.sync();
   whatsNew.ready(snapshotVersion > 0 && !state.hub.startup);
 }
+function normalizeMainHub(hub) {
+  return {
+    ...hub,
+    sessions: hub.sessions.map(data => {
+      const main = mainUnit(data)?.unit;
+      return main && main !== data.session ? {...data, session: main} : data;
+    }),
+  };
+}
 function receive(hub) {
   if (state.disposed) return;
   snapshotVersion++;
+  hub = normalizeMainHub(hub);
   latestHub = hub;
   if (sessionReplacement) {
     const current = hub.sessions.find(
@@ -2163,21 +2172,18 @@ function receive(hub) {
     saveDraft();
     saveConversationDisclosures();
     state.sessionId = next;
-    state.unitId =
-      primaryUnit(snapshot())?.id || snapshot()?.agents[0]?.id || 'parent';
+    state.unitId = 'parent';
     restoreDraft(conversationId());
     setTab('conversation');
   }
   terminalTabs.retain(hub.sessions.map(item => item.session.id));
   if (next === state.desiredSessionId) state.desiredSessionId = null;
   if (
-    (state.unitId === 'parent' && snapshot()?.session.primaryClosed) ||
-    (state.unitId !== 'parent' &&
-      !snapshot()?.agents.some(item => item.id === state.unitId))
+    state.unitId !== 'parent' &&
+    !snapshot()?.agents.some(item => item.id === state.unitId)
   ) {
     saveDraft();
-    state.unitId =
-      primaryUnit(snapshot())?.id || snapshot()?.agents[0]?.id || 'parent';
+    state.unitId = 'parent';
     restoreDraft(conversationId());
   }
   renderScheduler.schedule();
@@ -2221,7 +2227,7 @@ function renderSessionActions() {
   const unit = selectedUnit();
   const id = conversationId();
   const parent = state.unitId === 'parent';
-  const workspaceActions = parent || session?.primaryClosed;
+  const workspaceActions = parent;
   $('open-session-settings').disabled =
     !api?.promptSession ||
     !session ||
@@ -2255,18 +2261,22 @@ function renderSessionActions() {
     session.status === 'closed' ||
     stopping.has(session.id) ||
     closingSessions.has(session.id);
+  const closing =
+    closingSessions.has(conversationId()) || closingSessions.has(session?.id);
   $('close-session').disabled =
     Boolean(creating) ||
     !session ||
-    !api?.agentSession ||
     !unit ||
-    (parent && session.primaryClosed && !!primaryUnit(snapshot())) ||
-    closingSessions.has(conversationId()) ||
-    closingSessions.has(session.id);
-  $('close-session').title = unit ? `Close ${unit.name}` : '';
+    !(parent ? api?.closeSession : api?.agentSession) ||
+    closing;
+  $('close-session').title = unit
+    ? parent
+      ? `Close workspace ${session.name}`
+      : `Close ${unit.name}`
+    : '';
   text(
     $('close-session'),
-    closingSessions.has(conversationId()) ? 'Closing…' : 'Close agent',
+    closing ? 'Closing…' : parent ? 'Close workspace' : 'Close agent',
   );
 }
 async function openFolder(folder) {
@@ -2331,31 +2341,27 @@ async function startSession(submission) {
     render();
   }
 }
-let primaryCloseConfirmations = Promise.resolve();
-function confirmPrimaryClose(name, owned, workspaceName) {
-  const confirmation = primaryCloseConfirmations.then(() =>
-    showPrimaryCloseConfirmation(name, owned, workspaceName),
+let workspaceCloseConfirmations = Promise.resolve();
+function confirmWorkspaceClose(workspaceName, owned) {
+  const confirmation = workspaceCloseConfirmations.then(() =>
+    showWorkspaceCloseConfirmation(workspaceName, owned),
   );
-  primaryCloseConfirmations = confirmation.then(
+  workspaceCloseConfirmations = confirmation.then(
     () => undefined,
     () => undefined,
   );
   return confirmation;
 }
-function showPrimaryCloseConfirmation(name, owned, workspaceName) {
+function showWorkspaceCloseConfirmation(workspaceName, owned) {
   const dialog = $('close-primary-dialog');
-  text(
-    $('close-primary-title'),
-    workspaceName && workspaceName !== name
-      ? `Close ${name} in ${workspaceName}?`
-      : `Close ${name}?`,
-  );
+  text($('close-primary-title'), `Close ${workspaceName}?`);
   text(
     $('close-primary-description'),
     owned
-      ? 'Closing this agent will close this workspace and stop its agents.'
-      : 'Closing this agent will close this workspace in this window.',
+      ? 'Closing this workspace will stop its agents.'
+      : 'Closing this workspace will remove it from this window.',
   );
+  text($('confirm-close-primary'), 'Close workspace');
   return new Promise(resolve => {
     const finish = confirmed => {
       dialog.removeEventListener('cancel', cancel);
@@ -2377,19 +2383,51 @@ function showPrimaryCloseConfirmation(name, owned, workspaceName) {
     $('cancel-close-primary').focus();
   });
 }
-async function closeSession() {
+async function closeWorkspace() {
   const ownerId = state.sessionId;
   const workspace = snapshot()?.session;
-  const owned = workspace?.owned;
+  if (
+    creating ||
+    !ownerId ||
+    !workspace ||
+    !api?.closeSession ||
+    closingSessions.has(ownerId)
+  )
+    return;
+  saveDraft();
+  saveConversationDisclosures();
+  closingSessions.add(ownerId);
+  $('app-error').hidden = true;
+  render();
+  try {
+    if (!(await confirmWorkspaceClose(workspace.name, workspace.owned))) return;
+    await api.closeSession(ownerId);
+    workspaceCache.delete(ownerId);
+    pausedActivity.delete(ownerId);
+    const version = snapshotVersion;
+    const hub = await api.getState();
+    if (version === snapshotVersion) receive(hub);
+    if (!snapshot()) $('app-menu-button').focus();
+  } catch (error) {
+    showError(error);
+  } finally {
+    closingSessions.delete(ownerId);
+    render();
+  }
+}
+async function closeAgent() {
+  const ownerId = state.sessionId;
   const agentId = state.unitId;
   const unit = selectedUnit();
   const id = conversationId();
   if (
     creating ||
+    agentId === 'parent' ||
     !ownerId ||
     !unit ||
     !api?.agentSession ||
-    closingSessions.has(id)
+    closingSessions.has(id) ||
+    closingSessions.has(ownerId)
   )
     return;
   saveDraft();
@@ -2398,30 +2436,20 @@ async function closeSession() {
   $('app-error').hidden = true;
   render();
   try {
-    let result = await api.agentSession(ownerId, {agentId, action: 'close'});
-    if (result?.requiresWorkspaceCloseConfirmation) {
-      if (!(await confirmPrimaryClose(unit.name, owned, workspace.name)))
-        return;
-      result = await api.agentSession(ownerId, {
-        agentId,
-        action: 'close',
-        confirmWorkspaceClose: true,
-      });
-    }
+    await api.agentSession(ownerId, {agentId, action: 'close'});
     const version = snapshotVersion;
     const hub = await api.getState();
     if (version === snapshotVersion) receive(hub);
-    if (result?.workspaceClosed) {
-      workspaceCache.delete(ownerId);
-      pausedActivity.delete(ownerId);
-      if (!snapshot()) $('app-menu-button').focus();
-    } else if (agentId !== 'parent') agentControls.dismiss(ownerId, agentId);
+    agentControls.dismiss(ownerId, agentId);
   } catch (error) {
     showError(error);
   } finally {
     closingSessions.delete(id);
     render();
   }
+}
+function closeSelected() {
+  return state.unitId === 'parent' ? closeWorkspace() : closeAgent();
 }
 async function sendPrompt(event) {
   event.preventDefault();
@@ -2637,7 +2665,7 @@ $('open-workspace-config').addEventListener('click', async () => {
   }
 });
 $('start-session').addEventListener('click', () => void startSession());
-$('close-session').addEventListener('click', closeSession);
+$('close-session').addEventListener('click', closeSelected);
 $('reset-item-session').addEventListener('click', () => {
   if (state.sessionId) void startSession({id: state.sessionId});
 });
@@ -2969,7 +2997,7 @@ const cleanupUpdates = initUpdates(api, {
 });
 const agentControls = initAgentControls({
   api,
-  closeAgent: closeSession,
+  closeAgent,
   selected: snapshot,
   selectedAgent: () => state.unitId,
   removed: () => {
@@ -3021,8 +3049,7 @@ const itemContextMenu = initItemContextMenu({
         sessionId: state.sessionId,
         unitId: state.unitId,
         name: unit.name,
-        workspaceActions:
-          state.unitId === 'parent' || snapshot()?.session.primaryClosed,
+        workspaceActions: state.unitId === 'parent',
       }
     );
   },
@@ -3042,9 +3069,7 @@ const itemContextMenu = initItemContextMenu({
 });
 const workspaceRename = initWorkspaceRename({
   api,
-  current: () =>
-    (state.unitId === 'parent' || snapshot()?.session.primaryClosed) &&
-    snapshot()?.session,
+  current: () => state.unitId === 'parent' && snapshot()?.session,
   sessions: () => state.hub.sessions.map(item => item.session),
   renamed: () => refreshState().catch(showError),
 });

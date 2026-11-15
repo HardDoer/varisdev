@@ -162,17 +162,20 @@ void test(
     assert.equal(parent.state.snapshot().session.id, sourceId);
     assert.equal(blank.entries[0].type, 'session');
     assert.equal(blank.entries[0].id, sourceId);
+    assert.equal((await parent.features()).agentProfile, undefined);
+    assert.equal(parent.state.snapshot().session.agentProfile, undefined);
     assert.equal(
-      (await parent.features()).agentProfile?.id,
-      'default',
-      'legacy startup receives neutral Default instead of a later configured default',
+      blank.entries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
     );
     assert.ok(
-      blank.entries.some(
+      !blank.entries.some(
         entry =>
           entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-profile' &&
-          (entry.data as {id?: string}).id === 'default',
+          entry.customType === 'varisdev.agent-profile',
       ),
     );
     assert.deepEqual(blank.tools, ['read', 'write', 'codemode', 'tool_search']);
@@ -198,11 +201,61 @@ void test(
     assert.ok(
       (await fresh.features()).commands.some(command => command.name === 'mcp'),
     );
-    assert.equal((await fresh.features()).agentProfile?.id, 'new-default');
+    assert.equal((await fresh.features()).agentProfile, undefined);
+    assert.equal(fresh.state.snapshot().session.agentProfile, undefined);
     const unsent = fresh.restartSnapshot();
+    assert.equal(
+      unsent.entries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
+    );
+    assert.ok(
+      !unsent.entries.some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      ),
+    );
     assert.ok(unsent.sessionFile);
     await assert.rejects(access(unsent.sessionFile), /ENOENT/);
     const unsentId = fresh.state.snapshot().session.id;
+
+    const persistentMain = await createDashboardParent(
+      {cwd, name: 'Persist Main on workspace close'},
+      inherited,
+    );
+    parents.push(persistentMain);
+    const persistentMainSnapshot = persistentMain.restartSnapshot();
+    const persistentMainFile = persistentMainSnapshot.sessionFile!;
+    const persistentMainId = persistentMain.state.snapshot().session.id;
+    await assert.rejects(access(persistentMainFile), /ENOENT/);
+    await persistentMain.close();
+    await access(persistentMainFile);
+    const savedMain = SessionManager.open(persistentMainFile);
+    assert.equal(savedMain.getSessionId(), persistentMainId);
+    assert.equal(
+      savedMain
+        .getEntries()
+        .filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
+    );
+    const resumedMain = await createDashboardParent(
+      {
+        cwd,
+        resume: {id: persistentMainId, path: persistentMainFile},
+      },
+      inherited,
+    );
+    parents.push(resumedMain);
+    assert.equal(resumedMain.state.snapshot().session.id, persistentMainId);
+    assert.notEqual(resumedMain.state.snapshot().session.primaryClosed, true);
+
     await fresh.prompt('/remember-restart');
     const bufferedCustom = fresh.restartSnapshot();
     await assert.rejects(access(bufferedCustom.sessionFile!), /ENOENT/);
@@ -222,6 +275,13 @@ void test(
     assert.deepEqual(
       restoredBlankSnapshot.entries.slice(0, unsent.entries.length),
       JSON.parse(JSON.stringify(unsent.entries)),
+    );
+    assert.equal(
+      restoredBlankSnapshot.entries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
     );
     assert.equal(restoredBlankSnapshot.leafId, unsent.leafId);
     const restoredBuffered = await createDashboardParent(

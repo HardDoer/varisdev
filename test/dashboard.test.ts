@@ -529,7 +529,7 @@ void test('explicit replacement publishes one atomic swap after initialization, 
   };
   const hub = new DashboardHub(undefined, async request => {
     creations++;
-    assert.equal(request.agentProfile?.key, 'builtin:default');
+    assert.deepEqual(request, {cwd, name: undefined});
     return initialization.promise;
   });
   t.after(async () => {
@@ -551,7 +551,6 @@ void test('explicit replacement publishes one atomic swap after initialization, 
   const request = {
     cwd,
     replaceSessionId: 'outgoing',
-    templateId: 'builtin:default',
   };
   const first = hub.createSession(request);
   const second = hub.createSession(request);

@@ -6,20 +6,22 @@ This page covers VarisDev's additions. See [Pi's documentation](https://github.c
 
 ## Agents
 
-Each agent has its own conversation and shares its workspace directory. It inherits the current agent's model and thinking level unless explicitly configured. Without a current model, `agent_spawn` requires a model choice.
+Every workspace session has exactly one fixed **Main agent**. It starts the session and does not use an agent configuration. Main stays available for the lifetime of the workspace and cannot be closed separately. Additional agents keep their configured Primary agent or Subagent roles.
 
-**Menu → Agent-models** controls model choices for configurations without a model pin, including inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-models) and [agent configurations](agents.md).
+Each additional agent has its own conversation and shares its workspace directory. It inherits the current agent's model and thinking level unless explicitly configured. Without a current model, `agent_spawn` requires a model choice.
 
-| Tool              | Purpose                                                                          |
-| ----------------- | -------------------------------------------------------------------------------- |
-| `agent_spawn`     | Start an agent and return its ID.                                                |
-| `agent_list`      | List active agents, history, or both.                                            |
-| `agent_status`    | Read progress or results; use `details: true` for metadata and transcript paths. |
-| `agent_send`      | Steer active work or resume a completed agent.                                   |
-| `agent_inbox`     | Read messages sent to the conversation's starting agent.                         |
-| `agent_wait`      | Wait for selected agents to finish.                                              |
-| `agent_cancel`    | Cancel an agent and its queued messages.                                         |
-| `agent_templates` | List, read, save, or delete scoped Markdown agent configurations.                |
+**Menu → Agent settings** controls model choices for configurations without a model pin, including inherited models. The tool shows the configured choices to the current agent and checks them when agents start or resume. See [model configuration](configuration.md#agent-settings) and [agent configurations](agents.md).
+
+| Tool              | Purpose                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| `agent_spawn`     | Start an agent, return its ID, and deliver its result or error automatically.            |
+| `agent_list`      | List active agents, history, or both.                                                    |
+| `agent_status`    | Deferred explicit inspection of progress, results, metadata, and transcript paths.       |
+| `agent_send`      | Message running work or resume a finished agent.                                         |
+| `agent_inbox`     | Read explicit messages sent to the conversation's starting agent.                        |
+| `agent_wait`      | Deferred explicit wait for selected agents; automatic delivery normally handles results. |
+| `agent_cancel`    | Cancel an agent and its queued messages.                                                 |
+| `agent_templates` | List, read, save, or delete scoped Markdown agent configurations.                        |
 
 `agent_spawn` requires `task`. It automatically selects Default when `template` is omitted; `name` is optional. A spawned configuration must use `subagent` or `all` mode. Hidden configurations can be referenced directly; disabled configurations cannot be launched. Optional fields include `instructions`, `context` (`workspace` or `task`), `cwd`, `model` (`provider/model`), `thinkingLevel`, and `autoCleanup`. A configuration's model pin takes precedence over `model`. Other explicit spawn values refine the resolved configuration, while omitted model and thinking values inherit from the calling agent when the configuration does not set them.
 
@@ -29,13 +31,17 @@ Agent configurations are optional. `agent_templates` is available through Pi's `
 
 Configuration permissions apply to the conversation created from that profile. The calling agent's `subagent` permission also controls which configured agents it may launch. See [agent configurations](agents.md) for scope merging, modes, defaults, and Markdown fields.
 
-The default concurrency limit is six agents per workspace, including the conversation starter while it is open; additional agents queue. Closing the starter releases its slot. Change **Menu → Agent-models → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions while the starter is open. There is no fixed limit on queued or retained agents. `autoCleanup: true` disposes finished agents while preserving results.
+VarisDev automatically delivers the completed result or error from each spawned agent, and from each finished agent resumed with `agent_send`, to the conversation that initiated the work. The caller and workers continue in parallel. VarisDev waits only if the caller reaches the end of its run while tracked work is outstanding, then resumes it with the delivered result. An agent waiting for nested agents temporarily releases its concurrency slot. Sending with `agent_send` to an already running recipient is messaging only and does not add another result dependency.
 
-Agents have no execution deadline. `agent_wait` defaults to 60 seconds and all agents, including history; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs.
+`agent_status` and `agent_wait` remain available as deferred tools for explicit inspection and compatibility. Normal model runs do not need to poll or wait manually. Use `details: true` with `agent_status` for metadata and transcript paths. For an explicit wait, `agent_wait` uses a 60-second timeout and selects all agents, including history, when `ids` is omitted; a timeout leaves agents running. Pass specific IDs to avoid repeating older results. For successive `mode: "any"` waits, pass only unfinished IDs. Agents have no execution deadline.
 
-Poll `agent_inbox` with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current workspace. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not start a new turn in the receiving conversation.
+The default concurrency limit is six agents per workspace, including Main; additional agents queue. Change **Menu → Agent settings → Maximum concurrent agents** to adjust the limit. A limit of one disables additional launches and resumptions. There is no fixed count limit on queued agents.
 
-Spawn, send, and cancel return short acknowledgements. Status and wait return results; truncated output includes `outputTruncated` and `resultFile` for reading the full text.
+Finished history for completed, failed, and cancelled agents expires after the inactivity period in Agent settings. The default is seven days, with a range of 1–365 days. Viewing an agent's conversation, reading its result, or continuing it resets the period. Active agents, including running and queued work, the Main session transcript, and the last Primary agent's history are protected. Expired history is permanently deleted rather than archived. `autoCleanup: true` disposes a finished agent so it cannot resume; its result remains readable until history expires.
+
+`agent_inbox` is for explicit agent-to-agent messages rather than automatic completion results. Start with `after: 0`, then reuse its `nextAfter` cursor to read new messages in arrival order. `hasMore` indicates another page; `missed` reports messages lost beyond the 100-message retention window. Cursors belong to the current workspace. Without `after`, inbox reads use newest-first history with `offset`. Use `messageId` to read a full message. Messages do not start a new turn in the receiving conversation.
+
+Spawn, send, and cancel return short acknowledgements. Automatic delivery includes completed results and errors. Explicit status and wait calls return results; truncated output includes `outputTruncated` and `resultFile` for reading the full text.
 
 When the workspace conversation finishes a run, VarisDev plays a completion sound only while the app window is unfocused. It waits for retries, automatic compaction, and queued work to settle. Cancelled runs stay silent. Windows and Linux use the original Windows 98 ding, with a system bell fallback; macOS uses its system bell.
 
@@ -45,7 +51,7 @@ Closing the window hides VarisDev in the system tray while work continues. Hover
 
 Right-click a workspace tile and choose **Rename workspace**, or use **Actions → Rename workspace**. The name is saved with the conversation and restored when resumed.
 
-Choose **Actions → Close agent** to close the selected conversation. Other primary agents keep the workspace open. Closing the last primary asks for confirmation, then closes the workspace, stops its agents, and closes its embedded terminals. Saved history remains available through **Menu → Resume session**. Closing the last workspace returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. A workspace attached from another terminal is dismissed from this window.
+Choose **Actions → Close agent** to close an additional agent's conversation. Main remains available after all additional agents are closed. **Close workspace** ends the session, stops its agents, and closes its embedded terminals. Retained history remains available through **Menu → Resume session**. Closing the last workspace returns to the start screen, where **Recent projects** offers one-click access to your last twelve project folders. A workspace attached from another terminal is dismissed from this window.
 
 Resuming a saved conversation replaces other open workspaces in the same folder, stopping their agents; workspaces in other folders stay open. If the chosen conversation is already open, its workspace is reused rather than duplicated. If it cannot be loaded, the current workspaces stay open.
 

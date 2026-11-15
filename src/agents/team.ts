@@ -16,7 +16,12 @@ import {
 import type {UnitChange} from '../dashboard/changes.ts';
 import type {ConversationSnapshot} from '../conversation.ts';
 import {subscribeToolSettings} from '../tools/settings.ts';
-import {sessionPrimaryClosed} from '../dashboard/primary-session.ts';
+import {historyLastUsed} from './retention-policy.ts';
+import {
+  claimAgentHistoryAsync,
+  watchAgentHistory,
+  type AgentHistoryLease,
+} from './retention.ts';
 
 export interface AgentMessage {
   from: {id: string; name: string};
@@ -84,44 +89,24 @@ class AgentTeam {
   readonly sessionId: string;
   private readonly unsubscribe: () => void;
   private readonly publish: () => void;
-  private readonly history?: AgentHistoryStore;
+  private history?: AgentHistoryStore;
   private readonly configurations = new Map<string, AgentWorkerConfiguration>();
   private closing?: Promise<void>;
+  private historyLease?: AgentHistoryLease;
+  private retention?: ReturnType<typeof watchAgentHistory>;
+  private pruningHistory = false;
+  private readonly restoreWorker?: RestoreWorker;
+  readonly ready: Promise<void>;
 
   constructor(
     ctx: ExtensionContext,
     changed: () => void,
     restoreWorker?: RestoreWorker,
   ) {
+    this.restoreWorker = restoreWorker;
     this.context = ctx;
     this.publish = changed;
     this.sessionId = ctx.sessionManager.getSessionId();
-    if (ctx.sessionManager.getSessionFile?.()) {
-      this.manager.setPrimaryOpen(!sessionPrimaryClosed(ctx.sessionManager));
-      this.history = new AgentHistoryStore(getAgentDir(), this.sessionId);
-      const saved = this.history.read();
-      if (saved) {
-        for (const [id, configuration] of Object.entries(saved.configurations))
-          this.configurations.set(id, configuration);
-        this.messages.push(...saved.messages.slice(-maxParentMessages));
-        this.messageSequence = saved.messageSequence;
-        this.changes.push(...saved.changes.slice(-100));
-        this.manager.restore(
-          saved.agents.map(agent => ({
-            ...agent,
-            resumable: Boolean(
-              agent.resumable &&
-              agent.sessionFile &&
-              existsSync(agent.sessionFile) &&
-              this.configurations.has(agent.id),
-            ),
-          })),
-          restoreWorker
-            ? record => restoreWorker(record, this.context, this)
-            : undefined,
-        );
-      }
-    }
     const stopObservingAgents = this.manager.subscribe(() => {
       this.updateStatus();
       this.changed();
@@ -134,21 +119,126 @@ class AgentTeam {
       stopObservingSettings();
     };
     this.updateStatus();
+    this.ready = ctx.sessionManager.getSessionFile?.()
+      ? this.openHistory(getAgentDir())
+      : Promise.resolve();
   }
 
-  private changed(): void {
+  private restoreAgents(agents: AgentSessionSnapshot['agents']): void {
+    this.manager.restore(
+      agents.map(agent => ({
+        ...agent,
+        resumable: Boolean(
+          agent.resumable &&
+          agent.sessionFile &&
+          existsSync(agent.sessionFile) &&
+          this.configurations.has(agent.id),
+        ),
+      })),
+      this.restoreWorker
+        ? record => this.restoreWorker!(record, this.context, this)
+        : undefined,
+    );
+  }
+
+  private async openHistory(agentDir: string): Promise<void> {
+    this.historyLease = await claimAgentHistoryAsync(agentDir, this.sessionId);
+    try {
+      this.history = new AgentHistoryStore(agentDir, this.sessionId);
+      const saved = this.history.read();
+      if (saved) {
+        for (const [id, configuration] of Object.entries(saved.configurations))
+          this.configurations.set(id, configuration);
+        this.messages.push(...saved.messages.slice(-maxParentMessages));
+        this.messageSequence = saved.messageSequence;
+        this.changes.push(...saved.changes.slice(-100));
+        this.restoreAgents(saved.agents);
+      }
+      if (!this.closed)
+        this.retention = watchAgentHistory(agentDir, before =>
+          this.expireHistory(before),
+        );
+      await this.retention?.ready;
+    } catch (error) {
+      this.historyLease.release();
+      throw error;
+    }
+  }
+
+  private async expireHistory(before: number): Promise<void> {
+    if (this.closed) return;
+    await this.historyLease?.prune(async files => {
+      if (this.closed) return;
+      this.pruningHistory = true;
+      const removed = new Set<string>();
+      let original: AgentSessionSnapshot['agents'] = [];
+      const failures: unknown[] = [];
+      try {
+        await this.history?.flush();
+        const saved = this.history?.read();
+        if (saved) {
+          const known = new Set(this.manager.list().map(agent => agent.id));
+          const missing = saved.agents.filter(agent => !known.has(agent.id));
+          for (const agent of missing) {
+            const configuration = saved.configurations[agent.id];
+            if (configuration) this.configurations.set(agent.id, configuration);
+          }
+          if (missing.length) this.restoreAgents(missing);
+          this.manager.mergeLastUse(historyLastUsed(saved));
+        }
+        original = this.deliverySnapshot().agents;
+        const expired = await this.manager.expireFinished(before, agent =>
+          files.isExpired(agent.id, before),
+        );
+        for (const id of expired) {
+          try {
+            if (files.remove(id, before)) {
+              removed.add(id);
+              this.configurations.delete(id);
+            }
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+      } finally {
+        const retained = new Set(this.manager.list().map(agent => agent.id));
+        this.restoreAgents(
+          original.filter(
+            agent => !retained.has(agent.id) && !removed.has(agent.id),
+          ),
+        );
+        this.pruningHistory = false;
+        this.changed(removed);
+        await this.history?.flush();
+      }
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          'Some expired agent files could not be removed.',
+        );
+    });
+  }
+
+  private changed(removed?: ReadonlySet<string>): void {
     this.cachedSnapshot = undefined;
-    this.saveHistory();
+    this.saveHistory(undefined, removed);
     this.publish();
   }
 
-  private saveHistory(snapshot?: AgentSessionSnapshot): void {
-    this.history?.save(() => ({
-      ...(snapshot ?? this.deliverySnapshot()),
-      version: 1,
-      messageSequence: this.messageSequence,
-      configurations: Object.fromEntries(this.configurations),
-    }));
+  private saveHistory(
+    snapshot?: AgentSessionSnapshot,
+    removed?: ReadonlySet<string>,
+  ): void {
+    if (this.pruningHistory) return;
+    this.history?.save(
+      () => ({
+        ...(snapshot ?? this.deliverySnapshot()),
+        version: 1,
+        messageSequence: this.messageSequence,
+        configurations: Object.fromEntries(this.configurations),
+      }),
+      removed,
+    );
   }
 
   retainWorkerConfiguration(
@@ -314,10 +404,13 @@ class AgentTeam {
     this.closed = true;
     this.unsubscribe();
     this.setStatus();
-    this.closing = this.manager.close().then(async () => {
-      // Disposal releases workers, but their Pi session files remain available
-      // for an explicit continuation when this parent is reopened.
-      const previous = new Map(snapshot.agents.map(agent => [agent.id, agent]));
+    this.closing = this.ready.then(async () => {
+      await this.retention?.close();
+      const previous = new Map(
+        this.manager.list().map(agent => [agent.id, agent]),
+      );
+      await this.manager.close();
+      // Retained worker sessions remain available for explicit continuation.
       const agents = this.manager.list().map(agent => ({
         ...agent,
         ...this.manager.conversation(agent.id),
@@ -329,6 +422,7 @@ class AgentTeam {
       }));
       this.saveHistory({...snapshot, agents});
       await this.history?.flush();
+      this.historyLease?.release();
     });
     return this.closing;
   }
@@ -343,14 +437,18 @@ export class AgentSessionController {
   private restoreWorker?: RestoreWorker;
 
   constructor(pi: ExtensionAPI) {
-    pi.on('session_start', (_event, ctx) => {
+    pi.on('session_start', async (_event, ctx) => {
       this.shuttingDown = false;
       this.finalSnapshot = undefined;
-      if (ctx.sessionManager.getSessionFile?.()) this.attach(ctx);
+      if (ctx.sessionManager.getSessionFile?.()) {
+        this.attach(ctx);
+        await this.team?.ready;
+      }
     });
-    pi.on('agent_start', (_event, ctx) => {
+    pi.on('agent_start', async (_event, ctx) => {
       if (this.shuttingDown) return;
       this.attach(ctx);
+      await this.team?.ready;
     });
     pi.on('session_shutdown', async () => {
       this.shuttingDown = true;

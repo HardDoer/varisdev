@@ -360,17 +360,15 @@ async function main() {
   }));
   handle('varisdev:app-themes', () => ({themes: [], errors: []}));
   handle('pidev:session-features', features);
+  handle('pidev:close-session', sessionId => {
+    calls.push(['close', sessionId]);
+    hub.sessions = hub.sessions.filter(item => item.session.id !== sessionId);
+    hub.selectedSessionId = hub.sessions[0]?.session.id;
+    browser.webContents.send('pidev:snapshot', hub);
+  });
   handle('pidev:agent-session', (sessionId, request) => {
     if (request.action === 'features') return features();
-    if (request.action === 'close' && request.agentId === 'parent') {
-      if (!request.confirmWorkspaceClose)
-        return {requiresWorkspaceCloseConfirmation: true};
-      calls.push(['close', sessionId]);
-      hub.sessions = hub.sessions.filter(item => item.session.id !== sessionId);
-      hub.selectedSessionId = hub.sessions[0]?.session.id;
-      browser.webContents.send('pidev:snapshot', hub);
-      return {workspaceClosed: true};
-    }
+    assert.notEqual(request.agentId, 'parent', 'Main agent cannot be closed');
     if (['abort', 'cancel'].includes(request.action))
       stops.push([sessionId, request.agentId]);
     return {};

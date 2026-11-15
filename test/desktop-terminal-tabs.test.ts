@@ -910,7 +910,7 @@ void test('preload and application validate workspace ownership and manage every
   await assert.rejects(bridge.listTerminals('replacement'), /open workspace/);
 });
 
-void test('application agent closure preserves native tabs until the backend confirms workspace closure', async t => {
+void test('application rejects Main close and preserves native tabs when an additional agent closes', async t => {
   const directory = await temporary(t);
   const preferences = new DesktopPreferences(directory);
   const {profiles, env} = windowsProfiles(preferences);
@@ -922,11 +922,6 @@ void test('application agent closure preserves native tabs until the backend con
   });
   t.after(() => terminals.dispose());
   const requests: Array<{id: string; request: AgentSessionRequest}> = [];
-  const results: AgentSessionResult[] = [
-    undefined,
-    {requiresWorkspaceCloseConfirmation: true},
-    {workspaceClosed: true},
-  ];
   const {bridge} = await applicationBridge(
     terminals,
     profiles,
@@ -934,17 +929,19 @@ void test('application agent closure preserves native tabs until the backend con
     directory,
     async (id, request) => {
       requests.push({id, request});
-      // The close reply can arrive before the snapshot removes the workspace.
-      return results.shift();
+      if (request.agentId === 'parent')
+        throw new Error('The Main agent cannot be closed separately.');
+      return undefined;
     },
   );
   const first = await bridge.createTerminal('first');
   const second = await bridge.createTerminal('first');
   const other = await bridge.createTerminal('second');
   loader.shells[0].output('workspace history');
-  assert.equal(
-    await bridge.agentSession('first', {agentId: 'parent', action: 'close'}),
-    undefined,
+
+  await assert.rejects(
+    bridge.agentSession('first', {agentId: 'parent', action: 'close'}),
+    /Main.*cannot be closed separately/i,
   );
   assert.deepEqual(
     (await bridge.listTerminals('first')).map(terminal => terminal.sessionId),
@@ -954,9 +951,14 @@ void test('application agent closure preserves native tabs until the backend con
     loader.shells.map(shell => shell.kills()),
     [0, 0, 0],
   );
-  assert.deepEqual(
-    await bridge.agentSession('first', {agentId: 'primary', action: 'close'}),
-    {requiresWorkspaceCloseConfirmation: true},
+
+  assert.equal(
+    await bridge.agentSession('first', {
+      agentId: 'primary',
+      action: 'close',
+      confirmWorkspaceClose: true,
+    }),
+    undefined,
   );
   assert.deepEqual(
     loader.shells.map(shell => shell.kills()),
@@ -965,17 +967,8 @@ void test('application agent closure preserves native tabs until the backend con
   const restored = await bridge.openTerminal('first', first.sessionId);
   assert.equal(restored.generation, first.generation);
   assert.equal(restored.data, 'workspace history');
-  assert.deepEqual(
-    await bridge.agentSession('first', {
-      agentId: 'primary',
-      action: 'close',
-      confirmWorkspaceClose: true,
-    }),
-    {workspaceClosed: true},
-  );
   assert.deepEqual(requests, [
     {id: 'first', request: {agentId: 'parent', action: 'close'}},
-    {id: 'first', request: {agentId: 'primary', action: 'close'}},
     {
       id: 'first',
       request: {
@@ -985,6 +978,8 @@ void test('application agent closure preserves native tabs until the backend con
       },
     },
   ]);
+
+  await bridge.closeSession('first');
   assert.deepEqual(
     loader.shells.map(shell => shell.kills()),
     [1, 1, 0],

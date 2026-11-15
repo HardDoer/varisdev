@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {ConversationState, type ConversationSnapshot} from '../conversation.ts';
 import {copyModelUsage, type ModelUsage} from '../usage.ts';
+import {agentLastUsed, retainedPrimaryId} from './retention-policy.ts';
 import type {
   SessionConfiguration,
   SessionFeatures,
@@ -37,6 +38,7 @@ export interface AgentRecord extends AgentSpec {
   creationOrder?: number;
   startedAt?: string;
   finishedAt?: string;
+  lastUsedAt?: string;
   activity: string;
   output?: string;
   outputTruncated?: boolean;
@@ -116,18 +118,18 @@ export class AgentOrchestrator {
   private readonly jobs = new Map<string, Job>();
   private readonly listeners = new Set<() => void>();
   private maxConcurrentAgents: number;
-  private primaryOpen = true;
   private nextCreationOrder = 0;
   private active = 0;
   private closed = false;
   private closing?: Promise<void>;
+  private readonly waitedAgents = new Map<string, number>();
 
   constructor(maxConcurrentAgents = 6) {
     this.maxConcurrentAgents = 6;
     this.setMaxConcurrentAgents(maxConcurrentAgents);
   }
 
-  /** The open starting conversation reserves one slot. */
+  /** Main always reserves one slot for the lifetime of the workspace. */
   setMaxConcurrentAgents(maxConcurrentAgents: number): void {
     if (!Number.isSafeInteger(maxConcurrentAgents) || maxConcurrentAgents < 1) {
       throw new Error(
@@ -138,19 +140,14 @@ export class AgentOrchestrator {
     this.pump();
   }
 
-  setPrimaryOpen(open: boolean): void {
-    this.primaryOpen = open;
-    this.pump();
-  }
-
   private get workerSlots(): number {
-    return this.maxConcurrentAgents - Number(this.primaryOpen);
+    return this.maxConcurrentAgents - 1;
   }
 
   assertAdditionalAgentsAllowed(): void {
     if (!this.workerSlots)
       throw new Error(
-        'Additional agents are disabled: maximum concurrent agents is 1, reserved for the main conversation. Change Menu → Agent-models to allow more agents.',
+        'Additional agents are disabled: maximum concurrent agents is 1, reserved for the main conversation. Change Menu → Agent settings to allow more agents.',
       );
   }
 
@@ -175,6 +172,29 @@ export class AgentOrchestrator {
 
   get(id: string): AgentRecord {
     return copyRecord(this.job(id).record);
+  }
+
+  touch(id: string): AgentRecord {
+    this.ensureOpen();
+    const job = this.job(id);
+    job.record.lastUsedAt = new Date().toISOString();
+    this.changed();
+    return this.get(id);
+  }
+
+  /** Reconcile another owner's use without treating cleanup as new activity. */
+  mergeLastUse(used: ReadonlyMap<string, string>): void {
+    let changed = false;
+    for (const [id, at] of used) {
+      const job = this.jobs.get(id);
+      if (!job || !Number.isFinite(Date.parse(at))) continue;
+      const previous = Date.parse(job.record.lastUsedAt ?? '');
+      if (!Number.isFinite(previous) || Date.parse(at) > previous) {
+        job.record.lastUsedAt = at;
+        changed = true;
+      }
+    }
+    if (changed) this.changed();
   }
 
   /** Conversation stays separate from public tool records and survives worker cleanup. */
@@ -214,7 +234,17 @@ export class AgentOrchestrator {
       if (!isAgentFinished(record.status)) {
         record.status = 'cancelled';
         record.activity = 'Interrupted';
-        record.finishedAt = new Date().toISOString();
+        const timestamps = [
+          record.finishedAt,
+          record.startedAt,
+          record.createdAt,
+          ...messages.map(message => message.at),
+        ]
+          .map(value => Date.parse(value ?? ''))
+          .filter(Number.isFinite);
+        record.finishedAt = new Date(
+          timestamps.length ? Math.max(...timestamps) : Date.now(),
+        ).toISOString();
       }
       record.resumable = Boolean(
         record.resumable &&
@@ -307,8 +337,13 @@ export class AgentOrchestrator {
   }
 
   private interact<T>(job: Job, action: () => Promise<T>): Promise<T> {
+    this.touch(job.record.id);
     const operation = (job.interaction ?? Promise.resolve()).then(action);
-    job.interaction = operation.catch(() => {});
+    const settled = operation.catch(() => {});
+    job.interaction = settled;
+    void settled.then(() => {
+      if (job.interaction === settled) job.interaction = undefined;
+    });
     return operation;
   }
 
@@ -526,6 +561,43 @@ export class AgentOrchestrator {
     }
   }
 
+  /** Remove expired idle workers from lookup before disposing their resources. */
+  async expireFinished(
+    before: number,
+    canExpire: (agent: AgentRecord) => boolean = () => true,
+  ): Promise<string[]> {
+    if (this.closed) return [];
+    const primary = retainedPrimaryId(this.list());
+    const expired = [...this.jobs.values()].filter(
+      job =>
+        job.record.id !== primary &&
+        !this.waitedAgents.has(job.record.id) &&
+        isAgentFinished(job.record.status) &&
+        agentLastUsed(job.record) <= before &&
+        !job.operation &&
+        !job.initializing &&
+        !job.interaction &&
+        !job.maintaining &&
+        !job.ownsSlot &&
+        canExpire(job.record),
+    );
+    for (const job of expired) {
+      job.record.resumable = false;
+      job.stopVersion = (job.stopVersion ?? 0) + 1;
+      this.jobs.delete(job.record.id);
+    }
+    if (expired.length) this.changed();
+    await Promise.all(
+      expired.map(async job => {
+        await job.closing;
+        await job.cancellation;
+        await job.disposal;
+        await this.dispose(job);
+      }),
+    );
+    return expired.map(job => job.record.id);
+  }
+
   private captureUsage(job: Job): void {
     const usage = job.worker?.usage;
     if (usage) job.record.usage = copyModelUsage(usage);
@@ -652,8 +724,7 @@ export class AgentOrchestrator {
         resume.resolve();
       } else if (
         !job.waiters &&
-        ((this.maxConcurrentAgents === 1 && this.primaryOpen) ||
-          this.active < this.workerSlots)
+        (this.maxConcurrentAgents === 1 || this.active < this.workerSlots)
       ) {
         // Existing runs can finish after switching to main-only workflows.
         job.ownsSlot = true;
@@ -739,6 +810,7 @@ export class AgentOrchestrator {
       }
       this.settleConversation(job);
       job.record.finishedAt = new Date().toISOString();
+      job.record.lastUsedAt = job.record.finishedAt;
       job.controller = undefined;
       job.operation = undefined;
       if (job.ownsSlot) {
@@ -752,9 +824,30 @@ export class AgentOrchestrator {
 
   async wait(
     ids: string[],
+    options: Parameters<AgentOrchestrator['waitForAgents']>[1] = {},
+  ): Promise<AgentRecord[]> {
+    const watched = [...new Set(ids)];
+    for (const id of watched)
+      this.waitedAgents.set(id, (this.waitedAgents.get(id) ?? 0) + 1);
+    try {
+      const records = await this.waitForAgents(ids, options);
+      return this.closed
+        ? records
+        : records.map(record => this.touch(record.id));
+    } finally {
+      for (const id of watched) {
+        const count = this.waitedAgents.get(id)! - 1;
+        if (count) this.waitedAgents.set(id, count);
+        else this.waitedAgents.delete(id);
+      }
+    }
+  }
+
+  private async waitForAgents(
+    ids: string[],
     options: {
       mode?: 'any' | 'all';
-      timeoutMs?: number;
+      timeoutMs?: number | null;
       signal?: AbortSignal;
       /** Release this running agent's slot until the wait finishes. */
       callerId?: string;
@@ -771,7 +864,7 @@ export class AgentOrchestrator {
       options.signal && callerSignal
         ? AbortSignal.any([options.signal, callerSignal])
         : (options.signal ?? callerSignal);
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
+    if (timeoutMs !== null && (!Number.isInteger(timeoutMs) || timeoutMs < 0)) {
       throw new Error('Wait timeout must be a non-negative integer.');
     }
     signal?.throwIfAborted();
@@ -784,7 +877,7 @@ export class AgentOrchestrator {
         (mode === 'any' ? finished.some(Boolean) : finished.every(Boolean))
       );
     };
-    if (!ready() && timeoutMs > 0) {
+    if (!ready() && (timeoutMs === null || timeoutMs > 0)) {
       const yielded =
         caller?.record.status === 'running' &&
         !caller.controller?.signal.aborted;
@@ -835,7 +928,10 @@ export class AgentOrchestrator {
           const unsubscribe = this.subscribe(() => {
             if (ready()) finish();
           });
-          const timer = setTimeout(() => finish(), timeoutMs);
+          const timer =
+            timeoutMs === null
+              ? undefined
+              : setTimeout(() => finish(), timeoutMs);
           signal?.addEventListener('abort', abort, {once: true});
           if (signal?.aborted) abort();
           else if (ready()) finish();

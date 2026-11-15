@@ -1,3 +1,4 @@
+import {mainAgentId} from '../src/agents/main.ts';
 import assert from 'node:assert/strict';
 import type {ChildProcess} from 'node:child_process';
 import {EventEmitter} from 'node:events';
@@ -19,7 +20,10 @@ import {
   type AgentTemplate,
 } from '../src/agents/templates.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
-import type {SessionFeatures} from '../src/dashboard/features.ts';
+import {
+  sessionAgentProfile,
+  type SessionFeatures,
+} from '../src/dashboard/features.ts';
 import {DashboardState} from '../src/dashboard/state.ts';
 import {
   ExternalSessionRequests,
@@ -787,11 +791,16 @@ void test('feature catalogs and configuration results cross source IPC with sess
     'features',
     'features-primary',
   );
-  assert.deepEqual(catalog.agentProfile, {
-    id: 'default',
-    name: 'Default',
-    mode: 'all',
-  });
+  assert.equal(catalog.agentProfile, undefined);
+  assert.equal(
+    source.ctx.sessionManager
+      .getEntries()
+      .filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+    1,
+  );
   assert.equal(catalog.commands[0].name, 'skill:fixture');
   assert.equal(catalog.commands[1].source, 'prompt');
   assert.equal(catalog.models[1].id, 'other');
@@ -900,7 +909,7 @@ void test('attached extension commands reach SDK command dispatch without creden
   await source.emit('session_shutdown', {reason: 'quit'});
 });
 
-void test('native attached sessions persist neutral selection and compose shared rules once', async t => {
+void test('native roots keep one Main marker while managed primary and subagent workers retain configurations', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'varisdev-attached-profile-'));
   const agentDir = join(directory, 'settings');
   const cwd = join(directory, 'project');
@@ -932,77 +941,144 @@ void test('native attached sessions persist neutral selection and compose shared
       thinkingLevel: 'off',
     });
   const launcher = new FactoryLauncher(async () => fakeWindow().window);
-  const source = extensionFixture('tui', 'native-neutral', launcher, cwd);
+  const rootShared: AgentToolsOptions = {};
+  const source = extensionFixture(
+    'tui',
+    'native-main',
+    launcher,
+    cwd,
+    rootShared,
+  );
   const originalModel = source.ctx.model;
   await source.emit('session_start');
-  const profiles = () =>
-    source.ctx.sessionManager
-      .getEntries()
-      .filter(
-        entry =>
-          entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-profile',
-      );
-  assert.equal(profiles().length, 1);
-  const entry = profiles()[0];
-  assert.equal(entry.type, 'custom');
-  const profile =
-    entry.type === 'custom' ? (entry.data as AgentTemplate) : undefined;
-  assert.equal(profile?.id, 'default');
-  assert.equal(profile?.key, 'builtin:default');
-  assert.equal(profile?.instructions, '');
-  assert.equal(profile?.model, undefined);
-  assert.equal(profile?.thinkingLevel, undefined);
-  assert.equal(profile?.permissionsVersion, 1);
-  assert.deepEqual(profile?.permissions, [sharedRule]);
+  const entries = () => source.ctx.sessionManager.getEntries();
+  const rootProfiles = () =>
+    entries().filter(
+      entry =>
+        entry.type === 'custom' &&
+        entry.customType === 'varisdev.agent-profile',
+    );
+  const rootMarkers = () =>
+    entries().filter(
+      entry =>
+        entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+    );
+  assert.equal(rootProfiles().length, 0);
+  assert.equal(rootMarkers().length, 1);
+  const rootMarker = rootMarkers()[0];
+  assert.deepEqual(rootMarker.type === 'custom' ? rootMarker.data : undefined, {
+    version: 1,
+  });
+  assert.equal(rootShared.agentProfile?.id, mainAgentId);
+  assert.equal(rootShared.agentProfile?.key, 'builtin:main');
+  assert.equal(rootShared.agentProfile?.name, 'Main agent');
+  assert.equal(rootShared.agentProfile?.mode, 'primary');
+  assert.equal(rootShared.agentProfile?.instructions, '');
+  assert.deepEqual(rootShared.agentProfile?.permissions, [sharedRule]);
+  assert.equal(sessionAgentProfile(source.ctx.sessionManager), undefined);
   assert.equal(source.ctx.model, originalModel);
+
+  const replacementRule = {
+    action: 'shell',
+    resource: '*',
+    effect: 'deny',
+  } as const;
   await writeFile(
     join(agentDir, 'settings.json'),
-    JSON.stringify({
-      permissions: [{action: 'shell', resource: '*', effect: 'deny'}],
-    }),
+    JSON.stringify({permissions: [replacementRule]}),
   );
   await source.emit('session_start');
-  assert.equal(
-    profiles().length,
-    1,
-    'an already composed snapshot is retained',
-  );
-  assert.deepEqual(profiles()[0], entry);
+  assert.equal(rootProfiles().length, 0);
+  assert.equal(rootMarkers().length, 1);
+  assert.deepEqual(rootShared.agentProfile?.permissions, [replacementRule]);
 
-  const explicit = extensionFixture('tui', 'native-explicit', launcher, cwd);
-  const saved = {
+  const explicitShared: AgentToolsOptions = {};
+  const explicit = extensionFixture(
+    'tui',
+    'native-saved-profile',
+    launcher,
+    cwd,
+    explicitShared,
+  );
+  const saved: AgentTemplate = {
     ...createDefaultAgentProfile(),
     id: 'saved',
     key: 'global:saved',
     name: 'Saved',
     instructions: 'Original saved body.',
     model: 'fixture/saved-model',
-    thinkingLevel: 'off' as const,
+    thinkingLevel: 'off',
     permissions: [
       {
         action: 'shell',
         resource: 'allowed-command',
         effect: 'allow',
-      } as const,
+      },
     ],
   };
   explicit.pi.appendEntry('varisdev.agent-profile', saved);
   await explicit.emit('session_start');
-  const upgraded = explicit.ctx.sessionManager.getEntries().at(-1);
-  assert.equal(upgraded?.type, 'custom');
-  const snapshot =
-    upgraded?.type === 'custom' ? (upgraded.data as AgentTemplate) : undefined;
-  assert.equal(snapshot?.id, 'saved');
-  assert.equal(snapshot?.instructions, saved.instructions);
-  assert.equal(snapshot?.model, saved.model);
-  assert.deepEqual(snapshot?.permissions, [
-    {action: 'shell', resource: '*', effect: 'deny'},
-    ...saved.permissions,
-  ]);
-  const count = explicit.ctx.sessionManager.getEntries().length;
+  const explicitEntries = explicit.ctx.sessionManager.getEntries();
+  assert.equal(
+    explicitEntries.filter(
+      entry =>
+        entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+    ).length,
+    1,
+  );
+  const staleProfiles = explicitEntries.filter(
+    entry =>
+      entry.type === 'custom' && entry.customType === 'varisdev.agent-profile',
+  );
+  assert.equal(staleProfiles.length, 1);
+  const staleProfile = staleProfiles[0];
+  assert.deepEqual(
+    staleProfile.type === 'custom' ? staleProfile.data : undefined,
+    saved,
+  );
+  assert.equal(explicitShared.agentProfile?.id, mainAgentId);
+  assert.deepEqual(explicitShared.agentProfile?.permissions, [replacementRule]);
+  assert.equal(sessionAgentProfile(explicit.ctx.sessionManager), undefined);
+  const explicitCount = explicitEntries.length;
   await explicit.emit('session_start');
-  assert.equal(explicit.ctx.sessionManager.getEntries().length, count);
+  assert.equal(explicit.ctx.sessionManager.getEntries().length, explicitCount);
+
+  for (const mode of ['primary', 'subagent'] as const) {
+    const id = `managed-${mode}`;
+    const managedShared: AgentToolsOptions = {};
+    const managed = extensionFixture('tui', id, launcher, cwd, managedShared);
+    const profile: AgentTemplate = {
+      ...createDefaultAgentProfile(),
+      id: `${mode}-worker`,
+      key: `workspace:${mode}-worker`,
+      name: `${mode} worker`,
+      mode,
+      instructions: `${mode} worker instructions`,
+      permissions: [],
+    };
+    managed.pi.events.emit('varisdev:agent-profile-managed', {
+      sessionId: id,
+      profile,
+    });
+    await managed.emit('session_start');
+    assert.equal(managedShared.agentProfile?.id, profile.id);
+    assert.equal(managedShared.agentProfile?.mode, mode);
+    assert.equal(
+      managed.ctx.sessionManager
+        .getEntries()
+        .filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      0,
+    );
+    assert.deepEqual(sessionAgentProfile(managed.ctx.sessionManager), {
+      id: profile.id,
+      name: profile.name,
+      mode,
+    });
+  }
 });
 
 void test('native attached policies enforce shared rules and respect session-scoped host management', async t => {
@@ -1157,10 +1233,11 @@ void test('native attached policies enforce shared rules and respect session-sco
   assert.equal(neutral.selections.length, 0);
 });
 
-void test('attached starter close keeps terminal hosting and children active and restores its saved marker', async () => {
+void test('attached Main rejects separate close and ignores a legacy closed marker across reload', async () => {
   const desktop = fakeWindow();
   const launcher = new FactoryLauncher(async () => desktop.window);
   const source = extensionFixture('tui', 'attached-primary-close', launcher);
+  source.pi.appendEntry('varisdev.primary-closed', {closed: true});
   source.control.snapshot = () => ({
     sessionId: 'attached-primary-close',
     agents: [
@@ -1183,28 +1260,25 @@ void test('attached starter close keeps terminal hosting and children active and
   await source.emit('session_start');
   await source.show();
   const identity = desktop.current!.snapshot().session.id;
-  await desktop.callbacks.agentSession!({agentId: 'parent', action: 'close'});
+  assert.equal(desktop.current!.snapshot().session.primaryClosed, false);
+  await assert.rejects(
+    desktop.callbacks.agentSession!({agentId: 'parent', action: 'close'}),
+    /Main.*cannot be closed separately/i,
+  );
   assert.equal(desktop.closes, 0);
   assert.equal(desktop.current!.snapshot().session.id, identity);
-  assert.equal(desktop.current!.snapshot().session.primaryClosed, true);
+  assert.equal(desktop.current!.snapshot().session.primaryClosed, false);
   assert.equal(source.worker.status, 'running');
-  assert.equal(source.aborts, 1);
-  await assert.rejects(
-    async () => desktop.callbacks.prompt('Closed starter prompt'),
-    /primary agent has closed/,
-  );
-  assert.deepEqual(source.messages, []);
-  assert.ok(
-    (
-      await source.emit('input', {
-        source: 'interactive',
-        text: 'Terminal prompt after close',
-      })
-    ).some(result => JSON.stringify(result) === '{"action":"handled"}'),
-  );
+  assert.equal(source.aborts, 0);
+  await desktop.callbacks.prompt('Main remains available');
+  await tick();
+  assert.deepEqual(source.messages.at(-1), {
+    prompt: 'Main remains available',
+    options: {deliverAs: 'steer', expandPromptTemplates: true},
+  });
   await source.emit('session_start', {reason: 'reload'});
   await source.show();
-  assert.equal(desktop.current!.snapshot().session.primaryClosed, true);
+  assert.equal(desktop.current!.snapshot().session.primaryClosed, false);
   assert.equal(source.worker.status, 'running');
   assert.equal(desktop.closes, 0);
 });

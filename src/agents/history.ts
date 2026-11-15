@@ -3,6 +3,8 @@ import {existsSync, readFileSync, readdirSync} from 'node:fs';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {mkdir, rename, rm, writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
+import lockfile from 'proper-lockfile';
+import {agentStorageId, historyLastUsed} from './retention-policy.ts';
 import type {AgentTemplate, AgentContextScope} from './templates.ts';
 import type {AgentSessionSnapshot} from './team.ts';
 import {WorkerConversation} from './conversation.ts';
@@ -26,6 +28,7 @@ export interface AgentWorkerConfiguration {
 export interface AgentHistory extends AgentSessionSnapshot {
   version: 1;
   messageSequence: number;
+  lastUsed?: Record<string, string>;
   configurations: Record<string, AgentWorkerConfiguration>;
 }
 
@@ -39,6 +42,17 @@ function stringFields(
 ): value is Record<string, string> {
   return (
     objectRow(value) && fields.every(field => typeof value[field] === 'string')
+  );
+}
+
+function isWorkerConfiguration(
+  value: unknown,
+): value is AgentWorkerConfiguration {
+  return (
+    objectRow(value) &&
+    (value.context === 'workspace' || value.context === 'task') &&
+    stringFields(value.agentProfile, ['id', 'name', 'instructions']) &&
+    Array.isArray(value.agentProfile.permissions)
   );
 }
 
@@ -98,6 +112,7 @@ function restoreAgent(
     'error',
     'startedAt',
     'finishedAt',
+    'lastUsedAt',
     'thinkingLevel',
     'pinnedModel',
   ] as const)
@@ -108,12 +123,15 @@ function restoreAgent(
 /** Each parent owns its history alongside its retained Pi worker sessions. */
 export class AgentHistoryStore {
   private pending?: () => AgentHistory;
+  private pendingRemoved = new Set<string>();
   private timer?: ReturnType<typeof setTimeout>;
   private writing: Promise<void> = Promise.resolve();
   readonly path: string;
   readonly sessionId: string;
 
   constructor(agentDir: string, sessionId: string) {
+    if (!agentStorageId.test(sessionId))
+      throw new Error('Invalid agent session ID.');
     this.sessionId = sessionId;
     this.path = join(agentDir, 'varisdev', 'agents', sessionId, 'history.json');
   }
@@ -132,10 +150,18 @@ export class AgentHistoryStore {
         !objectRow(history.configurations)
       )
         throw new Error('Invalid agent history.');
-      const agents = history.agents.flatMap(value => {
+      const lastUsed = historyLastUsed(history);
+      const agents: AgentHistory['agents'] = history.agents.flatMap(value => {
         try {
           const agent = restoreAgent(value);
-          return agent ? [agent] : [];
+          return agent
+            ? [
+                {
+                  ...agent,
+                  lastUsedAt: lastUsed.get(agent.id) ?? agent.lastUsedAt,
+                },
+              ]
+            : [];
         } catch {
           return [];
         }
@@ -164,17 +190,14 @@ export class AgentHistoryStore {
           ]),
       );
       const configurations = Object.fromEntries(
-        Object.entries(history.configurations).filter(
-          ([, value]) =>
-            objectRow(value) &&
-            ['workspace', 'task'].includes(String(value.context)) &&
-            stringFields(value.agentProfile, ['id', 'name', 'instructions']) &&
-            Array.isArray(value.agentProfile.permissions),
+        Object.entries(history.configurations).filter(([, value]) =>
+          isWorkerConfiguration(value),
         ),
       ) as AgentHistory['configurations'];
       return {
         version: 1,
         sessionId: this.sessionId,
+        lastUsed: Object.fromEntries(lastUsed),
         agents,
         messages,
         changes,
@@ -273,8 +296,9 @@ export class AgentHistoryStore {
       : undefined;
   }
 
-  save(history: () => AgentHistory): void {
+  save(history: () => AgentHistory, removed: Iterable<string> = []): void {
     this.pending = history;
+    for (const id of removed) this.pendingRemoved.add(id);
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
@@ -291,15 +315,100 @@ export class AgentHistoryStore {
     const pending = this.pending;
     this.pending = undefined;
     if (pending) {
+      const removed = new Set(this.pendingRemoved);
+      this.pendingRemoved.clear();
       const history = pending();
       const write = async () => {
         await mkdir(dirname(this.path), {recursive: true});
+        const release = await lockfile.lock(this.path, {
+          realpath: false,
+          lockfilePath: join(
+            dirname(dirname(this.path)),
+            `.history-${this.sessionId}.lock`,
+          ),
+          stale: 300000,
+          retries: {retries: 100, minTimeout: 20, maxTimeout: 100},
+        });
         const temporary = `${this.path}.${randomUUID()}.tmp`;
         try {
-          await writeFile(temporary, JSON.stringify(history), {mode: 0o600});
+          let previous: unknown;
+          try {
+            previous = JSON.parse(readFileSync(this.path, 'utf8'));
+          } catch (error) {
+            if (
+              !(error instanceof SyntaxError) &&
+              (error as NodeJS.ErrnoException).code !== 'ENOENT'
+            )
+              throw error;
+          }
+          const saved =
+            objectRow(previous) &&
+            previous.version === 1 &&
+            previous.sessionId === this.sessionId
+              ? previous
+              : {};
+          const used = historyLastUsed(saved, history);
+          const agents = history.agents.filter(agent => !removed.has(agent.id));
+          const known = new Set(agents.map(agent => agent.id));
+          const configurations = {...history.configurations};
+          for (const id of removed) {
+            used.delete(id);
+            delete configurations[id];
+          }
+          // An omitted record may have been created by another owner. Only an
+          // explicit expiry removes it and its saved resume configuration.
+          for (const value of Array.isArray(saved.agents) ? saved.agents : []) {
+            if (
+              !objectRow(value) ||
+              typeof value.id !== 'string' ||
+              !agentStorageId.test(value.id) ||
+              known.has(value.id) ||
+              removed.has(value.id)
+            )
+              continue;
+            let agent: AgentHistory['agents'][number] | undefined;
+            try {
+              agent = restoreAgent(value);
+            } catch {
+              continue;
+            }
+            if (!agent) continue;
+            agents.push(agent);
+            known.add(agent.id);
+          }
+          for (const agent of agents) {
+            const configuration = objectRow(saved.configurations)
+              ? saved.configurations[agent.id]
+              : undefined;
+            if (
+              !Object.hasOwn(configurations, agent.id) &&
+              isWorkerConfiguration(configuration)
+            )
+              configurations[agent.id] = configuration;
+          }
+          for (const id of used.keys())
+            if (
+              !agentStorageId.test(id) ||
+              (!known.has(id) && !existsSync(join(dirname(this.path), id)))
+            )
+              used.delete(id);
+          const merged = {
+            ...history,
+            lastUsed: Object.fromEntries(used),
+            configurations,
+            agents: agents.map(agent => ({
+              ...agent,
+              lastUsedAt: used.get(agent.id) ?? agent.lastUsedAt,
+            })),
+          };
+          await writeFile(temporary, JSON.stringify(merged), {mode: 0o600});
           await rename(temporary, this.path);
         } finally {
-          await rm(temporary, {force: true});
+          try {
+            await rm(temporary, {force: true});
+          } finally {
+            await release();
+          }
         }
       };
       this.writing = this.writing.catch(() => {}).then(write);

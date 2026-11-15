@@ -208,16 +208,18 @@ async function openMenu(selector = '#item-actions-button') {
   await waitFor(() =>
     document.getElementById('item-context-menu').matches(':popover-open'),
   );
-  assert.deepEqual(
-    await evaluate(() => ({
-      close: document.getElementById('close-session').textContent.trim(),
-      workspaceClose: [
-        ...document.querySelectorAll(
-          '#item-context-menu [role="menuitem"], #app-menu-panel button',
-        ),
-      ].some(item => /close workspace/i.test(item.textContent)),
-    })),
-    {close: 'Close agent', workspaceClose: false},
+  const closeAction = await evaluate(() => ({
+    close: document.getElementById('close-session').textContent.trim(),
+    workspaceClose: [
+      ...document.querySelectorAll(
+        '#item-context-menu [role="menuitem"], #app-menu-panel button',
+      ),
+    ].some(item => /close workspace/i.test(item.textContent)),
+  }));
+  assert.ok(['Close workspace', 'Close agent'].includes(closeAction.close));
+  assert.equal(
+    closeAction.workspaceClose,
+    closeAction.close === 'Close workspace',
   );
 }
 async function closed() {
@@ -343,6 +345,11 @@ async function main() {
     hub.sessions.push(replacement);
     return {id: 'replacement'};
   });
+  handle('pidev:close-session', id => {
+    record('close-session', id);
+    hub.sessions = hub.sessions.filter(item => item.session.id !== id);
+    browser.webContents.send('pidev:snapshot', hub);
+  });
   handle('pidev:agent-session', (ownerId, request) => {
     if (request.action === 'features')
       return {
@@ -353,38 +360,17 @@ async function main() {
         thinkingLevel: 'off',
         thinkingLevels: ['off'],
       };
+    if (request.action === 'view') return;
     record('agent-session', ownerId, request);
     assert.equal(request.action, 'close');
     const data = hub.sessions.find(item => item.session.id === ownerId);
     assert.ok(data, 'Agent action targets an open workspace');
-    const starterOpen = !data.session.primaryClosed;
-    const primaries = data.agents.filter(
-      item => item.agentMode !== 'subagent' && item.resumable !== false,
-    );
-    const primary =
-      request.agentId === 'parent'
-        ? starterOpen
-        : primaries.some(item => item.id === request.agentId);
+    assert.notEqual(request.agentId, 'parent', 'Main agent cannot be closed');
     assert.ok(
-      request.agentId === 'parent'
-        ? starterOpen
-        : data.agents.some(item => item.id === request.agentId),
+      data.agents.some(item => item.id === request.agentId),
       'Agent action targets an open conversation',
     );
-    const liveOwner =
-      data.session.status !== 'closed' &&
-      (data.session.controllable ?? data.session.owned);
-    if (
-      !liveOwner ||
-      (primary && primaries.length + Number(starterOpen) === 1)
-    ) {
-      if (!request.confirmWorkspaceClose)
-        return {requiresWorkspaceCloseConfirmation: true};
-      hub.sessions = hub.sessions.filter(item => item !== data);
-      return {workspaceClosed: true};
-    }
-    if (request.agentId === 'parent') data.session.primaryClosed = true;
-    else data.agents = data.agents.filter(item => item.id !== request.agentId);
+    data.agents = data.agents.filter(item => item.id !== request.agentId);
     data.totalAgents = data.agents.length;
   });
   handle('pidev:cancel-agent', (ownerId, agentId) => {
@@ -411,11 +397,11 @@ async function main() {
   await reload();
 
   await check(
-    'right click closes another workspace starter while its remaining primary keeps the workspace open',
+    'right click exposes an explicit Close workspace action for Main',
     async () => {
       const target = hub.sessions[1];
       target.agents.push(
-        agent('primary', 'Remaining primary', 'running', {
+        agent('primary', 'Additional primary', 'running', {
           agentMode: 'primary',
         }),
       );
@@ -437,10 +423,6 @@ async function main() {
           closeInApp: document
             .getElementById('app-menu-panel')
             .contains(document.getElementById('close-session')),
-          oldClose: document.getElementById('close-parent-session') !== null,
-          resetInApp: document
-            .getElementById('app-menu-panel')
-            .contains(document.getElementById('start-session')),
           resetVisible: !document.getElementById('reset-item-session').hidden,
           cancelAllVisible:
             !document.getElementById('cancel-all-agents').hidden,
@@ -450,11 +432,9 @@ async function main() {
         {
           role: 'menu',
           title: 'Harbor workspace',
-          close: 'Close agent',
+          close: 'Close workspace',
           closeInContext: true,
           closeInApp: false,
-          oldClose: false,
-          resetInApp: true,
           resetVisible: true,
           cancelAllVisible: true,
           cancelOneHidden: true,
@@ -462,160 +442,116 @@ async function main() {
         },
       );
       await act('close-session');
-      await selected('beta', 'Remaining primary');
-      assert.deepEqual(calls, [
-        ['agent-session', 'beta', {agentId: 'parent', action: 'close'}],
-      ]);
-      assert.equal(target.session.primaryClosed, true);
-      assert.equal(hub.sessions.length, 2);
-      assert.equal(target.agents.length, 6);
-      assert.equal(
-        await evaluate(
-          () => document.getElementById('close-primary-dialog').open,
-        ),
-        false,
-      );
-      await openMenu();
+      await waitFor(() => document.getElementById('close-primary-dialog').open);
       assert.deepEqual(
         await evaluate(() => ({
-          title: document.getElementById('item-context-menu-title').textContent,
-          renameVisible: !document.getElementById('rename-workspace').hidden,
-          resetVisible: !document.getElementById('reset-item-session').hidden,
-          cancelAllVisible:
-            !document.getElementById('cancel-all-agents').hidden,
+          title: document.getElementById('close-primary-title').textContent,
+          description: document
+            .getElementById('close-primary-description')
+            .textContent.replace(/\s+/g, ' ')
+            .trim(),
+          confirm: document
+            .getElementById('confirm-close-primary')
+            .textContent.trim(),
+          focus: document.activeElement.id,
         })),
         {
-          title: 'Remaining primary',
-          renameVisible: true,
-          resetVisible: true,
-          cancelAllVisible: true,
+          title: 'Close Harbor workspace?',
+          description: 'Closing this workspace will stop its agents.',
+          confirm: 'Close workspace',
+          focus: 'cancel-close-primary',
         },
       );
-      await key('Escape');
+      assert.deepEqual(calls, []);
+      await click('#cancel-close-primary');
+      await selected('beta', 'Harbor workspace');
+      assert.equal(hub.sessions.length, 2);
+      target.session.owned = false;
+      browser.webContents.send('pidev:snapshot', hub);
+      await openMenu();
+      await act('close-session');
+      await waitFor(() => document.getElementById('close-primary-dialog').open);
+      assert.equal(
+        await evaluate(() =>
+          document
+            .getElementById('close-primary-description')
+            .textContent.replace(/\s+/g, ' ')
+            .trim(),
+        ),
+        'Closing this workspace will remove it from this window.',
+      );
+      await click('#cancel-close-primary');
+      target.session.owned = true;
+      browser.webContents.send('pidev:snapshot', hub);
+      await openMenu();
+      await act('close-session');
+      await waitFor(() => document.getElementById('close-primary-dialog').open);
+      await click('#confirm-close-primary');
+      await selected('alpha', 'Orchard workspace');
+      assert.deepEqual(calls, [['close-session', 'beta']]);
+      assert.deepEqual(
+        hub.sessions.map(item => item.session.id),
+        ['alpha'],
+      );
     },
   );
 
-  for (const agentId of ['parent', 'primary']) {
-    await check(
-      `final ${agentId === 'parent' ? 'starter' : 'spawned primary'} warning can be cancelled before confirming workspace closure`,
-      async () => {
-        const kinds =
-          agentId === 'parent'
-            ? ['owned']
-            : ['owned', 'attached', 'observed', 'disconnected', 'closed'];
-        for (const kind of kinds) {
-          hub = initialHub();
-          calls = [];
-          const target = hub.sessions[1];
-          const name =
-            agentId === 'parent' ? 'Harbor workspace' : 'Remaining primary';
-          if (agentId !== 'parent') {
-            target.session.primaryClosed = true;
-            target.agents.push(
-              agent(agentId, name, 'running', {agentMode: 'primary'}),
-            );
-            target.totalAgents = target.agents.length;
-          }
-          if (kind !== 'owned') {
-            target.session.owned = false;
-            target.session.controllable = kind === 'attached';
-            if (kind === 'observed') delete target.session.controllable;
-          }
-          if (kind === 'disconnected' || kind === 'closed') {
-            target.session.status = 'closed';
-            target.session.activity = 'Terminal disconnected';
-          }
-          browser.webContents.send('pidev:snapshot', hub);
-          await waitFor(() =>
-            document.querySelector('.parent-card[data-context-session="beta"]'),
-          );
-          await click('.parent-card[data-context-session="beta"]');
-          await selected('beta', name);
-          const before = JSON.parse(JSON.stringify(target));
-          await openMenu(
-            agentId === 'parent'
-              ? '.parent-card[data-context-session="beta"]'
-              : '.worker-card[data-context-unit="primary"]',
-          );
-          await act('close-session');
-          await waitFor(
+  await check(
+    'additional primary and subagent closes leave Main and the workspace open',
+    async () => {
+      const target = hub.sessions[1];
+      target.session.primaryClosed = true;
+      target.agents.push(
+        agent('primary', 'Additional primary', 'running', {
+          agentMode: 'primary',
+        }),
+      );
+      target.totalAgents = target.agents.length;
+      browser.webContents.send('pidev:snapshot', hub);
+      await click('.parent-card[data-context-session="beta"]');
+      await selected('beta', 'Harbor workspace');
+      for (const [id, name] of [
+        ['primary', 'Additional primary'],
+        ['review', 'Review agent'],
+      ]) {
+        await openMenu(`.worker-card[data-context-unit="${id}"]`);
+        await selected('beta', name);
+        assert.equal(
+          await evaluate(() =>
+            document.getElementById('close-session').textContent.trim(),
+          ),
+          'Close agent',
+        );
+        await act('close-session');
+        await selected('beta', 'Harbor workspace');
+        assert.equal(
+          await evaluate(
             () => document.getElementById('close-primary-dialog').open,
-          );
-          assert.deepEqual(
-            await evaluate(() => ({
-              title: document.getElementById('close-primary-title').textContent,
-              description: document
-                .getElementById('close-primary-description')
-                .textContent.replace(/\s+/g, ' ')
-                .trim(),
-              focus: document.activeElement.id,
-            })),
-            {
-              title:
-                agentId === 'parent'
-                  ? `Close ${name}?`
-                  : `Close ${name} in Harbor workspace?`,
-              description:
-                kind === 'owned'
-                  ? 'Closing this agent will close this workspace and stop its agents.'
-                  : 'Closing this agent will close this workspace in this window.',
-              focus: 'cancel-close-primary',
-            },
-          );
-          assert.deepEqual(target, before);
-          await click('#cancel-close-primary');
-          await waitFor(
-            () => !document.getElementById('close-primary-dialog').open,
-          );
-          await selected('beta', name);
-          assert.deepEqual(calls, [
-            ['agent-session', 'beta', {agentId, action: 'close'}],
-          ]);
-          assert.deepEqual(hub.sessions[1], before);
-          assert.equal(hub.sessions.length, 2);
-          await openMenu();
-          await act('close-session');
-          await waitFor(
-            () => document.getElementById('close-primary-dialog').open,
-          );
-          await click('#confirm-close-primary');
-          await waitFor(
-            () => !document.getElementById('close-primary-dialog').open,
-          );
-          await selected('alpha', 'Orchard workspace');
-          assert.deepEqual(calls, [
-            ['agent-session', 'beta', {agentId, action: 'close'}],
-            ['agent-session', 'beta', {agentId, action: 'close'}],
-            [
-              'agent-session',
-              'beta',
-              {agentId, action: 'close', confirmWorkspaceClose: true},
-            ],
-          ]);
-          assert.deepEqual(
-            hub.sessions.map(item => item.session.id),
-            ['alpha'],
-          );
-          assert.deepEqual(target, before);
-          assert.equal(
-            await evaluate(() =>
-              window.localStorage.getItem('varisdev.dismissed-agents.v1'),
-            ),
-            null,
-          );
-          assert.equal(
-            await evaluate(
-              () =>
-                document.querySelector(
-                  '.parent-card[data-context-session="beta"]',
-                ) === null,
-            ),
-            true,
-          );
-        }
-      },
-    );
-  }
+          ),
+          false,
+        );
+      }
+      assert.deepEqual(calls, [
+        ['agent-session', 'beta', {agentId: 'primary', action: 'close'}],
+        ['agent-session', 'beta', {agentId: 'review', action: 'close'}],
+      ]);
+      assert.equal(hub.sessions.length, 2);
+      assert.equal(target.session.primaryClosed, true);
+      assert.ok(
+        await evaluate(() =>
+          Boolean(
+            document.querySelector('.worker-card[data-context-unit="parent"]'),
+          ),
+        ),
+      );
+      assert.equal(
+        await evaluate(
+          () => document.getElementById('factory-title').textContent,
+        ),
+        'Main agent',
+      );
+    },
+  );
 
   await check(
     'agent close routes the selected card through owner and agent ids',
@@ -750,15 +686,17 @@ async function main() {
   await check(
     'close and cancel failures remain visible after the menu dismisses',
     async () => {
-      failures.set('agent-session', 'Starter close failed');
+      failures.set('close-session', 'Workspace close failed');
       await openMenu('.parent-card[data-context-session="beta"]');
       await act('close-session');
+      await waitFor(() => document.getElementById('close-primary-dialog').open);
+      await click('#confirm-close-primary');
       await waitFor(
         () =>
           !document.getElementById('app-error').hidden &&
           document
             .getElementById('app-error')
-            .textContent.includes('Starter close failed'),
+            .textContent.includes('Workspace close failed'),
       );
       assert.equal(
         await evaluate(
@@ -815,7 +753,7 @@ async function main() {
         true,
       );
       assert.deepEqual(calls, [
-        ['agent-session', 'beta', {agentId: 'parent', action: 'close'}],
+        ['close-session', 'beta'],
         ['agent-session', 'beta', {agentId: 'review', action: 'close'}],
         ['cancel', 'beta', 'review'],
         ['cancel', 'beta', 'all'],
@@ -987,18 +925,8 @@ async function main() {
       await click('#confirm-close-primary');
       await waitFor(() => !document.getElementById('welcome').hidden);
       assert.deepEqual(calls, [
-        ['agent-session', 'alpha', {agentId: 'parent', action: 'close'}],
-        [
-          'agent-session',
-          'alpha',
-          {agentId: 'parent', action: 'close', confirmWorkspaceClose: true},
-        ],
-        ['agent-session', 'beta', {agentId: 'parent', action: 'close'}],
-        [
-          'agent-session',
-          'beta',
-          {agentId: 'parent', action: 'close', confirmWorkspaceClose: true},
-        ],
+        ['close-session', 'alpha'],
+        ['close-session', 'beta'],
       ]);
     },
   );

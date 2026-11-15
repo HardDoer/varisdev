@@ -14,6 +14,7 @@ import {
   type AgentMessageSender,
 } from '../agents/orchestrator.ts';
 import {createSessionWorker} from '../agents/session.ts';
+import {registerAgentCompletions} from '../agents/completions.ts';
 import type {AgentWorkerConfiguration} from '../agents/history.ts';
 import {
   listAgentTemplates,
@@ -118,7 +119,7 @@ const spawnSchema = Type.Object({
   autoCleanup: Type.Optional(
     Type.Boolean({
       description:
-        'Dispose after completion. Results stay readable, but the agent cannot resume. Default false.',
+        'Dispose after completion. Results remain until history expires; the agent cannot resume. Default false.',
     }),
   ),
 });
@@ -267,7 +268,7 @@ function registerAgentListTool(
       'List agent IDs and progress. Defaults to active; history is newest first.' +
       (selfId
         ? ' Includes your selfId; agent_send accepts peer IDs or "parent".'
-        : ' Use agent_status for results and errors.'),
+        : ''),
     parameters: Type.Object({
       view: Type.Optional(
         Type.Union(
@@ -302,6 +303,7 @@ function registerAgentSendTool(
   pi: ExtensionAPI,
   getManager: GetManager,
   sender?: {id: string; sendToParent: (message: AgentMessage) => ParentMessage},
+  completions?: ReturnType<typeof registerAgentCompletions>,
 ): void {
   pi.registerTool({
     name: 'agent_send',
@@ -359,10 +361,9 @@ function registerAgentSendTool(
           undefined,
           recipient.pinnedModel,
         );
-      return toolResult(
-        [await current.send(params.id, message, identity)],
-        'ack',
-      );
+      const result = await current.send(params.id, message, identity);
+      if (isAgentFinished(recipient.status)) completions?.track(params.id, ctx);
+      return toolResult([result], 'ack');
     },
   });
 }
@@ -435,7 +436,7 @@ function registerAgentTemplateTool(pi: ExtensionAPI): void {
         Type.String({
           maxLength: 512,
           description:
-            'Pinned delegated model as provider/model, overriding launch arguments and Agent-models. Omit to inherit.',
+            'Pinned delegated model as provider/model, overriding launch arguments and Agent settings. Omit to inherit.',
         }),
       ),
       thinkingLevel: Type.Optional(
@@ -582,6 +583,14 @@ export function registerAgentTools(
       );
     });
   }
+  // Stop result delivery before the controller closes its workers.
+  const completions = registerAgentCompletions(
+    pi,
+    ctx => getTeam(ctx).getManager(),
+    records => toolResult(records, 'result').content,
+    shared?.id,
+    () => shared?.signal?.(),
+  );
   const control = shared?.control ?? new AgentSessionController(pi);
   const getTeam = (ctx: ExtensionContext) =>
     shared?.team ?? control.getTeam(ctx);
@@ -674,9 +683,11 @@ export function registerAgentTools(
     params: Static<typeof spawnSchema>,
     signal: AbortSignal | undefined,
     ctx: ExtensionContext,
+    userInvoked = false,
   ) => {
     signal?.throwIfAborted();
     const team = getTeam(ctx);
+    await team.ready;
     const current = team.getManager();
     const settings = await readToolSettings();
     current.setMaxConcurrentAgents(settings.agents.maxConcurrentAgents);
@@ -691,7 +702,7 @@ export function registerAgentTools(
       throw new Error(`Unknown agent configuration: ${params.template}`);
     if (template.disabled)
       throw new Error(`Agent configuration is disabled: ${template.id}`);
-    if (template.mode === 'primary')
+    if (template.mode === 'primary' && !userInvoked)
       throw new Error(
         `Agent configuration ${template.id} only supports primary conversations.`,
       );
@@ -749,6 +760,7 @@ export function registerAgentTools(
       id => buildWorker(current.get(id), ctx, team, configuration),
     );
     team.retainWorkerConfiguration(record.id, configuration);
+    completions.track(record.id, ctx);
     return toolResult([record], 'ack');
   };
 
@@ -792,7 +804,7 @@ export function registerAgentTools(
           },
         );
         if (denied) throw new Error(denied.reason);
-        const result = await launchAgent(params, signal, ctx);
+        const result = await launchAgent(params, signal, ctx, true);
         pi.sendMessage({
           customType: 'varisdev.agent-mention',
           content: `${event.text}\n\n${result.content[0].text}`,
@@ -834,13 +846,14 @@ export function registerAgentTools(
         (maxConcurrentAgents === 1
           ? 'Additional agents are disabled: the single slot is reserved for the main conversation. '
           : `Maximum ${maxConcurrentAgents} concurrent agents including the main conversation (${maxConcurrentAgents - 1} background agent${maxConcurrentAgents === 2 ? '' : 's'}); others queue. `) +
-        'An explicit configuration model is pinned and overrides the model argument and Agent-models. ' +
+        'Results are delivered automatically to this conversation; continue other work without polling. ' +
+        'An explicit configuration model is pinned and overrides the model argument and Agent settings. ' +
         (allowedModels === null
           ? 'Inheriting configurations accept any model from the current model registry. '
           : allowedModels.length === 0
-            ? 'No models enabled for inheriting configurations; configure Menu → Agent-models first. '
-            : 'Inheriting configurations use models allowed by Menu → Agent-models. ') +
-        'Agents share files in cwd. Use agent_wait for results and agent_inbox for messages; completion does not start another turn.',
+            ? 'No models enabled for inheriting configurations; configure Menu → Agent settings first. '
+            : 'Inheriting configurations use models allowed by Menu → Agent settings. ') +
+        'Agents share files in cwd. Use agent_inbox for messages.',
       promptSnippet:
         'Start a background agent with its own conversation and return its ID immediately.',
       parameters: {
@@ -968,6 +981,7 @@ export function registerAgentTools(
   pi.registerTool({
     name: 'agent_status',
     label: 'Agent status',
+    exposure: 'deferred',
     description:
       'Get progress, result, or error. Truncated results include their full resultFile path.',
     parameters: Type.Object({
@@ -980,10 +994,9 @@ export function registerAgentTools(
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      return toolResult(
-        [getManager(ctx).get(params.id)],
-        params.details ? 'details' : 'result',
-      );
+      const record = getManager(ctx).touch(params.id);
+      completions.acknowledge([record]);
+      return toolResult([record], params.details ? 'details' : 'result');
     },
   });
   registerAgentSendTool(
@@ -995,10 +1008,12 @@ export function registerAgentTools(
           sendToParent: message => shared.team!.storeMessage(message),
         }
       : undefined,
+    completions,
   );
   pi.registerTool({
     name: 'agent_wait',
     label: 'Wait for agents',
+    exposure: 'deferred',
     description:
       'Wait for completion, failure, or cancellation and return results. Timeout/interruption leaves agents running. Finished agents satisfy the wait; for successive mode="any" waits, pass only unfinished IDs.',
     parameters: waitSchema,
@@ -1018,9 +1033,14 @@ export function registerAgentTools(
           'progress',
         ),
       );
-      return toolResult(
-        await current.wait(ids, {...params, signal, callerId: shared?.id}),
-      );
+      completions.inspect();
+      const records = await current.wait(ids, {
+        ...params,
+        signal,
+        callerId: shared?.id,
+      });
+      completions.acknowledge(records);
+      return toolResult(records);
     },
   });
   pi.registerTool({

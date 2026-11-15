@@ -42,17 +42,17 @@ By default, when a project has repository settings or resources and no saved tru
 
 Workspace configuration can contain `settings.json`, `skills/`, `prompts/`, `extensions/`, `themes/`, package registrations, `mcp.json`, and Pi context files such as `AGENTS.md`, `AGENTS.MD`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.MD`, `SYSTEM.md`, and `APPEND_SYSTEM.md`. Workspace preferences and resources override trusted repository configuration, which overrides global configuration; existing repository and global resources remain available. Context instructions accumulate in Pi's normal order and apply workspace instructions last. `/reload` rereads these files.
 
-Interactive Pi settings commands keep their existing global or repository save behavior; workspace `settings.json` is an overlay edited as a file. Every conversation selects an agent from the Markdown configurations described in [Agent configurations](agents.md). The empty **Default** agent preserves normal Pi behavior. Set `default_agent` to choose another visible primary or all-mode profile. Shared `permissions` in settings apply before profile rules. `models.json` and `auth.json` remain global. MCP entries in the workspace file must contain complete server definitions rather than partial `{enabled}` overrides.
+Interactive Pi settings commands keep their existing global or repository save behavior; workspace `settings.json` is an overlay edited as a file. Every workspace session starts with a fixed Main agent that does not use a Markdown configuration. The [Agent configurations](agents.md) apply to additional Primary agents and Subagents. Shared `permissions` in settings apply before profile rules. `models.json` and `auth.json` remain global. MCP entries in the workspace file must contain complete server definitions rather than partial `{enabled}` overrides.
 
 ## Workspaces
 
 Open **Actions** beside the conversation title, or right-click a workspace, agent, history entry, or the conversation title. Right-clicking selects that item. With an item focused, **Shift+F10** or the menu key opens its actions; use the arrow keys to navigate and **Esc** to close. **Actions** remains available when the visualization is hidden.
 
-- **New conversation** automatically selects **Default**, or the eligible profile chosen by `default_agent`. You can choose another configuration; a name and initial task are optional. See [agent configurations](agents.md).
+- **New conversation** starts one Main agent. Choose a folder and optionally enter a conversation name and first message. The dialog has no agent configuration picker; configurations apply to additional agents. See [agent configurations](agents.md).
 - **Actions → Reset conversation**, **Menu → Reset conversation**, and `/new` replace the selected workspace with a fresh conversation in the same folder, stopping all of its agents. The workspace stays visible during reset; if the new conversation cannot start, the current one stays open.
 - **Menu → Resume session** reopens a saved conversation as a workspace, replacing other open workspaces in the same folder. Other projects stay open. Use **Choose folder** to browse another folder's history.
 - The start screen's **Recent projects** remembers up to twelve folders across app restarts.
-- **Actions → Close agent** closes the selected agent. Closing the final primary asks for confirmation, then closes the workspace and stops its agents without deleting saved history. A workspace connected from a terminal is dismissed from the app.
+- **Actions → Close agent** closes an additional agent. Main cannot be closed separately. **Close workspace** ends the session and stops its agents without deleting retained history. A workspace connected from a terminal is dismissed from the app.
 - **Actions → Cancel agent** stops the selected additional agent; **Cancel all agents** is available from its workspace's actions.
 - **Actions → Remove agent** clears a stopped or finished additional agent from the dashboard. It reappears if it resumes.
 
@@ -106,15 +106,19 @@ These modes use higher provider rates. Cost estimates in **Tokens** use configur
 
 Provider details: [Anthropic Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode), [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode), [OpenAI Ultrafast mode](https://developers.openai.com/api/docs/guides/ultrafast-mode), and [ChatGPT speed and plan requirements](https://learn.chatgpt.com/docs/agent-configuration/speed).
 
-### Agent models
+### Agent settings
 
-**Menu → Agent-models → Maximum concurrent agents** sets the workspace's agent limit. The default is **6**, including the conversation starter while it is open and leaving five slots for additional agents. Closing the starter releases its slot. A limit of **1** prevents additional launches and resumptions while the starter is open. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
+**Menu → Agent settings** combines concurrency, allowed models, history retention, and the nested **Agent configurations** editor.
 
-**Menu → Agent-models** controls which models background agents may use when their configuration has no explicit model. Fresh settings start with none selected.
+**Maximum concurrent agents** sets the workspace's agent limit. The default is **6**, including Main and leaving five slots for additional agents. A limit of **1** prevents additional launches and resumptions. Additional work queues when all slots are occupied. Lowering the limit lets running agents finish; the new limit applies to subsequent launches and resumptions.
 
-**Agent-models** uses the selected workspace's Pi scoped models, or the saved global scope when no workspace is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
+The model list controls which models additional agents may use when their configuration has no explicit model. Fresh settings start with none selected. It uses the selected workspace's Pi scoped models, or the saved global scope when no workspace is selected. An empty scope shows the full model catalog. Saved choices outside the current scope remain visible as unavailable.
 
 Agents inherit the current agent's model and reasoning level unless explicitly configured. The inherited or launch-selected model must be allowed. An explicit model in an agent configuration pins that agent type to the model, overriding this list and launch arguments. Both restrictions and pins apply across projects, including queued and resumed agents. Changes apply to subsequent agent launches and resumptions. Running agents keep their current model.
+
+**Keep finished agents (days)** sets the inactivity period for completed, failed, and cancelled agents. The default is **7 days**, with a range of **1–365 days**. Viewing an agent's conversation, reading its result, continuing it, or using its controls resets the timer. Cleanup runs at startup, hourly, and when this setting changes. Expired transcripts, result files, and saved agent history are permanently deleted rather than archived. Active agents, including running and queued work, the Main session transcript, and the last Primary agent's history are kept. Results already delivered to Main remain in its transcript.
+
+**Agent configurations** opens the [configuration editor](agents.md#storage-and-scopes) inside Agent settings.
 
 For virtual models, the router's extension must also be loaded from the worker's project or global configuration.
 

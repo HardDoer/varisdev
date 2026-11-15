@@ -12,7 +12,12 @@ import {
   type AgentApprovalStore,
 } from './approvals.ts';
 import {sessionAgentApprovalScope} from './approval-context.ts';
+import {mainAgentId} from './main.ts';
 import type {AgentApprovalRequest, AgentPolicyOptions} from './policy.ts';
+
+function agentName(id?: string): string {
+  return id === mainAgentId ? 'Main agent' : (id ?? 'agent');
+}
 
 const approvalChoices = new Map<string, AgentApprovalChoice>([
   ['Allow once', 'once'],
@@ -29,7 +34,7 @@ export async function requestAgentApproval(
   if (!ctx.hasUI || request.signal?.aborted) return 'deny';
   const selected = await ctx.ui.select(
     [
-      `Permission: ${request.agentId ?? 'agent'}`,
+      `Permission: ${agentName(request.agentId)}`,
       `${request.toolName}: ${request.action} ${request.resource}`,
       ...(request.workspace ? [`Workspace: ${request.workspace}`] : []),
     ].join('\n'),
@@ -65,7 +70,7 @@ export function createAgentApprovalRelay(
 }
 
 function grantLabel(grant: AgentApprovalGrant, index: number): string {
-  return `${index + 1}. ${grant.agentId}: ${grant.operation.toolName} — ${grant.operation.action} ${grant.operation.resource}`;
+  return `${index + 1}. ${agentName(grant.agentId)}: ${grant.operation.toolName} — ${grant.operation.action} ${grant.operation.resource}`;
 }
 
 export interface AgentApprovalManagementOptions {
@@ -86,7 +91,7 @@ async function reviewGrant(
     const details = new ScrollView(
       new Text(
         [
-          `${grant.agentId}: ${operation.toolName}`,
+          `${agentName(grant.agentId)}: ${operation.toolName}`,
           `${operation.action} ${operation.resource}`,
           `Workspace: ${grant.workspace}`,
           ...(grant.conversationId

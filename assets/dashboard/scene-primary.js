@@ -2,6 +2,7 @@
  * @typedef {object} SceneUnit
  * @property {string} id
  * @property {string} [status]
+ * @property {string} [activity]
  * @property {string} [agentMode]
  * @property {string | number} [createdAt]
  * @property {number} [creationOrder]
@@ -15,7 +16,21 @@ export function isPrimaryAgent(agent) {
 }
 
 /**
- * Remaining primary conversations, with the starter first while it is open.
+ * The fixed Main agent. A legacy primaryClosed marker cannot remove it.
+ * @param {{session?: SceneUnit, agents?: SceneUnit[]} | undefined} data
+ * @returns {{id: string, unit: SceneUnit} | undefined}
+ */
+export function mainUnit(data) {
+  const main = data?.session;
+  if (!main) return undefined;
+  return {
+    id: 'parent',
+    unit: main.primaryClosed ? {...main, primaryClosed: false} : main,
+  };
+}
+
+/**
+ * Main and available additional primary conversations.
  * @param {{session?: SceneUnit, agents?: SceneUnit[]} | undefined} data
  * @returns {{id: string, unit: SceneUnit}[]}
  */
@@ -44,18 +59,15 @@ export function primaryUnits(data) {
       );
     })
     .map(({id, unit}) => ({id, unit}));
-  const starter = data?.session;
-  return starter && !starter.primaryClosed && starter.status !== 'closed'
-    ? [{id: 'parent', unit: starter}, ...additional]
-    : additional;
+  const main = mainUnit(data);
+  return main ? [main, ...additional] : additional;
 }
 
 /**
- * The large robot belongs to the starter, then the second newest primary.
+ * The workspace root is always its fixed Main conversation.
  * @param {{session?: SceneUnit, agents?: SceneUnit[]} | undefined} data
  * @returns {{id: string, unit: SceneUnit} | undefined}
  */
 export function primaryUnit(data) {
-  const units = primaryUnits(data);
-  return units[0]?.id === 'parent' ? units[0] : units[1] || units[0];
+  return mainUnit(data);
 }

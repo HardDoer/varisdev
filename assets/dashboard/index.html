@@ -113,7 +113,7 @@
         tabindex="-1"
         disabled
       >
-        Close agent
+        Close workspace
       </button>
     </div>
     <dialog
@@ -122,17 +122,17 @@
       aria-describedby="close-primary-description"
     >
       <div class="dialog-heading">
-        <h2 id="close-primary-title">Close primary agent?</h2>
+        <h2 id="close-primary-title">Close workspace?</h2>
       </div>
       <p id="close-primary-description">
-        Closing this agent will close this workspace and stop its agents.
+        Closing this workspace will stop its agents.
       </p>
       <div class="dialog-footer">
         <button id="cancel-close-primary" class="quiet-button" type="button">
           Cancel
         </button>
         <button id="confirm-close-primary" class="primary-button" type="button">
-          Close agent and workspace
+          Close workspace
         </button>
       </div>
     </dialog>
@@ -236,8 +236,6 @@
               hidden
             ></p>
           </div>
-          <label for="new-agent-template">Agent</label>
-          <select id="new-agent-template" required></select>
           <label for="new-agent-name"
             >Conversation name <span class="muted">(optional)</span></label
           >
@@ -842,19 +840,19 @@
     >
       <form id="tool-settings-form">
         <div class="dialog-heading">
-          <h2 id="tool-settings-title">Agent-models</h2>
+          <h2 id="tool-settings-title">Agent settings</h2>
           <button
             id="tool-settings-close"
             class="quiet-button"
             type="button"
-            aria-label="Close Agent-models"
+            aria-label="Close Agent settings"
           >
             Close
           </button>
         </div>
         <div class="tool-settings-body">
           <p id="tool-settings-description">
-            These settings apply across projects.
+            Model and history settings apply across projects.
           </p>
           <p id="tool-settings-loading" role="status">
             Loading models from Pi…
@@ -864,27 +862,55 @@
               id="agent-model-settings"
               class="tool-settings-card"
               role="region"
-              aria-labelledby="tool-settings-title"
+              aria-labelledby="agent-model-settings-title"
             >
-              <label for="agent-max-concurrent"
-                >Maximum concurrent agents</label
-              >
-              <input
-                id="agent-max-concurrent"
-                type="number"
-                min="1"
-                max="9007199254740991"
-                step="1"
-                required
-                aria-describedby="agent-max-concurrent-help"
-              />
-              <p
-                id="agent-max-concurrent-help"
-                class="muted tool-settings-card-note"
-              >
-                Includes the main conversation. Set to 1 to use only the main
-                agent.
-              </p>
+              <h3 id="agent-model-settings-title">Models and history</h3>
+              <div class="tool-settings-limits">
+                <div class="tool-settings-field">
+                  <label for="agent-max-concurrent"
+                    >Maximum concurrent agents</label
+                  >
+                  <input
+                    id="agent-max-concurrent"
+                    type="number"
+                    min="1"
+                    max="9007199254740991"
+                    step="1"
+                    required
+                    aria-describedby="agent-max-concurrent-help"
+                  />
+                  <p
+                    id="agent-max-concurrent-help"
+                    class="muted tool-settings-card-note"
+                  >
+                    Includes the main conversation. Set to 1 to use only the
+                    main agent.
+                  </p>
+                </div>
+                <div class="tool-settings-field">
+                  <label for="agent-history-retention"
+                    >Keep finished agents (days)</label
+                  >
+                  <input
+                    id="agent-history-retention"
+                    type="number"
+                    min="1"
+                    max="365"
+                    step="1"
+                    required
+                    aria-describedby="agent-history-retention-help"
+                  />
+                  <p
+                    id="agent-history-retention-help"
+                    class="muted tool-settings-card-note"
+                  >
+                    After this many days without use, finished agents’
+                    transcripts, results and history are permanently deleted.
+                    Active agents, the main conversation and the last primary
+                    agent are kept.
+                  </p>
+                </div>
+              </div>
               <label for="tool-settings-search">Search models</label>
               <input
                 id="tool-settings-search"
@@ -909,6 +935,15 @@
           ></p>
         </div>
         <div class="dialog-footer">
+          <button
+            id="open-agent-templates"
+            class="quiet-button"
+            type="button"
+            aria-haspopup="dialog"
+            aria-controls="agent-templates-dialog"
+          >
+            Agent configurations
+          </button>
           <button
             id="tool-settings-retry"
             class="quiet-button"
@@ -935,7 +970,7 @@
         reasoning level.
       </p>
       <p>
-        Choose allowed models in Menu → Agent-models. This also limits which
+        Choose allowed models in Menu → Agent settings. This also limits which
         models agents can inherit.
       </p>
       <p class="muted">Escape also acknowledges this notice.</p>
@@ -950,7 +985,7 @@
           Retry
         </button>
         <button id="agent-notice-configure" class="quiet-button" type="button">
-          Configure agent models
+          Agent settings
         </button>
         <button
           id="agent-notice-acknowledge"
@@ -1038,15 +1073,6 @@
                     type="button"
                   >
                     Open workspace configuration
-                  </button>
-                  <button
-                    id="open-agent-templates"
-                    class="quiet-button"
-                    type="button"
-                    aria-haspopup="dialog"
-                    aria-controls="agent-templates-dialog"
-                  >
-                    Agent configurations
                   </button>
                   <button id="new-session" class="primary-button" type="button">
                     Open folder
@@ -1174,7 +1200,7 @@
                       aria-haspopup="dialog"
                       aria-controls="tool-settings-dialog"
                     >
-                      Agent-models
+                      Agent settings
                     </button>
                     <button
                       id="open-environment"
@@ -1394,9 +1420,9 @@
               <span
                 id="selected-conversation-mark"
                 class="robot-glyph robot-primary robot-starter"
-                data-agent-kind="primary"
+                data-agent-kind="main"
                 role="img"
-                aria-label="Primary agent"
+                aria-label="Main agent"
                 ><i></i><span class="robot-crown" aria-hidden="true"></span
               ></span>
               <div>
@@ -1517,6 +1543,15 @@
                   viewBox="0 0 18 18"
                   aria-hidden="true"
                 >
+                  <g class="kind-main-icon">
+                    <path class="kind-antenna" d="M9 6V2.5" />
+                    <path
+                      class="kind-shell"
+                      d="M4 6h10a2 2 0 0 1 2 2v5.5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"
+                    />
+                    <path class="kind-screen" d="M4.5 8.5h9V13h-9z" />
+                    <path class="kind-eyes" d="M6.5 10.75h1m3 0h1" />
+                  </g>
                   <g class="kind-primary-icon">
                     <path
                       class="kind-crown"
@@ -1539,13 +1574,13 @@
                     <path class="kind-eyes" d="M6.5 10.75h1m3 0h1" />
                   </g>
                 </svg>
-                <span id="conversation-kind-label">Primary agent</span>
+                <span id="conversation-kind-label">Main agent</span>
               </span>
               <div class="inspector-session-actions">
                 <button
                   id="back-to-parent"
-                  aria-label="Back to starting agent"
-                  title="Back to starting agent"
+                  aria-label="Back to Main agent"
+                  title="Back to Main agent"
                   class="quiet-button"
                   type="button"
                   hidden

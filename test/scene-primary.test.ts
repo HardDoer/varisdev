@@ -4,6 +4,7 @@ import {DashboardState} from '../src/dashboard/state.ts';
 import type {AgentRecord} from '../src/agents/orchestrator.ts';
 import {
   isPrimaryAgent,
+  mainUnit,
   primaryUnit,
   primaryUnits,
 } from '../assets/dashboard/scene-primary.js';
@@ -20,8 +21,9 @@ const older = agent('older', '2026-01-01T00:00:00Z');
 const middle = agent('middle', '2026-01-02T00:00:00Z');
 const newest = agent('newest', '2026-01-03T00:00:00Z');
 
-void test('the starter owns the large robot while present regardless of agent creation order', () => {
+void test('the fixed Main agent remains the scene root regardless of agent creation order', () => {
   const data = {session: starter, agents: [middle, older, newest]};
+  assert.deepEqual(mainUnit(data), {id: 'parent', unit: starter});
   assert.deepEqual(primaryUnit(data), {id: 'parent', unit: starter});
   assert.deepEqual(
     primaryUnits(data).map(item => item.id),
@@ -30,27 +32,44 @@ void test('the starter owns the large robot while present regardless of agent cr
   assert.deepEqual(data.agents, [middle, older, newest]);
 });
 
-void test('root closure promotes the second most recently created remaining primary', () => {
-  for (const session of [
-    {...starter, primaryClosed: true},
-    {...starter, status: 'closed'},
-  ]) {
-    const data = {session, agents: [newest, older, middle]};
-    assert.deepEqual(
-      primaryUnits(data).map(item => item.id),
-      ['newest', 'middle', 'older'],
-    );
-    assert.deepEqual(primaryUnit(data), {id: 'middle', unit: middle});
-    data.agents = [newest, older];
-    assert.deepEqual(primaryUnit(data), {id: 'older', unit: older});
-    data.agents = [newest];
-    assert.deepEqual(primaryUnit(data), {id: 'newest', unit: newest});
-    data.agents = [];
-    assert.equal(primaryUnit(data), undefined);
-  }
+void test('legacy primaryClosed cannot remove Main or rewrite supplied state text', () => {
+  const marked = {
+    ...starter,
+    primaryClosed: true,
+    activity: 'Closed',
+  };
+  const markedData = {session: marked, agents: [newest, older, middle]};
+  assert.deepEqual(mainUnit(markedData), {
+    id: 'parent',
+    unit: {...marked, primaryClosed: false},
+  });
+  assert.equal(mainUnit(markedData)?.unit.status, 'idle');
+  assert.equal(mainUnit(markedData)?.unit.activity, 'Closed');
+
+  const disconnected = {
+    ...starter,
+    status: 'closed',
+    activity: 'Terminal disconnected',
+  };
+  const disconnectedData = {
+    session: disconnected,
+    agents: [newest, older, middle],
+  };
+  assert.equal(mainUnit(disconnectedData)?.unit, disconnected);
+  assert.equal(mainUnit(disconnectedData)?.unit.status, 'closed');
+  assert.equal(
+    mainUnit(disconnectedData)?.unit.activity,
+    'Terminal disconnected',
+  );
+  assert.deepEqual(
+    primaryUnits(disconnectedData).map(item => item.id),
+    ['parent', 'newest', 'middle', 'older'],
+  );
+  disconnectedData.agents = [];
+  assert.equal(primaryUnit(disconnectedData)?.id, 'parent');
 });
 
-void test('all and legacy modes are primaries; subagents and closed conversations cannot be promoted', () => {
+void test('primary role classification stays separate from availability filtering', () => {
   const all = {...middle, agentMode: 'all'};
   const legacy = {...older, agentMode: undefined};
   const subagent = {...newest, agentMode: 'subagent'};
@@ -62,46 +81,50 @@ void test('all and legacy modes are primaries; subagents and closed conversation
   };
   assert.ok(isPrimaryAgent(all));
   assert.ok(isPrimaryAgent(legacy));
+  assert.ok(isPrimaryAgent(cleaned));
+  assert.ok(isPrimaryAgent(closed));
   assert.equal(isPrimaryAgent(subagent), false);
+  assert.equal(isPrimaryAgent(undefined), false);
   assert.deepEqual(
     primaryUnits(data).map(item => item.id),
-    ['middle', 'older'],
+    ['parent', 'middle', 'older'],
   );
-  assert.equal(primaryUnit(data)?.unit, legacy);
-  assert.equal(
-    primaryUnit({session: data.session, agents: [subagent]}),
-    undefined,
-  );
+  assert.equal(primaryUnit(data)?.id, 'parent');
+  assert.equal(primaryUnit({agents: [subagent]}), undefined);
   assert.equal(primaryUnit(undefined), undefined);
+  assert.equal(mainUnit(undefined), undefined);
 });
 
-void test('equal creation times use immutable IDs for older snapshots, including missing timestamps', () => {
-  const first = {...newest, id: 'first'};
-  const second = {...newest, id: 'second'};
-  const third = {...newest, id: 'third'};
+void test('additional primaries retain creation time, creation order and id ordering', () => {
+  const first = {...newest, id: 'first', creationOrder: 1};
+  const second = {...newest, id: 'second', creationOrder: 3};
+  const third = {...newest, id: 'third', creationOrder: 2};
   const data = {
     session: {...starter, status: 'closed'},
     agents: [first, second, third],
   };
   assert.deepEqual(
     primaryUnits(data).map(item => item.id),
-    ['third', 'second', 'first'],
+    ['parent', 'second', 'third', 'first'],
   );
-  assert.equal(primaryUnit(data)?.unit, second);
   data.agents.reverse();
   assert.deepEqual(
     primaryUnits(data).map(item => item.id),
-    ['third', 'second', 'first'],
+    ['parent', 'second', 'third', 'first'],
   );
   assert.deepEqual(
     primaryUnits({
-      agents: data.agents.map(unit => ({...unit, createdAt: undefined})),
+      agents: data.agents.map(unit => ({
+        ...unit,
+        createdAt: undefined,
+        creationOrder: undefined,
+      })),
     }).map(item => item.id),
     ['third', 'second', 'first'],
   );
 });
 
-void test('same-timestamp primaries keep creation order through dashboard completion, sorting and restoration', () => {
+void test('dashboard completion and restoration preserve Main and additional ordering', () => {
   const at = '2026-01-01T00:00:00Z';
   const state = new DashboardState({
     ...starter,
@@ -109,7 +132,7 @@ void test('same-timestamp primaries keep creation order through dashboard comple
     primaryClosed: true,
     name: 'Workspace',
     cwd: '/project',
-    activity: 'Primary agent closed',
+    activity: 'Legacy closed marker',
     startedAt: at,
     updatedAt: at,
   });
@@ -126,24 +149,32 @@ void test('same-timestamp primaries keep creation order through dashboard comple
     activity: 'Working',
   }));
   state.updateTeam(records, []);
-  assert.equal(primaryUnit(state.snapshot())?.id, 'a-second');
+  assert.equal(primaryUnit(state.snapshot())?.id, 'parent');
+  assert.deepEqual(
+    primaryUnits(state.snapshot()).map(unit => unit.id),
+    ['parent', 'b-third', 'a-second', 'z-first'],
+  );
   records[0].status = 'completed';
   records[0].finishedAt = '2026-01-01T00:01:00Z';
   state.updateTeam(records, []);
-  assert.deepEqual(
-    state.snapshot().agents.map(unit => unit.id),
-    ['a-second', 'b-third', 'z-first'],
-  );
-  assert.equal(primaryUnit(state.snapshot())?.id, 'a-second');
   records[1].status = 'cancelled';
   records[1].finishedAt = '2026-01-01T00:02:00Z';
   state.updateTeam(records, []);
-  assert.equal(primaryUnit(state.snapshot())?.id, 'a-second');
+  assert.deepEqual(
+    primaryUnits(state.snapshot()).map(unit => unit.id),
+    ['parent', 'b-third', 'a-second', 'z-first'],
+  );
 
   const saved = state.snapshot();
   const restored = new DashboardState(saved.session);
   restored.updateTeam(saved.agents, [], true);
-  assert.equal(primaryUnit(restored.snapshot())?.id, 'a-second');
+  assert.deepEqual(
+    primaryUnits(restored.snapshot()).map(unit => unit.id),
+    ['parent', 'b-third', 'a-second', 'z-first'],
+  );
   restored.updateTeam([...saved.agents].reverse(), [], true);
-  assert.equal(primaryUnit(restored.snapshot())?.id, 'a-second');
+  assert.deepEqual(
+    primaryUnits(restored.snapshot()).map(unit => unit.id),
+    ['parent', 'b-third', 'a-second', 'z-first'],
+  );
 });

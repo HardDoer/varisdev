@@ -1,24 +1,26 @@
 # Agents and agent configurations
 
-The agent that starts a workspace conversation is the large robot in the factory. After it closes, the second most recently created remaining primary takes its place, or the only remaining primary. Agents with `primary` or `all` configurations can fill this role. Select an agent to inspect its conversation, context, and current work. Primary and all-mode agents accept direct prompts; subagents receive work through their parent.
+Every workspace session has exactly one **Main agent**, the fixed conversation starter shown as the large robot in the factory. Main does not use an agent configuration. Additional agents keep their configured **Primary agent** or **Subagent** roles. Select an agent to inspect its conversation, context, and current work. Additional agents created from `primary` or `all` configurations accept direct prompts; subagents receive work through their parent.
 
 ## Start a conversation
 
-Every conversation has a selected agent. **Default** is selected automatically and adds no persona, workflow instructions, model pin, step limit, or permission rules. It preserves Pi's normal context, resources, tools, and settings. You can use Default for all work.
+**New conversation** starts the session's Main agent. Choose a saved folder from **Recent workspaces** or use **Choose folder** to work elsewhere. Recent workspaces use the same history as the welcome screen; folders that no longer exist are omitted. A conversation name and first message are optional, and unnamed workspaces use the folder name. The dialog has no agent configuration picker.
 
-**New conversation** starts in the current workspace. Choose a saved folder from **Recent workspaces** or use **Choose folder** to work elsewhere. Recent workspaces use the same history as the welcome screen; folders that no longer exist are omitted. Selecting a folder reloads its available agent configurations and default agent. A name and initial message are optional; unnamed workspaces use the folder name. Set `default_agent` in Pi `settings.json` to choose a visible primary or all-mode agent automatically. An unavailable, hidden, disabled, or subagent-only choice falls back to Default. If an override makes Default unsuitable, the empty built-in Default remains available.
+Main uses Pi's normal workspace context, resources, tools, and session model and thinking settings. Resumed sessions keep the same Main transcript and restore additional agents with their saved configurations. Main stays available until the workspace is closed and cannot be closed separately.
 
-Resumed conversations keep their saved agent configuration and closed primary agents stay closed while another primary can continue. If none can continue, the starting conversation reopens. The selected configuration appears beside the composer and in session settings.
+Every agent has its own message history. Starting an additional agent does not copy the calling conversation or other agents' messages. Resuming an agent retains its own history. Additional agents share workspace files and can exchange messages explicitly.
 
-Every new agent has its own message history. Starting one does not copy the calling conversation or other agents' messages. Resuming an agent retains its own history. Additional agents share workspace files and can exchange messages explicitly.
+**Menu → Resume session** restores the Main transcript and the workspace's retained additional agents, conversations, results, recorded file changes, and inbox messages. Retained agents can continue from their saved conversations. Work interrupted by an app exit appears as stopped and waits for an explicit follow-up. Older saved workspaces recover available agent transcripts for viewing; those imported agents cannot continue because their launch settings were not saved.
 
-**Menu → Resume session** restores the workspace's additional agents, conversations, results, recorded file changes, and inbox messages. Retained agents can continue from their saved conversations. Work interrupted by an app exit appears as stopped and waits for an explicit follow-up. Older saved workspaces recover available agent transcripts for viewing; those imported agents cannot continue because their launch settings were not saved.
+Finished agent history expires after **7 days without use** by default. Set a period from **1–365 days** in [Agent settings](configuration.md#agent-settings). Viewing an agent's conversation, reading its result, or continuing it resets the inactivity period. Active agents, including running and queued work, the Main session transcript, and the last Primary agent's history are protected. Expired history is permanently deleted rather than archived.
 
-Use **Actions → Close agent**, or right-click an agent and choose **Close agent**, to close its conversation. Other primary agents keep the workspace open. Closing the final primary asks for confirmation, then closes the workspace and stops its agents.
+Use **Actions → Close agent**, or right-click an additional agent and choose **Close agent**, to close its conversation. Main stays available even after every additional agent is closed. **Close workspace** ends the whole session and stops its agents.
 
 ## Other agents
 
-Start a subagent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled`. Each invocation starts a new agent. The parent agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`. Quote names containing spaces, such as `@"Review Agent" Check the changes` or `@agent:"Team/Review Agent" Check the changes`; the mention picker inserts the appropriate form.
+Agent configurations apply to additional agents. In Main, start an agent with a configuration ID at the beginning of a message, for example `@explore Find where cancellation is handled` or `@build Implement the change`. Each invocation starts an additional agent in the same workspace. The parent agent can continue an existing subagent with `agent_send` and its ID. For nested configuration IDs, use `@agent:team/reviewer Your task`. Quote names containing spaces, such as `@"Review Agent" Check the changes` or `@agent:"Team/Review Agent" Check the changes`; the mention picker inserts the appropriate form.
+
+VarisDev delivers completed results and errors automatically to the conversation that initiated the work. The caller and workers can continue in parallel. VarisDev waits only if the caller reaches the end of its run with outstanding work, then resumes it when that work settles. An agent waiting for nested agents temporarily releases its concurrency slot. Normal use does not require polling `agent_status` or calling `agent_wait`. Sending a message to an already running agent is messaging only and does not add another result dependency.
 
 Build and Plan are optional primary agents. General and Explore are optional subagents. Plan and Explore provide restricted tools for investigation; General can work broadly but cannot delegate further. Their instructions apply only when selected.
 
@@ -26,7 +28,7 @@ Build and Plan are optional primary agents. General and Explore are optional sub
 
 ## Storage and scopes
 
-Open **Agent configurations** to create or edit Markdown profiles. Higher scopes override fields from lower scopes:
+Open **Menu → Agent settings → Agent configurations** to create or edit Markdown profiles. Higher scopes override fields from lower scopes:
 
 1. **Workspace (this machine)** applies to this project on the current machine.
 2. **Repository** can be shared through version control.
@@ -70,9 +72,9 @@ All fields are optional:
 
 - `name` defaults to the ID.
 - `description` explains when the agent is useful.
-- `mode` is `primary` for new workspace conversations, `subagent` for delegated launches, or `all` for both. New custom profiles default to `primary`. Only primary and all-mode agents accept direct user prompts; a subagent's parent can continue or steer its retained session.
+- `mode` is `primary` for an additional conversation that accepts direct prompts, `subagent` for delegated launches, or `all` for both. New custom profiles default to `primary`. Only primary and all-mode additional agents accept direct user prompts; a subagent's parent can continue or steer its retained session.
 - `context` is `workspace` or `task`, defaulting to `workspace`.
-- `model` pins a delegated agent to `provider/model`, overriding launch arguments and Agent-models selections. Omit it to inherit the caller's model or accept an allowed launch choice. In the editor, this default appears as **Use agent model settings** when agent models are selected, otherwise **Inherit**. A recognized suffix such as `#high` supplies `thinkingLevel`; arbitrary provider variants are not supported by this shorthand. Primary conversations select their model separately.
+- `model` pins a delegated agent to `provider/model`, overriding launch arguments and Agent settings selections. Omit it to inherit the caller's model or accept an allowed launch choice. In the editor, this default appears as **Use agent model settings** when agent models are selected, otherwise **Inherit**. A recognized suffix such as `#high` supplies `thinkingLevel`; arbitrary provider variants are not supported by this shorthand. Main and other primary conversations select their model separately.
 - `thinkingLevel` is `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 - `hidden: true` omits the profile from ordinary choosers and catalogs. Explicit references can still use it.
 - `disabled: true` prevents new launches from that profile.
@@ -86,7 +88,7 @@ Common actions include `shell`, `edit`, `subagent`, `read`, `glob`, `list`, `gre
 
 Permissions are checked when tools run, including nested and deferred calls. Shell rules apply to commands in pipelines and substitutions and to explicit file paths. A trailing ` *` also matches the command without arguments. Restricted shell calls are limited to 16 KiB of source. `ask` requests approval in the owning workspace. Tools and skills that are fully denied are unavailable to the agent, though tool metadata may still appear in search results. Skill permissions also apply to explicit skill commands and reads.
 
-Primary conversations use Pi's selected model and reasoning independently of the agent profile. Delegated agents inherit omitted values from their caller, subject to Agent-models selections. Delegated model pins remain fixed; other model and reasoning controls remain editable.
+Main uses Pi's selected model and reasoning. Additional agents inherit omitted values from their caller, subject to Agent settings selections. Configuration model pins remain fixed; other model and reasoning controls remain editable.
 
 ### Remembered approvals
 

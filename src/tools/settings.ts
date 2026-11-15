@@ -4,22 +4,33 @@ import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 
 export interface ToolSettings {
-  agents: {allowedModels: string[] | null; maxConcurrentAgents: number};
+  agents: {
+    allowedModels: string[] | null;
+    maxConcurrentAgents: number;
+    historyRetentionDays: number;
+  };
 }
 
 interface ToolSettingsUpdate {
   agents?: {
     allowedModels: string[] | null;
     maxConcurrentAgents?: number;
+    historyRetentionDays?: number;
   };
 }
 
+export const defaultAgentHistoryRetentionDays = 7;
+
 const writes = new Map<string, Promise<void>>();
 const listeners = new Map<string, Set<(settings: ToolSettings) => void>>();
-const settingsPath = () =>
-  join(getAgentDir(), 'varisdev', 'tool-settings.json');
+const settingsPath = (agentDir = getAgentDir()) =>
+  join(agentDir, 'varisdev', 'tool-settings.json');
 const defaults = (): ToolSettings => ({
-  agents: {allowedModels: [], maxConcurrentAgents: 6},
+  agents: {
+    allowedModels: [],
+    maxConcurrentAgents: 6,
+    historyRetentionDays: defaultAgentHistoryRetentionDays,
+  },
 });
 
 function object(value: unknown, keys: string[]): Record<string, unknown> {
@@ -49,13 +60,23 @@ function modelId(value: unknown): string {
 
 function agents(value: unknown): NonNullable<ToolSettingsUpdate['agents']> {
   const keys = ['allowedModels'];
+  for (const key of ['maxConcurrentAgents', 'historyRetentionDays']) {
+    if (value && typeof value === 'object' && Object.hasOwn(value, key))
+      keys.push(key);
+  }
+  const {allowedModels, maxConcurrentAgents, historyRetentionDays} = object(
+    value,
+    keys,
+  );
   if (
-    value &&
-    typeof value === 'object' &&
-    Object.hasOwn(value, 'maxConcurrentAgents')
+    keys.includes('historyRetentionDays') &&
+    (!Number.isSafeInteger(historyRetentionDays) ||
+      Number(historyRetentionDays) < 1 ||
+      Number(historyRetentionDays) > 365)
   )
-    keys.push('maxConcurrentAgents');
-  const {allowedModels, maxConcurrentAgents} = object(value, keys);
+    throw new Error(
+      'Agent history retention must be a whole number from 1 to 365 days.',
+    );
   if (
     keys.includes('maxConcurrentAgents') &&
     (!Number.isSafeInteger(maxConcurrentAgents) ||
@@ -68,7 +89,9 @@ function agents(value: unknown): NonNullable<ToolSettingsUpdate['agents']> {
     allowedModels !== null &&
     (!Array.isArray(allowedModels) || allowedModels.length > 512)
   )
-    throw new Error('Choose up to 512 allowed models in Menu → Agent-models.');
+    throw new Error(
+      'Choose up to 512 allowed models in Menu → Agent settings.',
+    );
   return {
     allowedModels:
       allowedModels === null
@@ -77,6 +100,9 @@ function agents(value: unknown): NonNullable<ToolSettingsUpdate['agents']> {
     ...(maxConcurrentAgents === undefined
       ? {}
       : {maxConcurrentAgents: maxConcurrentAgents as number}),
+    ...(historyRetentionDays === undefined
+      ? {}
+      : {historyRetentionDays: historyRetentionDays as number}),
   };
 }
 
@@ -113,8 +139,10 @@ async function read(path: string): Promise<ToolSettings> {
   }
 }
 
-export async function readToolSettings(): Promise<ToolSettings> {
-  const path = settingsPath();
+export async function readToolSettings(
+  agentDir?: string,
+): Promise<ToolSettings> {
+  const path = settingsPath(agentDir);
   await writes.get(path);
   return read(path);
 }
@@ -188,10 +216,10 @@ export async function assertAgentModelAllowed(
   const {allowedModels} = (settings ?? (await readToolSettings())).agents;
   if (allowedModels?.length === 0)
     throw new Error(
-      'No agent models selected. Choose a model in Menu → Agent-models.',
+      'No agent models selected. Choose a model in Menu → Agent settings.',
     );
   if (allowedModels !== null && !allowedModels.includes(model))
     throw new Error(
-      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Agent-models. Allowed models: ${allowedModels.join(', ')}.`,
+      `Agent model ${model} is not allowed. Choose an allowed model explicitly or change Menu → Agent settings. Allowed models: ${allowedModels.join(', ')}.`,
     );
 }

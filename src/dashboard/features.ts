@@ -1,4 +1,5 @@
 import type {AgentMentionCandidate} from '../agents/mentions.ts';
+import {isMainAgent} from '../agents/main.ts';
 import {getSupportedThinkingLevels} from '@earendil-works/pi-ai';
 import {
   createDefaultAgentProfile,
@@ -63,7 +64,8 @@ export function agentProfileSummary(
 
 export function sessionAgentProfile(
   manager: Pick<SessionManager, 'getEntries'>,
-): NonNullable<SessionFeatures['agentProfile']> {
+): SessionFeatures['agentProfile'] {
+  if (isMainAgent(manager)) return undefined;
   const saved = manager
     .getEntries?.()
     .findLast(

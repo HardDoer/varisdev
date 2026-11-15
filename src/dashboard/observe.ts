@@ -9,11 +9,7 @@ import {
   type AgentSessionController,
 } from '../agents/team.ts';
 import {DashboardState, type ConversationMessage} from './state.ts';
-import {
-  primaryClosedEntry,
-  sessionPrimaryClosed,
-  isAvailablePrimary,
-} from './primary-session.ts';
+import {primaryClosedEntry, sessionPrimaryClosed} from './primary-session.ts';
 import {observeFileChanges} from './changes.ts';
 import {sessionAgentProfile} from './features.ts';
 import {sessionSpeedMode, type SpeedMode} from '../speed-modes.ts';
@@ -439,16 +435,12 @@ export function observeDashboardSession(
     userMessage = undefined;
     sessionId = ctx.sessionManager.getSessionId();
     const now = new Date().toISOString();
-    let primaryClosed = sessionPrimaryClosed(ctx.sessionManager);
-    const team = control.deliverySnapshot?.() ?? control.snapshot();
-    if (primaryClosed && !team?.agents.some(isAvailablePrimary)) {
+    if (sessionPrimaryClosed(ctx.sessionManager))
       pi.appendEntry(primaryClosedEntry, {closed: false});
-      primaryClosed = false;
-    }
     const session = {
       ...metadata(ctx),
       agentProfile: sessionAgentProfile(ctx.sessionManager),
-      primaryClosed,
+      primaryClosed: false,
       id: ctx.sessionManager.getSessionId(),
       status: ctx.isIdle() ? ('idle' as const) : ('running' as const),
       activity: ctx.isIdle() ? 'Ready for a task' : 'Working',

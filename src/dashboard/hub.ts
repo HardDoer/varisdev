@@ -6,7 +6,6 @@ import {realpath, stat} from 'node:fs/promises';
 import {basename, isAbsolute} from 'node:path';
 import type {DashboardSnapshot} from './state.ts';
 import {DashboardState} from './state.ts';
-import {isAvailablePrimary} from './primary-availability.ts';
 import {DashboardInputError} from './errors.ts';
 import {nativeCommand, parseSlashCommand} from './command-catalog.mjs';
 import {readWorkspaceDiff, type WorkspaceDiff} from './workspace.ts';
@@ -48,7 +47,7 @@ export type AgentSessionRequest = {agentId: string} & (
   | {action: 'command'; command: string}
   | {action: 'compact'; instructions?: string}
   | {action: 'close'; confirmWorkspaceClose?: boolean}
-  | {action: 'abort' | 'features' | 'reload'}
+  | {action: 'abort' | 'features' | 'reload' | 'view'}
 );
 
 export type AgentSessionResult =
@@ -208,6 +207,7 @@ export function agentSessionRequest(input: unknown): AgentSessionRequest {
       'compact',
       'reload',
       'close',
+      'view',
     ].includes(action as string)
   )
     throw new DashboardInputError('Unknown agent conversation action.');
@@ -234,6 +234,10 @@ export function agentSessionRequest(input: unknown): AgentSessionRequest {
       instructions: compactionInstructions(values.instructions),
     };
   if (action === 'close') {
+    if (agentId === 'parent')
+      throw new DashboardInputError(
+        'The Main agent cannot be closed separately.',
+      );
     if (
       values.confirmWorkspaceClose !== undefined &&
       typeof values.confirmWorkspaceClose !== 'boolean'
@@ -249,7 +253,7 @@ export function agentSessionRequest(input: unknown): AgentSessionRequest {
         : {}),
     };
   }
-  return {agentId, action: action as 'abort' | 'features' | 'reload'};
+  return {agentId, action: action as 'abort' | 'features' | 'reload' | 'view'};
 }
 
 async function sessionFolder(input: unknown): Promise<string> {
@@ -327,9 +331,7 @@ export class DashboardHub {
       return;
     const closed = this.closedConversations.get(snapshot.session.id);
     if (closed) {
-      if (snapshot.session.primaryClosed) closed.delete('parent');
       for (const agentId of closed) {
-        if (agentId === 'parent') continue;
         const agent = snapshot.agents.find(agent => agent.id === agentId);
         if (!agent || agent.resumable === false) closed.delete(agentId);
       }
@@ -339,10 +341,6 @@ export class DashboardHub {
     this.external = closed?.size
       ? {
           ...next,
-          session: {
-            ...next.session,
-            ...(closed.has('parent') ? {primaryClosed: true} : {}),
-          },
           agents: next.agents.map(agent =>
             closed.has(agent.id) ? {...agent, resumable: false} : agent,
           ),
@@ -703,8 +701,10 @@ export class DashboardHub {
   ): Promise<StartedSession> {
     const cwd = await folder;
     this.ensureOpen();
-    if (values.sessionId !== undefined && values.templateId !== undefined)
-      throw new DashboardInputError('Templates apply to new conversations.');
+    if (values.templateId !== undefined)
+      throw new DashboardInputError(
+        'The Main agent does not use an agent configuration.',
+      );
     if (values.sessionId !== undefined) {
       const id = text(values.sessionId, 'Session ID', 128);
       const {SessionManager} = await import('@earendil-works/pi-coding-agent');
@@ -760,20 +760,7 @@ export class DashboardHub {
       values.name === undefined || values.name === ''
         ? undefined
         : text(values.name, 'Name', 120);
-    const explicit = values.templateId !== undefined;
-    const {resolveAgentTemplate, resolveDefaultAgentTemplate} =
-      await import('../agents/templates.ts');
-    this.ensureOpen();
-    const template = explicit
-      ? await resolveAgentTemplate(cwd, values.templateId)
-      : await resolveDefaultAgentTemplate(cwd, 'primary');
-    if (!template || template.disabled)
-      throw new DashboardInputError('This agent profile is unavailable.');
-    if (template.mode === 'subagent')
-      throw new DashboardInputError(
-        'Choose an agent that supports primary use.',
-      );
-    const request = {cwd, name, agentProfile: structuredClone(template)};
+    const request = {cwd, name};
     if (replaceId === undefined) return this.startSession(request);
     return this.inResumeFolder(cwd, async () => {
       this.activeReplacements.add(replaceId);
@@ -1386,51 +1373,8 @@ export class DashboardHub {
     request: Extract<AgentSessionRequest, {action: 'close'}>,
   ): Promise<AgentSessionResult> {
     this.ensureOpen();
-    const external =
-      this.external?.session.id === id ? this.external : undefined;
-    const entry = this.sessions.get(id);
-    const current = external ?? entry?.state.deliverySnapshot();
-    if (!current) throw new DashboardInputError('Unknown workspace.');
-    const liveOwner =
-      current.session.status !== 'closed' &&
-      (external
-        ? this.externalControl?.agentSession
-        : entry?.parent?.agentSession);
-    if (!liveOwner) {
-      if (!request.confirmWorkspaceClose)
-        return {requiresWorkspaceCloseConfirmation: true};
-      await this.closeSession(id);
-      return {workspaceClosed: true};
-    }
     const attached = this.attached(id);
-    const snapshot = attached
-      ? this.external!
-      : this.owned(id).state.deliverySnapshot();
     const closed = attached ? this.closedConversations.get(id) : undefined;
-    const starterOpen =
-      !snapshot.session.primaryClosed &&
-      snapshot.session.status !== 'closed' &&
-      !closed?.has('parent');
-    const primaries = snapshot.agents.filter(
-      agent => isAvailablePrimary(agent) && !closed?.has(agent.id),
-    );
-    const primary =
-      request.agentId === 'parent'
-        ? starterOpen
-        : primaries.some(agent => agent.id === request.agentId);
-    const primaryCount = primaries.length + Number(starterOpen);
-    const selectedExists =
-      request.agentId === 'parent' ||
-      snapshot.agents.some(agent => agent.id === request.agentId);
-    if (
-      (primary && primaryCount === 1) ||
-      (primaryCount === 0 && selectedExists)
-    ) {
-      if (!request.confirmWorkspaceClose)
-        return {requiresWorkspaceCloseConfirmation: true};
-      await this.closeSession(id);
-      return {workspaceClosed: true};
-    }
     await this.dispatchAgentSession(id, request);
     // Terminal snapshots can arrive after the action reply.
     if (attached && this.external?.session.id === id) {
@@ -1439,10 +1383,6 @@ export class DashboardHub {
       this.closedConversations.set(id, explicitlyClosed);
       this.external = {
         ...this.external,
-        session: {
-          ...this.external.session,
-          ...(request.agentId === 'parent' ? {primaryClosed: true} : {}),
-        },
         agents: this.external.agents.map(agent =>
           agent.id === request.agentId ? {...agent, resumable: false} : agent,
         ),

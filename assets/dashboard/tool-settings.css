@@ -60,11 +60,20 @@
 #agent-model-settings {
   --tool-settings-card-accent: var(--action-agent);
 }
-#agent-model-settings > label {
+#agent-model-settings h3 {
+  margin: 0 0 16px;
+}
+#agent-model-settings > label,
+.tool-settings-field > label {
   display: block;
   margin-bottom: 6px;
   color: var(--text);
   font-weight: 650;
+}
+.tool-settings-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
 #tool-settings-selection {
   margin: 10px 0;
@@ -75,12 +84,14 @@
   line-height: 1.5;
 }
 #agent-max-concurrent,
+#agent-history-retention,
 #tool-settings-search {
   width: 100%;
   min-width: 0;
   min-height: 42px;
 }
 #agent-max-concurrent,
+#agent-history-retention,
 #tool-settings-search,
 #tool-settings-models {
   border-color: var(--action-agent);
@@ -131,7 +142,11 @@
 #agent-notice-dialog .dialog-footer {
   flex-wrap: wrap;
 }
-@media (max-width: 520px) {
+@media (max-width: 640px) {
+  .tool-settings-limits {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
   .tool-settings-card {
     padding: 14px;
   }

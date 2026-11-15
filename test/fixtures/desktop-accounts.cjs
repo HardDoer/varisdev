@@ -410,25 +410,36 @@ async function main() {
     await evaluate(
       () => document.getElementById('tool-settings-title').textContent,
     ),
-    'Agent-models',
+    'Agent settings',
   );
   await evaluate(() => {
     document.querySelector('#tool-settings-models input').click();
     const field = document.getElementById('agent-max-concurrent');
     field.value = '3';
     field.dispatchEvent(new Event('input', {bubbles: true}));
+    const retention = document.getElementById('agent-history-retention');
+    retention.value = '12';
+    retention.dispatchEvent(new Event('input', {bubbles: true}));
     document.getElementById('tool-settings-form').requestSubmit();
   });
   await waitFor(() => !document.getElementById('tool-settings-dialog').open);
   assert.deepEqual(
     (await toolSettings.getToolSettings(hub.selectedSessionId)).settings.agents,
-    {allowedModels: ['fixture/agent'], maxConcurrentAgents: 3},
+    {
+      allowedModels: ['fixture/agent'],
+      maxConcurrentAgents: 3,
+      historyRetentionDays: 12,
+    },
   );
   assert.deepEqual(
     JSON.parse(
       readFileSync(join(agentDir, 'varisdev', 'tool-settings.json'), 'utf8'),
     ).agents,
-    {allowedModels: ['fixture/agent'], maxConcurrentAgents: 3},
+    {
+      allowedModels: ['fixture/agent'],
+      maxConcurrentAgents: 3,
+      historyRetentionDays: 12,
+    },
   );
   await evaluate(() => {
     document.getElementById('app-menu-button').click();
@@ -439,6 +450,7 @@ async function main() {
       !document.getElementById('tool-settings-content').hidden &&
       !document.getElementById('tool-settings-close').disabled &&
       document.getElementById('agent-max-concurrent').value === '3' &&
+      document.getElementById('agent-history-retention').value === '12' &&
       document.querySelector('#tool-settings-models input').checked,
   );
   browser.show();
@@ -484,7 +496,7 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 100));
     const screenshot = await browser.webContents.capturePage();
     writeFileSync(
-      join(directory, `agent-models-${width}.png`),
+      join(directory, `agent-settings-${width}.png`),
       screenshot.toPNG(),
     );
   }
@@ -497,7 +509,7 @@ async function main() {
   browser.setSize(1100, 760);
   await waitFor(() => document.getElementById('accounts-dialog').open);
   report.cases.push(
-    'Agent-models persists agent choices and concurrency and remains reachable in compact layouts',
+    'Agent settings persists agent choices, concurrency and retention and remains reachable in compact layouts',
   );
   runtime.registerNativeProvider({
     ...runtime.getProvider('openai'),

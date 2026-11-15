@@ -13,15 +13,17 @@ import {
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
 import {
-  saveAgentTemplate,
+  createDefaultAgentProfile,
   resolveAgentTemplate,
+  saveAgentTemplate,
   type AgentTemplate,
 } from '../src/agents/templates.ts';
 import {
   createDashboardParent,
   type DesktopDashboardParent,
 } from '../src/dashboard/parent.ts';
-import {saveToolSettings} from '../src/tools/settings.ts';
+import {sessionAgentProfile} from '../src/dashboard/features.ts';
+import {primaryClosedEntry} from '../src/dashboard/primary-session.ts';
 
 interface Request {
   model: string;
@@ -29,6 +31,7 @@ interface Request {
   messages: Array<{role: string; content: unknown}>;
   tools?: Array<{function: {name: string}}>;
 }
+
 function reply(
   response: ServerResponse,
   output: string | {path: string; content: string},
@@ -52,51 +55,109 @@ function reply(
     `data: ${JSON.stringify({id: randomUUID(), object: 'chat.completion.chunk', created: 1, model: 'profile-model', choices: [{index: 0, delta, finish_reason: tool ? 'tool_calls' : 'stop'}]})}\n\ndata: [DONE]\n\n`,
   );
 }
+
 async function until(check: () => boolean) {
   const deadline = Date.now() + 5000;
   while (!check() && Date.now() < deadline) await delay(10);
-  assert.ok(check(), 'Expected profile integration state');
+  assert.ok(check(), 'Expected Main agent integration state');
 }
 
+void test('Main markers hide selectable profile metadata while worker histories retain it', () => {
+  const manager = SessionManager.inMemory(process.cwd());
+  assert.deepEqual(sessionAgentProfile(manager), {
+    id: 'default',
+    name: 'Default',
+    mode: 'all',
+  });
+  manager.appendCustomEntry('varisdev.agent-profile', {
+    ...createDefaultAgentProfile(),
+    id: 'worker',
+    key: 'workspace:worker',
+    name: 'Worker',
+    mode: 'subagent',
+    instructions: 'Worker instructions',
+  } satisfies AgentTemplate);
+  assert.deepEqual(sessionAgentProfile(manager), {
+    id: 'worker',
+    name: 'Worker',
+    mode: 'subagent',
+  });
+  manager.appendCustomEntry('varisdev.main-agent', {version: 1});
+  assert.equal(sessionAgentProfile(manager), undefined);
+  manager.appendCustomEntry('varisdev.agent-profile', {
+    ...createDefaultAgentProfile(),
+    id: 'later-worker',
+    key: 'workspace:later-worker',
+    name: 'Later worker',
+    mode: 'primary',
+  } satisfies AgentTemplate);
+  assert.equal(
+    sessionAgentProfile(manager),
+    undefined,
+    'the Main marker takes precedence regardless of profile entry order',
+  );
+});
+
 void test(
-  'main profiles keep their system body and policy snapshot across approvals, model changes and saved history',
+  'Main roots ignore requested, saved and default configurations while retaining shared permissions and one marker',
   {timeout: 20000},
   async t => {
-    const directory = await mkdtemp(join(tmpdir(), 'varisdev-profile-parent-'));
+    const directory = await mkdtemp(join(tmpdir(), 'varisdev-main-parent-'));
     const agentDir = join(directory, 'config');
     const cwd = join(directory, 'project');
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const sharedPermissions = [
+      {action: 'edit', resource: '*', effect: 'deny'},
+      {action: 'edit', resource: 'approved.txt', effect: 'ask'},
+      {action: 'subagent', resource: '*', effect: 'deny'},
+    ] as const;
     await mkdir(join(cwd, '.git'), {recursive: true});
-    await mkdir(agentDir);
+    await mkdir(agentDir, {recursive: true});
+    await writeFile(join(cwd, 'AGENTS.md'), 'MAIN WORKSPACE CONTEXT MARKER');
+    await writeFile(join(agentDir, 'SYSTEM.md'), 'MAIN GLOBAL BASE MARKER');
     await writeFile(
-      join(cwd, 'AGENTS.md'),
-      'Project context survives the custom profile base.',
+      join(agentDir, 'APPEND_SYSTEM.md'),
+      'MAIN APPENDED CONTEXT MARKER',
     );
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}}),
+      JSON.stringify({
+        retry: {enabled: false},
+        default_agent: 'configured-root',
+        permissions: sharedPermissions,
+      }),
     );
-    await mkdir(join(agentDir, 'skills', 'automatic-context'), {
-      recursive: true,
+    await saveAgentTemplate(cwd, {
+      scope: 'repository',
+      id: 'configured-root',
+      name: 'Configured root',
+      mode: 'primary',
+      context: 'task',
+      instructions: 'CONFIGURED DEFAULT PROFILE MUST BE IGNORED',
+      model: 'profile-fixture/configured-model',
+      thinkingLevel: 'off',
+      steps: 1,
+      permissions: [
+        {action: 'edit', resource: '*', effect: 'allow'},
+        {action: 'subagent', resource: '*', effect: 'allow'},
+      ],
     });
-    await mkdir(join(agentDir, 'prompts'));
-    await writeFile(
-      join(agentDir, 'SYSTEM.md'),
-      'Automatic global base marker.',
-    );
-    await writeFile(
-      join(agentDir, 'APPEND_SYSTEM.md'),
-      'Automatic appended context marker.',
-    );
-    await writeFile(
-      join(agentDir, 'skills', 'automatic-context', 'SKILL.md'),
-      '---\nname: automatic-context\ndescription: Automatic skill catalog marker\n---\nSkill content.',
-    );
-    await writeFile(
-      join(agentDir, 'prompts', 'automatic-prompt.md'),
-      'Automatic prompt content.',
-    );
-    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const configured = (await resolveAgentTemplate(cwd, 'configured-root'))!;
+    const requested: AgentTemplate = {
+      ...configured,
+      id: 'requested-root',
+      key: 'repository:requested-root',
+      name: 'Requested root',
+      mode: 'subagent',
+      disabled: true,
+      instructions: 'REQUESTED ROOT PROFILE MUST BE IGNORED',
+      permissions: [
+        {action: 'edit', resource: '*', effect: 'allow'},
+        {action: 'subagent', resource: '*', effect: 'allow'},
+      ],
+    };
+
     const runtime = await ModelRuntime.create({
       authPath: join(agentDir, 'auth.json'),
       modelsPath: null,
@@ -119,24 +180,19 @@ void test(
         const results = body.messages
           .slice(userIndex + 1)
           .filter(message => message.role === 'tool');
-        if (prompt.includes('policy-refresh-check')) {
-          if (!results.length) {
-            await saveToolSettings('agents', {
-              allowedModels: ['profile-fixture/configured-model'],
-            });
+        if (prompt.includes('exercise-main-policy')) {
+          if (results.length === 0)
             reply(response, {
-              path: 'policy-refresh.txt',
-              content: 'Allowed write.',
+              path: 'approved.txt',
+              content: 'Approved write.\n',
             });
-          } else reply(response, 'Policy refresh finished.');
-        } else if (!prompt.includes('exercise-profile'))
-          reply(response, 'Restored profile response.');
-        else if (!results.length)
-          reply(response, {path: 'approved.txt', content: 'Approved write.'});
-        else if (results.length === 1)
-          reply(response, {path: 'denied.txt', content: 'Forbidden write.'});
-        else
-          reply(response, 'Profile completed within its model step allowance.');
+          else if (results.length === 1)
+            reply(response, {
+              path: 'denied.txt',
+              content: 'Forbidden write.\n',
+            });
+          else reply(response, 'Main policy exercise complete.');
+        } else reply(response, 'Main conversation response.');
       } catch (error) {
         errors.push(error);
         response.destroy();
@@ -144,7 +200,9 @@ void test(
     });
     t.after(async () => {
       for (const parent of parents) await parent.close();
+      server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));
+      registry.unregisterProvider('profile-fixture');
       if (previousAgentDir === undefined)
         delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -171,496 +229,226 @@ void test(
       modelRegistry: registry,
       thinkingLevel: 'high' as const,
     };
-    await saveAgentTemplate(cwd, {
-      scope: 'repository',
-      id: 'custom-primary',
-      name: 'Custom primary',
-      mode: 'primary',
-      instructions: 'CUSTOM PROFILE BASE: complete the requested review.',
-      model: 'profile-fixture/configured-model',
-      thinkingLevel: 'off',
-      color: '#3366ff',
-      steps: 3,
-      permissions: [
-        {action: 'edit', resource: '*', effect: 'deny'},
-        {action: 'edit', resource: 'approved.txt', effect: 'ask'},
-      ],
-    });
-    const profile = (await resolveAgentTemplate(cwd, 'custom-primary'))!;
-    await assert.rejects(
-      createDashboardParent(
-        {cwd, agentProfile: {...profile, mode: 'subagent'}},
-        inherited,
-      ),
-      /primary use/,
-    );
-    await assert.rejects(
-      createDashboardParent(
-        {cwd, agentProfile: {...profile, disabled: true}},
-        inherited,
-      ),
-      /primary use/,
-    );
+
     const parent = await createDashboardParent(
-      {cwd, agentProfile: profile},
+      {
+        cwd,
+        agentProfile: requested,
+        instructions: 'EXPLICIT MAIN INSTRUCTION MARKER',
+      },
       inherited,
     );
     parents.push(parent);
-    profile.name = 'MUTATED caller-owned name';
-    profile.instructions = 'MUTATED caller-owned profile';
-    profile.permissions![0].effect = 'allow';
-    profile.steps = 99;
-    const prompt = parent.prompt(
-      'exercise-profile: write the approved file, try the denied file, and report.',
+    assert.equal((await parent.features()).agentProfile, undefined);
+    assert.equal(parent.state.snapshot().session.agentProfile, undefined);
+    assert.equal(parent.state.snapshot().session.name, 'project');
+    const initialEntries = parent.restartSnapshot().entries;
+    assert.equal(
+      initialEntries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
     );
-    await until(() => !!parent.ui.snapshot().dialogs.length);
-    const confirmation = parent.ui.snapshot().dialogs[0];
-    assert.equal(confirmation.kind, 'select');
-    assert.match(confirmation.title, /custom-primary/);
-    assert.deepEqual(confirmation.options, [
-      'Allow once',
-      'Allow this conversation',
-      'Allow this agent in this workspace',
-      'Deny',
-    ]);
-    parent.ui.respond(confirmation.id, 'Allow once');
-    await prompt;
+    assert.ok(
+      !initialEntries.some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      ),
+    );
+    assert.ok(
+      !initialEntries.some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-context',
+      ),
+    );
+
+    const exercising = parent.prompt(
+      'exercise-main-policy: write approved.txt, then denied.txt, and report.',
+    );
+    await until(() => parent.ui.snapshot().dialogs.length > 0);
+    const approval = parent.ui.snapshot().dialogs[0];
+    assert.equal(approval.kind, 'select');
+    assert.match(approval.title, /Permission: main/i);
+    parent.ui.respond(approval.id, 'Allow once');
+    await exercising;
     assert.deepEqual(errors, []);
     assert.equal(
       await readFile(join(cwd, 'approved.txt'), 'utf8'),
-      'Approved write.',
+      'Approved write.\n',
     );
     await assert.rejects(readFile(join(cwd, 'denied.txt')), {code: 'ENOENT'});
-    assert.equal(requests.length, 3);
     assert.equal(
-      requests[0].model,
-      'profile-model',
-      'a primary profile does not replace the selected Pi model',
+      requests.length,
+      3,
+      'the requested one-step profile does not constrain Main',
     );
-    assert.equal(
-      requests[0].reasoning_effort,
-      'high',
-      'a primary profile does not replace the selected Pi effort',
-    );
-    assert.ok(requests[0].tools?.some(tool => tool.function.name === 'write'));
-    assert.equal(requests[2].tools?.length ?? 0, 0);
-    assert.match(JSON.stringify(requests[0].messages), /CUSTOM PROFILE BASE/);
-    assert.match(
-      JSON.stringify(requests[0].messages),
-      /Project context survives/,
-    );
-    assert.match(
-      JSON.stringify(requests[0].messages),
-      /Automatic appended context marker/,
-    );
-    assert.match(
-      JSON.stringify(requests[0].messages),
-      /Automatic skill catalog marker/,
-    );
-    assert.ok(
-      (await parent.features()).commands.some(
-        command =>
-          command.source === 'prompt' && command.name === 'automatic-prompt',
-      ),
-    );
+    assert.equal(requests[0].model, 'profile-model');
+    assert.equal(requests[0].reasoning_effort, 'high');
+    const initialMessages = JSON.stringify(requests[0].messages);
+    assert.match(initialMessages, /MAIN GLOBAL BASE MARKER/);
+    assert.match(initialMessages, /MAIN APPENDED CONTEXT MARKER/);
+    assert.match(initialMessages, /MAIN WORKSPACE CONTEXT MARKER/);
+    assert.match(initialMessages, /EXPLICIT MAIN INSTRUCTION MARKER/);
     assert.doesNotMatch(
-      JSON.stringify(requests[0].messages),
-      /MUTATED caller-owned profile/,
+      initialMessages,
+      /REQUESTED ROOT PROFILE MUST BE IGNORED|CONFIGURED DEFAULT PROFILE MUST BE IGNORED/,
     );
-    assert.match(
-      JSON.stringify(requests[2].messages),
-      /Agent permission denied/,
+    const agentSession = parent.agentSession;
+    assert.ok(agentSession);
+    await assert.rejects(
+      agentSession({agentId: 'parent', action: 'close'}),
+      /Main.*cannot be closed separately/i,
     );
-    assert.deepEqual((await parent.features()).agentProfile, {
-      id: 'custom-primary',
-      name: 'Custom primary',
-      mode: 'primary',
-      color: '#3366FF',
-    });
+    assert.notEqual(parent.state.snapshot().session.primaryClosed, true);
+
     await parent.configure({
       provider: 'profile-fixture',
       modelId: 'configured-model',
       thinkingLevel: 'off',
     });
     const saved = parent.state.snapshot().session;
-    assert.deepEqual(
-      saved.agentProfile,
-      (await parent.features()).agentProfile,
-    );
+    assert.equal(saved.agentProfile, undefined);
     const restart = parent.restartSnapshot();
-    assert.ok(
-      restart.tools.includes('write'),
-      'profile tools restore after the final model step',
-    );
-    assert.ok(
-      restart.entries.some(
+    assert.equal(
+      restart.entries.filter(
         entry =>
-          entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-profile',
-      ),
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
     );
     await parent.close();
+
     await saveAgentTemplate(cwd, {
       scope: 'repository',
-      id: 'custom-primary',
-      name: 'Edited name on disk',
-      instructions: 'Edited profile on disk.',
-      mode: 'subagent',
-      disabled: true,
+      id: 'configured-root',
+      name: 'Edited configured root',
+      mode: 'primary',
+      instructions: 'EDITED DEFAULT PROFILE MUST BE IGNORED',
     });
     const resumed = await createDashboardParent(
       {cwd, resume: {id: saved.id, path: saved.sessionFile!}},
       inherited,
     );
     parents.push(resumed);
-    await resumed.prompt(
-      'Check the saved profile after editing its source file.',
-    );
-    const restored = requests.at(-1)!;
-    assert.equal(restored.model, 'configured-model');
-    assert.match(JSON.stringify(restored.messages), /CUSTOM PROFILE BASE/);
-    assert.doesNotMatch(
-      JSON.stringify(restored.messages),
-      /Edited profile on disk/,
-    );
-    assert.ok(
-      restored.tools?.some(tool => tool.function.name === 'write'),
-      'a new user message resets the step allowance',
-    );
+    assert.equal((await resumed.features()).agentProfile, undefined);
+    assert.equal(resumed.state.snapshot().session.agentProfile, undefined);
+    assert.notEqual(resumed.state.snapshot().session.primaryClosed, true);
+    assert.equal((await resumed.features()).model?.id, 'configured-model');
     assert.equal((await resumed.features()).thinkingLevel, 'off');
-    assert.equal((await resumed.features()).agentProfile?.mode, 'primary');
-    assert.deepEqual(
-      resumed.state.snapshot().session.agentProfile,
-      saved.agentProfile,
-    );
-    assert.equal(saved.agentProfile?.name, 'Custom primary');
-
-    await saveAgentTemplate(cwd, {
-      scope: 'repository',
-      id: 'isolated-context',
-      mode: 'primary',
-      context: 'task',
-      instructions: 'Task profile base marker.',
-    });
-    const taskProfile = (await resolveAgentTemplate(cwd, 'isolated-context'))!;
-    const task = await createDashboardParent(
-      {
-        cwd,
-        agentProfile: taskProfile,
-        instructions: 'Explicit appended instructions marker.',
-      },
-      inherited,
-    );
-    parents.push(task);
-    const assertTaskContext = (request: Request) => {
-      const messages = JSON.stringify(request.messages);
-      assert.equal(messages.split('Task profile base marker.').length - 1, 1);
-      assert.equal(
-        messages.split('Explicit appended instructions marker.').length - 1,
-        1,
-      );
-      assert.doesNotMatch(
-        messages,
-        /Project context survives|Automatic global base marker|Automatic appended context marker|Automatic skill catalog marker|exercise-profile|CUSTOM PROFILE BASE/,
-      );
-      assert.ok(request.tools?.some(tool => tool.function.name === 'read'));
-    };
-    await task.prompt('Start a fresh task-scoped conversation.');
-    assertTaskContext(requests.at(-1)!);
-    const taskUserContent = requests
-      .at(-1)!
-      .messages.findLast(message => message.role === 'user')?.content;
-    if (typeof taskUserContent === 'string')
-      assert.equal(taskUserContent, 'Start a fresh task-scoped conversation.');
-    else
-      assert.deepEqual(taskUserContent, [
-        {type: 'text', text: 'Start a fresh task-scoped conversation.'},
-      ]);
-    const taskFeatures = await task.features();
-    assert.ok(
-      !taskFeatures.commands.some(
-        command => command.source === 'skill' || command.source === 'prompt',
-      ),
-    );
-    await task.reload();
-    await task.prompt('Check the same context after reload.');
-    assertTaskContext(requests.at(-1)!);
-    const taskSaved = task.state.snapshot().session;
-    assert.ok(
-      task
-        .restartSnapshot()
-        .entries.some(
-          entry =>
-            entry.type === 'custom' &&
-            entry.customType === 'varisdev.agent-context' &&
-            (entry.data as {scope?: string})?.scope === 'task',
-        ),
-    );
-    await task.close();
-    // Workers may save an explicit task override with a workspace-scoped profile.
-    SessionManager.open(taskSaved.sessionFile!).appendCustomEntry(
-      'varisdev.agent-profile',
-      {...taskProfile, context: 'workspace'},
-    );
-    await saveAgentTemplate(cwd, {
-      scope: 'repository',
-      id: 'isolated-context',
-      context: 'workspace',
-      instructions: 'Edited context profile body.',
-    });
-    const restoredTask = await createDashboardParent(
-      {cwd, resume: {id: taskSaved.id, path: taskSaved.sessionFile!}},
-      inherited,
-    );
-    parents.push(restoredTask);
-    await restoredTask.prompt(
-      'Reopen the saved task scope as the main conversation.',
-    );
-    assertTaskContext(requests.at(-1)!);
-    assert.doesNotMatch(
-      JSON.stringify(requests.at(-1)!.messages),
-      /Edited context profile body/,
-    );
-
-    const emptyTask = await createDashboardParent(
-      {cwd, agentProfile: {...taskProfile, instructions: ''}},
-      inherited,
-    );
-    parents.push(emptyTask);
-    await emptyTask.prompt('Use the normal provider base with task context.');
-    assert.doesNotMatch(
-      JSON.stringify(requests.at(-1)!.messages),
-      /Automatic global base marker|Automatic appended context marker|Project context survives|Automatic skill catalog marker/,
-    );
-    const workspace = await createDashboardParent(
-      {
-        cwd,
-        agentProfile: {...taskProfile, context: 'workspace', instructions: ''},
-      },
-      inherited,
-    );
-    parents.push(workspace);
-    await workspace.prompt('Use the normal workspace context.');
-    const workspaceMessages = JSON.stringify(requests.at(-1)!.messages);
-    assert.match(workspaceMessages, /Automatic global base marker/);
-    assert.match(workspaceMessages, /Automatic appended context marker/);
-    assert.match(workspaceMessages, /Project context survives/);
-    assert.match(workspaceMessages, /Automatic skill catalog marker/);
-    assert.doesNotMatch(
-      workspaceMessages,
-      /Start a fresh task-scoped conversation|exercise-profile/,
-    );
-    const plain = await createDashboardParent({cwd}, inherited);
-    parents.push(plain);
-    assert.deepEqual((await plain.features()).agentProfile, {
-      id: 'default',
-      name: 'Default',
-      mode: 'all',
-    });
-    assert.equal(plain.state.snapshot().session.name, 'project');
-    assert.equal(plain.state.snapshot().session.agentProfile?.id, 'default');
-    const plainEntries = plain.restartSnapshot().entries;
-    assert.ok(
-      plainEntries.some(
-        entry =>
-          entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-profile' &&
-          (entry.data as {id?: string}).id === 'default',
-      ),
-    );
-    assert.ok(
-      !plainEntries.some(
-        entry =>
-          entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-policy-tools',
-      ),
-      'neutral Default does not install policy hooks',
-    );
-    await plain.prompt(
-      'Start a plain conversation without a configured profile.',
-    );
-    const plainRequest = requests.at(-1)!;
-    const plainMessages = JSON.stringify(plainRequest.messages);
-    assert.ok(
-      !plainRequest.tools?.some(
-        tool => tool.function.name === 'agent_templates',
-      ),
-      'configuration CRUD stays deferred until requested',
-    );
-    assert.doesNotMatch(
-      plainMessages,
-      /You are (?:the )?(?:Build|Plan|General|Explore)\b|default coding agent|builtin:(?:build|plan|general|explore)/i,
-    );
-    assert.match(plainMessages, /Automatic global base marker/);
-    assert.match(plainMessages, /Automatic appended context marker/);
-    assert.match(plainMessages, /Project context survives/);
-    assert.doesNotMatch(
-      plainMessages,
-      /varisdev\.agent-profile|varisdev\.agent-context|builtin:default|CUSTOM PROFILE BASE|Task profile base marker|Edited context profile body|You are (?:the )?(?:delegated agent|Default)|"permissions"|"sourcePath"/,
-    );
-    const plainSaved = plain.state.snapshot().session;
-    await plain.close();
-    await writeFile(
-      join(agentDir, 'settings.json'),
-      JSON.stringify({
-        retry: {enabled: false},
-        default_agent: 'isolated-context',
-        permissions: [
-          {action: 'shell', resource: 'blocked-legacy-command', effect: 'deny'},
-        ],
-      }),
-    );
-    const configuredDefault = await createDashboardParent(
-      {cwd, model: 'profile-fixture/configured-model', thinkingLevel: 'off'},
-      inherited,
-    );
-    parents.push(configuredDefault);
-    const configuredFeatures = await configuredDefault.features();
-    assert.equal(configuredFeatures.agentProfile?.id, 'isolated-context');
-    assert.equal(configuredFeatures.model?.id, 'configured-model');
-    assert.equal(configuredFeatures.thinkingLevel, 'off');
-    const legacyDirectory = join(agentDir, 'legacy-sessions');
-    await mkdir(legacyDirectory);
-    const legacy = SessionManager.create(cwd, legacyDirectory);
-    legacy.appendModelChange('profile-fixture', 'profile-model');
-    legacy.appendThinkingLevelChange('high');
-    for (const entry of SessionManager.open(
-      plainSaved.sessionFile!,
-    ).getBranch())
-      if (
-        entry.type === 'message' &&
-        (entry.message.role === 'user' || entry.message.role === 'assistant')
-      )
-        legacy.appendMessage(entry.message);
-    const resumedLegacy = await createDashboardParent(
-      {
-        cwd,
-        resume: {id: legacy.getSessionId(), path: legacy.getSessionFile()!},
-      },
-      inherited,
-    );
-    parents.push(resumedLegacy);
     assert.equal(
-      (await resumedLegacy.features()).agentProfile?.id,
-      'default',
-      'legacy history gets neutral Default instead of the newly configured custom default',
-    );
-    const legacyProfiles = resumedLegacy
-      .restartSnapshot()
-      .entries.filter(
-        entry =>
-          entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-profile',
-      );
-    assert.equal(legacyProfiles.length, 1);
-    const legacyProfile =
-      legacyProfiles[0].type === 'custom'
-        ? (legacyProfiles[0].data as AgentTemplate)
-        : undefined;
-    assert.equal(legacyProfile?.id, 'default');
-    assert.equal(legacyProfile?.instructions, '');
-    assert.equal(legacyProfile?.model, undefined);
-    assert.equal(legacyProfile?.permissionsVersion, 1);
-    assert.deepEqual(legacyProfile?.permissions, [
-      {action: 'shell', resource: 'blocked-legacy-command', effect: 'deny'},
-    ]);
-    await resumedLegacy.prompt(
-      'Continue the legacy conversation using its normal Pi context.',
-    );
-    assert.doesNotMatch(
-      JSON.stringify(requests.at(-1)!.messages),
-      /Edited context profile body|builtin:default|You are (?:the )?Default|varisdev\.agent-profile/,
-    );
-
-    const resumedPlain = await createDashboardParent(
-      {cwd, resume: {id: plainSaved.id, path: plainSaved.sessionFile!}},
-      inherited,
-    );
-    parents.push(resumedPlain);
-    assert.equal(
-      (await resumedPlain.features()).agentProfile?.id,
-      'default',
-      'a later configured default does not replace the saved Default selection',
-    );
-    await saveAgentTemplate(cwd, {
-      scope: 'repository',
-      id: 'hidden-default',
-      mode: 'primary',
-      hidden: true,
-      instructions: '',
-    });
-    await writeFile(
-      join(agentDir, 'settings.json'),
-      JSON.stringify({
-        retry: {enabled: false},
-        default_agent: 'hidden-default',
-      }),
-    );
-    const resumedLegacyAgain = await createDashboardParent(
-      {
-        cwd,
-        resume: {id: legacy.getSessionId(), path: legacy.getSessionFile()!},
-      },
-      inherited,
-    );
-    parents.push(resumedLegacyAgain);
-    assert.deepEqual(
-      resumedLegacyAgain
+      resumed
         .restartSnapshot()
         .entries.filter(
           entry =>
             entry.type === 'custom' &&
-            entry.customType === 'varisdev.agent-profile',
-        ),
-      legacyProfiles,
-      'shared permissions are composed and persisted once',
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
     );
-    const invalidDefault = await createDashboardParent({cwd}, inherited);
-    parents.push(invalidDefault);
-    assert.equal((await invalidDefault.features()).agentProfile?.id, 'default');
-    assert.equal(invalidDefault.state.snapshot().session.name, 'project');
+    await resumed.prompt('Resume the Main conversation.');
+    const resumedMessages = JSON.stringify(requests.at(-1)!.messages);
+    assert.match(resumedMessages, /EXPLICIT MAIN INSTRUCTION MARKER/);
+    assert.doesNotMatch(
+      resumedMessages,
+      /REQUESTED ROOT PROFILE MUST BE IGNORED|CONFIGURED DEFAULT PROFILE MUST BE IGNORED|EDITED DEFAULT PROFILE MUST BE IGNORED/,
+    );
+    await resumed.close();
 
-    await saveAgentTemplate(cwd, {
-      scope: 'repository',
-      id: 'local-helper',
-      mode: 'subagent',
-      instructions: 'Local test helper.',
+    const legacy = SessionManager.create(
+      cwd,
+      join(directory, 'legacy-sessions'),
+    );
+    legacy.appendMessage({
+      role: 'user',
+      content: 'Legacy conversation history.',
+      timestamp: Date.now(),
     });
-    await saveAgentTemplate(cwd, {
-      scope: 'repository',
-      id: 'refresh-policy',
+    legacy.appendModelChange('profile-fixture', 'profile-model');
+    legacy.appendThinkingLevelChange('high');
+    legacy.appendCustomEntry('varisdev.agent-profile', {
+      ...configured,
+      id: 'legacy-root',
+      key: 'repository:legacy-root',
       mode: 'primary',
-      instructions: 'Local policy regression profile.',
-      steps: 2,
-      permissions: [{action: 'subagent', resource: '*', effect: 'deny'}],
+      context: 'task',
+      instructions: 'LEGACY SAVED PROFILE MUST BE IGNORED',
+      permissions: [
+        {action: 'edit', resource: '*', effect: 'allow'},
+        {action: 'subagent', resource: '*', effect: 'allow'},
+      ],
     });
-    const refreshProfile = (await resolveAgentTemplate(cwd, 'refresh-policy'))!;
-    const guarded = await createDashboardParent(
-      {cwd, agentProfile: refreshProfile},
+    legacy.appendCustomEntry('varisdev.agent-context', {scope: 'task'});
+    legacy.appendCustomEntry(primaryClosedEntry, {closed: true});
+    const legacyParent = await createDashboardParent(
+      {
+        cwd,
+        resume: {id: legacy.getSessionId(), path: legacy.getSessionFile()!},
+      },
       inherited,
     );
-    parents.push(guarded);
-    const firstPolicyRequest = requests.length;
-    await guarded.prompt('policy-refresh-check: write a file and summarize.');
-    const policyRequests = requests.slice(firstPolicyRequest);
-    assert.equal(policyRequests.length, 2);
-    assert.ok(
-      policyRequests[0].tools?.some(tool => tool.function.name === 'write'),
-    );
-    assert.ok(
-      !policyRequests[0].tools?.some(
-        tool => tool.function.name === 'agent_spawn',
-      ),
-      'dynamic registration cannot restore a denied subagent tool',
+    parents.push(legacyParent);
+    assert.equal((await legacyParent.features()).agentProfile, undefined);
+    assert.notEqual(legacyParent.state.snapshot().session.primaryClosed, true);
+    const legacyEntries = legacyParent.restartSnapshot().entries;
+    assert.equal(
+      legacyEntries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
     );
     assert.equal(
-      policyRequests[1].tools?.length ?? 0,
-      0,
-      'a changed tool-model policy cannot restore tools during the final model step',
+      legacyEntries.filter(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      ).length,
+      1,
+      'legacy profile history is retained without becoming the root identity',
     );
+    await legacyParent.prompt('Continue the legacy session as Main.');
+    const legacyMessages = JSON.stringify(requests.at(-1)!.messages);
+    assert.match(legacyMessages, /MAIN GLOBAL BASE MARKER/);
+    assert.match(legacyMessages, /MAIN APPENDED CONTEXT MARKER/);
+    assert.match(legacyMessages, /MAIN WORKSPACE CONTEXT MARKER/);
+    assert.doesNotMatch(
+      legacyMessages,
+      /LEGACY SAVED PROFILE MUST BE IGNORED|CONFIGURED DEFAULT PROFILE MUST BE IGNORED|EDITED DEFAULT PROFILE MUST BE IGNORED/,
+    );
+    await legacyParent.close();
+
+    const legacyAgain = await createDashboardParent(
+      {
+        cwd,
+        resume: {id: legacy.getSessionId(), path: legacy.getSessionFile()!},
+      },
+      inherited,
+    );
+    parents.push(legacyAgain);
+    assert.notEqual(legacyAgain.state.snapshot().session.primaryClosed, true);
     assert.equal(
-      await readFile(join(cwd, 'policy-refresh.txt'), 'utf8'),
-      'Allowed write.',
+      legacyAgain
+        .restartSnapshot()
+        .entries.filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
+      'resuming Main repeatedly does not duplicate its marker',
+    );
+
+    const fresh = await createDashboardParent({cwd}, inherited);
+    parents.push(fresh);
+    assert.equal((await fresh.features()).agentProfile, undefined);
+    assert.equal(fresh.state.snapshot().session.agentProfile, undefined);
+    await fresh.prompt('Start another Main conversation.');
+    assert.doesNotMatch(
+      JSON.stringify(requests.at(-1)!.messages),
+      /CONFIGURED DEFAULT PROFILE MUST BE IGNORED|EDITED DEFAULT PROFILE MUST BE IGNORED/,
     );
     assert.deepEqual(errors, []);
   },

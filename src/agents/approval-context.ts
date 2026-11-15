@@ -1,5 +1,6 @@
 import type {ExtensionContext} from '@earendil-works/pi-coding-agent';
 import type {AgentApprovalScope} from './approvals.ts';
+import {isMainAgent, mainAgentId} from './main.ts';
 
 /** Match policy identity when opening management outside a model turn. */
 export function sessionAgentApprovalScope(
@@ -17,7 +18,9 @@ export function sessionAgentApprovalScope(
       ? (saved.data as {id?: string} | undefined)
       : undefined;
   return {
-    agentId: profile?.id ?? 'default',
+    agentId: isMainAgent(ctx.sessionManager)
+      ? mainAgentId
+      : (profile?.id ?? 'default'),
     conversationId: ctx.sessionManager.getSessionId(),
     workspace: ctx.cwd,
   };

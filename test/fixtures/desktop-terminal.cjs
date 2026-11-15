@@ -1278,7 +1278,7 @@ app
       "[...document.querySelectorAll('#parents button')].find(button => button.textContent.includes('first')).click()",
     );
     await until(
-      "document.getElementById('factory-title').textContent.includes('first')",
+      "document.getElementById('inspector-title').textContent.includes('first')",
     );
     await until(
       `document.querySelector('.project-terminal:not([hidden])').textContent.includes('${coloredText}')`,
@@ -1343,6 +1343,8 @@ app
     );
     await evaluate("document.getElementById('item-actions-button').click()");
     await evaluate("document.getElementById('close-session').click()");
+    await until("document.getElementById('close-primary-dialog').open");
+    await evaluate("document.getElementById('confirm-close-primary').click()");
     await until("document.querySelectorAll('#parents button').length === 1");
     assert.throws(() => terminals.write('first', 'pwd\r'), /Open a terminal/);
     assert.equal(
@@ -1354,6 +1356,8 @@ app
       false,
     );
     await evaluate("document.getElementById('close-session').click()");
+    await until("document.getElementById('close-primary-dialog').open");
+    await evaluate("document.getElementById('confirm-close-primary').click()");
     await until("!document.getElementById('welcome').hidden");
     assert.throws(() => terminals.write('second', 'pwd\r'), /Open a terminal/);
     assert.equal(

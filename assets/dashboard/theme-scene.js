@@ -7,18 +7,18 @@ import {createFactoryVisitors, visitorCaneId} from './factory-visitors.js';
 import {createRobotDamage} from './robot-damage.js';
 import {createRobotWhip} from './robot-whip.js';
 import {factoryIdentity, factoryIdentityPalette} from './factory-identity.js';
-import {primaryUnit} from './scene-primary.js';
+import {mainUnit} from './scene-primary.js';
 
 function projectSnapshot(data) {
   if (!data) return data;
-  const primary = primaryUnit(data);
+  const main = mainUnit(data);
   return {
     ...data,
-    primaryId: primary?.id ?? null,
-    session: primary
-      ? {...primary.unit, id: data.session.id}
+    primaryId: main?.id ?? null,
+    session: main
+      ? {...main.unit, id: data.session.id}
       : {...data.session, status: 'closed'},
-    agents: (data.agents || []).filter(agent => agent.id !== primary?.id),
+    agents: data.agents || [],
   };
 }
 

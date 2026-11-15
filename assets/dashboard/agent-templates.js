@@ -28,18 +28,14 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   let disposed = false;
   const createState = {
     cwd: '',
-    templates: [],
     busy: false,
-    loading: false,
     choosing: false,
     failure: '',
-    diagnostics: '',
     request: 0,
     createdId: undefined,
     opened: false,
     prompted: false,
     submission: undefined,
-    defaultAgentId: undefined,
     recentFolders: [],
     recentLoading: false,
     recentFailure: '',
@@ -109,11 +105,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   }
 
   function renderAvailability() {
-    const createUnavailable = !(
-      api?.createSession &&
-      api?.listAgentTemplates &&
-      api?.promptSession
-    );
+    const createUnavailable = !(api?.createSession && api?.promptSession);
     newButton.disabled = createUnavailable;
     if (menuNewButton) menuNewButton.disabled = createUnavailable;
     templatesButton.disabled = !(
@@ -124,7 +116,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   }
 
   function createWorking() {
-    return createState.busy || createState.loading || createState.choosing;
+    return createState.busy || createState.choosing;
   }
   function renderCreate() {
     const working = createWorking();
@@ -144,10 +136,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
       : '';
     recent.title = recent.value;
     recent.classList.toggle('has-selection', !!recent.value);
-    $('new-agent-template').classList.toggle(
-      'has-selection',
-      !!$('new-agent-template').value,
-    );
     $('new-agent-choose-folder').disabled =
       working || created || !api?.chooseFolder;
     $('new-agent-recent').disabled =
@@ -163,7 +151,6 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
         ? 'No recent workspaces yet.'
         : '';
     setError($('new-agent-recent-error'), createState.recentFailure);
-    $('new-agent-template').disabled = working || created;
     $('new-agent-name').disabled = createState.busy || created;
     $('new-agent-name').placeholder =
       createState.cwd.split(/[\\/]/).filter(Boolean).at(-1) || createState.cwd;
@@ -171,16 +158,12 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     $('new-agent-close').disabled = createState.busy;
     $('new-agent-cancel').disabled = createState.busy;
     $('new-agent-create').disabled =
-      working ||
-      !createState.cwd ||
-      !$('new-agent-template').value ||
-      !api?.createSession;
+      working || !createState.cwd || !api?.createSession;
     $('new-agent-create').textContent = created
       ? 'Retry'
       : 'Start conversation';
     let status = '';
     if (createState.choosing) status = 'Choosing folder…';
-    else if (createState.loading) status = 'Loading agent configurations…';
     else if (createState.busy) {
       status = !createState.createdId
         ? 'Creating conversation…'
@@ -192,10 +175,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     else if (created && !createState.prompted)
       status = 'Conversation created. The initial message needs to be retried.';
     $('new-agent-status').textContent = status;
-    setError(
-      $('new-agent-error'),
-      [createState.failure, createState.diagnostics].filter(Boolean).join('\n'),
-    );
+    setError($('new-agent-error'), createState.failure);
   }
   function resetCreate() {
     createState.request++;
@@ -205,124 +185,18 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     createState.recentFailure = '';
     $('new-agent-recent').replaceChildren();
     createState.cwd = '';
-    createState.templates = [];
     createState.busy = false;
-    createState.loading = false;
     createState.choosing = false;
     createState.failure = '';
-    createState.diagnostics = '';
     createState.createdId = undefined;
     createState.opened = false;
     createState.prompted = false;
     createState.submission = undefined;
-    createState.defaultAgentId = undefined;
     $('new-agent-form').reset();
-    $('new-agent-template').replaceChildren();
     renderCreate();
   }
   function templateName(template) {
     return template.name || template.id;
-  }
-  function createTemplateSelector(template) {
-    return template.key && template.id.includes(':')
-      ? template.key
-      : template.id;
-  }
-  function populateCreateTemplates(templates) {
-    const selectedTemplate = $('new-agent-template').value;
-    const options = templates.map(template => {
-      const option = document.createElement('option');
-      option.value = createTemplateSelector(template);
-      option.textContent = `${templateName(template)} · ${scopeName(template.scope)}`;
-      if (template.description) option.title = template.description;
-      return option;
-    });
-    $('new-agent-template').replaceChildren(...options);
-    const preservingSelection = templates.some(
-      template => createTemplateSelector(template) === selectedTemplate,
-    );
-    const fallback =
-      templates.find(
-        template =>
-          template.id === createState.defaultAgentId ||
-          createTemplateSelector(template) === createState.defaultAgentId,
-      ) ||
-      templates.find(template => template.id === 'default') ||
-      templates[0];
-    const selectedId = preservingSelection
-      ? selectedTemplate
-      : fallback
-        ? createTemplateSelector(fallback)
-        : '';
-    $('new-agent-template').value = selectedId;
-  }
-  async function loadCreateTemplates() {
-    if (!createState.cwd || disposed) {
-      populateCreateTemplates([]);
-      renderCreate();
-      return;
-    }
-    const request = ++createState.request;
-    createState.templates = [];
-    createState.defaultAgentId = undefined;
-    populateCreateTemplates([]);
-    createState.loading = true;
-    createState.failure = '';
-    createState.diagnostics = '';
-    renderCreate();
-    try {
-      const result = await api.listAgentTemplates(createState.cwd);
-      if (disposed || request !== createState.request) return;
-      createState.templates = (result.templates || []).filter(
-        template =>
-          !template.hidden &&
-          !template.disabled &&
-          ['primary', 'all'].includes(template.mode || 'primary'),
-      );
-      createState.defaultAgentId = result.defaultAgentId;
-      const scopedDefault = result.defaultAgent;
-      if (
-        result.defaultAgentId?.includes(':') &&
-        scopedDefault &&
-        !scopedDefault.hidden &&
-        !scopedDefault.disabled &&
-        ['primary', 'all'].includes(scopedDefault.mode || 'primary') &&
-        !createState.templates.some(
-          template => template.id === result.defaultAgentId,
-        )
-      )
-        createState.templates.unshift({
-          ...scopedDefault,
-          id: result.defaultAgentId,
-        });
-      if (
-        result.defaultAgentId === 'builtin:default' &&
-        !createState.templates.some(
-          template => template.id === result.defaultAgentId,
-        )
-      )
-        createState.templates.unshift({
-          id: 'builtin:default',
-          name: 'Default',
-          mode: 'all',
-          scope: 'builtin',
-        });
-      createState.diagnostics = (result.diagnostics || [])
-        .map(
-          item =>
-            `${scopeName(item.scope)} · ${item.sourcePath}: ${item.message}`,
-        )
-        .join('\n');
-      populateCreateTemplates(createState.templates);
-    } catch (error) {
-      if (!disposed && request === createState.request)
-        createState.failure = errorText(error);
-    } finally {
-      if (!disposed && request === createState.request) {
-        createState.loading = false;
-        renderCreate();
-      }
-    }
   }
   async function openCreate() {
     if (disposed || newButton.disabled || newDialog.open) return;
@@ -332,7 +206,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     renderCreate();
     newDialog.showModal();
     $('new-agent-name').focus();
-    await Promise.all([loadCreateTemplates(), loadRecentWorkspaces()]);
+    await loadRecentWorkspaces();
   }
   async function loadRecentWorkspaces() {
     if (!api?.recentProjects || disposed) return;
@@ -380,7 +254,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
     )
       return;
     createState.cwd = cwd;
-    await loadCreateTemplates();
+    renderCreate();
   }
   async function chooseCreateFolder() {
     if (createWorking() || createState.createdId || !api?.chooseFolder) return;
@@ -405,13 +279,7 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   }
   async function submitCreate(event) {
     event.preventDefault();
-    if (
-      createWorking() ||
-      !createState.cwd ||
-      !$('new-agent-template').value ||
-      disposed
-    )
-      return;
+    if (createWorking() || !createState.cwd || disposed) return;
     createState.busy = true;
     createState.failure = '';
     renderCreate();
@@ -420,13 +288,11 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
         const submission = {
           cwd: createState.cwd,
           name: $('new-agent-name').value.trim(),
-          templateId: $('new-agent-template').value || undefined,
           task: $('new-agent-task').value.trim(),
         };
-        const {cwd, name, templateId} = submission;
+        const {cwd, name} = submission;
         const result = await api.createSession({
           cwd,
-          templateId,
           ...(name ? {name} : {}),
         });
         if (!result.id)
@@ -1169,8 +1035,16 @@ export function initAgentTemplates({api, selected, launchCwd, opened}) {
   listen($('agent-templates-close'), 'click', () => {
     if (!templateState.busy) closeDialog(templatesDialog);
   });
+  listen(templatesDialog, 'keydown', event => {
+    if (event.key !== 'Escape' || event.isComposing) return;
+    // Keep Escape from also dismissing Agent settings underneath.
+    event.preventDefault();
+    event.stopPropagation();
+    if (!templateState.busy) closeDialog(templatesDialog);
+  });
   listen(templatesDialog, 'cancel', event => {
-    if (templateState.busy) event.preventDefault();
+    event.preventDefault();
+    if (!templateState.busy) closeDialog(templatesDialog);
   });
   listen(templatesDialog, 'close', () => {
     if (!templatesDialog.open) resetTemplates();

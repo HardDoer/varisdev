@@ -12,8 +12,10 @@ export async function runAgentSessionRequest(
   input: AgentSessionRequest,
 ): Promise<AgentSessionResult> {
   const request = agentSessionRequest(input);
-  const agent = manager.get(request.agentId);
+  const agent = manager.touch(request.agentId);
   switch (request.action) {
+    case 'view':
+      return;
     case 'prompt': {
       if (agent.agentMode === 'subagent')
         throw new Error(

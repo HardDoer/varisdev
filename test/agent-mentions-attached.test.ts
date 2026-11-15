@@ -19,7 +19,10 @@ import {
 } from '../src/agents/templates.ts';
 import {registerFactory} from '../src/dashboard/index.ts';
 import {DesktopExtensionUI} from '../src/dashboard/extension-ui.ts';
-import {sessionPrimaryClosed} from '../src/dashboard/primary-session.ts';
+import {
+  primaryClosedEntry,
+  sessionPrimaryClosed,
+} from '../src/dashboard/primary-session.ts';
 import type {DashboardState} from '../src/dashboard/state.ts';
 import type {FactoryControl} from '../src/desktop/launcher.ts';
 import {
@@ -82,7 +85,13 @@ void test(
     await mkdir(agentDir, {recursive: true});
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}}),
+      JSON.stringify({
+        retry: {enabled: false},
+        permissions: [
+          {action: 'subagent', resource: 'review', effect: 'ask'},
+          {action: 'subagent', resource: 'blocked', effect: 'deny'},
+        ],
+      }),
     );
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     await saveToolSettings('agents', {allowedModels: []});
@@ -97,11 +106,12 @@ void test(
       });
     const profile = {
       ...createDefaultAgentProfile(),
-      id: 'attached-root',
-      name: 'Attached root',
+      id: 'ignored-attached-root',
+      name: 'Ignored attached root',
+      instructions: 'IGNORED ATTACHED ROOT INSTRUCTIONS',
       permissions: [
-        {action: 'subagent', resource: 'review', effect: 'ask' as const},
-        {action: 'subagent', resource: 'blocked', effect: 'deny' as const},
+        {action: 'subagent', resource: 'review', effect: 'deny' as const},
+        {action: 'subagent', resource: 'blocked', effect: 'allow' as const},
       ],
     };
     const runtime = await ModelRuntime.create({
@@ -165,6 +175,7 @@ void test(
     await loader.reload();
     const sessionManager = SessionManager.create(cwd);
     sessionManager.appendCustomEntry('varisdev.agent-profile', profile);
+    sessionManager.appendCustomEntry(primaryClosedEntry);
     ({session} = await createAgentSession({
       cwd,
       agentDir,
@@ -177,8 +188,31 @@ void test(
     await session.prompt('/factory');
     assert.ok(control);
     assert.ok(state);
-    const rootModel = (await control.features()).model;
+    const rootFeatures = await control.features();
+    const rootModel = rootFeatures.model;
     assert.ok(!rootModel || rootModel.provider === 'unknown');
+    assert.equal(rootFeatures.agentProfile, undefined);
+    assert.equal(
+      sessionManager
+        .getEntries()
+        .filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
+    );
+    assert.equal(
+      sessionManager
+        .getEntries()
+        .filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.agent-profile',
+        ).length,
+      1,
+      'the legacy profile remains history but does not control Main',
+    );
 
     await control.prompt('@blocked Denied task');
     assert.match(
@@ -196,7 +230,7 @@ void test(
     await until(() => ui.snapshot().dialogs.length > 0);
     assert.equal(requests.length, 0);
     const approval = ui.snapshot().dialogs[0];
-    assert.equal(approval.title, 'Permission: attached-root');
+    assert.equal(approval.title, 'Permission: Main agent');
     ui.respond(approval.id, 'Allow once');
     await approved;
     await until(() => state!.snapshot().agents[0]?.status === 'completed');
@@ -241,20 +275,17 @@ void test(
     assert.ok(
       !state.snapshot().conversation.some(message => message.role === 'user'),
     );
-    await control.agentSession!({agentId: 'parent', action: 'close'});
-    assert.equal(state.snapshot().session.primaryClosed, true);
-    assert.ok(state.snapshot().agents.every(agent => agent.resumable));
+    assert.equal(state.snapshot().session.primaryClosed, false);
     await assert.rejects(
-      async () => control!.prompt('Closed root prompt'),
-      /primary agent has closed/,
+      control.agentSession!({agentId: 'parent', action: 'close'}),
+      /Main.*cannot be closed separately/i,
     );
-    await control.prompt('/name Attached host after starter closure');
+    assert.equal(state.snapshot().session.primaryClosed, false);
+    assert.ok(state.snapshot().agents.every(agent => agent.resumable));
+    await control.prompt('/name Attached host remains Main');
     const savedHost = SessionManager.open(sessionManager.getSessionFile()!);
-    assert.equal(sessionPrimaryClosed(savedHost), true);
-    assert.equal(
-      savedHost.getSessionName(),
-      'Attached host after starter closure',
-    );
+    assert.equal(sessionPrimaryClosed(savedHost), false);
+    assert.equal(savedHost.getSessionName(), 'Attached host remains Main');
     assert.equal(requests.length, 2);
   },
 );

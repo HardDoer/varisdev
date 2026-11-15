@@ -1,3 +1,4 @@
+import {mainAgentId} from '../src/agents/main.ts';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
@@ -29,7 +30,6 @@ import {
 import {
   resolveAgentTemplate,
   saveAgentTemplate,
-  type AgentTemplate,
 } from '../src/agents/templates.ts';
 import {
   createDashboardParent,
@@ -75,13 +75,21 @@ void test(
     const agentDir = join(directory, 'settings');
     await mkdir(join(cwd, '.git'), {recursive: true});
     await mkdir(agentDir);
+    const sharedPermissions = [
+      {action: 'skill', resource: 'denied-skill', effect: 'deny'},
+      {action: 'skill', resource: 'doctor', effect: 'deny'},
+      {action: 'skill', resource: 'approved-skill', effect: 'ask'},
+    ] as const;
     await writeFile(
       join(cwd, 'AGENTS.md'),
       'Root skill project context marker.',
     );
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}}),
+      JSON.stringify({
+        retry: {enabled: false},
+        permissions: sharedPermissions,
+      }),
     );
     for (const [name, description, body] of [
       ['denied-skill', 'DENIED SKILL DESCRIPTION', 'DENIED SKILL BODY MARKER'],
@@ -174,11 +182,7 @@ void test(
       id: 'skill-policy',
       mode: 'primary',
       instructions: 'Apply the root skill policy.',
-      permissions: [
-        {action: 'skill', resource: 'denied-skill', effect: 'deny'},
-        {action: 'skill', resource: 'doctor', effect: 'deny'},
-        {action: 'skill', resource: 'approved-skill', effect: 'ask'},
-      ],
+      permissions: [...sharedPermissions],
     });
     const profile = (await resolveAgentTemplate(cwd, 'skill-policy'))!;
     const builtin = await loadBuiltinSkills([]);
@@ -188,6 +192,18 @@ void test(
     );
     parents.push(parent);
     const features = await parent.features();
+    assert.equal(features.agentProfile, undefined);
+    assert.equal(parent.state.snapshot().session.agentProfile, undefined);
+    assert.equal(
+      parent
+        .restartSnapshot()
+        .entries.filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
+    );
     assert.ok(
       !features.commands.some(command => command.name === 'skill:doctor'),
     );
@@ -236,6 +252,7 @@ void test(
       beforeDenied,
       'skill input waits for its approval',
     );
+    assert.match(parent.ui.snapshot().dialogs[0].title, /Permission: main/i);
     parent.ui.respond(parent.ui.snapshot().dialogs[0].id, 'Deny');
     await declined.catch(error => {
       assert.match(String(error), /declined|permission/i);
@@ -300,20 +317,32 @@ void test(
     });
     assert.equal(requests.length, beforeReloadedDeny);
 
+    await writeFile(
+      join(agentDir, 'settings.json'),
+      JSON.stringify({
+        retry: {enabled: false},
+        default_agent: 'skill-policy',
+        permissions: [],
+      }),
+    );
     const neutral = await createDashboardParent({cwd}, inherited);
     parents.push(neutral);
-    assert.equal((await neutral.features()).agentProfile?.id, 'default');
+    assert.equal((await neutral.features()).agentProfile, undefined);
     assert.ok(
       (await neutral.features()).commands.some(
         command => command.name === 'skill:denied-skill',
       ),
     );
     await neutral.prompt(
-      '/skill:denied-skill Load this skill without a profile restriction.',
+      '/skill:denied-skill Load this skill without a shared restriction.',
     );
     assert.match(
       JSON.stringify(requests.at(-1)!.messages),
       /DENIED SKILL BODY MARKER/,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(requests.at(-1)!.messages),
+      /Apply the root skill policy/,
     );
     assert.equal(neutral.ui.snapshot().dialogs.length, 0);
     assert.ok(
@@ -340,7 +369,7 @@ void test(
         retry: {enabled: false},
         default_agent: 'skill-policy',
         permissions: [
-          ...profile.permissions,
+          ...sharedPermissions,
           {
             action: 'subagent',
             resource: 'native-blocked-helper',
@@ -361,8 +390,10 @@ void test(
       cwd,
       join(directory, 'native-sessions'),
     );
-    const nativeFactory: ExtensionFactory = pi => {
-      const shared: AgentToolsOptions = {};
+    const registerNativeFactory = (
+      pi: Parameters<ExtensionFactory>[0],
+      shared: AgentToolsOptions,
+    ) => {
       const control = registerAgentTools(pi, undefined, shared);
       registerFactory(
         pi,
@@ -377,6 +408,9 @@ void test(
         shared,
       );
     };
+    const nativeShared: AgentToolsOptions = {};
+    const nativeFactory: ExtensionFactory = pi =>
+      registerNativeFactory(pi, nativeShared);
     const nativeLoader = new DefaultResourceLoader({
       cwd,
       agentDir,
@@ -404,21 +438,34 @@ void test(
       uiContext: nativeUi.context,
       onError: error => errors.push(error),
     });
-    const nativeProfiles = nativeManager
-      .getEntries()
-      .filter(
-        entry =>
-          entry.type === 'custom' &&
-          entry.customType === 'varisdev.agent-profile',
-      );
-    assert.equal(nativeProfiles.length, 1);
-    const nativeProfile =
-      nativeProfiles[0].type === 'custom'
-        ? (nativeProfiles[0].data as AgentTemplate)
-        : undefined;
-    assert.equal(nativeProfile?.id, 'default');
-    assert.equal(nativeProfile?.instructions, '');
-    assert.equal(nativeProfile?.permissionsVersion, 1);
+    assert.equal(
+      nativeManager
+        .getEntries()
+        .filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
+    );
+    assert.ok(
+      !nativeManager
+        .getEntries()
+        .some(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.agent-profile',
+        ),
+    );
+    assert.equal(nativeShared.agentProfile?.id, mainAgentId);
+    assert.deepEqual(nativeShared.agentProfile?.permissions, [
+      ...sharedPermissions,
+      {
+        action: 'subagent',
+        resource: 'native-blocked-helper',
+        effect: 'deny',
+      },
+    ]);
     const beforeNativeDenied = requests.length;
     await native.prompt('/skill:denied-skill');
     assert.equal(requests.length, beforeNativeDenied);
@@ -477,7 +524,7 @@ void test(
         .filter(
           entry =>
             entry.type === 'custom' &&
-            entry.customType === 'varisdev.agent-profile',
+            entry.customType === 'varisdev.main-agent',
         ).length,
       1,
     );
@@ -487,129 +534,6 @@ void test(
     );
     assert.equal(requests.length, beforeNativeReloaded + 1);
     assert.equal(nativeUi.snapshot().dialogs.length, 0);
-
-    const explicitSkill = join(directory, 'explicit-native-skill');
-    await mkdir(explicitSkill);
-    await writeFile(
-      join(explicitSkill, 'SKILL.md'),
-      '---\nname: explicit-native-skill\ndescription: EXPLICIT NATIVE SKILL DESCRIPTION\n---\nExplicit skill body.',
-    );
-    const taskManager = SessionManager.create(
-      cwd,
-      join(directory, 'native-task-sessions'),
-    );
-    taskManager.appendCustomEntry('varisdev.agent-profile', {
-      ...nativeProfile!,
-      id: 'saved-native-task',
-      key: 'repository:saved-native-task',
-      context: 'task',
-      instructions: 'SAVED NATIVE TASK PROFILE BODY',
-      model: 'unavailable/profile-model',
-      thinkingLevel: 'high',
-    });
-    const taskLoader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
-      systemPrompt: 'NATIVE BASE PROMPT MARKER',
-      appendSystemPrompt: ['NATIVE APPEND PROMPT MARKER'],
-      additionalSkillPaths: [explicitSkill],
-      extensionFactories: [nativeFactory],
-      skillsOverride: base => includeBuiltinSkills(base, builtin),
-    });
-    await taskLoader.reload();
-    const {session: taskNative} = await createAgentSession({
-      cwd,
-      agentDir,
-      model: inherited.model,
-      modelRuntime: runtime,
-      thinkingLevel: 'off',
-      resourceLoader: taskLoader,
-      sessionManager: taskManager,
-    });
-    const taskUi = new DesktopExtensionUI(() => {});
-    nativeCleanup.push(() => {
-      taskNative.dispose();
-      taskUi.dispose();
-    });
-    await taskNative.bindExtensions({
-      mode: 'rpc',
-      uiContext: taskUi.context,
-      onError: error => errors.push(error),
-    });
-    await taskNative.prompt('Use the saved native task profile.');
-    const taskPayload = JSON.stringify(requests.at(-1)!.messages);
-    assert.equal(
-      taskPayload.split('SAVED NATIVE TASK PROFILE BODY').length - 1,
-      1,
-    );
-    assert.match(taskPayload, /NATIVE APPEND PROMPT MARKER/);
-    assert.doesNotMatch(taskPayload, /NATIVE BASE PROMPT MARKER/);
-    assert.match(taskPayload, /EXPLICIT NATIVE SKILL DESCRIPTION/);
-    assert.doesNotMatch(
-      taskPayload,
-      /OPEN SKILL DESCRIPTION|APPROVED SKILL DESCRIPTION|DENIED SKILL DESCRIPTION|Diagnose VarisDev installation/,
-    );
-    assert.match(
-      taskPayload,
-      /Root skill project context marker/,
-      'native context files lack source information needed to distinguish explicit files',
-    );
-    assert.equal(taskNative.model?.id, inherited.model.id);
-    assert.equal(taskNative.thinkingLevel, 'off');
-    await taskNative.reload();
-    await taskNative.prompt('Retain task context after reload.');
-    assert.doesNotMatch(
-      JSON.stringify(requests.at(-1)!.messages),
-      /Diagnose VarisDev installation/,
-    );
-
-    const explicitDoctorLoader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
-      additionalSkillPaths: [
-        join(builtinSkillsDirectory, 'doctor', 'SKILL.md'),
-      ],
-      extensionFactories: [nativeFactory],
-      skillsOverride: base => includeBuiltinSkills(base, builtin),
-    });
-    await explicitDoctorLoader.reload();
-    const explicitManager = SessionManager.create(
-      cwd,
-      join(directory, 'explicit-task-sessions'),
-    );
-    explicitManager.appendCustomEntry('varisdev.agent-profile', {
-      ...nativeProfile!,
-      context: 'task',
-      permissions: nativeProfile!.permissions.filter(
-        rule => rule.resource !== 'doctor',
-      ),
-    });
-    const {session: explicitNative} = await createAgentSession({
-      cwd,
-      agentDir,
-      model: inherited.model,
-      modelRuntime: runtime,
-      thinkingLevel: 'off',
-      resourceLoader: explicitDoctorLoader,
-      sessionManager: explicitManager,
-    });
-    const explicitUi = new DesktopExtensionUI(() => {});
-    nativeCleanup.push(() => {
-      explicitNative.dispose();
-      explicitUi.dispose();
-    });
-    await explicitNative.bindExtensions({
-      mode: 'rpc',
-      uiContext: explicitUi.context,
-      onError: error => errors.push(error),
-    });
-    await explicitNative.prompt(
-      'Use the explicitly selected doctor in task context.',
-    );
-    assert.match(
-      JSON.stringify(requests.at(-1)!.messages),
-      /Diagnose VarisDev installation/,
-    );
 
     await writeFile(
       join(agentDir, 'settings.json'),

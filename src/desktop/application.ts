@@ -963,6 +963,10 @@ process.on('disconnect', () => {
   hub.closeExternal();
 });
 
+let agentHistoryMaintenance:
+  | ReturnType<typeof import('../agents/retention.ts').watchAgentHistory>
+  | undefined;
+
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -975,6 +979,7 @@ async function shutdown(): Promise<void> {
     await runtime.waitForUpdate();
     terminals.dispose();
     await accounts.dispose();
+    await agentHistoryMaintenance?.close();
     if (
       attachedSessionId &&
       hub
@@ -1060,6 +1065,12 @@ if (!primaryInstance) {
         if (process.connected) process.send?.({type: 'ready'});
       }
       desktopReady = true;
+      const {watchAgentHistory} = await import('../agents/retention.ts');
+      const {getAgentDir} = await import('@earendil-works/pi-coding-agent');
+      agentHistoryMaintenance = watchAgentHistory(
+        getAgentDir(),
+        async () => {},
+      );
       void runtime.cleanupRuntimes();
       for (const project of pendingProjects.splice(0))
         await openProject(project);

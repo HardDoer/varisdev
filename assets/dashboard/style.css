@@ -936,6 +936,9 @@ main > .welcome {
   color: #bed3de;
   overflow-wrap: anywhere;
 }
+#inspector[data-conversation-kind='main'] {
+  --conversation-accent: var(--mint);
+}
 #inspector[data-conversation-kind='primary'] {
   --conversation-accent: var(--amber);
 }
@@ -993,10 +996,12 @@ main > .welcome {
   stroke: var(--robot-outline);
   stroke-width: 1;
 }
+.kind-main-icon,
 .kind-primary-icon,
 .kind-subagent-icon {
   display: none;
 }
+#inspector[data-conversation-kind='main'] .kind-main-icon,
 #inspector[data-conversation-kind='primary'] .kind-primary-icon,
 #inspector[data-conversation-kind='subagent'] .kind-subagent-icon {
   display: inline;

@@ -67,7 +67,16 @@ void test(
     await mkdir(join(agentDir, 'extensions'), {recursive: true});
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}}),
+      JSON.stringify({
+        retry: {enabled: false},
+        permissions: [
+          {
+            action: 'subagent',
+            resource: 'Ägent Review (v2).test',
+            effect: 'ask',
+          },
+        ],
+      }),
     );
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
@@ -91,16 +100,17 @@ export default function (pi) {
       scope: 'global',
       id: 'Ägent Review (v2).test',
       name: 'Review',
-      mode: 'subagent',
+      mode: 'primary',
       model: 'mention-fixture/pinned-child',
       instructions: 'PINNED CHILD INSTRUCTIONS',
     });
     const profile = createDefaultAgentProfile();
-    profile.id = 'main-reviewer';
-    profile.key = 'workspace:main-reviewer';
-    profile.name = 'Main reviewer';
+    profile.id = 'ignored-root-reviewer';
+    profile.key = 'workspace:ignored-root-reviewer';
+    profile.name = 'Ignored root reviewer';
+    profile.instructions = 'IGNORED ROOT PROFILE INSTRUCTIONS';
     profile.permissions = [
-      {action: 'subagent', resource: 'Ägent Review (v2).test', effect: 'ask'},
+      {action: 'subagent', resource: 'Ägent Review (v2).test', effect: 'deny'},
     ];
     const current = await createDashboardParent({cwd, agentProfile: profile});
     parents.push(current);
@@ -113,6 +123,7 @@ export default function (pi) {
     assert.equal(requests.length, 0);
     const approval = current.ui.snapshot().dialogs[0];
     assert.equal(approval.kind, 'select');
+    assert.match(approval.title, /Permission: main/i);
     current.ui.respond(approval.id, 'Allow once');
     await approved;
     await until(
@@ -125,7 +136,7 @@ export default function (pi) {
     const child = current.state.snapshot().agents[0];
     assert.equal(child.status, 'completed', child.error);
     assert.equal(child.pinnedModel, 'mention-fixture/pinned-child');
-    assert.equal(child.agentMode, 'subagent');
+    assert.equal(child.agentMode, 'primary');
     assert.equal(child.task, 'Inspect the changes');
     assert.match(child.output!, /Child reviewed the task/);
     assert.equal(requests.length, 1);
@@ -154,14 +165,23 @@ export default function (pi) {
       'Only the approved child made a provider request',
     );
 
-    const identity = (await current.features()).agentProfile;
-    const savedProfile = current
-      .restartSnapshot()
-      .entries.findLast(
+    assert.equal((await current.features()).agentProfile, undefined);
+    assert.equal(current.state.snapshot().session.agentProfile, undefined);
+    const beforeReload = current.restartSnapshot();
+    assert.equal(
+      beforeReload.entries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
+    );
+    assert.ok(
+      !beforeReload.entries.some(
         entry =>
           entry.type === 'custom' &&
           entry.customType === 'varisdev.agent-profile',
-      );
+      ),
+    );
     await current.reload();
     const reloaded = current.state.snapshot();
     assert.equal(reloaded.session.status, 'idle');
@@ -172,18 +192,22 @@ export default function (pi) {
     assert.equal(reloaded.agents[0].sessionFile, child.sessionFile);
     assert.deepEqual(reloaded.agents[0].conversation, child.conversation);
     assert.equal(reloaded.agents[0].output, child.output);
-    assert.deepEqual(reloaded.session.agentProfile, identity);
-    assert.deepEqual((await current.features()).agentProfile, identity);
-    assert.deepEqual(
-      current
-        .restartSnapshot()
-        .entries.findLast(
-          entry =>
-            entry.type === 'custom' &&
-            entry.customType === 'varisdev.agent-profile',
-        ),
-      savedProfile,
-      'Reload retains the saved root profile identity',
+    assert.equal(reloaded.session.agentProfile, undefined);
+    assert.equal((await current.features()).agentProfile, undefined);
+    const afterReload = current.restartSnapshot();
+    assert.equal(
+      afterReload.entries.filter(
+        entry =>
+          entry.type === 'custom' && entry.customType === 'varisdev.main-agent',
+      ).length,
+      1,
+    );
+    assert.ok(
+      !afterReload.entries.some(
+        entry =>
+          entry.type === 'custom' &&
+          entry.customType === 'varisdev.agent-profile',
+      ),
     );
     assert.equal(requests.length, 1, 'Reload requires no main turn');
     const next = current.prompt(

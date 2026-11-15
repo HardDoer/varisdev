@@ -63,7 +63,11 @@ void test('app catalog uses Pi available models and refreshes local custom model
   });
   const initial = await service.getToolSettings();
   assert.deepEqual(initial.settings, {
-    agents: {allowedModels: [], maxConcurrentAgents: 6},
+    agents: {
+      allowedModels: [],
+      maxConcurrentAgents: 6,
+      historyRetentionDays: 7,
+    },
   });
   assert.ok(
     !initial.models.some(model => model.provider === 'unconfigured-fixture'),
@@ -137,7 +141,11 @@ void test('desktop saves copy queued inputs and return live session choices', as
   replacement.agents.allowedModels[0] = 'unknown/mutated';
   const saved = await pending;
   assert.deepEqual(saved.settings, {
-    agents: {allowedModels: [firstId], maxConcurrentAgents: 6},
+    agents: {
+      allowedModels: [firstId],
+      maxConcurrentAgents: 6,
+      historyRetentionDays: 7,
+    },
   });
   assert.deepEqual(saved.models, models);
   await saveToolSettings('agents', {allowedModels: [secondId]});
@@ -186,7 +194,11 @@ void test('invalid IPC settings and unknown models preserve saved choices', asyn
     'session',
   );
   assert.deepEqual(saved.settings, {
-    agents: {allowedModels: [secondId], maxConcurrentAgents: 6},
+    agents: {
+      allowedModels: [secondId],
+      maxConcurrentAgents: 6,
+      historyRetentionDays: 7,
+    },
   });
 });
 
@@ -379,4 +391,78 @@ void test('desktop concurrency settings persist independently of allowed model c
   }
   await service.saveToolSettings('agents', {allowedModels: []}, 'session');
   assert.equal((await readToolSettings()).agents.maxConcurrentAgents, 1);
+});
+
+void test('desktop history retention survives service reloads and older settings updates', async t => {
+  const {directory, service} = await fixture(t);
+  const path = join(directory, 'varisdev', 'tool-settings.json');
+  await mkdir(join(path, '..'), {recursive: true});
+  await writeFile(
+    path,
+    JSON.stringify({
+      agents: {allowedModels: [firstId], maxConcurrentAgents: 3},
+    }),
+  );
+  assert.equal(
+    (await service.getToolSettings('session')).settings.agents
+      .historyRetentionDays,
+    7,
+  );
+  const input = {agents: {allowedModels: [firstId], historyRetentionDays: 365}};
+  const pending = service.saveToolSettings('all', input, 'session');
+  input.agents.historyRetentionDays = 1;
+  assert.equal((await pending).settings.agents.historyRetentionDays, 365);
+  const reloaded = new DesktopToolSettings({
+    sessionFeatures: async () => ({models: [first, second]}),
+  });
+  assert.equal(
+    (await reloaded.getToolSettings('session')).settings.agents
+      .historyRetentionDays,
+    365,
+  );
+  for (const section of ['agents', 'all']) {
+    const agents = {allowedModels: [secondId], maxConcurrentAgents: 2};
+    const saved = await reloaded.saveToolSettings(
+      section,
+      section === 'all' ? {agents} : agents,
+      'session',
+    );
+    assert.deepEqual(saved.settings.agents, {
+      allowedModels: [secondId],
+      maxConcurrentAgents: 2,
+      historyRetentionDays: 365,
+    });
+  }
+  const before = await readToolSettings();
+  for (const historyRetentionDays of [
+    0,
+    366,
+    -1,
+    1.5,
+    '7',
+    null,
+    undefined,
+    true,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    for (const section of ['agents', 'all']) {
+      const agents = {allowedModels: [firstId], historyRetentionDays};
+      await assert.rejects(
+        reloaded.saveToolSettings(
+          section,
+          section === 'all' ? {agents} : agents,
+          'session',
+        ),
+        /whole number from 1 to 365 days/,
+      );
+      assert.deepEqual(await readToolSettings(), before);
+    }
+  }
+  const saved = await reloaded.saveToolSettings(
+    'agents',
+    {allowedModels: [], historyRetentionDays: 1},
+    'session',
+  );
+  assert.equal(saved.settings.agents.historyRetentionDays, 1);
+  assert.equal(saved.settings.agents.maxConcurrentAgents, 2);
 });

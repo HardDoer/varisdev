@@ -353,9 +353,12 @@ function validTools(value) {
   return (
     Object.keys(value).every(key => ['agents', 'commit'].includes(key)) &&
     Object.keys(agents).every(key =>
-      ['allowedModels', 'maxConcurrentAgents'].includes(key),
+      ['allowedModels', 'maxConcurrentAgents', 'historyRetentionDays'].includes(
+        key,
+      ),
     ) &&
-    (agents.allowedModels === null ||
+    (agents.allowedModels === undefined ||
+      agents.allowedModels === null ||
       (Array.isArray(agents.allowedModels) &&
         agents.allowedModels.length <= 512 &&
         agents.allowedModels.every(
@@ -367,7 +370,11 @@ function validTools(value) {
         ))) &&
     (agents.maxConcurrentAgents === undefined ||
       (Number.isSafeInteger(agents.maxConcurrentAgents) &&
-        agents.maxConcurrentAgents >= 1))
+        agents.maxConcurrentAgents >= 1)) &&
+    (agents.historyRetentionDays === undefined ||
+      (Number.isSafeInteger(agents.historyRetentionDays) &&
+        agents.historyRetentionDays >= 1 &&
+        agents.historyRetentionDays <= 365))
   );
 }
 

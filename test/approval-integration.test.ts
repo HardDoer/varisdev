@@ -1,3 +1,4 @@
+import {mainAgentId} from '../src/agents/main.ts';
 import assert from 'node:assert/strict';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -68,7 +69,10 @@ void test(
     );
     await writeFile(
       join(agentDir, 'settings.json'),
-      JSON.stringify({retry: {enabled: false}}),
+      JSON.stringify({
+        retry: {enabled: false},
+        permissions: [{action: 'skill', resource: 'review', effect: 'ask'}],
+      }),
     );
     await mkdir(join(agentDir, 'skills', 'review'), {recursive: true});
     await writeFile(
@@ -116,6 +120,18 @@ void test(
         modelRegistry: registry,
         thinkingLevel: 'off',
       },
+    );
+    assert.equal((await parent.features()).agentProfile, undefined);
+    assert.equal(parent.state.snapshot().session.agentProfile, undefined);
+    assert.equal(
+      parent
+        .restartSnapshot()
+        .entries.filter(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.main-agent',
+        ).length,
+      1,
     );
     const workerUi = parent.ui;
     let workerContext: ExtensionContext | undefined;
@@ -194,6 +210,20 @@ void test(
       'conversation',
     );
     const agentGrant = await store.remember(scope, operation, 'agent');
+    const mainAgentGrant = await store.remember(
+      {
+        ...scope,
+        agentId: mainAgentId,
+        conversationId: parent.state.snapshot().session.id,
+      },
+      operation,
+      'agent',
+    );
+    const namedMainGrant = await store.remember(
+      {...scope, agentId: 'main'},
+      operation,
+      'agent',
+    );
     const cancelledReview = worker.command!('/approvals');
     await select(workerUi, 'This conversation');
     const cancelledChoices = await dialog(workerUi);
@@ -224,11 +254,25 @@ void test(
     const mainManagement = parent.prompt('/approvals');
     await select(parent.ui, 'This agent in this workspace');
     const agentChoices = await dialog(parent.ui);
+    assert.equal(
+      agentChoices.options?.length,
+      1,
+      'A configuration named main has separate approvals from Main',
+    );
     await select(parent.ui, agentChoices.options![0]);
     await select(parent.ui, 'Revoke approval');
     await select(parent.ui);
     await mainManagement;
-    assert.ok(!(await store.list()).some(grant => grant.id === agentGrant.id));
+    assert.ok(
+      !(await store.list()).some(grant => grant.id === mainAgentGrant.id),
+    );
+    assert.ok(
+      (await store.list()).some(grant => grant.id === agentGrant.id),
+      'Main approval management does not revoke the worker identity grant',
+    );
+    assert.ok(
+      (await store.list()).some(grant => grant.id === namedMainGrant.id),
+    );
 
     const workerCancellation = worker.command!('/approvals');
     await dialog(workerUi);
@@ -283,8 +327,12 @@ void test(
     assert.equal(workerUi.snapshot().dialogs.length, 0);
 
     await store.revoke(parentGrant.id);
+    await store.revoke(agentGrant.id);
+    await store.revoke(namedMainGrant.id);
     const reviewing = parent.prompt('/skill:review');
-    await select(parent.ui, 'Deny');
+    const mainPermission = await dialog(parent.ui);
+    assert.match(mainPermission.title, /Permission: main/i);
+    parent.ui.respond(mainPermission.id, 'Deny');
     await reviewing;
     assert.ok(
       parent.ui

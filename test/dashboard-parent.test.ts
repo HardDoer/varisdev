@@ -190,6 +190,35 @@ void test(
     let heldResponse: ServerResponse | undefined;
     let steeringResponse: ServerResponse | undefined;
     let heldDisconnected = false;
+    let workerResultResponse: ServerResponse | undefined;
+    let independentWorkFinished = false;
+    const isAgentResult = (message: ProviderRequest['messages'][number]) => {
+      if (message.role !== 'user') return false;
+      const content =
+        typeof message.content === 'string'
+          ? message.content
+          : Array.isArray(message.content)
+            ? message.content.map(block => block.text ?? '').join('')
+            : '';
+      try {
+        return Array.isArray(JSON.parse(content).agents);
+      } catch {
+        return false;
+      }
+    };
+    async function startHeld(parent: DashboardParent, prompt: string) {
+      const count = parent.state.snapshot().agents.length;
+      const run = parent.prompt(prompt);
+      await waitFor(
+        () =>
+          parent.state.snapshot().agents.length > count &&
+          parent.state.snapshot().session.response ===
+            'Background worker started.',
+        'parent finishes its independent work',
+      );
+      await parent.abort();
+      await run;
+    }
     const server = createServer(async (request, response) => {
       try {
         let text = '';
@@ -212,9 +241,9 @@ void test(
           return;
         }
         const userIndex = body.messages.findLastIndex(
-          message => message.role === 'user',
+          message => message.role === 'user' && !isAgentResult(message),
         );
-        const prompt = JSON.stringify(body.messages[userIndex]?.content);
+        const prompt = JSON.stringify(body.messages[userIndex]?.content ?? '');
         const toolResults = body.messages
           .slice(userIndex + 1)
           .filter(message => message.role === 'tool');
@@ -224,20 +253,14 @@ void test(
             response.once('close', () => {
               heldDisconnected = true;
             });
-          } else {
-            reply(
-              response,
-              toolResults.length === 0
-                ? {
-                    name: 'write',
-                    arguments: {
-                      path: 'worker.txt',
-                      content: 'Worker wrote this.\n',
-                    },
-                  }
-                : 'Completed worker result.',
-            );
-          }
+          } else if (toolResults.length === 0) {
+            reply(response, {
+              name: 'write',
+              arguments: {path: 'worker.txt', content: 'Worker wrote this.\n'},
+            });
+          } else if (independentWorkFinished)
+            reply(response, 'Completed worker result.');
+          else workerResultResponse = response;
         } else if (prompt.includes('steer-held-parent')) {
           steeringResponse = response;
         } else if (prompt.includes('steering-parent')) {
@@ -279,13 +302,24 @@ void test(
                 task: 'Write the worker fixture and report.',
               },
             },
-            {name: 'agent_wait', arguments: {timeoutMs: 5000}},
-            'Parent completed the delegated task.',
+            'Parent independent work finished.',
           ];
+          const receivedResults = body.messages
+            .slice(userIndex + 1)
+            .some(isAgentResult);
           reply(
             response,
-            outputs[toolResults.length] ?? 'Unexpected extra turn.',
+            receivedResults
+              ? 'Parent completed the delegated task.'
+              : (outputs[toolResults.length] ?? 'Unexpected extra turn.'),
           );
+          if (toolResults.length >= 2) {
+            independentWorkFinished = true;
+            if (workerResultResponse) {
+              reply(workerResultResponse, 'Completed worker result.');
+              workerResultResponse = undefined;
+            }
+          }
         }
       } catch (error) {
         serverErrors.push(error);
@@ -418,7 +452,7 @@ void test(
         ['user', undefined],
         ['tool', 'write'],
         ['tool', 'agent_spawn'],
-        ['tool', 'agent_wait'],
+        ['assistant', undefined],
         ['assistant', undefined],
       ],
     );
@@ -433,8 +467,11 @@ void test(
     assert.equal(JSON.parse(tools[0].input!).path, 'parent.txt');
     assert.match(tools[0].text, /Successfully wrote/);
     assert.match(tools[1].input ?? '', /Writer worker/);
-    assert.match(tools[2].text, /Completed worker result/);
-    assert.equal(new Set(tools.map(message => message.toolCallId)).size, 3);
+    assert.match(
+      JSON.stringify(requests.findLast(item => !item.worker)!.body.messages),
+      /Completed worker result/,
+    );
+    assert.equal(new Set(tools.map(message => message.toolCallId)).size, 2);
     assert.equal(
       completed.conversation[0].text,
       'Write a parent file, delegate the worker file, and collect the result.',
@@ -459,7 +496,7 @@ void test(
     );
     assert.deepEqual(
       completed.usage.calls.map(call => call.toolNames),
-      [['write'], ['agent_spawn'], ['agent_wait'], []],
+      [['write'], ['agent_spawn'], [], []],
     );
     assert.ok(completed.session.sessionFile);
     let restoredState: DashboardState | undefined;
@@ -588,7 +625,6 @@ void test(
       'download',
       'json_query',
       'agent_spawn',
-      'agent_wait',
       'agent_list',
     ]) {
       assert.ok(
@@ -718,202 +754,153 @@ void test(
     assert.equal(parent.state.snapshot().session.thinkingLevel, 'high');
 
     await t.test(
-      'closing starter preserves live children and persists across reload and resume',
+      'Main stays available after closing additional agents and when restoring older workspaces',
       async () => {
-        const closureParent = await createDashboardParent(
-          {cwd: otherCwd},
-          inherited,
-        );
-        parents.push(closureParent);
-        const hub = new DashboardHub(undefined, async () => closureParent);
-        hub.adoptSession(closureParent);
-        const workspaceId = closureParent.state.snapshot().session.id;
+        const main = await createDashboardParent({cwd: otherCwd}, inherited);
+        parents.push(main);
+        const hub = new DashboardHub(undefined, async () => main);
+        hub.adoptSession(main);
+        const workspaceId = main.state.snapshot().session.id;
         heldResponse = undefined;
         heldDisconnected = false;
-        await closureParent.prompt(
-          'start-held-worker: keep this primary running after starter close.',
+        await startHeld(
+          main,
+          'start-held-worker: keep Main and its child available.',
         );
-        await waitFor(
-          () => !!heldResponse,
-          'child starts before starter close',
-        );
-        const child = closureParent.state.snapshot().agents[0];
-        assert.equal(child.agentMode, 'all');
+        const child = main.state.snapshot().agents[0];
         steeringResponse = undefined;
-        const rootRun = closureParent.prompt(
-          'steer-held-parent: close this starter.',
+        const rootRun = main.prompt(
+          'steer-held-parent: Main is working beside its child.',
         );
-        await waitFor(() => !!steeringResponse, 'starter runs beside child');
-        await hub.agentSession(workspaceId, {
-          agentId: 'parent',
-          action: 'close',
-        });
-        await rootRun;
-        assert.equal(
-          closureParent.state.snapshot().session.primaryClosed,
-          true,
-        );
-        assert.equal(closureParent.state.snapshot().session.id, workspaceId);
-        assert.equal(closureParent.state.snapshot().session.status, 'idle');
-        assert.equal(
-          closureParent.state.snapshot().agents[0].status,
-          'running',
-        );
-        assert.equal(heldDisconnected, false);
+        await waitFor(() => !!steeringResponse, 'Main runs beside its child');
         await assert.rejects(
-          closureParent.prompt('Root prompt after closure'),
-          /primary agent has closed/,
-        );
-        await hub.renameSession(workspaceId, 'Workspace after starter close');
-        assert.equal(
-          closureParent.state.snapshot().session.name,
-          'Workspace after starter close',
-        );
-        reply(heldResponse!, 'Completed after starter closure.');
-        await waitFor(
-          () => closureParent.state.snapshot().agents[0].status === 'completed',
-          'child completes after starter closure',
-        );
-        await hub.agentSession(workspaceId, {
-          agentId: child.id,
-          action: 'prompt',
-          prompt: 'direct-worker-marker after starter closure',
-        });
-        await waitFor(
-          () => closureParent.state.snapshot().agents[0].status === 'completed',
-          'child accepts another turn',
-        );
-        await saveToolSettings('agents', {
-          allowedModels: [`${providerId}/dashboard-model`],
-          maxConcurrentAgents: 1,
-        });
-        await closureParent.reload();
-        assert.equal(
-          closureParent.state.snapshot().session.primaryClosed,
-          true,
+          hub.agentSession(workspaceId, {agentId: 'parent', action: 'close'}),
+          /Main agent cannot be closed/,
         );
         await assert.rejects(
-          closureParent.prompt('Root prompt after reload'),
-          /primary agent has closed/,
-        );
-        const savedPath = closureParent.state.snapshot().session.sessionFile!;
-        assert.deepEqual(
-          await hub.agentSession(workspaceId, {
-            agentId: child.id,
-            action: 'close',
-          }),
-          {requiresWorkspaceCloseConfirmation: true},
-        );
-        assert.deepEqual(
-          await hub.agentSession(workspaceId, {
-            agentId: child.id,
+          main.agentSession!({
+            agentId: 'parent',
             action: 'close',
             confirmWorkspaceClose: true,
           }),
-          {workspaceClosed: true},
+          /Main agent cannot be closed/,
         );
-        await hub.close();
+        assert.equal(main.state.snapshot().session.primaryClosed, false);
+        assert.equal(main.state.snapshot().session.status, 'running');
+        assert.equal(main.state.snapshot().agents[0].status, 'running');
+        assert.equal(heldDisconnected, false);
+        await main.abort();
+        await rootRun;
+        reply(heldResponse!, 'Completed after Main close was rejected.');
+        await waitFor(
+          () => main.state.snapshot().agents[0].status === 'completed',
+          'child finishes',
+        );
+        await main.reload();
+        assert.equal(main.state.snapshot().session.primaryClosed, false);
+        assert.equal(
+          await hub.agentSession(workspaceId, {
+            agentId: child.id,
+            action: 'close',
+          }),
+          undefined,
+        );
+        assert.equal(
+          hub.snapshot().sessions.length,
+          1,
+          'closing the final additional agent keeps the workspace open',
+        );
+        await main.prompt('follow-up-parent: Main is still available.');
+        assert.equal(main.lastAssistantText?.(), 'Follow-up parent answer.');
+
+        heldResponse = undefined;
+        await startHeld(
+          main,
+          'start-held-worker: retain a primary for legacy resume.',
+        );
+        const retained = main.state
+          .snapshot()
+          .agents.find(agent => agent.status === 'running')!;
+        reply(heldResponse!, 'Retained primary result.');
+        await waitFor(
+          () =>
+            main.state.snapshot().agents.find(agent => agent.id === retained.id)
+              ?.status === 'completed',
+          'retained primary finishes',
+        );
+        const savedPath = main.state.snapshot().session.sessionFile!;
+        await hub.closeSession(workspaceId);
+        assert.equal(hub.snapshot().sessions.length, 0);
+        const legacy = SessionManager.open(savedPath);
+        legacy.appendCustomEntry('varisdev.primary-closed', {closed: true});
         const resumed = await createDashboardParent(
           {cwd: otherCwd, resume: {id: workspaceId, path: savedPath}},
           inherited,
         );
         parents.push(resumed);
-        assert.equal(resumed.state.snapshot().session.primaryClosed, true);
         assert.equal(
-          resumed.state.snapshot().agents.find(agent => agent.id === child.id)
-            ?.resumable,
+          resumed.state.snapshot().session.primaryClosed,
+          false,
+          'legacy closure does not remove Main even with a retained primary',
+        );
+        assert.equal(
+          resumed.state
+            .snapshot()
+            .agents.find(agent => agent.id === retained.id)?.resumable,
           true,
         );
-        await assert.rejects(
-          resumed.prompt('Root prompt after resume'),
-          /primary agent has closed/,
+        assert.equal((await resumed.features()).agentProfile, undefined);
+        await resumed.prompt('follow-up-parent: Main reopened.');
+        assert.equal(resumed.lastAssistantText?.(), 'Follow-up parent answer.');
+        await resumed.reload();
+        assert.equal(resumed.state.snapshot().session.primaryClosed, false);
+        const stored = SessionManager.open(savedPath).getEntries();
+        assert.equal(
+          stored.filter(
+            entry =>
+              entry.type === 'custom' &&
+              entry.customType === 'varisdev.main-agent',
+          ).length,
+          1,
         );
-        await resumed.agentSession!({
-          agentId: child.id,
-          action: 'prompt',
-          prompt: 'direct-worker-marker after workspace resume',
-        });
-        await waitFor(
-          () => resumed.state.snapshot().agents[0].status === 'completed',
-          'saved child resumes while starter remains closed',
+        const reopening = stored.findLast(
+          entry =>
+            entry.type === 'custom' &&
+            entry.customType === 'varisdev.primary-closed',
         );
-        await resumed.agentSession!({agentId: child.id, action: 'close'});
+        assert.ok(reopening?.type === 'custom');
+        assert.deepEqual(reopening.data, {closed: false});
         await resumed.close();
-        const recovered = await createDashboardParent(
-          {cwd: otherCwd, resume: {id: workspaceId, path: savedPath}},
+        await hub.close();
+
+        const blank = await createDashboardParent(
+          {cwd: otherCwd, name: 'Empty Main workspace'},
           inherited,
         );
-        parents.push(recovered);
-        assert.equal(
-          recovered.state.snapshot().session.primaryClosed,
-          false,
-          'starter reopens if no retained primary can resume',
-        );
-        await recovered.prompt(
-          'independent-parent: recovered workspace starter',
-        );
-        assert.equal(
-          recovered.state.snapshot().session.response,
-          'Independent parent answer.',
-        );
-        await recovered.reload();
-        assert.equal(
-          recovered.state.snapshot().session.primaryClosed,
-          false,
-          'reopened state is persisted for later reloads',
-        );
-        await recovered.close();
-        await saveToolSettings('agents', {
-          allowedModels: [`${providerId}/dashboard-model`],
-          maxConcurrentAgents: 6,
-        });
-        const blank = await createDashboardParent({cwd: otherCwd}, inherited);
         parents.push(blank);
-        await blank.prompt('@default Write the worker fixture and report.');
-        await waitFor(
-          () => blank.state.snapshot().agents[0]?.status === 'completed',
-          'agent runs while starter has no conversation',
-        );
-        const blankSnapshot = blank.state.snapshot();
-        assert.ok(
-          !blankSnapshot.conversation.some(message => message.role === 'user'),
-        );
-        await blank.agentSession!({agentId: 'parent', action: 'close'});
-        await blank.prompt('/name Saved host with closed starter');
+        const savedBlank = blank.state.snapshot().session;
         await blank.close();
         const blankResumed = await createDashboardParent(
           {
             cwd: otherCwd,
-            resume: {
-              id: blankSnapshot.session.id,
-              path: blankSnapshot.session.sessionFile!,
-            },
+            resume: {id: savedBlank.id, path: savedBlank.sessionFile!},
           },
           inherited,
         );
         parents.push(blankResumed);
-        assert.equal(blankResumed.state.snapshot().session.primaryClosed, true);
+        assert.equal(
+          blankResumed.state.snapshot().session.primaryClosed,
+          false,
+        );
         assert.equal(
           blankResumed.state.snapshot().session.name,
-          'Saved host with closed starter',
+          'Empty Main workspace',
         );
-        await blankResumed.agentSession!({
-          agentId: blankSnapshot.agents[0].id,
-          action: 'prompt',
-          prompt: 'direct-worker-marker after empty starter resume',
-        });
-        await waitFor(
-          () => blankResumed.state.snapshot().agents[0].status === 'completed',
-          'child resumes from host without root messages',
-        );
+        assert.deepEqual(blankResumed.state.snapshot().agents, []);
         await blankResumed.close();
         heldResponse = undefined;
         heldDisconnected = false;
         steeringResponse = undefined;
-        await saveToolSettings('agents', {
-          allowedModels: [`${providerId}/dashboard-model`],
-          maxConcurrentAgents: 6,
-        });
       },
     );
 
@@ -1010,7 +997,8 @@ void test(
         ),
     );
 
-    await parent.prompt(
+    await startHeld(
+      parent,
       'start-held-worker: leave a worker running in the background.',
     );
     await waitFor(
@@ -1058,7 +1046,8 @@ void test(
     heldDisconnected = false;
     heldResponse = undefined;
     for (let index = 0; index < 6; index++) {
-      await parent.prompt(
+      await startHeld(
+        parent,
         'start-held-worker: create background worker ' + index,
       );
     }
@@ -1116,7 +1105,7 @@ void test(
     await independentParentRun;
     heldDisconnected = false;
     heldResponse = undefined;
-    await parent.prompt('start-held-worker: shutdown still cancels agent');
+    await startHeld(parent, 'start-held-worker: shutdown still cancels agent');
     await waitFor(() => !!heldResponse, 'shutdown worker reaches provider');
     const closing = parent.close();
     assert.equal(parent.close(), closing);

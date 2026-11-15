@@ -1,4 +1,5 @@
-import {discoverAgentMentions, parseAgentMention} from '../agents/mentions.ts';
+import {createMainAgentProfile, mainAgentEntry} from '../agents/main.ts';
+import {discoverAgentMentions} from '../agents/mentions.ts';
 import {
   sessionEntryToContextMessages,
   type BuildSystemPromptOptions,
@@ -18,7 +19,6 @@ import {
   decideAgentPermission,
 } from '../agents/policy.ts';
 import {
-  createDefaultAgentProfile,
   ensureAgentProfilePermissions,
   type AgentTemplate,
 } from '../agents/templates.ts';
@@ -30,7 +30,11 @@ import {
   type FactoryWindow,
 } from '../desktop/launcher.ts';
 import {observeDashboardSession} from './observe.ts';
-import {primaryClosedEntry, persistPrimarySession} from './primary-session.ts';
+import {
+  primaryClosedEntry,
+  persistPrimarySession,
+  sessionPrimaryClosed,
+} from './primary-session.ts';
 import type {DashboardState} from './state.ts';
 import {
   sessionConfiguration,
@@ -89,6 +93,7 @@ export function registerFactory(
   let cancelBeforeStart = false;
   let approvalController = new AbortController();
   const managedProfiles = new Map<string, AgentTemplate>();
+  const managedMainSessions = new Set<string>();
   let nativeSkills: {sessionId: string; skills: readonly Skill[]} | undefined;
   const applyNativePrompt = (
     options: BuildSystemPromptOptions,
@@ -113,7 +118,13 @@ export function registerFactory(
     'varisdev:agent-profile-managed',
     value => {
       if (!value || typeof value !== 'object') return;
-      const managed = value as {sessionId?: string; profile?: AgentTemplate};
+      const managed = value as {
+        sessionId?: string;
+        profile?: AgentTemplate;
+        main?: boolean;
+      };
+      if (managed.sessionId && managed.main)
+        managedMainSessions.add(managed.sessionId);
       if (managed.sessionId && managed.profile)
         managedProfiles.set(
           managed.sessionId,
@@ -181,12 +192,31 @@ export function registerFactory(
         ? (saved.data as AgentTemplate | undefined)
         : undefined;
     const sessionId = ctx.sessionManager.getSessionId();
+    const main =
+      !managedProfiles.has(sessionId) || managedMainSessions.has(sessionId);
     const profile = await ensureAgentProfilePermissions(
       ctx.cwd,
-      snapshot ?? managedProfiles.get(sessionId) ?? createDefaultAgentProfile(),
+      main
+        ? createMainAgentProfile()
+        : (snapshot ?? managedProfiles.get(sessionId)!),
     );
     if (version !== generation) return;
-    if (!snapshot || JSON.stringify(snapshot) !== JSON.stringify(profile))
+    if (main) {
+      if (
+        !ctx.sessionManager
+          .getEntries()
+          .some(
+            entry =>
+              entry.type === 'custom' && entry.customType === mainAgentEntry,
+          )
+      )
+        pi.appendEntry(mainAgentEntry, {version: 1});
+      if (sessionPrimaryClosed(ctx.sessionManager))
+        pi.appendEntry(primaryClosedEntry, {closed: false});
+    } else if (
+      !snapshot ||
+      JSON.stringify(snapshot) !== JSON.stringify(profile)
+    )
       pi.appendEntry('varisdev.agent-profile', structuredClone(profile));
     shared.agentProfile = structuredClone(profile);
     for (const release of nativePolicyCleanup.splice(0)) release();
@@ -247,11 +277,6 @@ export function registerFactory(
     })(nativePi);
   });
   const observer = observeDashboardSession(pi, control, (state, ctx) => {
-    if (control.snapshot())
-      control
-        .getTeam(ctx)
-        .getManager()
-        .setPrimaryOpen?.(!state.deliverySnapshot().session.primaryClosed);
     const current: FactoryBinding = {
       state,
       ctx,
@@ -438,12 +463,6 @@ export function registerFactory(
             throw new Error('Prompt must contain 1 to 64000 characters.');
           const parsed = parseSlashCommand(prompt);
           const native = parsed && nativeCommand(parsed.name);
-          if (
-            state.deliverySnapshot().session.primaryClosed &&
-            !parseAgentMention(prompt) &&
-            parsed?.name !== 'name'
-          )
-            throw new Error('This primary agent has closed.');
           if (current.stopping || (current.maintaining && !native?.live))
             throw new Error(
               'This session is updating. Try again when it is idle.',
@@ -512,8 +531,6 @@ export function registerFactory(
               state.record('message', prompt.trim());
               return;
             }
-            if (state.deliverySnapshot().session.primaryClosed)
-              throw new Error('This primary agent has closed.');
             const commandName = prompt.startsWith('/')
               ? prompt.split(/\s+/, 1)[0].slice(1)
               : undefined;
@@ -549,19 +566,6 @@ export function registerFactory(
         async agentSession(input) {
           ensureAttached(current);
           const request = agentSessionRequest(input);
-          if (request.agentId === 'parent' && request.action === 'close') {
-            if (!state.deliverySnapshot().session.primaryClosed) {
-              pi.appendEntry(primaryClosedEntry);
-              state.updateSession({primaryClosed: true});
-            }
-            await current.control.abort();
-            ensureAttached(current);
-            persistPrimarySession(ctx.sessionManager);
-            if (control.snapshot())
-              control.getTeam(ctx).getManager().setPrimaryOpen?.(false);
-            state.updateSession({activity: 'Primary agent closed'});
-            return;
-          }
           if (!control.snapshot())
             throw new Error('This session has no agent conversations.');
           const result = await runAgentSessionRequest(
@@ -633,8 +637,6 @@ export function registerFactory(
       binding.systemPromptOptions = event.systemPromptOptions;
   });
   pi.on('input', event => {
-    if (binding?.state.deliverySnapshot().session.primaryClosed)
-      return {action: 'handled'};
     if (event.source === 'interactive' || event.source === 'rpc') {
       cancelBeforeStart = false;
       if (approvalController.signal.aborted)
@@ -649,14 +651,10 @@ export function registerFactory(
         ctx.sessionManager.getSessionId()
     )
       return;
-    if (
-      cancelBeforeStart ||
-      binding?.state.deliverySnapshot().session.primaryClosed
-    ) {
-      ctx.abort();
-    }
+    if (cancelBeforeStart) ctx.abort();
   });
-  pi.on('session_shutdown', event => {
+  pi.on('session_shutdown', (event, ctx) => {
+    persistPrimarySession(ctx.sessionManager);
     approvalController.abort();
     for (const release of nativePolicyCleanup.splice(0)) release();
     generation++;

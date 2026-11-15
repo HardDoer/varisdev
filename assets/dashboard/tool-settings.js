@@ -105,9 +105,13 @@ export function initToolSettings({api, selectedSessionId}) {
       busy ||
       !loaded ||
       !Number.isSafeInteger(draft?.agents.maxConcurrentAgents) ||
-      draft.agents.maxConcurrentAgents < 1;
+      draft.agents.maxConcurrentAgents < 1 ||
+      !Number.isSafeInteger(draft?.agents.historyRetentionDays) ||
+      draft.agents.historyRetentionDays < 1 ||
+      draft.agents.historyRetentionDays > 365;
     if (!loaded) return;
     $('agent-max-concurrent').disabled = busy;
+    $('agent-history-retention').disabled = busy;
     $('tool-settings-search').disabled = busy;
     const count = draft.agents.allowedModels.length;
     $('tool-settings-selection').textContent =
@@ -118,6 +122,9 @@ export function initToolSettings({api, selectedSessionId}) {
     if (state && draft) {
       $('agent-max-concurrent').value = String(
         draft.agents.maxConcurrentAgents,
+      );
+      $('agent-history-retention').value = String(
+        draft.agents.historyRetentionDays,
       );
       renderModels();
     }
@@ -134,6 +141,7 @@ export function initToolSettings({api, selectedSessionId}) {
       state = next;
       draft = structuredClone(next.settings);
       draft.agents.allowedModels ??= [];
+      draft.agents.historyRetentionDays ??= 7;
     } catch (error) {
       failure = errorText(error);
     } finally {
@@ -251,6 +259,11 @@ export function initToolSettings({api, selectedSessionId}) {
   listen($('tool-settings-search'), 'input', renderModels);
   listen($('agent-max-concurrent'), 'input', event => {
     draft.agents.maxConcurrentAgents = event.target.valueAsNumber;
+    failure = '';
+    renderControls();
+  });
+  listen($('agent-history-retention'), 'input', event => {
+    draft.agents.historyRetentionDays = event.target.valueAsNumber;
     failure = '';
     renderControls();
   });

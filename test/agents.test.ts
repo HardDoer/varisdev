@@ -38,6 +38,18 @@ type AgentEventHandler = (
   ctx: ExtensionContext,
 ) => Promise<void> | void;
 
+function addHandler(
+  events: Map<string, AgentEventHandler>,
+  event: string,
+  handler: AgentEventHandler,
+) {
+  const previous = events.get(event);
+  events.set(event, async (value, ctx) => {
+    await previous?.(value, ctx);
+    await handler(value, ctx);
+  });
+}
+
 function toolContext(ctx: ExtensionContext): ExtensionToolContext {
   return Object.assign(ctx, {
     tools: [],
@@ -755,7 +767,7 @@ void test('agent tools select registered models and effort without adding parent
       tools.set(tool.name, tool);
     },
     on(event: string, handler: AgentEventHandler) {
-      events.set(event, handler);
+      addHandler(events, event, handler);
     },
     registerCommand(
       name: string,
@@ -1053,7 +1065,7 @@ void test('worker messaging identifies senders, validates recipients, and stays 
       tools.set(tool.name, tool);
     },
     on(event: string, handler: AgentEventHandler) {
-      events.set(event, handler);
+      addHandler(events, event, handler);
     },
     registerCommand() {},
     getThinkingLevel: () => 'off',
@@ -1276,7 +1288,7 @@ function agentParent(
       tools.set(tool.name, tool);
     },
     on(event: string, handler: AgentEventHandler) {
-      events.set(event, handler);
+      addHandler(events, event, handler);
     },
     registerCommand() {},
     getThinkingLevel: () => 'off',
@@ -1884,7 +1896,7 @@ void test('agent tools enforce live allowed models and refresh schemas between t
   // Execute also enforces policy even when callers bypass schema validation.
   await assert.rejects(
     parent.spawn('Inherited denied'),
-    /Menu → Agent-models.*other\/model/,
+    /Menu → Agent settings.*other\/model/,
   );
   await assert.rejects(parent.execute('agent_spawn', params), /not allowed/);
   assert.equal(workers.created.length, 0);
@@ -1984,7 +1996,7 @@ void test('model policy is checked when queued workers start, including initiali
     result.details.agents.every(
       agent =>
         agent.status === 'failed' &&
-        agent.error?.includes('Menu → Agent-models'),
+        agent.error?.includes('Menu → Agent settings'),
     ),
   );
   assert.equal(workers.byId.has(uninitialized), false);
@@ -2213,22 +2225,22 @@ void test('fresh and cleared agent policies deny explicit and inherited models w
   const params = {name: 'Explicit', task: 'Must not start', model};
   const assertEmptyPolicy = async () => {
     const tool = parent.tools.get('agent_spawn')!;
-    assert.match(tool.description, /No models enabled.*Menu → Agent-models/);
+    assert.match(tool.description, /No models enabled.*Menu → Agent settings/);
     const schema = tool.parameters as {
       properties: {model: {enum?: string[]; description: string}};
     };
     assert.equal(Object.hasOwn(schema.properties.model, 'enum'), false);
     assert.doesNotMatch(
       schema.properties.model.description,
-      /Menu → Agent-models/,
+      /Menu → Agent settings/,
     );
     await assert.rejects(
       parent.spawn('Inherited denied'),
-      /No agent models selected.*Choose a model in Menu → Agent-models/,
+      /No agent models selected.*Choose a model in Menu → Agent settings/,
     );
     await assert.rejects(
       parent.execute('agent_spawn', params),
-      /No agent models selected.*Choose a model in Menu → Agent-models/,
+      /No agent models selected.*Choose a model in Menu → Agent settings/,
     );
     assert.equal(workers.created.length, 0);
   };
@@ -3243,7 +3255,7 @@ void test('switching to main only lets a running nested waiter finish while queu
 });
 
 void test(
-  'closed starter releases its reserved concurrency slot for retained primary agents',
+  'retained primary agents cannot use the slot reserved for Main',
   {timeout: 5000},
   async t => {
     const manager = new AgentOrchestrator(2);
@@ -3270,8 +3282,8 @@ void test(
     );
     await manager.wait([record.id]);
     manager.setMaxConcurrentAgents(1);
-    await assert.rejects(manager.send(record.id, 'before closure'), /reserved/);
-    manager.setPrimaryOpen(false);
+    await assert.rejects(manager.send(record.id, 'reserved slot'), /reserved/);
+    manager.setMaxConcurrentAgents(2);
     await manager.send(record.id, 'retained continuation');
     await manager.wait([record.id]);
     assert.deepEqual(prompts, ['initial', 'retained continuation']);

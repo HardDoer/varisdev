@@ -168,10 +168,9 @@ function features() {
 }
 function renderAgentProfile() {
   const resource = features();
-  const profile =
-    current?.session.agentProfile ||
-    resource?.agentProfile ||
-    (resource ? {id: 'default', name: 'Default'} : undefined);
+  const profile = current?.agentId
+    ? current.session.agentProfile || resource?.agentProfile
+    : undefined;
   const label = $('agent-profile-label');
   const settings = $('session-maintenance-profile');
   if (!current || !profile) {
